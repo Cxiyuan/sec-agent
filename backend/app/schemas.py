@@ -101,33 +101,6 @@ class EventGroup(BaseModel):
     business_context: dict[str, Any] | None = None
 
 
-class AttackStage(BaseModel):
-    stage: str  # 侦察 / 入侵 / 横向 / 外泄
-    description: str
-    evidence: list[dict[str, Any]] = Field(default_factory=list)  # 挂载的日志证据
-
-
-class AttackChain(BaseModel):
-    stages: list[AttackStage] = Field(default_factory=list)
-    confidence: float = 0.0
-    summary: str = ""
-
-
-class AttackerProfile(BaseModel):
-    basic: dict[str, Any] = Field(default_factory=dict)
-    behavior: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnomalyFindings(BaseModel):
-    findings: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ResponseSuggestion(BaseModel):
-    category: Literal["block", "remediation", "incident_response"]
-    action: str
-    detail: str
-
-
 class AgentState(BaseModel):
     """LangGraph 图状态。"""
 

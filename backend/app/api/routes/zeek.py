@@ -167,8 +167,7 @@ def set_interface(
             content={
                 "conflict": "write_failed",
                 "detail": (
-                    f"写入网卡配置失败：{write_error}"
-                    "（请确认 /config 共享卷已挂载给后端与 Zeek）"
+                    f"写入网卡配置失败：{write_error}（请确认 /config 共享卷已挂载给后端与 Zeek）"
                 ),
             },
         )

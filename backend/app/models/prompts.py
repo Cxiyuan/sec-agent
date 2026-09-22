@@ -9,8 +9,10 @@ score 越高越可疑。只输出 JSON，不要多余文字。"""
 
 TRIAGE_USER = """事件类型：{event_type}
 来源系统：{source_system}
-源地址：{src_ip}:{src_port}
-目的地址：{dst_ip}:{dst_port}
+源地址：{src_ip}
+源端口：{src_port}
+目的地址：{dst_ip}
+目的端口：{dst_port}
 协议：{protocol}
 命中规则：{hit_rule}
 摘要：{summary}

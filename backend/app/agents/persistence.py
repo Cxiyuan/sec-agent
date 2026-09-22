@@ -8,8 +8,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import BaselineStat, Event, EventGroup, Report, Rule
+from app.runtime_config import get as runtime_get
 from app.schemas import EventGroup as EventGroupSchema
 from app.workers.pubsub import publish
 
@@ -207,7 +209,7 @@ def update_baseline(key: str, value: float) -> None:
     with SessionLocal() as db:
         row = db.get(BaselineStat, key)
         if row is None:
-            row = BaselineStat(key=key, count=0, mean=0.0, m2=0.0)
+            row = BaselineStat(key=key, count=0, mean=0.0, m2=0.0, first_seen=_now())
             db.add(row)
         row.count += 1
         delta = value - row.mean
@@ -217,9 +219,22 @@ def update_baseline(key: str, value: float) -> None:
 
 
 def get_baseline(key: str) -> dict[str, float] | None:
+    """取基线统计；观测期（baseline_observe_days）内返回 None（只学习、不判异常）。"""
     with SessionLocal() as db:
         row = db.get(BaselineStat, key)
         if row is None or row.count < 2:
+            return None
+        # 冷启动保护：观测不足 N 天时不报统计异常，避免上线首日大量误报
+        # （后台「系统配置」可改，30 秒 TTL 内生效）
+        observe_days = int(
+            runtime_get("baseline_observe_days", settings.baseline_observe_days)
+        )
+        in_observe = (
+            observe_days > 0
+            and row.first_seen is not None
+            and (_now() - row.first_seen).days < observe_days
+        )
+        if in_observe:
             return None
         variance = row.m2 / (row.count - 1)
         std = variance**0.5

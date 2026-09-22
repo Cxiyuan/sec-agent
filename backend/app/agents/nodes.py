@@ -135,8 +135,10 @@ def _edge_review(entry: UnifiedLog, rule_label: str) -> tuple[float, bool, str]:
     user_prompt = prompts.TRIAGE_USER.format(
         event_type=entry.event_type,
         source_system=entry.source_system,
-        src_ip=f"{entry.src_ip}:{entry.src_port}",
-        dst_ip=f"{entry.dst_ip}:{entry.dst_port}",
+        src_ip=entry.src_ip or "-",
+        src_port=entry.src_port if entry.src_port is not None else "-",
+        dst_ip=entry.dst_ip or "-",
+        dst_port=entry.dst_port if entry.dst_port is not None else "-",
         protocol=entry.protocol,
         hit_rule=rule_label,
         summary=entry.summary,
@@ -829,11 +831,16 @@ def memory_write_node(state: AgentState) -> dict[str, Any]:
 
 
 def profile_update_node(state: AgentState) -> dict[str, Any]:
-    """用本窗口观测增量更新画像基线，并清理长期无观测画像。"""
+    """用本窗口观测增量更新画像基线，回写异常风险分，并清理长期无观测画像。"""
     if not settings.profile_enabled:
         return {}
     observations = window_observations(state.get("raw_logs", []))
-    result = update_profiles(observations)
+    # 把 profile_recall 算出的异常风险一并回写，驾驶舱 TOP / 排序才会生效
+    info = state.get("profile") or {}
+    risks = {
+        f"{e.get('kind')}|{e.get('key')}": e for e in (info.get("entities") or [])
+    }
+    result = update_profiles(observations, risks)
     deleted = profile_cleanup()
     log.info(
         "画像基线更新：实体 %d（新增 %d / 更新 %d）；清理过期 %d",

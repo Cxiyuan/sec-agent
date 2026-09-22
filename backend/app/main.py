@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,6 @@ from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import Rule, User
 from app.rules.builtin import BUILTIN_RULES
-from app.rules.engine import validate_rule_regexes
 from app.workers.log import get_logger
 
 _log = get_logger(__name__)
@@ -29,7 +29,29 @@ _MIGRATIONS = (
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS lookback JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS memory_hits JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS profile_hits JSONB",
+    "ALTER TABLE baseline_stats ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
 )
+
+# 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
+_CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
+
+
+def _dynamic_rule_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """把依赖系统配置的内置规则按当前配置实例化，避免出现「空实现」规则。
+
+    - JA3 指纹规则：conditions.value 取自 ST_JA3_BLOCKLIST；清单为空时禁用
+      （否则会对所有带 JA3 的 TLS 会话误报）
+    """
+    if spec.get("name") not in _CONFIG_DRIVEN_RULES:
+        return spec
+    ja3_list = [x.strip() for x in (settings.ja3_blocklist or "").split(",") if x.strip()]
+    out = dict(spec)
+    out["conditions"] = {
+        "logic": "and",
+        "rules": [{"field": "ja3", "op": "in", "value": ja3_list}],
+    }
+    out["enabled"] = bool(ja3_list)
+    return out
 
 
 def _migrate() -> None:
@@ -44,6 +66,11 @@ def _seed() -> None:
         conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
     Base.metadata.create_all(engine)
     _migrate()
+
+    # 自检：提示词模板与内置规则正则（这两类问题会「静默失败」）
+    from app.selfcheck import run_startup_selfcheck
+
+    run_startup_selfcheck()
     with SessionLocal() as db:
         if (
             db.execute(
@@ -58,19 +85,22 @@ def _seed() -> None:
                     role="admin",
                 )
             )
-        for r in BUILTIN_RULES:
-            # 内置规则正则启动自检：非法正则会静默死掉，必须显式告警
-            for msg in validate_rule_regexes(r):
-                _log.warning("内置规则「%s」%s", r["name"], msg)
-            exists = db.execute(select(Rule).where(Rule.name == r["name"])).scalar_one_or_none()
+        for spec in BUILTIN_RULES:
+            rule_spec = _dynamic_rule_spec(spec)
+            exists = db.execute(
+                select(Rule).where(Rule.name == rule_spec["name"])
+            ).scalar_one_or_none()
             if exists is None:
-                db.add(Rule(**r))
+                db.add(Rule(**rule_spec))
             elif exists.source == "builtin":
                 # 内置规则随版本同步更新（不覆盖用户自建规则）
-                exists.description = r.get("description", "")
-                exists.conditions = r.get("conditions", {})
-                exists.severity = r.get("severity", exists.severity)
-                exists.priority = r.get("priority", exists.priority)
+                exists.description = rule_spec.get("description", "")
+                exists.conditions = rule_spec.get("conditions", {})
+                exists.severity = rule_spec.get("severity", exists.severity)
+                exists.priority = rule_spec.get("priority", exists.priority)
+                if rule_spec["name"] in _CONFIG_DRIVEN_RULES:
+                    # 依赖配置的规则，启用状态跟随配置
+                    exists.enabled = rule_spec.get("enabled", exists.enabled)
         db.commit()
 
     from app.topology.service import seed_node_types
@@ -100,4 +130,7 @@ app.include_router(api_router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": settings.app_name}
+    """健康检查 + 当前生效的模型配置（运维可见性）。"""
+    from app.models.registry import current_models
+
+    return {"status": "ok", "app": settings.app_name, "models": current_models()}

@@ -13,6 +13,7 @@ from app.db.base import SessionLocal
 from app.db.models import Asset, KnowledgeChunk
 from app.rag.embedder import embed_for_query
 from app.rag.lan import is_lan_ip
+from app.runtime_config import get as runtime_get
 from app.topology.graph import subgraph_around
 from app.topology.service import enabled_topologies
 from app.workers.log import get_logger
@@ -157,7 +158,7 @@ def topology_context(matched_asset_ids: set[str]) -> list[dict[str, Any]]:
 def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[str, Any]:
     """混合检索。返回 {lan_ips, assets, knowledge, topology}。"""
     empty: dict[str, Any] = {"lan_ips": [], "assets": [], "knowledge": [], "topology": []}
-    if not settings.rag_enabled:
+    if not runtime_get("rag_enabled", settings.rag_enabled):
         return empty
 
     # 仅查询局域网 IP
@@ -173,7 +174,12 @@ def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[st
             if assets:
                 names = [str(a.get("asset_name") or a["ip"]) for a in assets]
                 query = f"{query} {' '.join(names)}".strip()
-            knowledge = vector_search(db, query, settings.rag_top_k, settings.rag_min_score)
+            knowledge = vector_search(
+                db,
+                query,
+                int(runtime_get("rag_top_k", settings.rag_top_k)),
+                float(runtime_get("rag_min_score", settings.rag_min_score)),
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("资产/知识检索失败: %s", exc)
         return {**empty, "lan_ips": lan_ips}

@@ -586,13 +586,17 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-JA3指纹命中",
-        "description": "TLS JA3 指纹命中已知工具清单（ST_JA3_BLOCKLIST）",
+        "description": (
+            "TLS JA3 指纹命中已知工具清单（清单由系统配置 ST_JA3_BLOCKLIST 提供；"
+            "清单为空时本规则自动禁用，避免对所有 TLS 会话误报）"
+        ),
         "source": "builtin",
         "priority": 15,
         "severity": "medium",
+        # value 由启动播种按 ST_JA3_BLOCKLIST 填充；空列表时 in 永不命中（安全默认）
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "ja3", "op": "exists"}],
+            "rules": [{"field": "ja3", "op": "in", "value": []}],
         },
     },
     {

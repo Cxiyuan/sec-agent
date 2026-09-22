@@ -233,8 +233,15 @@ def _merge(base: Any, add: Counter, limit: int) -> dict[str, int]:
     return dict(sorted(merged.items(), key=lambda item: -item[1])[:limit])
 
 
-def update_profiles(observations: dict[str, dict[str, Any]]) -> dict[str, int]:
-    """把本窗口观测并入画像基线（增量累积）。"""
+def update_profiles(
+    observations: dict[str, dict[str, Any]],
+    risks: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    """把本窗口观测并入画像基线（增量累积），并回写本轮异常风险分。
+
+    risks：key = f"{kind}|{key}"，值含 {risk, reasons}（来自 recall_entities）；
+    回写后驾驶舱「画像异常 TOP」与列表排序才能生效。
+    """
     if not observations or not settings.profile_enabled:
         return {"created": 0, "updated": 0}
     now = datetime.now(UTC)
@@ -271,6 +278,12 @@ def update_profiles(observations: dict[str, dict[str, Any]]) -> dict[str, int]:
                 row.hour_hist = _merge(row.hour_hist, obs["hours"], _LIMITS["hour_hist"])
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])
                 row.fail_count = (row.fail_count or 0) + _safe_int(obs["fail"])
+
+                # 回写本轮异常风险（供驾驶舱 TOP 与列表排序）
+                risk = (risks or {}).get(f"{obs['kind']}|{obs['key']}") or {}
+                if risk:
+                    row.risk_score = float(risk.get("risk") or 0.0)
+                    row.anomalies = list(risk.get("reasons") or [])[:20]
             db.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("更新实体画像失败: %s", exc)

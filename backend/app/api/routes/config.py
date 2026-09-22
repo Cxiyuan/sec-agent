@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.base import get_db
 from app.db.models import SystemConfig, User
 from app.models.registry import invalidate_model_cache
+from app.runtime_config import invalidate as invalidate_runtime_config
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -30,12 +31,15 @@ CONFIG_KEYS: dict[str, Any] = {
     "report_min_severity": settings.report_min_severity,
     "hitl_enabled": settings.hitl_enabled,
     "hitl_min_severity": settings.hitl_min_severity,
-    "analysis_interval_minutes": settings.analysis_interval_minutes,
     "baseline_observe_days": settings.baseline_observe_days,
-    # RAG
+    # RAG（经 runtime_config 即时生效）
     "rag_enabled": settings.rag_enabled,
     "rag_top_k": settings.rag_top_k,
+    "rag_min_score": settings.rag_min_score,
 }
+
+# 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，
+# 改配置不会生效，只能改环境变量并重启 beat。
 
 
 class ConfigIn(BaseModel):
@@ -67,6 +71,7 @@ def update_config(
         db.add(row)
     row.value = {"value": body.value}
     db.commit()
-    # 模型名变更立即生效；其余配置由各节点读取时生效
+    # 模型名与 RAG 参数均需即时生效
     invalidate_model_cache()
+    invalidate_runtime_config()
     return {"key": key, "value": body.value}

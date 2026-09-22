@@ -98,8 +98,3 @@ def deep_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[s
 def flash_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
     """云端 flash 返回纯文本。"""
     return _invoke(_cloud_llm("flash", temperature), system, user)
-
-
-def deep_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
-    """云端 deep 返回纯文本。"""
-    return _invoke(_cloud_llm("deep", temperature), system, user)

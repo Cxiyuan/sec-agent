@@ -144,10 +144,29 @@ def _to_str_list(v: Any) -> str:
 def _first(doc: dict[str, Any], keys: tuple[str, ...]) -> Any:
     """按候选字段名取第一个有值的字段（用于请求体等多命名场景）。"""
     for key in keys:
-        value = doc.get(key)
+        value = _get(doc, key)
         if value:
             return value
     return None
+
+
+def _get(doc: dict[str, Any], path: str) -> Any:
+    """按点号路径取值。
+
+    兼容两种形态：
+    - 扁平键：Zeek 的 JSON 输出默认就是这种（{"id.orig_h": "1.2.3.4"}）
+    - 嵌套对象：部分上游 pipeline（如 Logstash json 过滤器 / Filebeat expand_keys）
+      会把点号键展开成 {"id": {"orig_h": "1.2.3.4"}}
+    只支持扁平会在这类环境下把 IP/端口读成空值。
+    """
+    if path in doc:
+        return doc[path]
+    node: Any = doc
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
 
 
 def _split_uri(uri: str) -> tuple[str, str]:
@@ -241,8 +260,8 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
     log_type = _zeek_log_type(doc)
     note = doc.get("note")
     conn_state = doc.get("conn_state")
-    src_ip = doc.get("id.orig_h")
-    dst_ip = doc.get("id.resp_h")
+    src_ip = _get(doc, "id.orig_h")
+    dst_ip = _get(doc, "id.resp_h")
 
     uri = str(doc.get("uri") or "")
     query = str(doc.get("query") or uri or "")
@@ -263,8 +282,8 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         log_type=log_type,
         src_ip=str(src_ip) if src_ip else None,
         dst_ip=str(dst_ip) if dst_ip else None,
-        src_port=_to_int(doc.get("id.orig_p")),
-        dst_port=_to_int(doc.get("id.resp_p")),
+        src_port=_to_int(_get(doc, "id.orig_p")),
+        dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
         hostname=doc.get("host") or doc.get("server_name"),
         user=doc.get("user") or doc.get("uid_owner"),

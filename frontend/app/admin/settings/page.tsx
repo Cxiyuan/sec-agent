@@ -36,7 +36,6 @@ const GROUPS: { name: string; fields: Field[] }[] = [
       { key: "report_min_severity", label: "报告最低级别", type: "select", options: ["critical", "high", "medium", "low", "info"] },
       { key: "hitl_enabled", label: "高危人工确认", type: "bool" },
       { key: "hitl_min_severity", label: "人工确认级别", type: "select", options: ["critical", "high", "medium", "low"] },
-      { key: "analysis_interval_minutes", label: "分析间隔（分钟）", type: "number" },
       { key: "baseline_observe_days", label: "基线观察天数", type: "number" },
     ],
   },
@@ -45,6 +44,7 @@ const GROUPS: { name: string; fields: Field[] }[] = [
     fields: [
       { key: "rag_enabled", label: "启用资产 RAG", type: "bool" },
       { key: "rag_top_k", label: "检索条数 top-K", type: "number" },
+      { key: "rag_min_score", label: "检索相似度下限（0~1）", type: "number" },
     ],
   },
 ];

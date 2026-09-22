@@ -144,6 +144,7 @@ class BaselineStat(Base):
     count: Mapped[int] = mapped_column(Integer, default=0)
     mean: Mapped[float] = mapped_column(Float, default=0.0)
     m2: Mapped[float] = mapped_column(Float, default=0.0)  # 平方差累计，用于算标准差
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

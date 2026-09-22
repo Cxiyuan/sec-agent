@@ -20,6 +20,7 @@ from app.db.base import get_db
 from app.db.models import SystemConfig, User
 from app.ingestion import es_config
 from app.ingestion.es_client import get_es
+from app.ingestion.es_schema import clear_cache as clear_ip_field_cache
 
 router = APIRouter(prefix="/api/es", tags=["es"])
 
@@ -116,6 +117,8 @@ def update_config(
         row.value = {"value": value}
     db.commit()
     es_config.invalidate()
+    # 连接/索引变了，之前探测的 IP 字段类型（30 分钟缓存）可能指向旧集群，必须清掉
+    clear_ip_field_cache()
     return _mask(es_config.current())
 
 
@@ -139,7 +142,11 @@ def test_connection(
         else:
             probe = get_es()
         info = probe.info()
-        return {"ok": True, "cluster_name": info.get("cluster_name"), "version": (info.get("version") or {}).get("number")}
+        return {
+            "ok": True,
+            "cluster_name": info.get("cluster_name"),
+            "version": (info.get("version") or {}).get("number"),
+        }
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=400,
@@ -181,7 +188,10 @@ def status(_: Annotated[User, Depends(get_current_user)]):
         if isinstance(row, dict) and any(str(row.get("index", "")).startswith(p) for p in patterns)
     ]
 
-    ilm: dict[str, Any] = {"policy": settings.es_ilm_policy, "retention_days": es_config.retention_days()}
+    ilm: dict[str, Any] = {
+        "policy": settings.es_ilm_policy,
+        "retention_days": es_config.retention_days(),
+    }
     try:
         policy = es.ilm.get_lifecycle(name=settings.es_ilm_policy)
         ilm["exists"] = True

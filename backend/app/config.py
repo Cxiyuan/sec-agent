@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # 通用
     app_name: str = "深瞳 · 安全分析智能体"
-    debug: bool = False
+    debug: bool = False  # True 时日志为 DEBUG 级别（见 workers/log.py）
     timezone: str = "Asia/Shanghai"
 
     # Elasticsearch
@@ -40,9 +40,9 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     # 分析窗口
-    analysis_interval_minutes: int = 5
+    analysis_interval_minutes: int = 5  # 注意：仅环境变量生效（Celery Beat 启动时读取，改后需重启 beat）
     analysis_window_minutes: int = 5
-    baseline_observe_days: int = 7
+    baseline_observe_days: int = 7  # 基线观测期：不足 N 天只学习不判异常（防上线首日误报）
 
     # 拉取护栏 / 检索上限
     max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）
@@ -99,7 +99,6 @@ class Settings(BaseSettings):
     rag_min_score: float = 0.0
     rag_chunk_size: int = 500
     rag_chunk_overlap: int = 100
-    rag_upload_dir: str = "/data/uploads"
 
     # 录入校验收紧
     asset_csv_max_mb: int = 20
@@ -124,16 +123,13 @@ class Settings(BaseSettings):
     web_login_path_regex: str = (
         "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
     )
-    ja3_blocklist: str = ""  # 可疑 JA3 指纹（逗号分隔）
-    web_scan_error_burst: int = 30  # 错误码突变阈值
+    ja3_blocklist: str = ""  # 可疑 JA3 指纹（逗号分隔）；为空时「内置-JA3指纹命中」规则自动禁用
 
     # 账号 / 会话跨窗口长期画像（UEBA）
     profile_enabled: bool = True
-    profile_window_days: int = 30
     profile_min_obs: int = 5  # 冷启动：低于此观测数只学习不告警
     profile_risk_threshold: float = 0.6
     profile_retention_days: int = 180
-    profile_top_n: int = 8  # 基线里保留的 TOP 分布长度
     session_cookie_names: str = (
         "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
     )
