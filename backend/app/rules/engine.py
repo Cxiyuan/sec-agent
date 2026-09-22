@@ -231,5 +231,11 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
 
     conditions = rule.get("conditions") or {}
     walk({"rules": conditions.get("rules") or []})
-    walk({"rules": conditions.get("whitelist") if isinstance(conditions.get("whitelist"), list) else []})
+    walk(
+        {
+            "rules": conditions.get("whitelist")
+            if isinstance(conditions.get("whitelist"), list)
+            else []
+        }
+    )
     return errors

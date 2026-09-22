@@ -169,9 +169,7 @@ def _auth_scheme(doc: dict[str, Any]) -> str:
     return ""
 
 
-def _extract_account(
-    path: str, body: str, query_string: str, user_field: Any
-) -> str:
+def _extract_account(path: str, body: str, query_string: str, user_field: Any) -> str:
     """账号提取：user 字段优先；否则仅在登录路径下从参数中提取。"""
     if user_field and str(user_field).strip():
         return str(user_field).strip()[:128]
@@ -193,9 +191,7 @@ def _zeek_log_type(doc: dict[str, Any]) -> str:
     return "conn"
 
 
-def _http_event_type(
-    method: str, path: str, content_type: str, status_code: int | None
-) -> str:
+def _http_event_type(method: str, path: str, content_type: str, status_code: int | None) -> str:
     """HTTP 请求细分：登录 / 上传 / 错误 / 普通请求。"""
     upper = method.upper()
     if upper == "POST" and path and _login_re().search(path):

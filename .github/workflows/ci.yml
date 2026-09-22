@@ -43,3 +43,11 @@ jobs:
           context: ./frontend
           push: true
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-frontend:latest
+
+      - name: Build & push zeek
+        uses: docker/build-push-action@v6
+        with:
+          context: ./zeek
+          push: true
+          # 基底版本可用 build-args 覆盖（默认 zeek/zeek:9.0）
+          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-zeek:latest

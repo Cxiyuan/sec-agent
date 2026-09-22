@@ -130,8 +130,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)"},
-                {"field": "body", "op": "regex", "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)",
+                },
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)",
+                },
             ],
         },
     },
@@ -172,8 +180,16 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(%2e%2e%2f|%2e%2e/|%252e%252e|%c0%ae|\\.\\.%5c|%2e%2e%5c)",
                 },
-                {"field": "query", "op": "regex", "value": "(?i)(/etc/(passwd|shadow)|/proc/self|win\\.ini|boot\\.ini)"},
-                {"field": "body", "op": "regex", "value": "(?i)(\\.\\./|\\.\\.\\\\|/etc/(passwd|shadow))"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(/etc/(passwd|shadow)|/proc/self|win\\.ini|boot\\.ini)",
+                },
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(\\.\\./|\\.\\.\\\\|/etc/(passwd|shadow))",
+                },
             ],
         },
     },
@@ -213,7 +229,11 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(\\{\\{[^}]*\\}\\}|\\$\\{[^}]+\\}|#\\{[^}]+\\}|<%=[^%]+%>)",
                 },
-                {"field": "body", "op": "regex", "value": "(\\{\\{[^}]*\\}\\}|\\$\\{[^}]+\\}|<%=[^%]+%>)"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(\\{\\{[^}]*\\}\\}|\\$\\{[^}]+\\}|<%=[^%]+%>)",
+                },
             ],
         },
     },
@@ -226,8 +246,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)\\$\\{(jndi|lower|upper|env|sys|java):"},
-                {"field": "body", "op": "regex", "value": "(?i)\\$\\{(jndi|lower|upper|env|sys|java):"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)\\$\\{(jndi|lower|upper|env|sys|java):",
+                },
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)\\$\\{(jndi|lower|upper|env|sys|java):",
+                },
                 {"field": "user_agent", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "referer", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "query", "op": "regex", "value": "(?i)(ognl|spel|%24%7bjndi)"},
@@ -243,7 +271,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "body", "op": "regex", "value": "(?i)(<!DOCTYPE[^>]*\\[|<!ENTITY|SYSTEM\\s+[\"']file:|SYSTEM\\s+[\"']http)"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(<!DOCTYPE[^>]*\\[|<!ENTITY|SYSTEM\\s+[\"']file:|SYSTEM\\s+[\"']http)",
+                },
                 {"field": "query", "op": "regex", "value": "(?i)(<!DOCTYPE|<!ENTITY)"},
             ],
         },
@@ -258,9 +290,17 @@ BUILTIN_RULES: list[dict] = [
             "logic": "or",
             "rules": [
                 {"field": "body", "op": "regex", "value": "(rO0AB|aced0005|AAEAAAD)"},
-                {"field": "body", "op": "regex", "value": "(?i)(__reduce__|c__builtin__|cos\\nsystem|pickle\\.loads|O:8:\"|O:4:\")"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": '(?i)(__reduce__|c__builtin__|cos\\nsystem|pickle\\.loads|O:8:"|O:4:")',
+                },
                 {"field": "cookie", "op": "regex", "value": "(?i)rememberMe="},
-                {"field": "body", "op": "regex", "value": "(?i)(java\\.io\\.Serializable|ObjectInputStream|readObject)"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(java\\.io\\.Serializable|ObjectInputStream|readObject)",
+                },
             ],
         },
     },
@@ -284,7 +324,11 @@ BUILTIN_RULES: list[dict] = [
                     "value": "(?i)(file://|gopher://|dict://|ldap://|tftp://)",
                 },
                 {"field": "query", "op": "contains", "value": "169.254.169.254"},
-                {"field": "query", "op": "regex", "value": "(?i)(url|redirect|next|target)=[^&]*(127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(url|redirect|next|target)=[^&]*(127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)",
+                },
             ],
         },
     },
@@ -302,7 +346,11 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(php://(input|filter|data)|data://|expect://|zip://|phar://)",
                 },
-                {"field": "body", "op": "regex", "value": "(?i)(php://(input|filter)|data://|expect://)"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(php://(input|filter)|data://|expect://)",
+                },
             ],
         },
     },
@@ -316,7 +364,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "or",
             "rules": [
                 {"field": "query", "op": "regex", "value": "(?i)(%0d%0a|%0a%0d|\\r\\n)"},
-                {"field": "body", "op": "regex", "value": "(?i)(%0d%0a|\\r\\n(set-cookie|location):)"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(%0d%0a|\\r\\n(set-cookie|location):)",
+                },
             ],
         },
     },
@@ -329,7 +381,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass)"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass)",
+                },
                 {"field": "body", "op": "regex", "value": "(?i)(\\)\\(\\||\\|\\(objectclass)"},
             ],
         },
@@ -343,8 +399,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(redirect|url|next|return|continue|dest|goto|target)="},
-                {"field": "query", "op": "regex", "value": "(?i)(https?://|//[a-z0-9-]+\\.[a-z]{2,})"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(redirect|url|next|return|continue|dest|goto|target)=",
+                },
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(https?://|//[a-z0-9-]+\\.[a-z]{2,})",
+                },
             ],
         },
     },
@@ -357,9 +421,17 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "hostname", "op": "regex", "value": "(?i)(localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254)"},
+                {
+                    "field": "hostname",
+                    "op": "regex",
+                    "value": "(?i)(localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254)",
+                },
                 {"field": "hostname", "op": "contains", "value": ","},
-                {"field": "hostname", "op": "regex", "value": "(?i)(burpcollaborator|interact\\.sh|oast\\.|canarytokens)"},
+                {
+                    "field": "hostname",
+                    "op": "regex",
+                    "value": "(?i)(burpcollaborator|interact\\.sh|oast\\.|canarytokens)",
+                },
             ],
         },
     },
@@ -373,7 +445,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "http"},
-                {"field": "method", "op": "in", "value": ["PUT", "DELETE", "TRACE", "TRACK", "PROPFIND", "OPTIONS"]},
+                {
+                    "field": "method",
+                    "op": "in",
+                    "value": ["PUT", "DELETE", "TRACE", "TRACK", "PROPFIND", "OPTIONS"],
+                },
             ],
             "whitelist": [
                 {
@@ -453,7 +529,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "ssl"},
-                {"field": "tls_version", "op": "regex", "value": "(?i)(SSLv3|TLSv1\\.0|TLSv1\\.1|TLSv10|TLSv11)"},
+                {
+                    "field": "tls_version",
+                    "op": "regex",
+                    "value": "(?i)(SSLv3|TLSv1\\.0|TLSv1\\.1|TLSv10|TLSv11)",
+                },
             ],
         },
     },
@@ -467,7 +547,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "ssl"},
-                {"field": "cert_issuer", "op": "regex", "value": "(?i)(self|unknown|localhost|test|openssl)"},
+                {
+                    "field": "cert_issuer",
+                    "op": "regex",
+                    "value": "(?i)(self|unknown|localhost|test|openssl)",
+                },
             ],
         },
     },
@@ -588,9 +672,17 @@ BUILTIN_RULES: list[dict] = [
             "logic": "or",
             "rules": [
                 {"field": "cookie", "op": "regex", "value": "(?i)(rememberMe=|shiro)"},
-                {"field": "uri_path", "op": "regex", "value": "(?i)(\\.action$|\\.do$|/index\\.php\\?s=|/struts/)"},
+                {
+                    "field": "uri_path",
+                    "op": "regex",
+                    "value": "(?i)(\\.action$|\\.do$|/index\\.php\\?s=|/struts/)",
+                },
                 {"field": "body", "op": "regex", "value": "(?i)(@type.*com\\.sun|fastjson|jndi:)"},
-                {"field": "uri_path", "op": "regex", "value": "(?i)(/seeyon/|/weaver/|/e-mobile/|/mobile/plugin/)"},
+                {
+                    "field": "uri_path",
+                    "op": "regex",
+                    "value": "(?i)(/seeyon/|/weaver/|/e-mobile/|/mobile/plugin/)",
+                },
             ],
         },
     },
@@ -880,8 +972,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "body", "op": "regex", "value": "(?i)(pass(word)?=(admin|123456|root|test|guest|admin123))"},
-                {"field": "query", "op": "regex", "value": "(?i)(pass(word)?=(admin|123456|root|test|guest))"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(pass(word)?=(admin|123456|root|test|guest|admin123))",
+                },
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(pass(word)?=(admin|123456|root|test|guest))",
+                },
             ],
         },
     },
@@ -894,7 +994,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(token|jwt|access_token|id_token)=ey[A-Za-z0-9_-]{10,}"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(token|jwt|access_token|id_token)=ey[A-Za-z0-9_-]{10,}",
+                },
                 {"field": "auth_scheme", "op": "in", "value": ["bearer", "jwt"]},
             ],
         },
@@ -947,7 +1051,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
-                {"field": "rule_groups", "op": "regex", "value": "(?i)(account_lock|locked|disabled)"},
+                {
+                    "field": "rule_groups",
+                    "op": "regex",
+                    "value": "(?i)(account_lock|locked|disabled)",
+                },
             ],
         },
     },
@@ -960,8 +1068,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "rule_groups", "op": "regex", "value": "(?i)(privilege_escalation|sudo|su_)"},
-                {"field": "summary", "op": "regex", "value": "(?i)(privilege escalation|sudo:|su: )"},
+                {
+                    "field": "rule_groups",
+                    "op": "regex",
+                    "value": "(?i)(privilege_escalation|sudo|su_)",
+                },
+                {
+                    "field": "summary",
+                    "op": "regex",
+                    "value": "(?i)(privilege escalation|sudo:|su: )",
+                },
             ],
         },
     },
@@ -1031,7 +1147,20 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "dst_port",
                     "op": "in",
-                    "value": [4444, 4445, 5555, 6666, 6667, 7777, 9001, 9050, 1337, 31337, 12345, 54321],
+                    "value": [
+                        4444,
+                        4445,
+                        5555,
+                        6666,
+                        6667,
+                        7777,
+                        9001,
+                        9050,
+                        1337,
+                        31337,
+                        12345,
+                        54321,
+                    ],
                 },
                 {"field": "event_type", "op": "ne", "value": "scan_attempt"},
             ],
@@ -1198,7 +1327,11 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 {"field": "method", "op": "in", "value": ["POST", "PUT", "DELETE"]},
                 {"field": "referer", "op": "regex", "value": "^https?://"},
-                {"field": "referer", "op": "regex", "value": "(?i)(evil|attacker|burpcollaborator|interact\\.sh)"},
+                {
+                    "field": "referer",
+                    "op": "regex",
+                    "value": "(?i)(evil|attacker|burpcollaborator|interact\\.sh)",
+                },
             ],
         },
     },
@@ -1211,8 +1344,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)origin=(null|https?://(evil|attacker))"},
-                {"field": "body", "op": "regex", "value": "(?i)origin=(null|https?://(evil|attacker))"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)origin=(null|https?://(evil|attacker))",
+                },
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)origin=(null|https?://(evil|attacker))",
+                },
             ],
         },
     },

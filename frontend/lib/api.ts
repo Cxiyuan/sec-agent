@@ -276,6 +276,50 @@ export interface ProfileHits {
   anomalies?: ProfileHit[];
 }
 
+/** Zeek 采集：网卡与状态 */
+export interface ZeekIfaceInfo {
+  name: string;
+  state: string;
+  mtu: number;
+}
+
+export interface ZeekStatus {
+  interface: string;
+  bpf_filter: string;
+  local_nets: string;
+  effective_local_nets: string[];
+  last_reload: string | null;
+  config_path: string;
+  detected: ZeekIfaceInfo[];
+  rotation_hours: number;
+  retention_days_local: number;
+}
+
+/** ES 连接与保留配置 */
+export interface EsConfigInfo {
+  url: string;
+  username: string;
+  password_set: boolean;
+  zeek_index: string;
+  wazuh_index: string;
+  retention_days: number;
+  retention_min_days: number;
+  ilm_policy: string;
+}
+
+export interface EsIndexInfo {
+  index: string;
+  docs?: string;
+  store?: string;
+  created?: string;
+}
+
+export interface EsStatus {
+  health: { status?: string; cluster_name?: string; nodes?: number };
+  indices: EsIndexInfo[];
+  ilm: { policy: string; retention_days: number; exists?: boolean; version?: number };
+}
+
 /** 持续性威胁聚合项（驾驶舱） */
 export interface PersistentItem {
   ip: string;

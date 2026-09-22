@@ -264,7 +264,9 @@ def update_profiles(observations: dict[str, dict[str, Any]]) -> dict[str, int]:
                 row.obs_count = (row.obs_count or 0) + _safe_int(obs["count"])
                 row.last_seen = now
                 row.src_ips = _merge(row.src_ips, obs["src_ips"], _LIMITS["src_ips"])
-                row.user_agents = _merge(row.user_agents, obs["user_agents"], _LIMITS["user_agents"])
+                row.user_agents = _merge(
+                    row.user_agents, obs["user_agents"], _LIMITS["user_agents"]
+                )
                 row.paths = _merge(row.paths, obs["paths"], _LIMITS["paths"])
                 row.hour_hist = _merge(row.hour_hist, obs["hours"], _LIMITS["hour_hist"])
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])

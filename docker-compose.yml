@@ -41,8 +41,14 @@ services:
       ST_CLOUD_MODEL_API_KEY: ${CLOUD_API_KEY:-}
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）
+      ST_ZEEK_CONF_DIR: /config
+      ST_ZEEK_IFACE_CONF: /config/interface.conf
+      ST_ZEEK_INTERFACES_JSON: /config/interfaces.json
     ports:
       - "8000:8000"
+    volumes:
+      - zeek-config:/config
     depends_on:
       - postgres
       - redis
@@ -74,9 +80,36 @@ services:
     depends_on:
       - backend
 
-# 说明：LLM 模型运行环境（边缘 llama.cpp/Ollama、one-api 代理等）不属于本项目，
-# 由外部部署。本项目只通过 ST_EDGE_MODEL_BASE_URL / ST_CLOUD_MODEL_BASE_URL 对接调用。
+  # Zeek 采集（内含 Filebeat，直发 ES）
+  # 注意：host 网络 + NET_RAW/NET_ADMIN 才能抓宿主网卡，需 Linux 宿主；
+  #      因此访问 ES 请用宿主可达地址（不要用 compose 内部服务名）。
+  zeek:
+    image: ${ZEEK_IMAGE:-ghcr.io/cxiyuan/sec-agent/shentong-zeek:latest}
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      ZEEK_CONF_DIR: /config
+      ZEEK_IFACE_CONF: /config/interface.conf
+      ZEEK_INTERFACES_JSON: /config/interfaces.json
+      ZEEK_LOG_DIR: /logs
+      ES_URL: ${ZEEK_ES_URL:-http://localhost:9200}
+      ES_USER: ${ES_USER:-}
+      ES_PASSWORD: ${ES_PASSWORD:-}
+    volumes:
+      - zeek-logs:/logs
+      - zeek-config:/config
+    restart: unless-stopped
+
+# 说明：Wazuh（主机事件采集）与 LLM 模型运行环境（llama.cpp / one-api 等）不属于本项目，
+# 由外部部署。本项目通过 ST_EDGE_MODEL_BASE_URL / ST_CLOUD_MODEL_BASE_URL 对接模型，
+# 通过 ES 读取 Zeek / Wazuh 日志。
+#
+# Zeek 采集镜像（zeek/）需要 Linux 宿主：host 网络 + NET_RAW/NET_ADMIN 才能抓宿主网卡。
 
 volumes:
   es-data:
   pg-data:
+  zeek-logs:
+  zeek-config:

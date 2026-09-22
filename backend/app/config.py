@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     es_zeek_index: str = "zeek-*"
     es_wazuh_index: str = "wazuh-alerts-*"
     es_verify_certs: bool = False
+    es_retention_days: int = 30  # ES 日志保留天数（后台可改，下限 = 回溯封顶 7 天）
+    es_ilm_policy: str = "shentong-retention"
+
+    # Zeek 采集（镜像侧轮转 24h / 本地保留 3 天为硬编码）
+    zeek_conf_dir: str = "/config"
+    zeek_iface_conf: str = "/config/interface.conf"
+    zeek_interfaces_json: str = "/config/interfaces.json"
+    zeek_interface: str = "eth0"
+    zeek_bpf_filter: str = ""
+    zeek_local_nets: str = ""  # 留空则从「分析网段」自动生成
 
     # PostgreSQL
     pg_url: str = "postgresql+psycopg://shentong:shentong@localhost:5432/shentong"

@@ -3,6 +3,8 @@
 import * as React from "react";
 import { Nav } from "@/components/nav";
 import { ScopeManager } from "@/components/scope-manager";
+import { ZeekPanel } from "@/components/zeek-panel";
+import { EsPanel } from "@/components/es-panel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -153,6 +155,8 @@ export default function SettingsPage() {
 
         <div className="space-y-4">
           <ScopeManager />
+          <ZeekPanel />
+          <EsPanel />
           {GROUPS.map((g) => (
             <Card key={g.name}>
               <CardHeader>

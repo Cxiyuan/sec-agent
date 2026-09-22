@@ -1,0 +1,47 @@
+# Filebeat：把 Zeek 的 JSON 日志发运到 Elasticsearch
+# 索引名按日志类型分（zeek-conn-yyyy.MM.dd 等）；索引模板与 ILM 由深瞳后端统一维护。
+
+filebeat.inputs:
+  - type: filestream
+    id: zeek-logs
+    enabled: true
+    # Zeek 独立模式：活动日志在顶层，轮转后进日期子目录
+    paths:
+      - ${ZEEK_LOG_DIR:/logs}/*.log
+      - ${ZEEK_LOG_DIR:/logs}/*/*.log
+    parsers:
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+    # 与 normalizer 的 source_system 对齐
+    fields:
+      source_system: zeek
+    fields_under_root: true
+    clean_removed: true
+    close_removed: true
+
+processors:
+  # 从文件名提取日志类型：conn.log -> conn；conn.10-30-00.log -> conn
+  - dissect:
+      tokenizer: "%{log_type}.%{?rest}"
+      field: log.file.name
+      target_prefix: ""
+      ignore_failure: true
+  - drop_event:
+      when:
+        not:
+          has_fields: ["log_type"]
+
+output.elasticsearch:
+  hosts: ["${ES_URL:http://localhost:9200}"]
+  username: "${ES_USER:}"
+  password: "${ES_PASSWORD:}"
+  index: "zeek-%{[log_type]}-%{+yyyy.MM.dd}"
+
+# 模板与 ILM 由深瞳后端下发，避免两边互相覆盖
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+logging.level: warning
+logging.to_stderr: true

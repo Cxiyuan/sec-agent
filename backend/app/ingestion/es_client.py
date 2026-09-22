@@ -15,6 +15,7 @@ from typing import Any
 from elasticsearch import Elasticsearch
 
 from app.config import settings
+from app.ingestion import es_config
 from app.ingestion.es_schema import get_ip_fields, split_fields
 from app.workers.log import get_logger
 
@@ -38,10 +39,11 @@ class FetchResult:
 
 
 def get_es() -> Elasticsearch:
-    auth = (settings.es_user, settings.es_password) if settings.es_user else None
+    """构造 ES 客户端（连接信息取自运行时配置：DB 覆盖 env）。"""
+    cfg = es_config.current()
     return Elasticsearch(
-        settings.es_url,
-        basic_auth=auth,
+        cfg.get("es.url") or settings.es_url,
+        basic_auth=es_config.auth_pair(),
         verify_certs=settings.es_verify_certs,
         request_timeout=60,
     )
@@ -162,10 +164,13 @@ def fetch_window_logs(
         return result
 
     es = get_es()
+    cfg = es_config.current()
+    zeek_index = cfg.get("es.zeek_index") or settings.es_zeek_index
+    wazuh_index = cfg.get("es.wazuh_index") or settings.es_wazuh_index
     time_filter = {"range": {"@timestamp": {"gte": start.isoformat(), "lt": end.isoformat()}}}
     modes: set[str] = set()
 
-    for index, source in ((settings.es_zeek_index, "zeek"), (settings.es_wazuh_index, "wazuh")):
+    for index, source in ((zeek_index, "zeek"), (wazuh_index, "wazuh")):
         fields = get_ip_fields(index, source)
         clause = scope_clause(fields, cidrs)
         query = {"bool": {"filter": [time_filter] + ([clause] if clause else [])}}

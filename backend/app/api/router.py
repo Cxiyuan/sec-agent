@@ -8,6 +8,7 @@ from app.api.routes import (
     auth,
     config,
     documents,
+    es_admin,
     events,
     memories,
     profiles,
@@ -15,6 +16,7 @@ from app.api.routes import (
     rules,
     topologies,
     ws,
+    zeek,
 )
 
 api_router = APIRouter()
@@ -29,4 +31,6 @@ api_router.include_router(events.router)
 api_router.include_router(rules.router)
 api_router.include_router(reports.router)
 api_router.include_router(config.router)
+api_router.include_router(es_admin.router)
+api_router.include_router(zeek.router)
 api_router.include_router(ws.router)
