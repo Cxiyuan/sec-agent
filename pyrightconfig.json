@@ -1,0 +1,9 @@
+{
+  "include": ["backend"],
+  "executionEnvironments": [
+    { "root": "backend" }
+  ],
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "pythonVersion": "3.11"
+}

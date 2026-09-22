@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# Node / Next.js
+node_modules
+.next/
+out/
+*.tsbuildinfo
+
+# 报告产物
+backend/data/
+data/
+
+# 系统
+.DS_Store
+*.log

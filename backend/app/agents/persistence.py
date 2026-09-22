@@ -1,0 +1,193 @@
+"""分析结果持久化 + 滚动基线。"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.db.base import SessionLocal
+from app.db.models import BaselineStat, Event, EventGroup, Report, Rule
+from app.schemas import EventGroup as EventGroupSchema
+from app.workers.pubsub import publish
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+# ---------- 规则 ----------
+
+
+def get_enabled_rules(db: Session) -> list[dict[str, Any]]:
+    rows = db.execute(select(Rule).where(Rule.enabled.is_(True)).order_by(Rule.priority)).scalars()
+    return [
+        {
+            "name": r.name,
+            "description": r.description,
+            "conditions": r.conditions,
+            "severity": r.severity,
+            "source": r.source,
+            "priority": r.priority,
+        }
+        for r in rows
+    ]
+
+
+# ---------- 事件组 ----------
+
+
+def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
+    """保存事件组及其事件（幂等：按 fingerprint upsert）。"""
+    with SessionLocal() as db:
+        for g in groups:
+            row = db.execute(
+                select(EventGroup).where(EventGroup.fingerprint == g.fingerprint)
+            ).scalar_one_or_none()
+            if row is None:
+                row = EventGroup(
+                    fingerprint=g.fingerprint,
+                    src_ips=g.src_ips,
+                    dst_ips=g.dst_ips,
+                    window_start=g.window_start,
+                    window_end=g.window_end,
+                    event_count=len(g.events),
+                    triage_score=g.triage_score,
+                    status="analyzing",
+                    thread_id=thread_id,
+                )
+                db.add(row)
+                db.flush()
+            for ev in g.events:
+                db.add(
+                    Event(
+                        group_id=row.id,
+                        fingerprint=ev.log.fingerprint(),
+                        source_system=ev.log.source_system,
+                        ts=ev.log.ts,
+                        event_type=ev.log.event_type,
+                        src_ip=ev.log.src_ip,
+                        dst_ip=ev.log.dst_ip,
+                        src_port=ev.log.src_port,
+                        dst_port=ev.log.dst_port,
+                        protocol=ev.log.protocol,
+                        severity=ev.log.severity,
+                        hit_rule=ev.hit_rule,
+                        edge_score=ev.edge_score,
+                        summary=ev.log.summary,
+                        raw=ev.log.raw,
+                    )
+                )
+        db.commit()
+
+    # 推送给驾驶舱 WebSocket（实时）
+    for g in groups:
+        publish(
+            "shentong:events",
+            {
+                "type": "new_group",
+                "fingerprint": g.fingerprint,
+                "src_ips": g.src_ips,
+                "dst_ips": g.dst_ips,
+                "event_count": len(g.events),
+                "triage_score": g.triage_score,
+            },
+        )
+
+
+def save_business_context(contexts: dict[str, dict[str, Any]]) -> None:
+    """保存事件组的业务背景快照。"""
+    with SessionLocal() as db:
+        for fp, ctx in contexts.items():
+            row = db.execute(
+                select(EventGroup).where(EventGroup.fingerprint == fp)
+            ).scalar_one_or_none()
+            if row is not None:
+                row.business_context = ctx
+        db.commit()
+
+
+def update_group_analysis(
+    fingerprint: str,
+    *,
+    severity: str | None = None,
+    status: str | None = None,
+    attack_chain: dict[str, Any] | None = None,
+    profile: dict[str, Any] | None = None,
+    anomaly: dict[str, Any] | None = None,
+    response_suggestions: list[dict[str, Any]] | None = None,
+) -> None:
+    with SessionLocal() as db:
+        row = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == fingerprint)
+        ).scalar_one_or_none()
+        if row is None:
+            return
+        if severity is not None:
+            row.severity = severity
+        if status is not None:
+            row.status = status
+        if attack_chain is not None:
+            row.attack_chain = attack_chain
+        if profile is not None:
+            row.profile = profile
+        if anomaly is not None:
+            row.anomaly = anomaly
+        if response_suggestions is not None:
+            row.response_suggestions = response_suggestions
+        db.commit()
+
+
+def set_groups_pending(fingerprints: list[str]) -> None:
+    with SessionLocal() as db:
+        for fp in fingerprints:
+            row = db.execute(
+                select(EventGroup).where(EventGroup.fingerprint == fp)
+            ).scalar_one_or_none()
+            if row:
+                row.status = "pending_confirmation"
+        db.commit()
+
+
+def save_report(
+    group_fingerprint: str, title: str, severity: str, html: str, pdf_path: str | None
+) -> None:
+    with SessionLocal() as db:
+        grp = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == group_fingerprint)
+        ).scalar_one_or_none()
+        if grp is None:
+            return
+        db.add(
+            Report(group_id=grp.id, title=title, severity=severity, html=html, pdf_path=pdf_path)
+        )
+        grp.status = "report_generated"
+        db.commit()
+
+
+# ---------- 滚动基线（Welford） ----------
+
+
+def update_baseline(key: str, value: float) -> None:
+    with SessionLocal() as db:
+        row = db.get(BaselineStat, key)
+        if row is None:
+            row = BaselineStat(key=key, count=0, mean=0.0, m2=0.0)
+            db.add(row)
+        row.count += 1
+        delta = value - row.mean
+        row.mean += delta / row.count
+        row.m2 += delta * (value - row.mean)
+        db.commit()
+
+
+def get_baseline(key: str) -> dict[str, float] | None:
+    with SessionLocal() as db:
+        row = db.get(BaselineStat, key)
+        if row is None or row.count < 2:
+            return None
+        variance = row.m2 / (row.count - 1)
+        std = variance**0.5
+        return {"count": row.count, "mean": row.mean, "std": std}

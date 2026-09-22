@@ -1,0 +1,82 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: shentong
+      POSTGRES_PASSWORD: shentong
+      POSTGRES_DB: shentong
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    environment: &backend-env
+      ST_ES_URL: http://elasticsearch:9200
+      ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
+      ST_REDIS_URL: redis://redis:6379/0
+      ST_CELERY_BROKER_URL: redis://redis:6379/1
+      ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ST_EDGE_MODEL_NAME: ${EDGE_MODEL_NAME:-qwen3.8-2b-distill}
+      ST_EDGE_MODEL_BASE_URL: ${EDGE_URL:-http://host.docker.internal:8080/v1}
+      ST_CLOUD_MODEL_NAME: ${CLOUD_MODEL_NAME:-minimax-text}
+      ST_CLOUD_MODEL_BASE_URL: ${ONE_API_URL:-http://host.docker.internal:3000/v1}
+      ST_CLOUD_MODEL_API_KEY: ${CLOUD_API_KEY:-}
+      ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+
+  celery-worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app worker -l info --concurrency=2
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+
+  celery-beat:
+    build: ./backend
+    command: celery -A app.workers.celery_app beat -l info
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+# 说明：LLM 模型运行环境（边缘 llama.cpp/Ollama、one-api 代理等）不属于本项目，
+# 由外部部署。本项目只通过 ST_EDGE_MODEL_BASE_URL / ST_CLOUD_MODEL_BASE_URL 对接调用。
+
+volumes:
+  es-data:
+  pg-data:
