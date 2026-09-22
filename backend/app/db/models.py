@@ -168,6 +168,8 @@ class Asset(Base):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     location: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    is_external: Mapped[bool] = mapped_column(Boolean, default=False)  # 外部资产（非局域网，需显式开启）
+    allow_ip_share: Mapped[bool] = mapped_column(Boolean, default=False)  # 允许该资产 IP 被多个资产共享
     embedding_status: Mapped[str] = mapped_column(
         String(16), default="pending"
     )  # pending/indexed/failed
@@ -189,6 +191,7 @@ class Document(Base):
     mime_type: Mapped[str] = mapped_column(String(128), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)  # SHA-256 去重
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/indexed/failed
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

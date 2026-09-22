@@ -6,7 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { apiFetch, getToken, type DocumentItem } from "@/lib/api";
+import {
+  ApiError,
+  apiFetch,
+  apiUpload,
+  errorText,
+  type DocumentItem,
+} from "@/lib/api";
 
 function statusVariant(s: string): "low" | "high" | "info" {
   if (s === "indexed") return "low";
@@ -41,17 +47,20 @@ export default function DocumentsPage() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/documents", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${getToken()}` },
-        body: fd,
-      });
-      if (!res.ok) {
-        setMsg(`上传失败：${await res.text()}`);
-        return;
-      }
-      setMsg("上传成功，正在异步向量化…");
+      const d = await apiUpload<DocumentItem>("/api/documents", fd);
+      setMsg(`上传成功：${d.title}，正在异步向量化…`);
       load();
+    } catch (e) {
+      if (e instanceof ApiError && e.body.conflict === "duplicate_content" && e.body.existing) {
+        const exist = e.body.existing;
+        setMsg(
+          `内容重复：已存在「${exist.title}」（${exist.filename}），未重复入库，可在列表中直接使用`
+        );
+      } else if (e instanceof ApiError) {
+        setMsg(errorText(e.body));
+      } else {
+        setMsg("上传失败");
+      }
     } finally {
       setBusy(false);
     }
@@ -84,7 +93,7 @@ export default function DocumentsPage() {
               {busy ? "上传中…" : "选择文件上传"}
             </Button>
             <span className="text-xs text-muted-foreground">
-              支持 txt / md / pdf / docx / xlsx，单文件 ≤ 20MB
+              支持 txt / md / pdf / docx / xlsx，单文件 ≤ 20MB；按内容去重，改名重复上传会被拒
             </span>
             <input
               ref={fileRef}

@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 100
     rag_upload_dir: str = "/data/uploads"
 
+    # 录入校验收紧
+    asset_csv_max_mb: int = 20
+    asset_csv_max_rows: int = 10000
+    doc_min_chars: int = 10
+    text_encodings: str = "utf-8,gb18030"
+
     # 升级与报告阈值（可被系统配置覆盖）
     escalate_score_threshold: float = 0.6
     report_min_severity: str = "medium"  # critical/high/medium/low/info

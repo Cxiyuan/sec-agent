@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -38,14 +39,52 @@ def _asset_dict(a: Asset) -> dict[str, Any]:
 
 
 def lookup_assets(db: Session, ips: list[str]) -> list[dict[str, Any]]:
-    """IP 精确查询：主 IP 或额外 IP 命中。"""
+    """IP 精确查询（主 IP 或额外 IP）+ CIDR 网段包含。
+
+    不再限制局域网，外部登记的资产也可按 IP 命中。
+    """
     if not ips:
         return []
+    found: dict[str, dict[str, Any]] = {}
+
+    # 1. 精确匹配（主 IP + 额外 IP）
     conds: list[Any] = [Asset.ip.in_(ips)]
     for ip in ips:
         conds.append(Asset.extra_ips.contains([ip]))
-    rows = db.scalars(select(Asset).where(or_(*conds))).all()
-    return [_asset_dict(a) for a in rows]
+    for a in db.scalars(select(Asset).where(or_(*conds))).all():
+        found[a.id] = _asset_dict(a)
+
+    # 2. CIDR 网段匹配：事件 IP 落在登记网段内即命中
+    addrs: list[Any] = []
+    for ip in ips:
+        try:
+            addrs.append(ipaddress.ip_address(ip))
+        except ValueError:
+            continue
+    if addrs:
+        for a in db.scalars(select(Asset).where(Asset.ip.contains("/"))).all():
+            if a.id in found:
+                continue
+            if _asset_contains(a, addrs):
+                found[a.id] = _asset_dict(a)
+
+    return list(found.values())
+
+
+def _asset_contains(a: Asset, addrs: list[Any]) -> bool:
+    """资产登记的主 IP / 额外 IP 中是否有 CIDR 网段覆盖给定地址。"""
+    for value in [a.ip, *(a.extra_ips or [])]:
+        sval = str(value)
+        if "/" not in sval:
+            continue
+        try:
+            net = ipaddress.ip_network(sval, strict=False)
+        except ValueError:
+            continue
+        for addr in addrs:
+            if addr.version == net.version and addr in net:
+                return True
+    return False
 
 
 def _cosine_sim(a: Any, b: Any) -> float:
@@ -94,9 +133,11 @@ def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[st
 
     # 仅查询局域网 IP
     lan_ips = sorted({ip for ip in (*src_ips, *dst_ips) if is_lan_ip(ip)})
+    # 全部事件 IP 都参与精确/CIDR 匹配（外部登记资产也能命中）
+    all_ips = sorted({ip for ip in (*src_ips, *dst_ips) if ip})[:500]
     try:
         with SessionLocal() as db:
-            assets = lookup_assets(db, lan_ips)
+            assets = lookup_assets(db, all_ips)
             query = query_text
             if assets:
                 names = [str(a.get("asset_name") or a["ip"]) for a in assets]

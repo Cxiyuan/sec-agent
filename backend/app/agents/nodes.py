@@ -404,9 +404,7 @@ def _report_body(g: Any, analysis: dict[str, Any]) -> str:
             prompts.REPORT_SYSTEM,
             prompts.REPORT_USER.format(
                 overview=json.dumps(overview, ensure_ascii=False, default=str),
-                chain=json.dumps(
-                    analysis.get("attack_chain", {}), ensure_ascii=False, default=str
-                ),
+                chain=json.dumps(analysis.get("attack_chain", {}), ensure_ascii=False, default=str),
                 profile=json.dumps(analysis.get("profile", {}), ensure_ascii=False, default=str),
                 suggestions=json.dumps(
                     g.response_suggestions or [], ensure_ascii=False, default=str

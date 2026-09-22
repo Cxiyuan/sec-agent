@@ -5,11 +5,27 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+from app.config import settings
+
+TEXT_EXT = (".txt", ".md", ".markdown", ".log", ".csv")
+
+
+def decode_text(data: bytes) -> str:
+    """按配置顺序探测编码解码（默认 utf-8 -> gb18030）；全部失败抛 ValueError。"""
+    encodings = [e.strip() for e in settings.text_encodings.split(",") if e.strip()]
+    for enc in encodings:
+        try:
+            text = data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        return text.lstrip("\ufeff")  # 去掉 BOM
+    raise ValueError(f"无法识别的文本编码（已尝试：{', '.join(encodings)}）")
+
 
 def extract_text(filename: str, data: bytes) -> str:
     ext = Path(filename).suffix.lower()
-    if ext in (".txt", ".md", ".markdown", ".log", ".csv"):
-        return data.decode("utf-8", errors="ignore")
+    if ext in TEXT_EXT:
+        return decode_text(data)
     if ext == ".pdf":
         return _pdf(data)
     if ext == ".docx":
@@ -17,7 +33,7 @@ def extract_text(filename: str, data: bytes) -> str:
     if ext == ".xlsx":
         return _xlsx(data)
     # 兜底：按文本解码
-    return data.decode("utf-8", errors="ignore")
+    return decode_text(data)
 
 
 def _pdf(data: bytes) -> str:

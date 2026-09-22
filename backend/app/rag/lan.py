@@ -33,3 +33,8 @@ def is_lan_ip(ip: str | None) -> bool:
     except ValueError:
         return False
     return any(addr in net for net in _networks())
+
+
+def lan_networks() -> tuple[IPNetwork, ...]:
+    """当前配置的局域网网段（供录入校验使用）。"""
+    return _networks()

@@ -16,12 +16,27 @@ from app.db.base import Base, SessionLocal, engine
 from app.db.models import Rule, User
 from app.rules.builtin import BUILTIN_RULES
 
+# 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
+_MIGRATIONS = (
+    "ALTER TABLE assets ADD COLUMN IF NOT EXISTS is_external BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE assets ADD COLUMN IF NOT EXISTS allow_ip_share BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
+)
+
+
+def _migrate() -> None:
+    with engine.begin() as conn:
+        for stmt in _MIGRATIONS:
+            conn.exec_driver_sql(stmt)
+
 
 def _seed() -> None:
-    """幂等初始化：建 pgvector 扩展、建表、默认管理员、内置规则。"""
+    """幂等初始化：建 pgvector 扩展、建表、补列、默认管理员、内置规则。"""
     with engine.begin() as conn:
         conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
     Base.metadata.create_all(engine)
+    _migrate()
     with SessionLocal() as db:
         if (
             db.execute(

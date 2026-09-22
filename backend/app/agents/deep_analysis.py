@@ -53,9 +53,7 @@ def _stat_features(g: Any) -> dict[str, float]:
     for src, c in by_src.items():
         # Counter 值均为 int，无需 float() 包装（int 可直接赋给 float 字典）
         features[f"{src}:conn_count"] = c["conn_count"]
-        features[f"{src}:distinct_dst_ports"] = sum(
-            1 for k in c if k.startswith("dst_port:")
-        )
+        features[f"{src}:distinct_dst_ports"] = sum(1 for k in c if k.startswith("dst_port:"))
         features[f"{src}:distinct_dst_ips"] = sum(1 for k in c if k.startswith("dst_ip:"))
     return features
 

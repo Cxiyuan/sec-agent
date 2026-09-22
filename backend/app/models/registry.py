@@ -42,9 +42,7 @@ def _load() -> dict[str, str]:
     try:
         with SessionLocal() as db:
             rows = db.scalars(
-                select(SystemConfig).where(
-                    SystemConfig.key.in_([f"model.{r}" for r in ROLES])
-                )
+                select(SystemConfig).where(SystemConfig.key.in_([f"model.{r}" for r in ROLES]))
             ).all()
             for row in rows:
                 role = row.key.removeprefix("model.")

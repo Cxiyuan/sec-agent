@@ -36,9 +36,7 @@ def _render_html(group: Any, analysis: dict[str, Any], body: str = "") -> str:
     )
 
 
-def render_report(
-    group: Any, analysis: dict[str, Any], body: str = ""
-) -> tuple[str, str | None]:
+def render_report(group: Any, analysis: dict[str, Any], body: str = "") -> tuple[str, str | None]:
     """渲染报告 HTML 并生成 PDF，返回 (html, pdf_path)。PDF 失败时返回 (html, None)。"""
     html = _render_html(group, analysis, body)
     try:
