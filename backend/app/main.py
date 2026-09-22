@@ -28,6 +28,7 @@ _MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS lookback JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS memory_hits JSONB",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS profile_hits JSONB",
 )
 
 

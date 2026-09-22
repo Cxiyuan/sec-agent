@@ -183,6 +183,7 @@ export interface EventGroupItem {
   business_context: BusinessContext | null;
   lookback: LookbackInfo | null;
   memory_hits: MemoryRecall | null;
+  profile_hits: ProfileHits | null;
   attack_chain: AttackChain | null;
   profile: Profile | null;
   anomaly: Anomaly | null;
@@ -237,6 +238,42 @@ export interface MemoryBrief {
 export interface MemoryRecall {
   memories?: MemoryBrief[];
   persistence?: PersistenceInfo;
+}
+
+/** 账号 / 会话画像条目 */
+export interface EntityProfileItem {
+  id: string;
+  kind: string;
+  entity_key: string;
+  entity_display: string;
+  obs_count: number;
+  risk_score: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  src_ips: Record<string, number>;
+  user_agents: Record<string, number>;
+  paths: Record<string, number>;
+  hour_hist: Record<string, number>;
+  success_count: number;
+  fail_count: number;
+  anomalies: string[];
+}
+
+/** 画像命中的异常（存于 event_groups.profile_hits） */
+export interface ProfileHit {
+  kind: string;
+  key: string;
+  display: string;
+  risk: number;
+  reasons: string[];
+  obs_count: number;
+  src_ips: string[];
+  count: number;
+}
+
+export interface ProfileHits {
+  entities?: ProfileHit[];
+  anomalies?: ProfileHit[];
 }
 
 /** 持续性威胁聚合项（驾驶舱） */

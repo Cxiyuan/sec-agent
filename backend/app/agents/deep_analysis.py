@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.memory import memory_text
 from app.agents.persistence import get_baseline, update_baseline
+from app.agents.profile import profile_text
 from app.agents.state import AgentState
 from app.intel.threat_intel import enrich_profile
 from app.models import prompts
@@ -41,6 +42,11 @@ def _memory_blob(state: AgentState, fingerprint: str) -> str:
 def _lookback_blob(state: AgentState, fingerprint: str) -> str:
     entry = (state.get("lookback") or {}).get(fingerprint) or {}
     return str(entry.get("summary") or "（无回溯）")
+
+
+def _profile_blob(state: AgentState, fingerprint: str) -> str:
+    info = ((state.get("profile") or {}).get("by_group") or {}).get(fingerprint)
+    return profile_text(info)
 
 
 # ---------- 4.1 异常检测（统计 + LLM） ----------
@@ -101,6 +107,7 @@ def anomaly_node(state: AgentState) -> dict[str, Any]:
                         business_context=context_text,
                         memory=_memory_blob(state, g.fingerprint),
                         lookback=_lookback_blob(state, g.fingerprint),
+                        entity_profile=_profile_blob(state, g.fingerprint),
                     ),
                 )
                 if r.get("is_anomaly"):
@@ -141,6 +148,7 @@ def attack_chain_node(state: AgentState) -> dict[str, Any]:
                     business_context=context_text,
                     memory=_memory_blob(state, g.fingerprint),
                     lookback=_lookback_blob(state, g.fingerprint),
+                    entity_profile=_profile_blob(state, g.fingerprint),
                 ),
             )
             stages = r.get("stages", [])
@@ -210,6 +218,7 @@ def profile_node(state: AgentState) -> dict[str, Any]:
                     ),
                     memory=_memory_blob(state, g.fingerprint),
                     lookback=_lookback_blob(state, g.fingerprint),
+                    entity_profile=_profile_blob(state, g.fingerprint),
                 ),
             )
             profile = {"basic": r.get("basic", {}), "behavior": r.get("behavior", {})}

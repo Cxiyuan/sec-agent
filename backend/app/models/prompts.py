@@ -41,6 +41,9 @@ ANOMALY_CONFIRM_USER = """候选异常：{candidate}
 回溯窗口历史行为：
 {lookback}
 
+账号/会话画像异常（新 IP/新 UA/非常用时段/会话跳变）：
+{entity_profile}
+
 请确认。"""
 
 ATTACK_CHAIN_SYSTEM = """你是攻击链还原专家。按固定 4 阶段分析一次攻击：侦察、入侵、横向、外泄。
@@ -60,6 +63,9 @@ ATTACK_CHAIN_USER = """事件组时间线（每条日志带编号）：
 
 回溯窗口历史行为（用于判断攻击链的完整阶段）：
 {lookback}
+
+账号/会话画像异常（跨窗口长期基线，新 IP/新 UA/非常用时段/会话跳变）：
+{entity_profile}
 
 请还原攻击链（阶段描述请结合业务系统名称）。"""
 
@@ -81,6 +87,9 @@ PROFILE_USER = """事件组日志：{logs}
 回溯窗口历史行为：
 {lookback}
 
+账号/会话画像异常：
+{entity_profile}
+
 请画像。"""
 
 SEVERITY_SYSTEM = """你是安全事件定级专家。综合攻击链与画像，从 5 级里选一个：critical/high/medium/low/info。
@@ -98,6 +107,9 @@ SEVERITY_USER = """攻击链：{chain}
 
 回溯窗口历史行为：
 {lookback}
+
+账号/会话画像异常（异常登录/会话跳变应提高定级）：
+{entity_profile}
 
 请定级。"""
 

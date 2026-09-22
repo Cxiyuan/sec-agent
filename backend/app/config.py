@@ -105,6 +105,30 @@ class Settings(BaseSettings):
     prefilter_bytes_out_alert: int = 100 * 1024 * 1024  # 100MB
     prefilter_query_len_warn: int = 100
 
+    # Web 深检
+    http_body_fields: str = (
+        "request_body,body,post_body,payload,http.request.body,http.request_body"
+    )
+    http_body_max_chars: int = 2000
+    http_cookie_max_chars: int = 200
+    web_login_path_regex: str = (
+        "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
+    )
+    ja3_blocklist: str = ""  # 可疑 JA3 指纹（逗号分隔）
+    web_scan_error_burst: int = 30  # 错误码突变阈值
+
+    # 账号 / 会话跨窗口长期画像（UEBA）
+    profile_enabled: bool = True
+    profile_window_days: int = 30
+    profile_min_obs: int = 5  # 冷启动：低于此观测数只学习不告警
+    profile_risk_threshold: float = 0.6
+    profile_retention_days: int = 180
+    profile_top_n: int = 8  # 基线里保留的 TOP 分布长度
+    session_cookie_names: str = (
+        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
+    )
+    account_form_fields: str = "username,user,email,login,account,uname,userid"
+
     # 网络拓扑
     topology_hops: int = 2  # 结构化检索上下游跳数
     topology_max_nodes: int = 10  # 单次渲染节点上限

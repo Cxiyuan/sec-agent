@@ -131,6 +131,17 @@ def update_group_memory_hits(fingerprint: str, memory: dict[str, Any]) -> None:
             db.commit()
 
 
+def update_group_profile_hits(fingerprint: str, profile: dict[str, Any]) -> None:
+    """保存账号/会话画像异常（供详情页与驾驶舱展示）。"""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == fingerprint)
+        ).scalar_one_or_none()
+        if row is not None:
+            row.profile_hits = profile
+            db.commit()
+
+
 def update_group_analysis(
     fingerprint: str,
     *,

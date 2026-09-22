@@ -25,8 +25,16 @@ from app.agents.persistence import (
     update_group_analysis,
     update_group_lookback,
     update_group_memory_hits,
+    update_group_profile_hits,
 )
 from app.agents.prefilter import known_asset_ip_set, prefilter
+from app.agents.profile import (
+    cleanup as profile_cleanup,
+    profile_text,
+    recall_entities,
+    update_profiles,
+    window_observations,
+)
 from app.agents.state import AgentState
 from app.config import settings
 from app.db.base import SessionLocal
@@ -399,6 +407,40 @@ def memory_recall_node(state: AgentState) -> dict[str, Any]:
     return {"memory": recalled}
 
 
+# ---------- 节点 3.65：账号/会话画像比对（跨窗口长期基线） ----------
+
+
+def _profile_text_for_group(state: AgentState, fingerprint: str) -> str:
+    info = ((state.get("profile") or {}).get("by_group") or {}).get(fingerprint)
+    return profile_text(info)
+
+
+def profile_recall_node(state: AgentState) -> dict[str, Any]:
+    """对全窗口日志做账号/会话画像比对；异常按涉及 IP 归属到事件组。"""
+    if not settings.profile_enabled:
+        return {"profile": {"entities": [], "anomalies": [], "by_group": {}}}
+
+    info = recall_entities(state.get("raw_logs", []))
+    entities = info.get("entities") or []
+    threshold = settings.profile_risk_threshold
+
+    by_group: dict[str, dict[str, Any]] = {}
+    for g in state.get("groups", []):
+        group_ips = set(g.src_ips + g.dst_ips)
+        related = [e for e in entities if group_ips & set(e.get("src_ips") or [])]
+        payload = {
+            "entities": related,
+            "anomalies": [e for e in related if e.get("risk", 0) >= threshold],
+        }
+        by_group[g.fingerprint] = payload
+        update_group_profile_hits(g.fingerprint, payload)
+
+    log.info(
+        "账号/会话画像：异常 %d 条（高风隖 %d）", len(entities), len(info.get("anomalies") or [])
+    )
+    return {"profile": {**info, "by_group": by_group}}
+
+
 # ---------- 节点 3.7：回溯决策与历史行为（LLM 决定时长，后端封顶） ----------
 
 
@@ -542,6 +584,7 @@ def severity_node(state: AgentState) -> dict[str, Any]:
         lookback_blob = str(
             ((state.get("lookback") or {}).get(g.fingerprint) or {}).get("summary") or "（无回溯）"
         )
+        profile_blob = _profile_text_for_group(state, g.fingerprint)
         try:
             r = flash_invoke_json(
                 prompts.SEVERITY_SYSTEM,
@@ -552,6 +595,7 @@ def severity_node(state: AgentState) -> dict[str, Any]:
                     business_context=context_text,
                     memory=memory_blob,
                     lookback=lookback_blob,
+                    entity_profile=profile_blob,
                 ),
             )
             severity = r.get("severity", rule_severity)
@@ -777,6 +821,26 @@ def memory_write_node(state: AgentState) -> dict[str, Any]:
         len(groups),
         deleted["run"],
         deleted["group"],
+    )
+    return {}
+
+
+# ---------- 节点 9：账号/会话画像基线更新 ----------
+
+
+def profile_update_node(state: AgentState) -> dict[str, Any]:
+    """用本窗口观测增量更新画像基线，并清理长期无观测画像。"""
+    if not settings.profile_enabled:
+        return {}
+    observations = window_observations(state.get("raw_logs", []))
+    result = update_profiles(observations)
+    deleted = profile_cleanup()
+    log.info(
+        "画像基线更新：实体 %d（新增 %d / 更新 %d）；清理过期 %d",
+        len(observations),
+        result["created"],
+        result["updated"],
+        deleted["deleted"],
     )
     return {}
 

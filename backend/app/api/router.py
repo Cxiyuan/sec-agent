@@ -10,6 +10,7 @@ from app.api.routes import (
     documents,
     events,
     memories,
+    profiles,
     reports,
     rules,
     topologies,
@@ -23,6 +24,7 @@ api_router.include_router(assets.router)
 api_router.include_router(documents.router)
 api_router.include_router(topologies.router)
 api_router.include_router(memories.router)
+api_router.include_router(profiles.router)
 api_router.include_router(events.router)
 api_router.include_router(rules.router)
 api_router.include_router(reports.router)

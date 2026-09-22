@@ -14,6 +14,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  UserSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch, clearToken, type ScopeStatus } from "@/lib/api";
@@ -26,6 +27,7 @@ const items = [
   { href: "/admin/documents", label: "知识文档", icon: FileText },
   { href: "/admin/topology", label: "网络拓扑", icon: Network },
   { href: "/admin/memories", label: "分析记忆", icon: Brain },
+  { href: "/admin/profiles", label: "账号会话画像", icon: UserSearch },
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
   { href: "/admin/reports", label: "报告", icon: ScrollText },
   { href: "/admin/settings", label: "系统配置", icon: Settings },

@@ -124,7 +124,7 @@ export default function AdminEventsPage() {
                     ))}
                   </div>
                 )}
-              {(detail.lookback || detail.memory_hits) && (
+              {(detail.lookback || detail.memory_hits || detail.profile_hits) && (
                 <div>
                   <h3 className="mb-1 font-medium">历史比对</h3>
                   {detail.lookback && (
@@ -154,6 +154,19 @@ export default function AdminEventsPage() {
                       {m.summary}
                     </p>
                   ))}
+                  {(detail.profile_hits?.entities || []).length > 0 && (
+                    <div className="mt-1">
+                      <p className="text-sm font-medium">账号 / 会话画像异常</p>
+                      {(detail.profile_hits?.entities || []).map((e, i) => (
+                        <p key={i} className="text-xs text-muted-foreground">
+                          <span className="font-mono">
+                            [{e.kind === "account" ? "账号" : "会话"}] {e.display}
+                          </span>
+                          风险 {e.risk}：{(e.reasons || []).join("；")}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div>

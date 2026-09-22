@@ -20,7 +20,9 @@ class UnifiedLog(BaseModel):
     source_system: str  # "zeek" | "wazuh"
     ts: datetime
     event_type: str  # 归一化事件类型：port_scan / brute_force / dns_query / ...
-    log_type: str = ""  # Zeek 日志类型：conn/dns/http/ssl/files/smtp/ssh/dhcp/notice；Wazuh 为 wazuh
+    log_type: str = (
+        ""  # Zeek 日志类型：conn/dns/http/ssl/files/smtp/ssh/dhcp/notice；Wazuh 为 wazuh
+    )
     src_ip: str | None = None
     dst_ip: str | None = None
     src_port: int | None = None
@@ -30,11 +32,32 @@ class UnifiedLog(BaseModel):
     user: str | None = None
     process: str | None = None
     command: str | None = None
-    # 应用层字段（供规则做浅层内容检测）
-    query: str = ""  # DNS 查询名 / HTTP URI
+    # 应用层字段（供规则做内容检测）
+    query: str = ""  # DNS 查询名 / HTTP URI（完整）
+    uri_path: str = ""  # HTTP 路径（去参数）
+    query_string: str = ""  # HTTP 参数部分
+    method: str = ""  # HTTP 方法
+    body: str = ""  # 请求体（自动适配字段名 + 截断）
+    referer: str = ""
+    cookie: str = ""  # 截断；会话 id 只做哈希后入库
+    auth_scheme: str = ""  # basic / bearer / jwt（不落库明文凭证）
+    content_type: str = ""
     user_agent: str = ""
     status_code: int | None = None
-    bytes_out: int | None = None  # 源→目的字节数（数据外传检测）
+    resp_mime: str = ""
+    bytes_out: int | None = None  # 源→目的字节数（数据外传）
+    bytes_in: int | None = None  # 目的→源字节数（数据窃取）
+    # TLS 指纹与证书（工具识别 / 弱 TLS）
+    ja3: str = ""
+    ja3s: str = ""
+    tls_version: str = ""
+    cert_issuer: str = ""
+    # DNS / 文件
+    qtype: str = ""
+    filename: str = ""
+    mime_type: str = ""
+    # 账号（画像主键：user 字段优先，缺失时从请求体提取）
+    account: str = ""
     # Wazuh 规则语义（保留原始规则信息，避免被压成通用类型）
     rule_id: str = ""
     rule_groups: str = ""  # 逗号连接
