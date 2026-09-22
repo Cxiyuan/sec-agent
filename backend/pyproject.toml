@@ -46,6 +46,10 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*"]
 
+# 报告模板等非 .py 数据文件必须显式声明，否则 pip install 打 wheel 时会丢失
+[tool.setuptools.package-data]
+"app.reports" = ["templates/*.html"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

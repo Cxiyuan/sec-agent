@@ -435,10 +435,13 @@ def report_node(state: AgentState) -> dict[str, Any]:
         if SEVERITY_RANK.get(sev, 0) < SEVERITY_RANK.get(min_sev, 2):
             continue
         analysis = analyses.get(g.fingerprint) or {}
-        body = _report_body(g, analysis)
-        html, pdf_path = render_report(g, analysis, body)
-        save_report(g.fingerprint, f"安全事件报告 - {sev}", sev, html, pdf_path)
-        summary["reports"] += 1
+        try:
+            body = _report_body(g, analysis)
+            html, pdf_path = render_report(g, analysis, body)
+            save_report(g.fingerprint, f"安全事件报告 - {sev}", sev, html, pdf_path)
+            summary["reports"] += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("报告生成失败 %s: %s", g.fingerprint, exc)
 
     log.info("报告输出：%s", summary)
     return {"run_summary": summary}
