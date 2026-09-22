@@ -11,14 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.agents.memory import (
     cleanup as memory_cleanup,
-)
-from app.agents.memory import (
     memory_text,
+    recall as recall_memory,
     write_group,
     write_run,
-)
-from app.agents.memory import (
-    recall as recall_memory,
 )
 from app.agents.persistence import (
     get_enabled_rules,
@@ -30,6 +26,7 @@ from app.agents.persistence import (
     update_group_lookback,
     update_group_memory_hits,
 )
+from app.agents.prefilter import known_asset_ip_set, prefilter
 from app.agents.state import AgentState
 from app.config import settings
 from app.db.base import SessionLocal
@@ -41,7 +38,7 @@ from app.ingestion.scope import enabled_cidrs
 from app.models import prompts
 from app.models.llm import edge_invoke_json, flash_invoke_json, flash_invoke_text
 from app.rag.context import build_business_context, context_text_for_group
-from app.rules.engine import match_rule
+from app.rules.engine import is_count_rule, match_count_rule, match_rule
 from app.schemas import EventGroup, SuspiciousEvent, UnifiedLog
 from app.workers.log import get_logger
 
@@ -65,6 +62,14 @@ def _safe_float(value: Any, default: float) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int) -> int:
+    """安全转 int（含 inf/nan 溢出防护）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -114,54 +119,115 @@ def ingest_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-# ---------- 节点 2：研判降噪（四层漏斗） ----------
+# ---------- 节点 2：研判降噪（四层漏斗 + 兜底预筛） ----------
+
+
+def _edge_review(entry: UnifiedLog, rule_label: str) -> tuple[float, bool, str]:
+    """边缘模型审查降噪：返回 (score, is_suspicious, reason)。"""
+    user_prompt = prompts.TRIAGE_USER.format(
+        event_type=entry.event_type,
+        source_system=entry.source_system,
+        src_ip=f"{entry.src_ip}:{entry.src_port}",
+        dst_ip=f"{entry.dst_ip}:{entry.dst_port}",
+        protocol=entry.protocol,
+        hit_rule=rule_label,
+        summary=entry.summary,
+        raw=json.dumps(entry.raw, ensure_ascii=False, default=str)[:1500],
+    )
+    try:
+        result = edge_invoke_json(prompts.TRIAGE_SYSTEM, user_prompt)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("边缘模型研判失败，默认视为可疑: %s", exc)
+        result = {"is_suspicious": True, "score": 0.6, "reason": "边缘模型不可用"}
+    return (
+        _safe_float(result.get("score"), 0.5),
+        bool(result.get("is_suspicious", True)),
+        str(result.get("reason", "")),
+    )
 
 
 def triage_node(state: AgentState) -> dict[str, Any]:
+    """四层漏斗：逐条规则 → 频率规则 → 边缘模型审查 → 兜底预筛（防漏报）。"""
     logs = state.get("raw_logs", [])
     with SessionLocal() as db:
         rules = get_enabled_rules(db)
 
+    per_log_rules = [r for r in rules if not is_count_rule(r)]
+    count_rules = [r for r in rules if is_count_rule(r)]
+
     suspicious: list[SuspiciousEvent] = []
-    for entry in logs:
-        hit = None
-        for rule in rules:  # 已按 priority 排序：用户规则 > 内置规则
-            if match_rule(rule, entry):
-                hit = rule
-                break
-        if hit is None:
-            continue  # 未命中任何规则，视为正常流量
+    handled: set[str] = set()
+    rule_hits = count_hits = fallback_hits = 0
 
-        # 边缘模型审查降噪
-        user_prompt = prompts.TRIAGE_USER.format(
-            event_type=entry.event_type,
-            source_system=entry.source_system,
-            src_ip=f"{entry.src_ip}:{entry.src_port}",
-            dst_ip=f"{entry.dst_ip}:{entry.dst_port}",
-            protocol=entry.protocol,
-            hit_rule=hit["name"],
-            summary=entry.summary,
-            raw=json.dumps(entry.raw, ensure_ascii=False, default=str)[:1500],
-        )
-        try:
-            result = edge_invoke_json(prompts.TRIAGE_SYSTEM, user_prompt)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("边缘模型研判失败，默认视为可疑: %s", exc)
-            result = {"is_suspicious": True, "score": 0.6, "reason": "边缘模型不可用"}
-
-        score = _safe_float(result.get("score"), 0.5)
-        is_suspicious = bool(result.get("is_suspicious", True))
-        if is_suspicious:
-            suspicious.append(
-                SuspiciousEvent(
-                    log=entry,
-                    hit_rule=hit["name"],
-                    rule_source=hit["source"],
-                    edge_score=score,
-                    edge_reason=str(result.get("reason", "")),
-                )
+    def add(entry: UnifiedLog, rule: dict[str, Any], extra: str = "") -> bool:
+        score, ok, reason = _edge_review(entry, rule["name"])
+        if not ok:
+            return False
+        suspicious.append(
+            SuspiciousEvent(
+                log=entry,
+                hit_rule=rule["name"],
+                rule_source=rule["source"],
+                edge_score=score,
+                edge_reason=(f"{extra}｜{reason}" if extra else reason)[:500],
             )
-    log.info("研判降噪：%d 条日志 -> %d 条可疑事件", len(logs), len(suspicious))
+        )
+        return True
+
+    # 第 1/2 层：逐条规则（已按 priority 排序：用户规则 > 内置规则，命中即停）
+    for entry in logs:
+        hit = next((r for r in per_log_rules if match_rule(r, entry)), None)
+        if hit is None:
+            continue
+        handled.add(entry.fingerprint())
+        if add(entry, hit):
+            rule_hits += 1
+
+    # 第 3 层：频率规则（扫描/爆破/目录爆破的真实特征是频率）
+    for rule in count_rules:
+        for key, matched in match_count_rule(rule, logs):
+            if not matched:
+                continue
+            rep = max(matched, key=lambda x: x.ts)
+            for m in matched:
+                handled.add(m.fingerprint())
+            if add(rep, rule, extra=f"{key} × {len(matched)} 次"):
+                count_hits += 1
+
+    # 第 4 层：兜底预筛——规则漏掉的高风险行为，交边缘模型复筛（防漏报）
+    missed = [entry for entry in logs if entry.fingerprint() not in handled]
+    candidates = prefilter(
+        missed,
+        scope_cidrs=(state.get("run_meta") or {}).get("scope_cidrs") or [],
+        known_asset_ips=known_asset_ip_set(),
+    )
+    for cand in candidates:
+        label = f"兜底预筛（{'；'.join(cand.reasons)}）"
+        score, ok, reason = _edge_review(cand.log, label)
+        if not ok:
+            continue
+        fallback_hits += 1
+        suspicious.append(
+            SuspiciousEvent(
+                log=cand.log,
+                hit_rule="兜底预筛",
+                rule_source="builtin",
+                edge_score=max(score, cand.score),
+                edge_reason=f"启发式 {cand.score}：{'；'.join(cand.reasons)}｜{reason}"[:500],
+            )
+        )
+
+    log.info(
+        "研判降噪：%d 条 → 可疑 %d（逐条规则 %d / 频率 %d / 兜底 %d）；"
+        "规则漏掉 %d 条，兜底候选 %d 条",
+        len(logs),
+        len(suspicious),
+        rule_hits,
+        count_hits,
+        fallback_hits,
+        len(missed),
+        len(candidates),
+    )
     return {"suspicious_events": suspicious}
 
 
@@ -328,9 +394,7 @@ def memory_recall_node(state: AgentState) -> dict[str, Any]:
         )
         recalled[g.fingerprint] = info
         update_group_memory_hits(g.fingerprint, info)
-    persistent = sum(
-        1 for v in recalled.values() if (v.get("persistence") or {}).get("persistent")
-    )
+    persistent = sum(1 for v in recalled.values() if (v.get("persistence") or {}).get("persistent"))
     log.info("历史记忆召回：%d 组，其中持续性 %d 组", len(recalled), persistent)
     return {"memory": recalled}
 
@@ -422,7 +486,7 @@ def lookback_node(state: AgentState) -> dict[str, Any]:
         decision = _decide_lookback(
             g, ctx_map.get(g.fingerprint) or {}, mem_map.get(g.fingerprint) or {}
         )
-        hours = int(_safe_float(decision.get("hours"), 0))
+        hours = _safe_int(_safe_float(decision.get("hours"), 0), 0)
         hours = max(0, min(hours, settings.lookback_max_days * 24))
         entry: dict[str, Any] = {
             "hours": hours,
@@ -434,15 +498,11 @@ def lookback_node(state: AgentState) -> dict[str, Any]:
         if hours > 0 and cidrs:
             end = _now()
             start = end - timedelta(hours=hours)
-            fetched = fetch_window_logs(
-                start, end, cidrs, max_logs=settings.lookback_max_logs
-            )
+            fetched = fetch_window_logs(start, end, cidrs, max_logs=settings.lookback_max_logs)
             events = _rule_hit_events(fetched.logs, sorted(set(g.src_ips + g.dst_ips)))
             entry["log_count"] = fetched.total
             entry["event_count"] = len(events)
-            entry["summary"] = _history_summary(
-                start, end, events, fetched.total, fetched.notes
-            )
+            entry["summary"] = _history_summary(start, end, events, fetched.total, fetched.notes)
         else:
             entry["summary"] = "未回溯（LLM 判定无需回溯或未配置分析网段）"
         results[g.fingerprint] = entry
@@ -480,8 +540,7 @@ def severity_node(state: AgentState) -> dict[str, Any]:
         )
         memory_blob = memory_text((state.get("memory") or {}).get(g.fingerprint) or {})
         lookback_blob = str(
-            ((state.get("lookback") or {}).get(g.fingerprint) or {}).get("summary")
-            or "（无回溯）"
+            ((state.get("lookback") or {}).get(g.fingerprint) or {}).get("summary") or "（无回溯）"
         )
         try:
             r = flash_invoke_json(

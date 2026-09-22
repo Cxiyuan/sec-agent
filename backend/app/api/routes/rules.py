@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.base import get_db
 from app.db.models import Rule, User
+from app.rules.engine import has_conditions, validate_rule_regexes
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
@@ -23,6 +25,16 @@ class RuleIn(BaseModel):
     severity: str = "medium"
     enabled: bool = True
     priority: int = 100
+
+
+def _validate(body: RuleIn) -> list[dict[str, str]]:
+    """保存前校验：条件非空 + 正则合法（非法正则会静默不生效）。"""
+    errors: list[dict[str, str]] = []
+    if not has_conditions({"conditions": body.conditions}):
+        errors.append({"field": "conditions", "msg": "规则至少需要一个条件（空条件规则不生效）"})
+    for msg in validate_rule_regexes({"conditions": body.conditions}):
+        errors.append({"field": "conditions", "msg": msg})
+    return errors
 
 
 def _rule_dict(r: Rule) -> dict[str, Any]:
@@ -56,6 +68,16 @@ def create_rule(
     exists = db.execute(select(Rule).where(Rule.name == body.name)).scalar_one_or_none()
     if exists:
         raise HTTPException(status_code=409, detail="规则名已存在")
+    errors = _validate(body)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
     rule = Rule(
         name=body.name,
         description=body.description,
@@ -80,6 +102,16 @@ def update_rule(
     rule = db.get(Rule, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="规则不存在")
+    errors = _validate(body)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
     rule.name = body.name
     rule.description = body.description
     rule.conditions = body.conditions

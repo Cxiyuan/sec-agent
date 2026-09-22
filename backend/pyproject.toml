@@ -54,6 +54,10 @@ include = ["app*"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint.isort]
+# 同一模块的 import 与 as 别名合并成一条（避免拆成多条重复 import）
+combine-as-imports = true
+
 # 依赖只在 GitHub Actions 的 Docker 里安装（项目规则禁止本地装包/构建），
 # 本地 pyright 无法解析第三方包属预期，降级为 warning 不阻塞。
 [tool.pyright]

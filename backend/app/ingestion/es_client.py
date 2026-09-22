@@ -110,7 +110,9 @@ def scope_clause(fields: dict[str, str], cidrs: list[str]) -> dict[str, Any] | N
     return {"bool": {"should": should, "minimum_should_match": 1}}
 
 
-def _scroll(es: Elasticsearch, index: str, query: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+def _scroll(
+    es: Elasticsearch, index: str, query: dict[str, Any], limit: int
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if limit <= 0:
         return out

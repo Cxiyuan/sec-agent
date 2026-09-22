@@ -19,7 +19,8 @@ class UnifiedLog(BaseModel):
 
     source_system: str  # "zeek" | "wazuh"
     ts: datetime
-    event_type: str  # 归一化事件类型：port_scan / brute_force / c2_beacon / ...
+    event_type: str  # 归一化事件类型：port_scan / brute_force / dns_query / ...
+    log_type: str = ""  # Zeek 日志类型：conn/dns/http/ssl/files/smtp/ssh/dhcp/notice；Wazuh 为 wazuh
     src_ip: str | None = None
     dst_ip: str | None = None
     src_port: int | None = None
@@ -29,6 +30,15 @@ class UnifiedLog(BaseModel):
     user: str | None = None
     process: str | None = None
     command: str | None = None
+    # 应用层字段（供规则做浅层内容检测）
+    query: str = ""  # DNS 查询名 / HTTP URI
+    user_agent: str = ""
+    status_code: int | None = None
+    bytes_out: int | None = None  # 源→目的字节数（数据外传检测）
+    # Wazuh 规则语义（保留原始规则信息，避免被压成通用类型）
+    rule_id: str = ""
+    rule_groups: str = ""  # 逗号连接
+    mitre: str = ""  # 逗号连接（MITRE 技术号/战术）
     severity: Severity = "info"
     summary: str = ""
     raw: dict[str, Any] = Field(default_factory=dict)

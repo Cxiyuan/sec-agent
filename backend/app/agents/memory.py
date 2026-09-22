@@ -229,7 +229,8 @@ def memory_text(recalled: dict[str, Any]) -> str:
             )
         if persistence.get("severities"):
             lines.append(
-                "历史定级分布：" + "，".join(f"{k}×{v}" for k, v in persistence["severities"].items())
+                "历史定级分布："
+                + "，".join(f"{k}×{v}" for k, v in persistence["severities"].items())
             )
     for m in memories:
         when = str(m.get("created_at") or "")[:19]

@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     doc_min_chars: int = 10
     text_encodings: str = "utf-8,gb18030"
 
+    # 兜底预筛（防漏报）：规则未命中的日志经启发式打分后交边缘模型复筛
+    prefilter_enabled: bool = True
+    prefilter_min_score: float = 0.3
+    prefilter_max_candidates: int = 300
+    prefilter_bytes_out_warn: int = 10 * 1024 * 1024  # 10MB
+    prefilter_bytes_out_alert: int = 100 * 1024 * 1024  # 100MB
+    prefilter_query_len_warn: int = 100
+
     # 网络拓扑
     topology_hops: int = 2  # 结构化检索上下游跳数
     topology_max_nodes: int = 10  # 单次渲染节点上限

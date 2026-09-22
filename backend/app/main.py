@@ -15,6 +15,10 @@ from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import Rule, User
 from app.rules.builtin import BUILTIN_RULES
+from app.rules.engine import validate_rule_regexes
+from app.workers.log import get_logger
+
+_log = get_logger(__name__)
 
 # 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
 _MIGRATIONS = (
@@ -54,9 +58,18 @@ def _seed() -> None:
                 )
             )
         for r in BUILTIN_RULES:
+            # 内置规则正则启动自检：非法正则会静默死掉，必须显式告警
+            for msg in validate_rule_regexes(r):
+                _log.warning("内置规则「%s」%s", r["name"], msg)
             exists = db.execute(select(Rule).where(Rule.name == r["name"])).scalar_one_or_none()
             if exists is None:
                 db.add(Rule(**r))
+            elif exists.source == "builtin":
+                # 内置规则随版本同步更新（不覆盖用户自建规则）
+                exists.description = r.get("description", "")
+                exists.conditions = r.get("conditions", {})
+                exists.severity = r.get("severity", exists.severity)
+                exists.priority = r.get("priority", exists.priority)
         db.commit()
 
     from app.topology.service import seed_node_types

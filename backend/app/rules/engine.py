@@ -11,6 +11,10 @@
 }
 
 操作符: eq / ne / contains / regex / gt / gte / lt / lte / in / exists
+
+频率规则（窗口内聚合）：conditions 里带 {"mode": "count", "key": [字段...], "min_count": N}
+- 逐条规则：mode 缺省（single）
+- 频率规则：mode=count，在 triage 中对整个窗口做分组计数
 """
 
 from __future__ import annotations
@@ -77,5 +81,75 @@ def evaluate_conditions(conditions: dict[str, Any], log: UnifiedLog) -> bool:
 
 
 def match_rule(rule: dict[str, Any], log: UnifiedLog) -> bool:
-    """rule 为 {name, conditions, severity, source, ...} 的字典。"""
-    return evaluate_conditions(rule.get("conditions") or {}, log)
+    """逐条规则匹配。
+
+    - 频率规则（mode=count）不参与，返回 False
+    - **空条件规则不匹配任何日志**（安全默认：避免空规则全量命中淹没管线）
+    """
+    conditions = rule.get("conditions") or {}
+    if conditions.get("mode") == "count":
+        return False
+    if not conditions.get("rules"):
+        return False
+    return evaluate_conditions(conditions, log)
+
+
+def is_count_rule(rule: dict[str, Any]) -> bool:
+    return (rule.get("conditions") or {}).get("mode") == "count"
+
+
+def has_conditions(rule: dict[str, Any]) -> bool:
+    """规则是否含有效条件（供 API 保存校验）。"""
+    return bool((rule.get("conditions") or {}).get("rules"))
+
+
+def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
+    """校验规则里的 regex 是否可编译。
+
+    非法正则在运行期会被静默吞掉（_match 捕获 re.error 返回 False），
+    导致规则「看着在、实际永不命中」——启动时自检可避免这种静默死规则。
+    """
+    errors: list[str] = []
+
+    def walk(conds: dict[str, Any]) -> None:
+        for r in conds.get("rules") or []:
+            if not isinstance(r, dict):
+                continue
+            if "rules" in r:
+                walk(r)
+                continue
+            if r.get("op") == "regex":
+                try:
+                    re.compile(str(r.get("value", "")))
+                except re.error as exc:
+                    errors.append(f"字段 {r.get('field')} 的正则非法：{exc}")
+
+    walk(rule.get("conditions") or {})
+    return errors
+
+
+def count_key(log: UnifiedLog, fields: list[str]) -> str:
+    return "|".join(str(getattr(log, f, "") or "") for f in fields)
+
+
+def match_count_rule(
+    rule: dict[str, Any], logs: list[UnifiedLog]
+) -> list[tuple[str, list[UnifiedLog]]]:
+    """频率规则：按 key 分组统计命中条数，返回达到 min_count 的分组。"""
+    conditions = rule.get("conditions") or {}
+    if not conditions.get("rules"):
+        return []
+    keys = conditions.get("key")
+    if not isinstance(keys, list) or not keys:
+        keys = ["src_ip"]
+    try:
+        min_count = int(conditions.get("min_count") or 1)
+    except (TypeError, ValueError):
+        min_count = 1
+
+    buckets: dict[str, list[UnifiedLog]] = {}
+    for log in logs:
+        if not evaluate_conditions(conditions, log):
+            continue
+        buckets.setdefault(count_key(log, [str(k) for k in keys]), []).append(log)
+    return [(k, v) for k, v in buckets.items() if len(v) >= min_count]
