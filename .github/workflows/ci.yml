@@ -30,31 +30,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 说明：provenance 关闭。默认会在镜像里内联证明，并在 action 的 Post 步骤
-      # 额外上传一份「制品」；制品存储配额用尽后该上传必然失败并刷告警，
-      # 而本项目镜像仅用于自建 compose 部署，不需要这层证明。
-      # 如以后需要：删掉 provenance: false，并确保 Actions 制品配额充足。
+      # DOCKER_BUILD_RECORD_UPLOAD=false 的必要性：
+      # build-push-action 的 Post 步骤默认（该变量默认 true）会把「Build record」
+      # 制品上传到 Actions 制品存储，供导入 Docker Desktop 的 Builds 视图。
+      # 制品配额用尽后该上传必然失败，每次构建都刷 Failed to CreateArtifact 告警。
+      # 本项目不需要该功能，关掉上传即可；流水线页面的构建摘要不受影响。
       - name: Build & push backend
         uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: ./backend
           push: true
-          provenance: false
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-backend:latest
 
       - name: Build & push frontend
         uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: ./frontend
           push: true
-          provenance: false
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-frontend:latest
 
       - name: Build & push zeek
         uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: ./zeek
           push: true
-          provenance: false
           # 基底版本可用 build-args 覆盖（默认 zeek/zeek:9.0）
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-zeek:latest
