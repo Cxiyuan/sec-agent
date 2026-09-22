@@ -12,13 +12,21 @@ from app.agents.persistence import get_baseline, update_baseline
 from app.agents.state import AgentState
 from app.intel.threat_intel import enrich_profile
 from app.models import prompts
-from app.models.llm import cloud_invoke_json
+from app.models.llm import deep_invoke_json, flash_invoke_json
 from app.rag.context import context_text_for_group
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
 KILLCHAIN_STAGES = ["侦察", "入侵", "横向", "外泄"]
+
+
+def _safe_int(value: Any) -> int | None:
+    """安全转 int，非法值返回 None。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _escalating_groups(state: AgentState) -> list[Any]:
@@ -43,11 +51,12 @@ def _stat_features(g: Any) -> dict[str, float]:
 
     features: dict[str, float] = {}
     for src, c in by_src.items():
-        features[f"{src}:conn_count"] = float(c["conn_count"])
-        features[f"{src}:distinct_dst_ports"] = float(
-            sum(1 for k in c if k.startswith("dst_port:"))
+        # Counter 值均为 int，无需 float() 包装（int 可直接赋给 float 字典）
+        features[f"{src}:conn_count"] = c["conn_count"]
+        features[f"{src}:distinct_dst_ports"] = sum(
+            1 for k in c if k.startswith("dst_port:")
         )
-        features[f"{src}:distinct_dst_ips"] = float(sum(1 for k in c if k.startswith("dst_ip:")))
+        features[f"{src}:distinct_dst_ips"] = sum(1 for k in c if k.startswith("dst_ip:"))
     return features
 
 
@@ -74,7 +83,7 @@ def anomaly_node(state: AgentState) -> dict[str, Any]:
         context_text = context_text_for_group(g, ctx_map.get(g.fingerprint))
         for cand in candidates[:10]:  # 限制确认次数
             try:
-                r = cloud_invoke_json(
+                r = flash_invoke_json(
                     prompts.ANOMALY_CONFIRM_SYSTEM,
                     prompts.ANOMALY_CONFIRM_USER.format(
                         candidate=json.dumps(cand, ensure_ascii=False),
@@ -115,7 +124,7 @@ def attack_chain_node(state: AgentState) -> dict[str, Any]:
             g, state.get("business_context", {}).get(g.fingerprint)
         )
         try:
-            r = cloud_invoke_json(
+            r = deep_invoke_json(
                 prompts.ATTACK_CHAIN_SYSTEM,
                 prompts.ATTACK_CHAIN_USER.format(
                     timeline=json.dumps(timeline, ensure_ascii=False, default=str),
@@ -136,7 +145,8 @@ def attack_chain_node(state: AgentState) -> dict[str, Any]:
                 continue
             evidence = []
             for eid in st.get("evidence_ids", []):
-                ev = id_to_ev.get(int(eid)) if str(eid).isdigit() else None
+                eid_int = _safe_int(eid)
+                ev = id_to_ev.get(eid_int) if eid_int is not None else None
                 if ev is not None:
                     evidence.append(
                         {
@@ -177,7 +187,7 @@ def profile_node(state: AgentState) -> dict[str, Any]:
             for e in g.events[:50]
         ]
         try:
-            r = cloud_invoke_json(
+            r = deep_invoke_json(
                 prompts.PROFILE_SYSTEM,
                 prompts.PROFILE_USER.format(
                     logs=json.dumps(logs, ensure_ascii=False, default=str),

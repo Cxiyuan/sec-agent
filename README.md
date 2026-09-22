@@ -76,16 +76,22 @@ docker compose up -d
 |---|---|---|
 | `ST_ES_URL` | Elasticsearch 地址 | `http://localhost:9200` |
 | `ST_PG_URL` | PostgreSQL 连接串 | `postgresql+psycopg://shentong:shentong@localhost:5432/shentong` |
-| `ST_EDGE_MODEL_BASE_URL` | 边缘模型 OpenAI 接口（外部部署） | `http://localhost:8080/v1` |
+| `ST_EDGE_MODEL_BASE_URL` | 本地边缘模型接口（外部部署） | `http://localhost:8080/v1` |
+| `ST_EDGE_MODEL_NAME` | 本地边缘模型名（初筛降噪） | `qwen3.8-2b-distill` |
 | `ST_CLOUD_MODEL_BASE_URL` | one-api 代理地址（外部部署） | `http://localhost:3000/v1` |
 | `ST_CLOUD_MODEL_API_KEY` | 云端模型密钥 | 空 |
+| `ST_FLASH_MODEL_NAME` | flash · 日常分析模型名 | `flash` |
+| `ST_DEEP_MODEL_NAME` | deep · 深度分析模型名 | `deep` |
+| `ST_EMBO_DB_MODEL_NAME` | 向量入库模型名 | `embo-db` |
+| `ST_EMBO_QUERY_MODEL_NAME` | 向量查询模型名 | `embo-query` |
+| `ST_EMBEDDING_DIM` | 向量维度（需与嵌入模型一致） | `1536` |
 | `ST_JWT_SECRET` | JWT 密钥 | `change-me-in-production` |
 
 完整配置见 `backend/app/config.py`。
 
+> 四个云端模型共用同一 one-api 端点（`ST_CLOUD_MODEL_BASE_URL` / `_API_KEY`），仅模型名不同。
+> 模型名也可在**后台「系统配置」页运行时修改**（DB 覆盖环境变量；API 立即生效，Worker ≤30 秒）。
 > 模型运行环境（推理服务、one-api、模型权重）**不在本项目范围**，本项目只需其服务地址与密钥。
-
-完整配置见 `backend/app/config.py`。
 
 ## 构建与部署
 

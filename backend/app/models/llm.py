@@ -1,4 +1,7 @@
-"""统一模型封装：边缘/云端都走 OpenAI 兼容接口，可热切换。"""
+"""统一模型封装：按角色（edge / flash / deep）调 OpenAI 兼容接口。
+
+角色 → 模型名由 app.models.registry 解析，支持后台「系统配置」运行时切换。
+"""
 
 from __future__ import annotations
 
@@ -10,11 +13,13 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from app.config import settings
+from app.models.registry import resolve_model
 
 
 def _edge_llm(temperature: float = 0.0) -> ChatOpenAI:
+    """本地边缘模型（初筛降噪）。"""
     return ChatOpenAI(
-        model=settings.edge_model_name,
+        model=resolve_model("edge"),
         base_url=settings.edge_model_base_url,
         api_key=SecretStr(settings.edge_model_api_key or "not-needed"),
         temperature=temperature,
@@ -23,9 +28,10 @@ def _edge_llm(temperature: float = 0.0) -> ChatOpenAI:
     )
 
 
-def _cloud_llm(temperature: float = 0.0) -> ChatOpenAI:
+def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
+    """云端模型（flash 日常 / deep 深度），共用同一 one-api 端点。"""
     return ChatOpenAI(
-        model=settings.cloud_model_name,
+        model=resolve_model(role),
         base_url=settings.cloud_model_base_url,
         api_key=SecretStr(settings.cloud_model_api_key or "not-needed"),
         temperature=temperature,
@@ -69,22 +75,31 @@ def _extract_json(text: str) -> dict[str, Any]:
     return _extract_braced(text)
 
 
-def edge_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
-    """调用边缘模型并要求返回 JSON。"""
-    llm = _edge_llm(temperature)
-    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    return _extract_json(str(resp.content))
-
-
-def cloud_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
-    """调用云端模型并要求返回 JSON。"""
-    llm = _cloud_llm(temperature)
-    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    return _extract_json(str(resp.content))
-
-
-def cloud_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
-    """调用云端模型返回纯文本。"""
-    llm = _cloud_llm(temperature)
+def _invoke(llm: ChatOpenAI, system: str, user: str) -> str:
     resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
     return str(resp.content)
+
+
+def edge_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
+    """边缘模型（本地）返回 JSON。"""
+    return _extract_json(_invoke(_edge_llm(temperature), system, user))
+
+
+def flash_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
+    """云端 flash（日常分析）返回 JSON。"""
+    return _extract_json(_invoke(_cloud_llm("flash", temperature), system, user))
+
+
+def deep_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
+    """云端 deep（深度分析）返回 JSON。"""
+    return _extract_json(_invoke(_cloud_llm("deep", temperature), system, user))
+
+
+def flash_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
+    """云端 flash 返回纯文本。"""
+    return _invoke(_cloud_llm("flash", temperature), system, user)
+
+
+def deep_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
+    """云端 deep 返回纯文本。"""
+    return _invoke(_cloud_llm("deep", temperature), system, user)

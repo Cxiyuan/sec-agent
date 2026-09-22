@@ -25,7 +25,7 @@ from app.ingestion.dedup import dedup_logs
 from app.ingestion.es_client import fetch_window_logs
 from app.ingestion.normalizer import normalize
 from app.models import prompts
-from app.models.llm import cloud_invoke_json, edge_invoke_json
+from app.models.llm import edge_invoke_json, flash_invoke_json, flash_invoke_text
 from app.rag.context import build_business_context, context_text_for_group
 from app.rules.engine import match_rule
 from app.schemas import EventGroup, SuspiciousEvent, UnifiedLog
@@ -290,7 +290,7 @@ def severity_node(state: AgentState) -> dict[str, Any]:
             g, state.get("business_context", {}).get(g.fingerprint)
         )
         try:
-            r = cloud_invoke_json(
+            r = flash_invoke_json(
                 prompts.SEVERITY_SYSTEM,
                 prompts.SEVERITY_USER.format(
                     chain=json.dumps(chain, ensure_ascii=False, default=str),
@@ -367,7 +367,7 @@ def response_node(state: AgentState) -> dict[str, Any]:
             g, state.get("business_context", {}).get(g.fingerprint)
         )
         try:
-            r = cloud_invoke_json(
+            r = flash_invoke_json(
                 prompts.RESPONSE_SYSTEM,
                 prompts.RESPONSE_USER.format(
                     severity=g.severity,
@@ -389,6 +389,35 @@ def response_node(state: AgentState) -> dict[str, Any]:
 # ---------- 节点 7：报告输出 ----------
 
 
+def _report_body(g: Any, analysis: dict[str, Any]) -> str:
+    """用 flash 生成报告正文；失败返回空串（不阻断报告生成）。"""
+    try:
+        overview = {
+            "src_ips": g.src_ips,
+            "dst_ips": g.dst_ips,
+            "severity": g.severity,
+            "event_count": len(g.events),
+            "window_start": g.window_start.isoformat() if g.window_start else None,
+            "window_end": g.window_end.isoformat() if g.window_end else None,
+        }
+        return flash_invoke_text(
+            prompts.REPORT_SYSTEM,
+            prompts.REPORT_USER.format(
+                overview=json.dumps(overview, ensure_ascii=False, default=str),
+                chain=json.dumps(
+                    analysis.get("attack_chain", {}), ensure_ascii=False, default=str
+                ),
+                profile=json.dumps(analysis.get("profile", {}), ensure_ascii=False, default=str),
+                suggestions=json.dumps(
+                    g.response_suggestions or [], ensure_ascii=False, default=str
+                ),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("报告正文生成失败（不影响报告输出）: %s", exc)
+        return ""
+
+
 def report_node(state: AgentState) -> dict[str, Any]:
     from app.reports.render import render_report
 
@@ -406,7 +435,8 @@ def report_node(state: AgentState) -> dict[str, Any]:
         if SEVERITY_RANK.get(sev, 0) < SEVERITY_RANK.get(min_sev, 2):
             continue
         analysis = analyses.get(g.fingerprint) or {}
-        html, pdf_path = render_report(g, analysis)
+        body = _report_body(g, analysis)
+        html, pdf_path = render_report(g, analysis, body)
         save_report(g.fingerprint, f"安全事件报告 - {sev}", sev, html, pdf_path)
         summary["reports"] += 1
 

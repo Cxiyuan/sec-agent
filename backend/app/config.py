@@ -35,19 +35,25 @@ class Settings(BaseSettings):
     baseline_observe_days: int = 7
 
     # 模型（统一 OpenAI 兼容接口）
+    # 三层：本地 edge（初筛降噪）→ 云端 flash（日常分析）→ 云端 deep（深度安全分析）
     edge_model_name: str = "qwen3.8-2b-distill"
     edge_model_base_url: str = "http://localhost:8080/v1"
     edge_model_api_key: str = "not-needed"
     edge_model_timeout: int = 300
 
-    cloud_model_name: str = "minimax-text"
-    cloud_model_base_url: str = "http://localhost:3000/v1"  # 局域网 one-api
+    # 云端 one-api 端点（四个云端模型共用；模型名可在后台系统配置里运行时修改）
+    cloud_model_base_url: str = "http://localhost:3000/v1"
     cloud_model_api_key: str = ""
     cloud_model_timeout: int = 600
 
-    # 嵌入模型（RAG 向量化，走 one-api 的 /v1/embeddings）
+    # 云端模型名（角色分工）
+    flash_model_name: str = "flash"  # 日常分析：异常确认/定级/处置/报告正文
+    deep_model_name: str = "deep"  # 深度分析：攻击链还原/攻击者画像
+    embo_db_model_name: str = "embo-db"  # 向量入库
+    embo_query_model_name: str = "embo-query"  # 向量查询
+
+    # 嵌入（RAG 向量化，走 one-api 的 /v1/embeddings）
     embedding_base_url: str = ""  # 留空则回退 cloud_model_base_url
-    embedding_model_name: str = "text-embedding-3-small"
     embedding_api_key: str = ""  # 留空则回退 cloud_model_api_key
     embedding_dim: int = 1536
     embedding_timeout: int = 60

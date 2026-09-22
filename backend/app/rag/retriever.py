@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import Asset, KnowledgeChunk
-from app.rag.embedder import embed_text
+from app.rag.embedder import embed_for_query
 from app.rag.lan import is_lan_ip
 from app.workers.log import get_logger
 
@@ -64,7 +64,7 @@ def _cosine_sim(a: Any, b: Any) -> float:
 
 def vector_search(db: Session, query: str, k: int, min_score: float) -> list[dict[str, Any]]:
     """向量语义检索 knowledge_chunks（DB 排序走 HNSW，得分 Python 计算）。"""
-    vec = embed_text(query)
+    vec = embed_for_query(query)
     if not vec:
         return []
     distance = KnowledgeChunk.embedding.cosine_distance(vec)

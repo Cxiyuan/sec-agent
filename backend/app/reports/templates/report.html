@@ -32,6 +32,13 @@
     <tr><th>初筛得分</th><td>{{ triage_score }}</td></tr>
   </table>
 
+  {% if body %}
+  <h2>分析结论</h2>
+  {% for para in body.split('\n') %}
+  {% if para.strip() %}<p>{{ para }}</p>{% endif %}
+  {% endfor %}
+  {% endif %}
+
   <h2>资产与业务背景</h2>
   {% if business_context.assets %}
   <table>

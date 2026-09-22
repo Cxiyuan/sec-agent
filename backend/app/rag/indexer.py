@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import Asset, Document, KnowledgeChunk
-from app.rag.embedder import embed_texts
+from app.rag.embedder import embed_for_index
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -68,7 +68,7 @@ def _replace_chunks(
     if not chunks:
         db.flush()
         return
-    vectors = embed_texts(chunks)
+    vectors = embed_for_index(chunks)
     for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
         db.add(
             KnowledgeChunk(
