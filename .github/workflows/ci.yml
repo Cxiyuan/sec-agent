@@ -13,10 +13,10 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # GHCR 镜像名必须全小写；GitHub 用户名可能含大写（如 Cxiyuan）
       - name: Lowercase image namespace
@@ -24,30 +24,37 @@ jobs:
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 说明：provenance 关闭。默认会在镜像里内联证明，并在 action 的 Post 步骤
+      # 额外上传一份「制品」；制品存储配额用尽后该上传必然失败并刷告警，
+      # 而本项目镜像仅用于自建 compose 部署，不需要这层证明。
+      # 如以后需要：删掉 provenance: false，并确保 Actions 制品配额充足。
       - name: Build & push backend
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./backend
           push: true
+          provenance: false
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-backend:latest
 
       - name: Build & push frontend
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./frontend
           push: true
+          provenance: false
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-frontend:latest
 
       - name: Build & push zeek
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./zeek
           push: true
+          provenance: false
           # 基底版本可用 build-args 覆盖（默认 zeek/zeek:9.0）
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-zeek:latest
