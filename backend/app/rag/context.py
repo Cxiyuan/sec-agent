@@ -54,9 +54,7 @@ def render_text(ctx: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_topology(
-    topology: list[dict[str, Any]], assets: list[dict[str, Any]]
-) -> list[str]:
+def _render_topology(topology: list[dict[str, Any]], assets: list[dict[str, Any]]) -> list[str]:
     """渲染拓扑局部视图（命中节点用 ★ 标注）。"""
     asset_map = {a["id"]: a for a in assets}
     out: list[str] = ["【网络拓扑】"]

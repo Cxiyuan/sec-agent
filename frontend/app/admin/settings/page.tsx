@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
+import { ScopeManager } from "@/components/scope-manager";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -151,6 +152,7 @@ export default function SettingsPage() {
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
 
         <div className="space-y-4">
+          <ScopeManager />
           {GROUPS.map((g) => (
             <Card key={g.name}>
               <CardHeader>

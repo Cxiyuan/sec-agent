@@ -22,6 +22,8 @@ _MIGRATIONS = (
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS allow_ip_share BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS lookback JSONB",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS memory_hits JSONB",
 )
 
 

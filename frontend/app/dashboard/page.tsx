@@ -5,11 +5,12 @@ import { Nav } from "@/components/nav";
 import { Chart } from "@/components/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, severityVariant } from "@/components/ui/badge";
-import { apiFetch, type EventGroupItem } from "@/lib/api";
+import { apiFetch, type EventGroupItem, type PersistentItem } from "@/lib/api";
 import type { EChartsOption } from "echarts";
 
 export default function DashboardPage() {
   const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
+  const [persistent, setPersistent] = React.useState<PersistentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
@@ -18,6 +19,10 @@ export default function DashboardPage() {
       .then((d) => alive && setGroups(d.items))
       .catch(() => {})
       .finally(() => alive && setLoading(false));
+
+    apiFetch<{ items: PersistentItem[] }>("/api/memories/persistent")
+      .then((d) => alive && setPersistent(d.items))
+      .catch(() => {});
 
     // 实时推送
     let ws: WebSocket | null = null;
@@ -104,6 +109,26 @@ export default function DashboardPage() {
               <Card><CardHeader><CardTitle className="text-sm">TOP 源 IP</CardTitle></CardHeader><CardContent><Chart option={topIpOption} height={260} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-sm">初筛得分</CardTitle></CardHeader><CardContent><Chart option={scoreOption} height={260} /></CardContent></Card>
             </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">持续性威胁（反复出现的 IP）</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {persistent.slice(0, 8).map((p) => (
+                  <div key={p.ip} className="flex items-center justify-between text-sm">
+                    <span className="font-mono">{p.ip}</span>
+                    <span className="text-muted-foreground">
+                      {p.count} 次
+                      {p.last_seen ? ` · 最近 ${p.last_seen.slice(0, 19).replace("T", " ")}` : ""}
+                    </span>
+                  </div>
+                ))}
+                {persistent.length === 0 && (
+                  <p className="text-sm text-muted-foreground">暂无反复出现的 IP</p>
+                )}
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader><CardTitle className="text-sm">攻击链概览</CardTitle></CardHeader>

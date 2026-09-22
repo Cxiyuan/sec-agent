@@ -95,8 +95,12 @@ def create_node_type(
             content={"conflict": "duplicate_key", "detail": f"类型标识已存在：{key}"},
         )
     nt = TopologyNodeType(
-        key=key, name=name, icon=body.icon or "Box", color=body.color or "#64748b",
-        builtin=False, sort=body.sort,
+        key=key,
+        name=name,
+        icon=body.icon or "Box",
+        color=body.color or "#64748b",
+        builtin=False,
+        sort=body.sort,
     )
     db.add(nt)
     db.commit()
@@ -243,7 +247,9 @@ def update_topology(
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="拓扑名称不能为空")
-    dup = db.scalars(select(Topology).where(Topology.name == name, Topology.id != topology_id)).first()
+    dup = db.scalars(
+        select(Topology).where(Topology.name == name, Topology.id != topology_id)
+    ).first()
     if dup is not None:
         return JSONResponse(
             status_code=409,

@@ -69,7 +69,9 @@ def normalize_graph(graph: Any) -> dict[str, Any]:
                 "data": {
                     "label": field(data, "label"),
                     "node_type": field(data, "node_type"),
-                    "asset_ids": [str(a) for a in _as_list(data.get("asset_ids")) if str(a).strip()],
+                    "asset_ids": [
+                        str(a) for a in _as_list(data.get("asset_ids")) if str(a).strip()
+                    ],
                     "zone": field(data, "zone"),
                     "note": field(data, "note"),
                 },

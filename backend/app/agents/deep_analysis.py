@@ -8,6 +8,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.memory import memory_text
 from app.agents.persistence import get_baseline, update_baseline
 from app.agents.state import AgentState
 from app.intel.threat_intel import enrich_profile
@@ -31,6 +32,15 @@ def _safe_int(value: Any) -> int | None:
 
 def _escalating_groups(state: AgentState) -> list[Any]:
     return [g for g in state.get("groups", []) if g.escalate]
+
+
+def _memory_blob(state: AgentState, fingerprint: str) -> str:
+    return memory_text((state.get("memory") or {}).get(fingerprint) or {})
+
+
+def _lookback_blob(state: AgentState, fingerprint: str) -> str:
+    entry = (state.get("lookback") or {}).get(fingerprint) or {}
+    return str(entry.get("summary") or "（无回溯）")
 
 
 # ---------- 4.1 异常检测（统计 + LLM） ----------
@@ -89,6 +99,8 @@ def anomaly_node(state: AgentState) -> dict[str, Any]:
                             [e.log.summary for e in g.events[:10]], ensure_ascii=False
                         ),
                         business_context=context_text,
+                        memory=_memory_blob(state, g.fingerprint),
+                        lookback=_lookback_blob(state, g.fingerprint),
                     ),
                 )
                 if r.get("is_anomaly"):
@@ -127,6 +139,8 @@ def attack_chain_node(state: AgentState) -> dict[str, Any]:
                 prompts.ATTACK_CHAIN_USER.format(
                     timeline=json.dumps(timeline, ensure_ascii=False, default=str),
                     business_context=context_text,
+                    memory=_memory_blob(state, g.fingerprint),
+                    lookback=_lookback_blob(state, g.fingerprint),
                 ),
             )
             stages = r.get("stages", [])
@@ -194,6 +208,8 @@ def profile_node(state: AgentState) -> dict[str, Any]:
                     business_context=context_text_for_group(
                         g, state.get("business_context", {}).get(g.fingerprint)
                     ),
+                    memory=_memory_blob(state, g.fingerprint),
+                    lookback=_lookback_blob(state, g.fingerprint),
                 ),
             )
             profile = {"basic": r.get("basic", {}), "behavior": r.get("behavior", {})}

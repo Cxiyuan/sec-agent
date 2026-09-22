@@ -181,10 +181,84 @@ export interface EventGroupItem {
   status: string;
   severity: string | null;
   business_context: BusinessContext | null;
+  lookback: LookbackInfo | null;
+  memory_hits: MemoryRecall | null;
   attack_chain: AttackChain | null;
   profile: Profile | null;
   anomaly: Anomaly | null;
   response_suggestions: ResponseSuggestion[] | null;
+  created_at: string | null;
+}
+
+/** 分析网段组 */
+export interface AnalysisScope {
+  id: string;
+  name: string;
+  description: string;
+  cidrs: string[];
+  enabled: boolean;
+  updated_at: string | null;
+}
+
+export interface ScopeStatus {
+  configured: boolean;
+  total: number;
+  enabled_count: number;
+}
+
+/** 回溯决策与历史行为 */
+export interface LookbackInfo {
+  hours: number;
+  reason: string;
+  log_count: number;
+  event_count: number;
+  summary: string;
+}
+
+/** 持续性统计 */
+export interface PersistenceInfo {
+  count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  severities: Record<string, number>;
+  persistent: boolean;
+  window_days: number;
+}
+
+export interface MemoryBrief {
+  id: string;
+  summary: string;
+  severity: string | null;
+  created_at: string | null;
+  ips: string[];
+}
+
+/** 历史记忆召回结果（存于 event_groups.memory_hits） */
+export interface MemoryRecall {
+  memories?: MemoryBrief[];
+  persistence?: PersistenceInfo;
+}
+
+/** 持续性威胁聚合项（驾驶舱） */
+export interface PersistentItem {
+  ip: string;
+  count: number;
+  last_seen: string | null;
+  severities: Record<string, number>;
+}
+
+/** 分析记忆条 */
+export interface MemoryItem {
+  id: string;
+  kind: string;
+  fingerprint: string;
+  severity: string | null;
+  summary: string;
+  ips: string[];
+  asset_ids: string[];
+  detail?: Record<string, unknown>;
+  window_start: string | null;
+  window_end: string | null;
   created_at: string | null;
 }
 

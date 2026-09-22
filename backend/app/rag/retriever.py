@@ -163,7 +163,9 @@ def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[st
     # 仅查询局域网 IP
     lan_ips = sorted({ip for ip in (*src_ips, *dst_ips) if is_lan_ip(ip)})
     # 全部事件 IP 都参与精确/CIDR 匹配（外部登记资产也能命中）
-    all_ips = sorted({ip for ip in (*src_ips, *dst_ips) if ip})[:500]
+    all_ips = sorted({ip for ip in (*src_ips, *dst_ips) if ip})
+    if settings.rag_max_ips > 0:
+        all_ips = all_ips[: settings.rag_max_ips]
     try:
         with SessionLocal() as db:
             assets = lookup_assets(db, all_ips)
@@ -179,9 +181,7 @@ def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[st
     # 去重：向量命中里排除已按 IP 精确命中的资产
     asset_ids = {a["id"] for a in assets}
     knowledge = [
-        k
-        for k in knowledge
-        if not (k["source_type"] == "asset" and k["source_id"] in asset_ids)
+        k for k in knowledge if not (k["source_type"] == "asset" and k["source_id"] in asset_ids)
     ]
     return {
         "lan_ips": lan_ips,

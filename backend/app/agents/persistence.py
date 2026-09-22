@@ -109,6 +109,28 @@ def save_business_context(contexts: dict[str, dict[str, Any]]) -> None:
         db.commit()
 
 
+def update_group_lookback(fingerprint: str, lookback: dict[str, Any]) -> None:
+    """保存回溯决策与历史行为摘要。"""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == fingerprint)
+        ).scalar_one_or_none()
+        if row is not None:
+            row.lookback = lookback
+            db.commit()
+
+
+def update_group_memory_hits(fingerprint: str, memory: dict[str, Any]) -> None:
+    """保存召回的历史记忆摘要（供详情页展示）。"""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == fingerprint)
+        ).scalar_one_or_none()
+        if row is not None:
+            row.memory_hits = memory
+            db.commit()
+
+
 def update_group_analysis(
     fingerprint: str,
     *,

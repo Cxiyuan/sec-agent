@@ -71,6 +71,8 @@ class EventGroup(Base):
     severity: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     business_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    lookback: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 回溯决策与历史行为摘要
+    memory_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 召回的历史记忆摘要
     attack_chain: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     anomaly: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -204,6 +206,7 @@ class Document(Base):
 
 class KnowledgeChunk(Base):
     """统一向量库：资产描述与文档切片统一入库，一次向量检索覆盖两者。"""
+
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
         Index(
@@ -215,9 +218,7 @@ class KnowledgeChunk(Base):
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    source_type: Mapped[str] = mapped_column(
-        String(16), index=True
-    )  # asset | document | topology
+    source_type: Mapped[str] = mapped_column(String(16), index=True)  # asset | document | topology
     source_id: Mapped[str] = mapped_column(String(64), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text, default="")
@@ -258,3 +259,43 @@ class TopologyNodeType(Base):
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     sort: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalysisScope(Base):
+    """分析网段（多套可启停）：只分析源/目的 IP 落在启用网段内的日志。"""
+
+    __tablename__ = "analysis_scopes"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    cidrs: Mapped[list] = mapped_column(JSONB, default=list)  # 单 IP 或 CIDR 列表
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AnalysisMemory(Base):
+    """分析记忆（两级）：kind=group 对象级 / kind=run 轮次级，用于历史比对与持续性统计。"""
+
+    __tablename__ = "analysis_memories"
+    __table_args__ = (
+        Index("ix_analysis_memories_kind_fp", "kind", "fingerprint"),
+        Index("ix_analysis_memories_ips", "ips", postgresql_using="gin"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # group | run
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ips: Mapped[list] = mapped_column(JSONB, default=list)
+    asset_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

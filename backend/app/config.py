@@ -34,6 +34,28 @@ class Settings(BaseSettings):
     analysis_window_minutes: int = 5
     baseline_observe_days: int = 7
 
+    # 拉取护栏 / 检索上限
+    max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）
+    rag_max_ips: int = 0  # RAG 检索 IP 上限，0 = 不限制
+
+    # 回溯（LLM 决定时长，后端封顶）
+    lookback_max_days: int = 7
+    lookback_max_logs: int = 5000
+    lookback_max_events: int = 200
+
+    # 分析记忆
+    memory_recall_limit: int = 5
+    memory_persistence_days: int = 7
+    memory_persistence_threshold: int = 3
+    memory_retention_run_days: int = 7
+    memory_retention_object_days: int = 180
+
+    # ES IP 字段（可用逗号分隔多个；以 mapping 自检结果为准）
+    es_zeek_src_fields: str = "id.orig_h"
+    es_zeek_dst_fields: str = "id.resp_h"
+    es_wazuh_src_fields: str = "data.srcip"
+    es_wazuh_dst_fields: str = "data.dstip"
+
     # 模型（统一 OpenAI 兼容接口）
     # 三层：本地 edge（初筛降噪）→ 云端 flash（日常分析）→ 云端 deep（深度安全分析）
     edge_model_name: str = "qwen3.8-2b-distill"

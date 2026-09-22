@@ -34,6 +34,13 @@ ANOMALY_CONFIRM_USER = """候选异常：{candidate}
 事件组摘要：{group_summary}
 业务背景：
 {business_context}
+
+历史分析记忆：
+{memory}
+
+回溯窗口历史行为：
+{lookback}
+
 请确认。"""
 
 ATTACK_CHAIN_SYSTEM = """你是攻击链还原专家。按固定 4 阶段分析一次攻击：侦察、入侵、横向、外泄。
@@ -48,6 +55,12 @@ ATTACK_CHAIN_USER = """事件组时间线（每条日志带编号）：
 业务背景（局域网资产信息，帮助你理解这些 IP 的业务含义）：
 {business_context}
 
+历史分析记忆（同一对象过去是否反复出现）：
+{memory}
+
+回溯窗口历史行为（用于判断攻击链的完整阶段）：
+{lookback}
+
 请还原攻击链（阶段描述请结合业务系统名称）。"""
 
 PROFILE_SYSTEM = """你是攻击者画像专家。输出攻击者基础画像和行为画像。
@@ -61,6 +74,13 @@ PROFILE_USER = """事件组日志：{logs}
 威胁情报：{intel}
 业务背景（assets_targeted 请用资产名/业务系统填充）：
 {business_context}
+
+历史分析记忆：
+{memory}
+
+回溯窗口历史行为：
+{lookback}
+
 请画像。"""
 
 SEVERITY_SYSTEM = """你是安全事件定级专家。综合攻击链与画像，从 5 级里选一个：critical/high/medium/low/info。
@@ -72,7 +92,31 @@ SEVERITY_USER = """攻击链：{chain}
 规则初定级别：{rule_severity}
 业务背景（含资产重要级别；关键业务资产受攻击应提高定级）：
 {business_context}
+
+历史分析记忆（持续性/反复出现的威胁应提高定级）：
+{memory}
+
+回溯窗口历史行为：
+{lookback}
+
 请定级。"""
+
+LOOKBACK_SYSTEM = """你是安全分析专家。基于当前事件组与历史分析记忆，判断是否需要回溯更长时间窗口做深度分析（用于识别 APT 等持续性威胁）。
+严格输出 JSON：{"hours": 数字, "reason": "一句话中文理由"}
+hours 为需回溯的小时数：0 表示无需回溯；常用值 1 / 6 / 24 / 72 / 168（最长 168 小时 = 7 天）。
+判定参考：命中高危规则、历史反复出现（持续性）、涉及关键业务资产、行为疑似横向移动/外联 C2/凭据窃取时，应回溯更久；偶发低危且无历史关联时可给 0。
+只输出 JSON。"""
+
+LOOKBACK_USER = """事件组摘要：
+{group_summary}
+
+业务背景：
+{business_context}
+
+历史分析记忆：
+{memory}
+
+请判断回溯时长。"""
 
 RESPONSE_SYSTEM = """你是应急响应专家，针对事件给出处置建议，覆盖阻断、修复、应急响应三类。
 严格输出 JSON：

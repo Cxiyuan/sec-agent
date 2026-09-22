@@ -1,4 +1,4 @@
-"""LangGraph 主图定义：主流水线 + 条件分支 + 深度分析子图 + HITL。"""
+"""LangGraph 主图定义：主流水线 + 条件分支 + 深度分析子图 + HITL + 记忆。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from app.agents.nodes import (
     hitl_node,
     hitl_route,
     ingest_node,
+    lookback_node,
+    memory_recall_node,
+    memory_write_node,
     report_node,
     response_node,
     severity_node,
@@ -28,25 +31,32 @@ def build_graph(checkpointer: Any = None) -> Any:
     g.add_node("triage", triage_node)
     g.add_node("correlate", correlate_node)
     g.add_node("asset_enrich", asset_enrich_node)
+    g.add_node("memory_recall", memory_recall_node)
+    g.add_node("lookback", lookback_node)
     g.add_node("deep_analysis", build_deep_analysis_subgraph())
     g.add_node("severity", severity_node)
     g.add_node("hitl", hitl_node)
     g.add_node("response", response_node)
     g.add_node("report", report_node)
+    g.add_node("memory_write", memory_write_node)
 
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "triage")
     g.add_edge("triage", "correlate")
     g.add_edge("correlate", "asset_enrich")
-    # 升级判定：有升级组走深度分析，否则跳过
+    g.add_edge("asset_enrich", "memory_recall")
+    # 升级判定：升级组先做回溯，再深度分析；否则直接定级
     g.add_conditional_edges(
-        "asset_enrich", escalate_route, {"deep": "deep_analysis", "skip": "severity"}
+        "memory_recall", escalate_route, {"deep": "lookback", "skip": "severity"}
     )
+    g.add_edge("lookback", "deep_analysis")
     g.add_edge("deep_analysis", "severity")
     # HITL：高危需人工确认
     g.add_conditional_edges("severity", hitl_route, {"confirm": "hitl", "pass": "response"})
     g.add_edge("hitl", "response")
     g.add_edge("response", "report")
-    g.add_edge("report", END)
+    # 报告后写入分析记忆（对象级 + 轮次级）并清理过期记忆
+    g.add_edge("report", "memory_write")
+    g.add_edge("memory_write", END)
 
     return g.compile(checkpointer=checkpointer)

@@ -31,6 +31,8 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "status": g.status,
         "severity": g.severity,
         "business_context": g.business_context,
+        "lookback": g.lookback,
+        "memory_hits": g.memory_hits,
         "attack_chain": g.attack_chain,
         "profile": g.profile,
         "anomaly": g.anomaly,

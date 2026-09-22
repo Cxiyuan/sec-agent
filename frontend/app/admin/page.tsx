@@ -124,6 +124,38 @@ export default function AdminEventsPage() {
                     ))}
                   </div>
                 )}
+              {(detail.lookback || detail.memory_hits) && (
+                <div>
+                  <h3 className="mb-1 font-medium">历史比对</h3>
+                  {detail.lookback && (
+                    <p className="text-sm">
+                      回溯 {detail.lookback.hours} 小时（{detail.lookback.reason || "-"}）：命中历史事件{" "}
+                      {detail.lookback.event_count} 条 / 拉取 {detail.lookback.log_count} 条
+                    </p>
+                  )}
+                  {detail.lookback?.summary && (
+                    <pre className="mt-1 whitespace-pre-wrap rounded-md border p-2 text-xs text-muted-foreground">
+                      {detail.lookback.summary}
+                    </pre>
+                  )}
+                  {detail.memory_hits?.persistence && detail.memory_hits.persistence.count > 0 && (
+                    <p className="mt-1 text-sm">
+                      {detail.memory_hits.persistence.persistent
+                        ? "⚠️ 持续性/反复出现："
+                        : "偶发："}
+                      最近 {detail.memory_hits.persistence.window_days} 天内出现{" "}
+                      {detail.memory_hits.persistence.count} 次
+                    </p>
+                  )}
+                  {(detail.memory_hits?.memories || []).map((m) => (
+                    <p key={m.id} className="font-mono text-xs text-muted-foreground">
+                      [{String(m.created_at || "").slice(0, 19).replace("T", " ")}][{m.severity || "-"}]
+                      {" "}
+                      {m.summary}
+                    </p>
+                  ))}
+                </div>
+              )}
               <div>
                 <h3 className="mb-1 font-medium">攻击链</h3>
                 {(detail.attack_chain?.stages || []).map((s, i) => (

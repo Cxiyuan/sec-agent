@@ -17,6 +17,12 @@ class AgentState(TypedDict, total=False):
     groups: list[EventGroup]
     # fingerprint -> 业务背景 {lan_ips, assets, knowledge, text}
     business_context: dict[str, dict[str, Any]]
+    # fingerprint -> 历史记忆 {memories: [...], persistence: {...}}
+    memory: dict[str, dict[str, Any]]
+    # fingerprint -> 回溯结果 {hours, reason, log_count, event_count, summary}
+    lookback: dict[str, dict[str, Any]]
+    # 本轮拉取与过滤元信息（供 run_summary）
+    run_meta: dict[str, Any]
     # fingerprint -> 深度分析结果 {"anomaly":..., "attack_chain":..., "profile":...}
     analyses: dict[str, dict[str, Any]]
     # fingerprint -> "confirm" | "dismiss"

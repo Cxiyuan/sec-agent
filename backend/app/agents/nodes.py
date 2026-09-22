@@ -9,6 +9,17 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agents.memory import (
+    cleanup as memory_cleanup,
+)
+from app.agents.memory import (
+    memory_text,
+    write_group,
+    write_run,
+)
+from app.agents.memory import (
+    recall as recall_memory,
+)
 from app.agents.persistence import (
     get_enabled_rules,
     save_business_context,
@@ -16,6 +27,8 @@ from app.agents.persistence import (
     save_report,
     set_groups_pending,
     update_group_analysis,
+    update_group_lookback,
+    update_group_memory_hits,
 )
 from app.agents.state import AgentState
 from app.config import settings
@@ -24,6 +37,7 @@ from app.db.models import SystemConfig
 from app.ingestion.dedup import dedup_logs
 from app.ingestion.es_client import fetch_window_logs
 from app.ingestion.normalizer import normalize
+from app.ingestion.scope import enabled_cidrs
 from app.models import prompts
 from app.models.llm import edge_invoke_json, flash_invoke_json, flash_invoke_text
 from app.rag.context import build_business_context, context_text_for_group
@@ -63,15 +77,41 @@ def ingest_node(state: AgentState) -> dict[str, Any]:
     )
     end = state.get("window_end") or start + timedelta(minutes=settings.analysis_window_minutes)
 
-    raw = fetch_window_logs(start, end)
+    # 只拉取「源或目的 IP 落在启用分析网段内」的日志
+    cidrs = enabled_cidrs()
+    fetched = fetch_window_logs(start, end, cidrs)
+
     logs: list[UnifiedLog] = []
-    for source, doc in raw:
+    for source, doc in fetched.logs:
         norm = normalize(source, doc)
         if norm is not None:
             logs.append(norm)
     logs = dedup_logs(logs, settings.analysis_window_minutes)
-    log.info("窗口 %s ~ %s 拉取日志 %d 条，去重后 %d 条", start, end, len(raw), len(logs))
-    return {"window_start": start, "window_end": end, "raw_logs": logs}
+
+    run_meta: dict[str, Any] = {
+        "scope_cidrs": cidrs,
+        "scope_count": len(cidrs),
+        "fetch_mode": fetched.mode,
+        "fetched_raw": fetched.total,
+        "truncated": fetched.truncated,
+        "notes": fetched.notes,
+        "skipped": "no_scope" if fetched.mode == "no_scope" else None,
+    }
+    log.info(
+        "窗口 %s ~ %s 拉取 %d 条（模式 %s，网段 %d 个），去重后 %d 条",
+        start,
+        end,
+        fetched.total,
+        fetched.mode,
+        len(cidrs),
+        len(logs),
+    )
+    return {
+        "window_start": start,
+        "window_end": end,
+        "raw_logs": logs,
+        "run_meta": run_meta,
+    }
 
 
 # ---------- 节点 2：研判降噪（四层漏斗） ----------
@@ -268,6 +308,155 @@ def asset_enrich_node(state: AgentState) -> dict[str, Any]:
     return {"business_context": contexts}
 
 
+# ---------- 节点 3.6：历史记忆召回（比对 + 持续性） ----------
+
+
+def _group_asset_ids(state: AgentState, fingerprint: str) -> list[str]:
+    ctx = (state.get("business_context") or {}).get(fingerprint) or {}
+    return [str(a["id"]) for a in (ctx.get("assets") or []) if a.get("id")]
+
+
+def memory_recall_node(state: AgentState) -> dict[str, Any]:
+    """按组召回历史记忆 + 持续性统计，写入 state.memory 与 event_groups.memory_hits。"""
+    groups = state.get("groups", [])
+    recalled: dict[str, dict[str, Any]] = {}
+    for g in groups:
+        info = recall_memory(
+            sorted(set(g.src_ips + g.dst_ips)),
+            _group_asset_ids(state, g.fingerprint),
+            g.fingerprint,
+        )
+        recalled[g.fingerprint] = info
+        update_group_memory_hits(g.fingerprint, info)
+    persistent = sum(
+        1 for v in recalled.values() if (v.get("persistence") or {}).get("persistent")
+    )
+    log.info("历史记忆召回：%d 组，其中持续性 %d 组", len(recalled), persistent)
+    return {"memory": recalled}
+
+
+# ---------- 节点 3.7：回溯决策与历史行为（LLM 决定时长，后端封顶） ----------
+
+
+def _decide_lookback(
+    g: EventGroup, ctx: dict[str, Any], memory_info: dict[str, Any]
+) -> dict[str, Any]:
+    prompt = prompts.LOOKBACK_USER.format(
+        group_summary=json.dumps(
+            {
+                "src_ips": g.src_ips,
+                "dst_ips": g.dst_ips,
+                "event_count": len(g.events),
+                "triage_score": round(g.triage_score, 3),
+                "hit_rules": sorted({e.hit_rule for e in g.events if e.hit_rule}),
+                "event_types": sorted({e.log.event_type for e in g.events}),
+            },
+            ensure_ascii=False,
+        ),
+        business_context=str(ctx.get("text") or "（无）"),
+        memory=memory_text(memory_info),
+    )
+    try:
+        return flash_invoke_json(prompts.LOOKBACK_SYSTEM, prompt)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("回溯决策失败，默认不回溯: %s", exc)
+        return {"hours": 0, "reason": "回溯决策失败"}
+
+
+def _rule_hit_events(
+    raw_logs: list[tuple[str, dict[str, Any]]], ips: list[str]
+) -> list[UnifiedLog]:
+    """回溯阶段只跑规则引擎（不调边缘模型，控成本）。"""
+    with SessionLocal() as db:
+        rules = get_enabled_rules(db)
+    ip_set = set(ips)
+    out: list[UnifiedLog] = []
+    for source, doc in raw_logs:
+        norm = normalize(source, doc)
+        if norm is None:
+            continue
+        if norm.src_ip not in ip_set and norm.dst_ip not in ip_set:
+            continue
+        if any(match_rule(r, norm) for r in rules):
+            out.append(norm)
+    out.sort(key=lambda x: x.ts)
+    return out[: settings.lookback_max_events]
+
+
+def _history_summary(
+    start: datetime,
+    end: datetime,
+    events: list[UnifiedLog],
+    fetched_total: int,
+    notes: list[str],
+) -> str:
+    head = f"回溯窗口 {start:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M}：拉取 {fetched_total} 条"
+    if not events:
+        return head + "，未发现命中规则的历史事件"
+    types: dict[str, int] = {}
+    for e in events:
+        types[e.event_type] = types.get(e.event_type, 0) + 1
+    dst_ips = {e.dst_ip for e in events if e.dst_ip}
+    dst_ports = {e.dst_port for e in events if e.dst_port}
+    lines = [
+        head,
+        f"命中规则事件 {len(events)} 条",
+        "类型分布：" + "，".join(f"{k}×{v}" for k, v in sorted(types.items(), key=lambda x: -x[1])),
+        f"首次 {events[0].ts:%Y-%m-%d %H:%M}，最近 {events[-1].ts:%Y-%m-%d %H:%M}",
+        f"涉及目的 IP {len(dst_ips)} 个、目的端口 {len(dst_ports)} 个",
+    ]
+    if notes:
+        lines.append("拉取说明：" + "；".join(notes[:3]))
+    return "\n".join(lines)
+
+
+def lookback_node(state: AgentState) -> dict[str, Any]:
+    """对升级组：LLM 决定回溯时长 → 按网段拉取历史日志 → 规则筛事件 → 生成历史行为摘要。"""
+    groups = [g for g in state.get("groups", []) if g.escalate]
+    ctx_map = state.get("business_context") or {}
+    mem_map = state.get("memory") or {}
+    cidrs = (state.get("run_meta") or {}).get("scope_cidrs") or enabled_cidrs()
+
+    results: dict[str, dict[str, Any]] = {}
+    for g in groups:
+        decision = _decide_lookback(
+            g, ctx_map.get(g.fingerprint) or {}, mem_map.get(g.fingerprint) or {}
+        )
+        hours = int(_safe_float(decision.get("hours"), 0))
+        hours = max(0, min(hours, settings.lookback_max_days * 24))
+        entry: dict[str, Any] = {
+            "hours": hours,
+            "reason": str(decision.get("reason") or ""),
+            "log_count": 0,
+            "event_count": 0,
+            "summary": "",
+        }
+        if hours > 0 and cidrs:
+            end = _now()
+            start = end - timedelta(hours=hours)
+            fetched = fetch_window_logs(
+                start, end, cidrs, max_logs=settings.lookback_max_logs
+            )
+            events = _rule_hit_events(fetched.logs, sorted(set(g.src_ips + g.dst_ips)))
+            entry["log_count"] = fetched.total
+            entry["event_count"] = len(events)
+            entry["summary"] = _history_summary(
+                start, end, events, fetched.total, fetched.notes
+            )
+        else:
+            entry["summary"] = "未回溯（LLM 判定无需回溯或未配置分析网段）"
+        results[g.fingerprint] = entry
+        update_group_lookback(g.fingerprint, entry)
+
+    if results:
+        log.info(
+            "回溯决策：%d 组，实际回溯 %d 组",
+            len(results),
+            sum(1 for v in results.values() if v["hours"] > 0),
+        )
+    return {"lookback": results}
+
+
 # ---------- 节点 4：云端深度分析（子图，见 deep_analysis.py） ----------
 
 # ---------- 节点 5：定级 ----------
@@ -289,6 +478,11 @@ def severity_node(state: AgentState) -> dict[str, Any]:
         context_text = context_text_for_group(
             g, state.get("business_context", {}).get(g.fingerprint)
         )
+        memory_blob = memory_text((state.get("memory") or {}).get(g.fingerprint) or {})
+        lookback_blob = str(
+            ((state.get("lookback") or {}).get(g.fingerprint) or {}).get("summary")
+            or "（无回溯）"
+        )
         try:
             r = flash_invoke_json(
                 prompts.SEVERITY_SYSTEM,
@@ -297,6 +491,8 @@ def severity_node(state: AgentState) -> dict[str, Any]:
                     profile=json.dumps(profile, ensure_ascii=False, default=str),
                     rule_severity=rule_severity,
                     business_context=context_text,
+                    memory=memory_blob,
+                    lookback=lookback_blob,
                 ),
             )
             severity = r.get("severity", rule_severity)
@@ -443,6 +639,87 @@ def report_node(state: AgentState) -> dict[str, Any]:
 
     log.info("报告输出：%s", summary)
     return {"run_summary": summary}
+
+
+# ---------- 节点 8：分析记忆写入 ----------
+
+
+def _group_memory_summary(
+    g: EventGroup, analysis: dict[str, Any], persistence: dict[str, Any]
+) -> str:
+    chain = analysis.get("attack_chain") or {}
+    stages = "→".join(str(s.get("stage", "")) for s in (chain.get("stages") or []))
+    parts = [f"定级 {g.severity or 'info'}"]
+    if stages:
+        parts.append(f"攻击链 {stages}")
+    if chain.get("summary"):
+        parts.append(str(chain["summary"])[:120])
+    if persistence.get("persistent"):
+        parts.append(
+            f"持续性（{persistence.get('window_days')}天内 {persistence.get('count')} 次）"
+        )
+    parts.append(f"涉及 IP {len(set(g.src_ips + g.dst_ips))} 个")
+    return "；".join(parts)
+
+
+def _run_memory_summary(state: AgentState) -> str:
+    meta = state.get("run_meta") or {}
+    if meta.get("skipped") == "no_scope":
+        return "本轮跳过：" + "；".join(meta.get("notes") or ["未配置分析网段"])
+    reports = (state.get("run_summary") or {}).get("reports", 0)
+    return (
+        f"窗口拉取 {meta.get('fetched_raw', 0)} 条（{meta.get('fetch_mode')}），"
+        f"去重 {len(state.get('raw_logs') or [])} 条，"
+        f"可疑事件 {len(state.get('suspicious_events') or [])} 条，"
+        f"事件组 {len(state.get('groups') or [])} 个，报告 {reports} 份"
+    )
+
+
+def memory_write_node(state: AgentState) -> dict[str, Any]:
+    """写入对象级 + 轮次级分析记忆，并机会式清理过期记忆。"""
+    groups = state.get("groups", [])
+    analyses = state.get("analyses") or {}
+    mem_map = state.get("memory") or {}
+    look_map = state.get("lookback") or {}
+
+    for g in groups:
+        analysis = analyses.get(g.fingerprint) or {}
+        persistence = (mem_map.get(g.fingerprint) or {}).get("persistence") or {}
+        write_group(
+            fingerprint=g.fingerprint,
+            window_start=g.window_start,
+            window_end=g.window_end,
+            ips=sorted(set(g.src_ips + g.dst_ips)),
+            asset_ids=_group_asset_ids(state, g.fingerprint),
+            severity=g.severity,
+            summary=_group_memory_summary(g, analysis, persistence),
+            detail={
+                "attack_chain": analysis.get("attack_chain"),
+                "lookback": look_map.get(g.fingerprint),
+                "persistent": bool(persistence.get("persistent")),
+            },
+        )
+
+    write_run(
+        thread_id=state.get("thread_id", ""),
+        window_start=state.get("window_start"),
+        window_end=state.get("window_end"),
+        ips=sorted({ip for g in groups for ip in (g.src_ips + g.dst_ips)})[:500],
+        summary=_run_memory_summary(state),
+        detail={
+            "run_meta": state.get("run_meta") or {},
+            "groups": len(groups),
+            "reports": (state.get("run_summary") or {}).get("reports", 0),
+        },
+    )
+    deleted = memory_cleanup()
+    log.info(
+        "分析记忆写入：对象 %d 条；清理 run=%d group=%d",
+        len(groups),
+        deleted["run"],
+        deleted["group"],
+    )
+    return {}
 
 
 # ---------- 条件路由 ----------
