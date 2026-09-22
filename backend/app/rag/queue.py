@@ -20,3 +20,10 @@ def enqueue_document_index(doc_id: str) -> None:
         celery_app.send_task("rag.index_document", args=[doc_id])
     except Exception as exc:  # noqa: BLE001
         log.warning("文档向量化入队失败 %s: %s", doc_id, exc)
+
+
+def enqueue_topology_index(topology_id: str) -> None:
+    try:
+        celery_app.send_task("rag.index_topology", args=[topology_id])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("拓扑向量化入队失败 %s: %s", topology_id, exc)

@@ -313,3 +313,63 @@ export interface ImportResult {
   skipped: number;
   external: number;
 }
+
+// ---------- 网络拓扑 ----------
+
+export interface TopologyNodeType {
+  key: string;
+  name: string;
+  icon: string;
+  color: string;
+  builtin: boolean;
+  sort: number;
+}
+
+export interface NodeTypeList {
+  items: TopologyNodeType[];
+  icon_candidates: string[];
+}
+
+export interface TopoNodeData extends Record<string, unknown> {
+  label: string;
+  node_type: string;
+  asset_ids: string[];
+  zone: string;
+  note: string;
+}
+
+export interface TopoNode {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: TopoNodeData;
+}
+
+export interface TopoEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  type?: string;
+}
+
+export interface TopoGraph {
+  nodes: TopoNode[];
+  edges: TopoEdge[];
+}
+
+export interface TopologyItem {
+  id: string;
+  name: string;
+  description: string;
+  node_count: number;
+  edge_count: number;
+  enabled: boolean;
+  status: string;
+  indexed_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TopologyDetail extends TopologyItem {
+  graph: TopoGraph;
+}

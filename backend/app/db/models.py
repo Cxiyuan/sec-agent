@@ -168,8 +168,12 @@ class Asset(Base):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     location: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str] = mapped_column(Text, default="")
-    is_external: Mapped[bool] = mapped_column(Boolean, default=False)  # 外部资产（非局域网，需显式开启）
-    allow_ip_share: Mapped[bool] = mapped_column(Boolean, default=False)  # 允许该资产 IP 被多个资产共享
+    is_external: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )  # 外部资产（非局域网，需显式开启）
+    allow_ip_share: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )  # 允许该资产 IP 被多个资产共享
     embedding_status: Mapped[str] = mapped_column(
         String(16), default="pending"
     )  # pending/indexed/failed
@@ -200,7 +204,6 @@ class Document(Base):
 
 class KnowledgeChunk(Base):
     """统一向量库：资产描述与文档切片统一入库，一次向量检索覆盖两者。"""
-
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
         Index(
@@ -212,10 +215,46 @@ class KnowledgeChunk(Base):
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    source_type: Mapped[str] = mapped_column(String(16), index=True)  # asset | document
+    source_type: Mapped[str] = mapped_column(
+        String(16), index=True
+    )  # asset | document | topology
     source_id: Mapped[str] = mapped_column(String(64), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text, default="")
     embedding: Mapped[list] = mapped_column(Vector(settings.embedding_dim))
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Topology(Base):
+    """网络拓扑图（多张）：graph 存 React Flow 原生结构 {nodes, edges}。"""
+
+    __tablename__ = "topologies"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    graph: Mapped[dict] = mapped_column(JSONB, default=dict)
+    node_count: Mapped[int] = mapped_column(Integer, default=0)
+    edge_count: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/indexed/failed
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TopologyNodeType(Base):
+    """拓扑节点类型（内置 + 自定义），icon 为 lucide 图标名。"""
+
+    __tablename__ = "topology_node_types"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    icon: Mapped[str] = mapped_column(String(64), default="Box")
+    color: Mapped[str] = mapped_column(String(16), default="#64748b")
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

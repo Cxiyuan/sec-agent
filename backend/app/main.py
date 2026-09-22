@@ -32,7 +32,7 @@ def _migrate() -> None:
 
 
 def _seed() -> None:
-    """幂等初始化：建 pgvector 扩展、建表、补列、默认管理员、内置规则。"""
+    """幂等初始化：建 pgvector 扩展、建表、补列、默认管理员、内置规则与拓扑节点类型。"""
     with engine.begin() as conn:
         conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
     Base.metadata.create_all(engine)
@@ -56,6 +56,10 @@ def _seed() -> None:
             if exists is None:
                 db.add(Rule(**r))
         db.commit()
+
+    from app.topology.service import seed_node_types
+
+    seed_node_types()
 
 
 @asynccontextmanager

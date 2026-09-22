@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.base import SessionLocal
-from app.db.models import Asset, Document, KnowledgeChunk
+from app.db.models import Asset, Document, KnowledgeChunk, Topology, TopologyNodeType
 from app.rag.embedder import embed_for_index
 from app.workers.log import get_logger
 
@@ -126,6 +126,49 @@ def index_document(doc_id: str, text: str) -> bool:
             d = db.get(Document, doc_id)
             if d is not None:
                 d.status = "failed"
+                db.commit()
+            return False
+
+
+def index_topology(topology_id: str) -> bool:
+    """向量化一张拓扑图（概览 + 每节点一条切片）。成功返回 True。"""
+    from app.topology.graph import build_chunks
+
+    with SessionLocal() as db:
+        t = db.get(Topology, topology_id)
+        if t is None:
+            return False
+        try:
+            graph = t.graph if isinstance(t.graph, dict) else {}
+            asset_ids = {
+                str(aid)
+                for node in graph.get("nodes", [])
+                for aid in ((node.get("data") or {}).get("asset_ids") or [])
+            }
+            assets_by_id = (
+                {a.id: a for a in db.scalars(select(Asset).where(Asset.id.in_(asset_ids))).all()}
+                if asset_ids
+                else {}
+            )
+            type_names = {nt.key: nt.name for nt in db.scalars(select(TopologyNodeType)).all()}
+            chunks = build_chunks(t.name, t.description or "", graph, assets_by_id, type_names)
+            _replace_chunks(
+                db,
+                "topology",
+                topology_id,
+                chunks,
+                {"topology_id": topology_id, "name": t.name},
+            )
+            t.status = "indexed"
+            t.indexed_at = datetime.now(UTC)
+            db.commit()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            log.warning("拓扑向量化失败 %s: %s", topology_id, exc)
+            t2 = db.get(Topology, topology_id)
+            if t2 is not None:
+                t2.status = "failed"
                 db.commit()
             return False
 

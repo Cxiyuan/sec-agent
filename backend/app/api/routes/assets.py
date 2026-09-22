@@ -26,6 +26,7 @@ from app.db.models import Asset, User
 from app.rag.indexer import clear_chunks
 from app.rag.parser import decode_text
 from app.rag.queue import enqueue_asset_index as _reindex_async
+from app.topology.service import detach_asset
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -148,7 +149,9 @@ def _load_index(db: Session) -> tuple[dict[str, Asset], dict[str, list[Asset]]]:
     return by_ip, by_any
 
 
-def _holdings(by_any: dict[str, list[Asset]], ips: list[str], exclude_id: str | None) -> list[Asset]:
+def _holdings(
+    by_any: dict[str, list[Asset]], ips: list[str], exclude_id: str | None
+) -> list[Asset]:
     seen: dict[str, Asset] = {}
     for ip in ips:
         for a in by_any.get(ip, []):
@@ -305,6 +308,7 @@ def delete_asset(
     clear_chunks("asset", asset_id)
     db.delete(a)
     db.commit()
+    detach_asset(asset_id)  # 清理拓扑节点中的资产引用
     return {"ok": True}
 
 
@@ -329,9 +333,7 @@ def reindex_asset(
 def _read_rows(file_bytes: bytes) -> list[dict[str, Any]]:
     """解码 + 表头校验 + 行数/体积校验，返回原始行列表。"""
     if len(file_bytes) > settings.asset_csv_max_mb * 1024 * 1024:
-        raise HTTPException(
-            status_code=400, detail=f"文件过大（>{settings.asset_csv_max_mb}MB）"
-        )
+        raise HTTPException(status_code=400, detail=f"文件过大（>{settings.asset_csv_max_mb}MB）")
     try:
         text = decode_text(file_bytes)
     except ValueError as exc:
@@ -344,14 +346,13 @@ def _read_rows(file_bytes: bytes) -> list[dict[str, Any]]:
 
     rows = list(reader)
     if len(rows) > settings.asset_csv_max_rows:
-        raise HTTPException(
-            status_code=400, detail=f"超过最大行数 {settings.asset_csv_max_rows}"
-        )
+        raise HTTPException(status_code=400, detail=f"超过最大行数 {settings.asset_csv_max_rows}")
     return rows
 
 
 def _row_payload(row: dict[str, Any]) -> dict[str, Any]:
     """CSV 行 -> 资产字段字典。"""
+
     def g(key: str) -> str:
         return str(row.get(key) or "").strip()
 
@@ -374,9 +375,7 @@ def _row_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _analyse(
-    db: Session, rows: list[dict[str, Any]], allow_external: bool
-) -> dict[str, Any]:
+def _analyse(db: Session, rows: list[dict[str, Any]], allow_external: bool) -> dict[str, Any]:
     """校验全量行，返回预览报告（不写库）。"""
     errors: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
@@ -426,9 +425,7 @@ def _analyse(
 
         holders = _holdings(by_any, _all_ips(payload), exclude_id=existing.id if existing else None)
         if holders:
-            ip_conflicts.append(
-                {"row": idx, "ip": ip, "holders": [_brief(h) for h in holders]}
-            )
+            ip_conflicts.append({"row": idx, "ip": ip, "holders": [_brief(h) for h in holders]})
         payloads.append({"row": idx, "payload": payload, "is_new": existing is None})
 
     return {

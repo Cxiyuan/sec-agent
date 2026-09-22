@@ -13,6 +13,8 @@ from app.db.base import SessionLocal
 from app.db.models import Asset, KnowledgeChunk
 from app.rag.embedder import embed_for_query
 from app.rag.lan import is_lan_ip
+from app.topology.graph import subgraph_around
+from app.topology.service import enabled_topologies
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -125,9 +127,36 @@ def vector_search(db: Session, query: str, k: int, min_score: float) -> list[dic
     return results
 
 
+def topology_context(matched_asset_ids: set[str]) -> list[dict[str, Any]]:
+    """按命中的资产找拓扑节点，取上下游局部子图（无命中/无拓扑返回空）。"""
+    if not matched_asset_ids:
+        return []
+    try:
+        tops = enabled_topologies()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("拓扑检索失败: %s", exc)
+        return []
+
+    results: list[dict[str, Any]] = []
+    for t in tops:
+        graph = t["graph"]
+        seeds = [
+            str(n.get("id"))
+            for n in graph.get("nodes", [])
+            if matched_asset_ids & set((n.get("data") or {}).get("asset_ids") or [])
+        ]
+        if not seeds:
+            continue
+        sub = subgraph_around(graph, seeds, settings.topology_hops, settings.topology_max_nodes)
+        if not sub["nodes"]:
+            continue
+        results.append({"topology_id": t["id"], "topology_name": t["name"], **sub})
+    return results
+
+
 def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[str, Any]:
-    """混合检索。返回 {lan_ips, assets, knowledge}。"""
-    empty: dict[str, Any] = {"lan_ips": [], "assets": [], "knowledge": []}
+    """混合检索。返回 {lan_ips, assets, knowledge, topology}。"""
+    empty: dict[str, Any] = {"lan_ips": [], "assets": [], "knowledge": [], "topology": []}
     if not settings.rag_enabled:
         return empty
 
@@ -144,12 +173,19 @@ def retrieve(src_ips: list[str], dst_ips: list[str], query_text: str) -> dict[st
                 query = f"{query} {' '.join(names)}".strip()
             knowledge = vector_search(db, query, settings.rag_top_k, settings.rag_min_score)
     except Exception as exc:  # noqa: BLE001
-        log.warning("混合检索失败: %s", exc)
+        log.warning("资产/知识检索失败: %s", exc)
         return {**empty, "lan_ips": lan_ips}
 
     # 去重：向量命中里排除已按 IP 精确命中的资产
     asset_ids = {a["id"] for a in assets}
     knowledge = [
-        k for k in knowledge if not (k["source_type"] == "asset" and k["source_id"] in asset_ids)
+        k
+        for k in knowledge
+        if not (k["source_type"] == "asset" and k["source_id"] in asset_ids)
     ]
-    return {"lan_ips": lan_ips, "assets": assets, "knowledge": knowledge}
+    return {
+        "lan_ips": lan_ips,
+        "assets": assets,
+        "knowledge": knowledge,
+        "topology": topology_context(asset_ids),
+    }

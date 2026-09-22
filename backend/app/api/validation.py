@@ -131,9 +131,7 @@ def validate_asset(payload: dict[str, Any], *, is_external: bool) -> list[FieldE
 
     importance = str(payload.get("importance") or "medium").strip()
     if importance not in IMPORTANCE_VALUES:
-        errors.append(
-            FieldError("importance", f"必须是 {'/'.join(IMPORTANCE_VALUES)} 之一")
-        )
+        errors.append(FieldError("importance", f"必须是 {'/'.join(IMPORTANCE_VALUES)} 之一"))
 
     for field, limit in FIELD_LIMITS.items():
         if field == "ip":

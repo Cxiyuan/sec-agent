@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { FileText, LayoutDashboard, ListOrdered, ScrollText, Server, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { FileText, LayoutDashboard, ListOrdered, Network, ScrollText, Server, Settings, Shield, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ const items = [
   { href: "/admin", label: "事件列表", icon: ListOrdered },
   { href: "/admin/assets", label: "资产管理", icon: Server },
   { href: "/admin/documents", label: "知识文档", icon: FileText },
+  { href: "/admin/topology", label: "网络拓扑", icon: Network },
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
   { href: "/admin/reports", label: "报告", icon: ScrollText },
   { href: "/admin/settings", label: "系统配置", icon: Settings },

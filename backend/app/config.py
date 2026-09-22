@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     doc_min_chars: int = 10
     text_encodings: str = "utf-8,gb18030"
 
+    # 网络拓扑
+    topology_hops: int = 2  # 结构化检索上下游跳数
+    topology_max_nodes: int = 10  # 单次渲染节点上限
+    topology_max_nodes_per_graph: int = 500  # 单张拓扑节点上限（保存校验）
+
     # 升级与报告阈值（可被系统配置覆盖）
     escalate_score_threshold: float = 0.6
     report_min_severity: str = "medium"  # critical/high/medium/low/info

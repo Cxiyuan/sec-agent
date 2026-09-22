@@ -15,7 +15,8 @@ def _to_dt(v: Any) -> datetime:
         return datetime.fromtimestamp(v, tz=UTC)
     if isinstance(v, str):
         try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+            # Python 3.11+ 的 fromisoformat 已直接支持结尾的 "Z"
+            return datetime.fromisoformat(v)
         except ValueError:
             return datetime.now(UTC)
     return datetime.now(UTC)

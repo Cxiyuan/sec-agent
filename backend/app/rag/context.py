@@ -19,10 +19,11 @@ def build_business_context(
 
 
 def render_text(ctx: dict[str, Any]) -> str:
-    """把命中的资产与知识片段渲染成提示词文本块。"""
+    """把命中的资产、拓扑与知识片段渲染成提示词文本块。"""
     assets = ctx.get("assets") or []
     knowledge = ctx.get("knowledge") or []
-    if not assets and not knowledge:
+    topology = ctx.get("topology") or []
+    if not assets and not knowledge and not topology:
         return NO_CONTEXT
 
     lines: list[str] = []
@@ -44,11 +45,50 @@ def render_text(ctx: dict[str, Any]) -> str:
             if a.get("description"):
                 bits.append(f"描述 {a['description']}")
             lines.append("- " + "，".join(bits))
+    if topology:
+        lines.extend(_render_topology(topology, assets))
     if knowledge:
         lines.append("【相关知识】")
         for k in knowledge:
             lines.append(f"- {str(k['content'])[:300]}")
     return "\n".join(lines)
+
+
+def _render_topology(
+    topology: list[dict[str, Any]], assets: list[dict[str, Any]]
+) -> list[str]:
+    """渲染拓扑局部视图（命中节点用 ★ 标注）。"""
+    asset_map = {a["id"]: a for a in assets}
+    out: list[str] = ["【网络拓扑】"]
+    for t in topology:
+        out.append(f"- 拓扑「{t.get('topology_name')}」中与本次事件相关的设备及上下游：")
+        hit = set(t.get("hit_nodes") or [])
+        label_of: dict[str, str] = {}
+        for n in t.get("nodes") or []:
+            data = n.get("data") or {}
+            nid = str(n.get("id"))
+            label = str(data.get("label") or nid)
+            label_of[nid] = label
+            bits = [f"{'★' if nid in hit else ''}{label}"]
+            if data.get("zone"):
+                bits.append(f"区域 {data['zone']}")
+            for aid in data.get("asset_ids") or []:
+                a = asset_map.get(str(aid))
+                if a:
+                    bits.append(
+                        f"资产 {a.get('ip')} {a.get('business_system') or a.get('asset_name') or ''}".strip()
+                    )
+            if data.get("note"):
+                bits.append(f"备注 {data['note']}")
+            out.append("  - " + "，".join(bits))
+        links = []
+        for e in t.get("edges") or []:
+            src = label_of.get(str(e.get("source")), str(e.get("source")))
+            dst = label_of.get(str(e.get("target")), str(e.get("target")))
+            links.append(f"{src}↔{dst}" + (f"（{e['label']}）" if e.get("label") else ""))
+        if links:
+            out.append("  - 连接：" + "，".join(links))
+    return out
 
 
 def context_text_for_group(group: Any, business_context: dict[str, Any] | None) -> str:

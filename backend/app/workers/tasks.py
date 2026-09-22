@@ -70,3 +70,18 @@ def index_document_task(doc_id: str) -> bool:
     if not index_document(doc_id, text):
         raise IndexFailedError(doc_id)
     return True
+
+
+@celery_app.task(
+    name="rag.index_topology",
+    autoretry_for=(IndexFailedError,),
+    retry_backoff=True,
+    max_retries=3,
+)
+def index_topology_task(topology_id: str) -> bool:
+    """向量化一张拓扑图。"""
+    from app.rag.indexer import index_topology
+
+    if not index_topology(topology_id):
+        raise IndexFailedError(topology_id)
+    return True
