@@ -226,9 +226,7 @@ def get_baseline(key: str) -> dict[str, float] | None:
             return None
         # 冷启动保护：观测不足 N 天时不报统计异常，避免上线首日大量误报
         # （后台「系统配置」可改，30 秒 TTL 内生效）
-        observe_days = int(
-            runtime_get("baseline_observe_days", settings.baseline_observe_days)
-        )
+        observe_days = int(runtime_get("baseline_observe_days", settings.baseline_observe_days))
         in_observe = (
             observe_days > 0
             and row.first_seen is not None

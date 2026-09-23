@@ -1,4 +1,5 @@
 """结构化日志：供 worker / 节点统一使用。"""
+
 import logging
 
 _configured = False

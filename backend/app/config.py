@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     # 分析窗口
-    analysis_interval_minutes: int = 5  # 注意：仅环境变量生效（Celery Beat 启动时读取，改后需重启 beat）
+    analysis_interval_minutes: int = (
+        5  # 注意：仅环境变量生效（Celery Beat 启动时读取，改后需重启 beat）
+    )
     analysis_window_minutes: int = 5
     baseline_observe_days: int = 7  # 基线观测期：不足 N 天只学习不判异常（防上线首日误报）
 

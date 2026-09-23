@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -35,18 +35,6 @@ def list_reports(
             for r in rows
         ]
     }
-
-
-@router.get("/{report_id}")
-def get_report_html(
-    report_id: str,
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
-) -> dict[str, Any]:
-    r = db.get(Report, report_id)
-    if r is None:
-        raise HTTPException(status_code=404, detail="报告不存在")
-    return {"id": r.id, "title": r.title, "severity": r.severity, "html": r.html}
 
 
 @router.get("/{report_id}/download")

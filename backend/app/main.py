@@ -16,9 +16,6 @@ from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import Rule, User
 from app.rules.builtin import BUILTIN_RULES
-from app.workers.log import get_logger
-
-_log = get_logger(__name__)
 
 # 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
 _MIGRATIONS = (

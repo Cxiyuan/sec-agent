@@ -322,17 +322,39 @@ def correlate_node(state: AgentState) -> dict[str, Any]:
 
 
 def _semantic_merge(groups: list[EventGroup], max_calls: int = 20) -> list[EventGroup]:
-    """边缘模型语义关联：高分且无共享 IP 的组，判断是否同一次攻击。"""
+    """边缘模型语义关联：高分且无共享 IP 的组，判断是否同一次攻击。
+
+    用并查集合并，避免两个坑：
+    - 索引错位：之前 merged 记的是 high 子列表下标，却拿去过滤 groups，会误删低分组；
+    - 传递合并丢事件：A 并 B、B 并 C 时，C 的事件挂在将被删除的 B 上而丢失。
+    """
     if len(groups) < 2:
         return groups
-    high = [g for g in groups if g.triage_score >= 0.5]
-    merged = set()
+    high_idx = [i for i, g in enumerate(groups) if g.triage_score >= 0.5]
+    if len(high_idx) < 2:
+        return groups
+    n = len(high_idx)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
     calls = 0
-    for i in range(len(high)):
-        for j in range(i + 1, len(high)):
+    for p in range(n):
+        for q in range(p + 1, n):
             if calls >= max_calls:
-                return groups
-            a, b = high[i], high[j]
+                break
+            if find(p) == find(q):
+                continue
+            a, b = groups[high_idx[p]], groups[high_idx[q]]
             if set(a.src_ips) & set(b.src_ips) or set(a.dst_ips) & set(b.dst_ips):
                 continue
             calls += 1
@@ -349,16 +371,29 @@ def _semantic_merge(groups: list[EventGroup], max_calls: int = 20) -> list[Event
                     ),
                 )
                 if r.get("same_attack"):
-                    merged.add(j)
-                    a.events.extend(b.events)
-                    a.src_ips = sorted(set(a.src_ips) | set(b.src_ips))
-                    a.dst_ips = sorted(set(a.dst_ips) | set(b.dst_ips))
-                    a.triage_score = max(a.triage_score, b.triage_score)
+                    union(p, q)
             except Exception as exc:  # noqa: BLE001
                 log.warning("语义关联失败: %s", exc)
                 continue
-    if merged:
-        groups = [g for idx, g in enumerate(groups) if idx not in merged]
+
+    # 按根聚合：根组吸收同组其它组的事件 / IP / 分数，只删除被吸收的组
+    buckets: dict[int, list[int]] = {}
+    for p in range(n):
+        buckets.setdefault(find(p), []).append(high_idx[p])
+    remove: set[int] = set()
+    for members in buckets.values():
+        if len(members) <= 1:
+            continue
+        base = groups[members[0]]
+        for gi in members[1:]:
+            other = groups[gi]
+            base.events.extend(other.events)
+            base.src_ips = sorted(set(base.src_ips) | set(other.src_ips))
+            base.dst_ips = sorted(set(base.dst_ips) | set(other.dst_ips))
+            base.triage_score = max(base.triage_score, other.triage_score)
+            remove.add(gi)
+    if remove:
+        groups = [g for i, g in enumerate(groups) if i not in remove]
     return groups
 
 
@@ -438,7 +473,7 @@ def profile_recall_node(state: AgentState) -> dict[str, Any]:
         update_group_profile_hits(g.fingerprint, payload)
 
     log.info(
-        "账号/会话画像：异常 %d 条（高风隖 %d）", len(entities), len(info.get("anomalies") or [])
+        "账号/会话画像：异常 %d 条（高风险 %d）", len(entities), len(info.get("anomalies") or [])
     )
     return {"profile": {**info, "by_group": by_group}}
 
@@ -837,9 +872,7 @@ def profile_update_node(state: AgentState) -> dict[str, Any]:
     observations = window_observations(state.get("raw_logs", []))
     # 把 profile_recall 算出的异常风险一并回写，驾驶舱 TOP / 排序才会生效
     info = state.get("profile") or {}
-    risks = {
-        f"{e.get('kind')}|{e.get('key')}": e for e in (info.get("entities") or [])
-    }
+    risks = {f"{e.get('kind')}|{e.get('key')}": e for e in (info.get("entities") or [])}
     result = update_profiles(observations, risks)
     deleted = profile_cleanup()
     log.info(

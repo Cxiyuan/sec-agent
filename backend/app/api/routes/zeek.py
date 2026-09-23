@@ -115,12 +115,6 @@ def _effective_nets(configured: str) -> list[str]:
     return explicit or enabled_cidrs()
 
 
-@router.get("/interfaces")
-def list_interfaces(_: Annotated[User, Depends(get_current_user)]):
-    """Zeek 容器枚举出的宿主网卡清单（供后台下拉选择）。"""
-    return {"items": _read_interfaces()}
-
-
 @router.get("/status")
 def get_status(_: Annotated[User, Depends(get_current_user)]):
     conf = _read_conf()

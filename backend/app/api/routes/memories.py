@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.memory import cleanup, list_memories
@@ -43,38 +43,6 @@ def list_all(
     offset: int = Query(0, ge=0),
 ):
     return list_memories(kind=kind, severity=severity, limit=limit, offset=offset)
-
-
-@router.get("/by-object")
-def by_object(
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
-    ip: str | None = None,
-    asset_id: str | None = None,
-    fingerprint: str | None = None,
-    days: int = Query(0, ge=0, le=365),
-    limit: int = Query(20, ge=1, le=200),
-):
-    """按 IP / 资产 / 指纹查历史记忆（供事件详情的历史比对展示）。"""
-    stmt = select(AnalysisMemory).where(AnalysisMemory.kind == "group")
-    conds = []
-    if fingerprint:
-        conds.append(AnalysisMemory.fingerprint == fingerprint)
-    if ip:
-        conds.append(AnalysisMemory.ips.op("?|")([ip]))
-    if asset_id:
-        conds.append(AnalysisMemory.asset_ids.op("?|")([asset_id]))
-    if conds:
-        stmt = stmt.where(or_(*conds))
-    window = days or settings.memory_persistence_days
-    stmt = stmt.where(AnalysisMemory.created_at >= datetime.now(UTC) - timedelta(days=window))
-    rows = db.scalars(stmt.order_by(AnalysisMemory.created_at.desc()).limit(limit)).all()
-    return {
-        "total": len(rows),
-        "window_days": window,
-        "persistent": len(rows) >= settings.memory_persistence_threshold,
-        "items": [_memory_dict(m) for m in rows],
-    }
 
 
 @router.get("/persistent")
