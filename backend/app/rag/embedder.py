@@ -1,6 +1,6 @@
 """嵌入：调用 MiniMax embo-01（自有格式，非 OpenAI 兼容）。
 
-- 端点：{base}/embeddings，URL 拼 ?GroupId={group_id}
+- 端点：{base}/embeddings（base 与 api_key 见 app/cloud_config.py）
 - 请求体：{"model": "embo-01", "texts": [...], "type": "db"|"query"}
 - 响应体：{"vectors": [[...], ...]}
 入库用 type=db（embo_db 角色），查询用 type=query（embo_query 角色），
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.cloud_config import cloud_api_key, cloud_base_url
 from app.config import settings
 from app.models.registry import resolve_model
 from app.workers.log import get_logger
@@ -22,15 +23,9 @@ def _embed(texts: list[str], type_: str) -> list[list[float]]:
     """调 MiniMax /embeddings。type_ 为 db（入库）或 query（查询）。"""
     if not texts:
         return []
-    base = settings.cloud_model_base_url.rstrip("/")
-    url = f"{base}/embeddings"
-    params: dict[str, str] = {}
-    if settings.minimax_group_id:
-        params["GroupId"] = settings.minimax_group_id
     resp = httpx.post(
-        url,
-        params=params,
-        headers={"Authorization": f"Bearer {settings.cloud_model_api_key}"},
+        f"{cloud_base_url()}/embeddings",
+        headers={"Authorization": f"Bearer {cloud_api_key()}"},
         json={
             "model": resolve_model("embo_db" if type_ == "db" else "embo_query"),
             "texts": texts,

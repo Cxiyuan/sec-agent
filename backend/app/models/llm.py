@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from app.cloud_config import cloud_api_key, cloud_base_url
 from app.config import settings
 from app.edge_config import EDGE_API_KEY, EDGE_MODEL_NAME, edge_base_url
 from app.models.registry import resolve_model
@@ -37,11 +38,11 @@ def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
 
 
 def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
-    """云端模型（flash 日常 / deep 深度），共用同一 one-api 端点。"""
+    """云端模型（flash 日常 / deep 深度），共用同一 MiniMax 端点。"""
     return ChatOpenAI(
         model=resolve_model(role),
-        base_url=settings.cloud_model_base_url,
-        api_key=SecretStr(settings.cloud_model_api_key or "not-needed"),
+        base_url=cloud_base_url(),
+        api_key=SecretStr(cloud_api_key() or "not-needed"),
         temperature=temperature,
         timeout=settings.cloud_model_timeout,
         max_retries=2,

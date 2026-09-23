@@ -34,9 +34,7 @@ services:
       ST_REDIS_URL: redis://redis:6379/0
       ST_CELERY_BROKER_URL: redis://redis:6379/1
       ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
-      # 云端模型（MiniMax 国内版）：base_url 已内置在 config 默认值，这里只注入密钥
-      ST_CLOUD_MODEL_API_KEY: ${CLOUD_API_KEY:-}
-      ST_MINIMAX_GROUP_ID: ${MINIMAX_GROUP_ID:-}
+      # 云端模型 API Key 不走环境变量：在后台「系统配置」页填写、存数据库
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）

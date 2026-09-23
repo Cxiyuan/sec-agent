@@ -74,14 +74,9 @@ class Settings(BaseSettings):
     # 环境变量不可覆盖；此处只保留超时等行为参数。
     edge_model_timeout: int = 300
 
-    # 云端模型（MiniMax 国内版）
-    # - chat（flash/deep）走 OpenAI 兼容协议：Authorization Bearer <api_key>，无需 GroupId
-    # - 嵌入（embo）走 MiniMax 自有格式：URL 拼 ?GroupId=，用 type 区分 db/query
-    # 模型名已固化（见 app/models/registry.py）：flash→MiniMax-M2.7，deep→MiniMax-M3，
-    # embo-db/embo-query→embo-01。界面不暴露 MiniMax 模型名，只保留角色名。
+    # 云端模型（MiniMax 国内版；模型名固化见 registry）
+    # api_key 由后台界面录入、存数据库（不落环境变量），见 app/cloud_config.py
     cloud_model_base_url: str = "https://api.minimaxi.com/v1"
-    cloud_model_api_key: str = ""  # MiniMax API key（环境变量 ST_CLOUD_MODEL_API_KEY）
-    minimax_group_id: str = ""  # 嵌入必需（环境变量 ST_MINIMAX_GROUP_ID，拼 URL ?GroupId=）
     cloud_model_timeout: int = 600
 
     # 嵌入（RAG 向量化，走 MiniMax embo-01）

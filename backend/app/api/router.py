@@ -6,6 +6,7 @@ from app.api.routes import (
     analysis_scopes,
     assets,
     auth,
+    cloud,
     config,
     documents,
     edge,
@@ -26,6 +27,7 @@ api_router.include_router(auth.router)
 api_router.include_router(analysis_scopes.router)
 api_router.include_router(assets.router)
 api_router.include_router(documents.router)
+api_router.include_router(cloud.router)
 api_router.include_router(edge.router)
 api_router.include_router(topologies.router)
 api_router.include_router(memories.router)
