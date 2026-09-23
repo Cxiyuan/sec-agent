@@ -17,6 +17,9 @@ from typing import Any
 
 from app.config import settings
 from app.schemas import Severity, UnifiedLog
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
 
 # Zeek 日志类型判别：按「特征字段」识别（ES 里各日志类型字段集不同）
 _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
@@ -123,6 +126,15 @@ def _to_dt(v: Any) -> datetime:
 def _as_dict(value: Any) -> dict[str, Any]:
     """非 dict 统一成空 dict（显式返回类型便于类型检查）。"""
     return value if isinstance(value, dict) else {}
+
+
+def _str_or_none(value: Any) -> str | None:
+    """只接受字符串（非字符串返回 None）。
+
+    用于防御字段名冲突：Filebeat 元数据会往事件里塞对象（如 host.name），
+    同名时会把 Zeek 的字符串字段顶掉，直接透传给 pydantic 会报错。
+    """
+    return value if isinstance(value, str) and value else None
 
 
 def _to_int(v: Any) -> int | None:
@@ -285,7 +297,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         src_port=_to_int(_get(doc, "id.orig_p")),
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
-        hostname=doc.get("host") or doc.get("server_name"),
+        hostname=_str_or_none(doc.get("http_host"))
+        or _str_or_none(doc.get("host"))
+        or _str_or_none(doc.get("server_name")),
         user=doc.get("user") or doc.get("uid_owner"),
         query=query,
         user_agent=str(doc.get("user_agent") or ""),
@@ -478,13 +492,26 @@ def _map_wazuh_level(level: Any) -> Severity:
     return "info"
 
 
+_normalize_failures = 0
+_MAX_FAILURE_LOGS = 5
+
+
 def normalize(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
-    """按来源系统分发规范化，无法识别时返回 None。"""
+    """按来源系统分发规范化，无法识别时返回 None。
+
+    异常不静默吞掉：否则「字段类型不符」这类问题会让整批事件无声丢弃
+    （曾因 Filebeat 元数据 host 覆盖 Zeek 的 host，导致 999 条全部归零且无报错）。
+    为防刷屏，每个进程最多记录前面若干条。
+    """
+    global _normalize_failures
     try:
         if source == "zeek":
             return normalize_zeek(doc)
         if source == "wazuh":
             return normalize_wazuh(doc)
         return None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if _normalize_failures < _MAX_FAILURE_LOGS:
+            _normalize_failures += 1
+            log.warning("归一化失败（%s，第 %d 次）：%s", source, _normalize_failures, exc)
         return None

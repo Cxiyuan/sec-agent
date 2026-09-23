@@ -22,6 +22,15 @@ filebeat.inputs:
     close_removed: true
 
 processors:
+  # 先给 Zeek 的 host 字段改名：Filebeat 自己的元数据也叫 host（对象 {name: 主机名}），
+  # 会把 Zeek 的 HTTP Host 头（字符串，如 diankong.nczy.edu.cn）覆盖掉，
+  # 既丢数据、又会让后端 normalizer 因类型不符而报错（事件被丢弃）。
+  - rename:
+      fields:
+        - from: "host"
+          to: "http_host"
+      ignore_missing: true
+      ignore_failure: true
   # 从路径提取日志类型：/logs/conn.log -> conn；/logs/2026-09-23/conn.14-00-00.log -> conn
   # 注意①：filestream 输入只提供 log.file.path（没有 log.file.name）
   # 注意②：本镜像的 Filebeat 构建不含 grok 处理器，故用 JS script 处理器取文件名
