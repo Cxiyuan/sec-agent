@@ -11,7 +11,8 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
-    "elasticsearch>=8.15",
+    # ES 客户端主版本必须与服务端一致（服务端用 8.x；不封顶会装成 9.x 导致全部请求 400）
+    "elasticsearch>=8.15,<9",
     "langgraph>=0.2.60",
     "langgraph-checkpoint-postgres>=2.0",
     "langchain-core>=0.3",
