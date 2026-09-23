@@ -1,6 +1,9 @@
 # 深瞳前端镜像（Next.js）
 FROM node:20-alpine AS builder
 WORKDIR /app
+# 后端地址在「构建时」烙进 rewrites（Next 的 rewrites 不读运行时环境变量）
+ARG BACKEND_URL=http://backend:8000
+ENV BACKEND_URL=$BACKEND_URL
 COPY package.json package-lock.json ./
 RUN npm install --no-audit --no-fund
 COPY . .

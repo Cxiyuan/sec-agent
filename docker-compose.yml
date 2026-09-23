@@ -68,9 +68,8 @@ services:
       - redis
 
   frontend:
+    # 后端地址在构建时烙进 rewrites（默认 backend:8000，见 next.config.mjs）
     build: ./frontend
-    environment:
-      BACKEND_URL: http://backend:8000
     ports:
       - "3000:3000"
     depends_on:
