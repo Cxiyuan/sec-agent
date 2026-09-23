@@ -8,6 +8,7 @@ from app.api.routes import (
     auth,
     config,
     documents,
+    edge,
     es_admin,
     events,
     memories,
@@ -25,6 +26,7 @@ api_router.include_router(auth.router)
 api_router.include_router(analysis_scopes.router)
 api_router.include_router(assets.router)
 api_router.include_router(documents.router)
+api_router.include_router(edge.router)
 api_router.include_router(topologies.router)
 api_router.include_router(memories.router)
 api_router.include_router(profiles.router)

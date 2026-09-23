@@ -19,7 +19,7 @@ from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
-ROLES = ("edge", "flash", "deep", "embo_db", "embo_query")
+ROLES = ("flash", "deep", "embo_db", "embo_query")
 
 _CACHE_TTL_SECONDS = 30.0
 _cache: dict[str, str] | None = None
@@ -28,7 +28,6 @@ _cache_at: float = 0.0
 
 def _defaults() -> dict[str, str]:
     return {
-        "edge": settings.edge_model_name,
         "flash": settings.flash_model_name,
         "deep": settings.deep_model_name,
         "embo_db": settings.embo_db_model_name,

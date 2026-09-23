@@ -41,6 +41,7 @@ from app.agents.state import AgentState
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import SystemConfig
+from app.edge_config import edge_thinking_for, edge_thinking_merge
 from app.ingestion.dedup import dedup_logs
 from app.ingestion.es_client import fetch_window_logs
 from app.ingestion.normalizer import normalize
@@ -149,7 +150,9 @@ def _edge_review(entry: UnifiedLog, rule_label: str) -> tuple[float, bool, str]:
         raw=json.dumps(entry.raw, ensure_ascii=False, default=str)[:1500],
     )
     try:
-        result = edge_invoke_json(prompts.TRIAGE_SYSTEM, user_prompt)
+        result = edge_invoke_json(
+            prompts.TRIAGE_SYSTEM, user_prompt, thinking=edge_thinking_for(entry.event_type)
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("边缘模型研判失败，默认视为可疑: %s", exc)
         result = {"is_suspicious": True, "score": 0.6, "reason": "边缘模型不可用"}
@@ -373,6 +376,7 @@ def _semantic_merge(groups: list[EventGroup], max_calls: int = 20) -> list[Event
                             [e.log.summary for e in b.events[:5]], ensure_ascii=False
                         ),
                     ),
+                    thinking=edge_thinking_merge(),
                 )
                 if r.get("same_attack"):
                     union(p, q)

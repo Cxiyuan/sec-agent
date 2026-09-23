@@ -5,6 +5,7 @@ import { Nav } from "@/components/nav";
 import { ScopeManager } from "@/components/scope-manager";
 import { ZeekPanel } from "@/components/zeek-panel";
 import { EsPanel } from "@/components/es-panel";
+import { EdgePanel } from "@/components/edge-panel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,11 +23,18 @@ const GROUPS: { name: string; fields: Field[] }[] = [
   {
     name: "模型（角色分工，可运行时修改）",
     fields: [
-      { key: "model.edge", label: "edge · 本地初筛降噪", type: "text" },
       { key: "model.flash", label: "flash · 日常分析", type: "text", hint: "异常确认/定级/处置/报告正文" },
       { key: "model.deep", label: "deep · 深度分析", type: "text", hint: "攻击链还原/攻击者画像" },
       { key: "model.embo_db", label: "embo-db · 向量入库", type: "text" },
       { key: "model.embo_query", label: "embo-query · 向量查询", type: "text" },
+    ],
+  },
+  {
+    name: "边缘模型思考模式（每场景独立开关）",
+    fields: [
+      { key: "edge_thinking.semantic_merge", label: "语义关联开思考", type: "bool", hint: "判断两个事件组是否同一次攻击" },
+      { key: "edge_thinking.triage_complex", label: "复杂研判开思考", type: "bool", hint: "Web攻击/恶意软件/C2/横向移动等" },
+      { key: "edge_thinking.triage_simple", label: "简单研判开思考", type: "bool", hint: "扫描/爆破/常规连接" },
     ],
   },
   {
@@ -157,6 +165,7 @@ export default function SettingsPage() {
           <ScopeManager />
           <ZeekPanel />
           <EsPanel />
+          <EdgePanel />
           {GROUPS.map((g) => (
             <Card key={g.name}>
               <CardHeader>

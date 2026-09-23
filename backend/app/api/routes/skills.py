@@ -34,7 +34,9 @@ def _validate(body: SkillIn) -> list[dict[str, str]]:
     if not body.name.strip():
         errors.append({"field": "name", "msg": "技能名不能为空"})
     if not body.event_types:
-        errors.append({"field": "event_types", "msg": "至少声明一个事件类型（否则永远不会被路由命中）"})
+        errors.append(
+            {"field": "event_types", "msg": "至少声明一个事件类型（否则永远不会被路由命中）"}
+        )
     if not body.sop.strip():
         errors.append({"field": "sop", "msg": "SOP 正文不能为空"})
     known = set(tool_names())

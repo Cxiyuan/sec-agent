@@ -20,8 +20,7 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 # 可配置键及默认值。默认取环境变量；写入 DB 后 DB 值优先。
 CONFIG_KEYS: dict[str, Any] = {
-    # 模型名（角色分工，后台可运行时修改）
-    "model.edge": settings.edge_model_name,
+    # 模型名（角色分工，后台可运行时修改；edge 已固化不在可改列表）
     "model.flash": settings.flash_model_name,
     "model.deep": settings.deep_model_name,
     "model.embo_db": settings.embo_db_model_name,
@@ -40,6 +39,10 @@ CONFIG_KEYS: dict[str, Any] = {
     "skill_enabled": settings.skill_enabled,
     "intel_enabled": settings.intel_enabled,
     "active_scan_enabled": settings.active_scan_enabled,
+    # 边缘模型思考模式（每场景独立开关，经 runtime_config 即时生效；IP 由 /api/edge 管理）
+    "edge_thinking.semantic_merge": True,
+    "edge_thinking.triage_complex": True,
+    "edge_thinking.triage_simple": False,
 }
 
 # 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，

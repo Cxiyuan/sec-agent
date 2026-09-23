@@ -72,7 +72,9 @@ def execute(tool_name: str, ctx: ToolContext) -> dict[str, Any]:
     spec = TOOLS.get(tool_name)
     if spec is None:
         return {"error": f"未知工具 {tool_name}"}
-    if spec["category"] == "active" and not runtime_get("active_scan_enabled", settings.active_scan_enabled):
+    if spec["category"] == "active" and not runtime_get(
+        "active_scan_enabled", settings.active_scan_enabled
+    ):
         return {"skipped": "主动探测未开启（active_scan_enabled=false）"}
     try:
         return spec["run"](ctx)

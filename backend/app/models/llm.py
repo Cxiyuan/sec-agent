@@ -13,19 +13,27 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from app.config import settings
+from app.edge_config import EDGE_API_KEY, EDGE_MODEL_NAME, edge_base_url
 from app.models.registry import resolve_model
 
 
-def _edge_llm(temperature: float = 0.0) -> ChatOpenAI:
-    """本地边缘模型（初筛降噪）。"""
-    return ChatOpenAI(
-        model=resolve_model("edge"),
-        base_url=settings.edge_model_base_url,
-        api_key=SecretStr(settings.edge_model_api_key or "not-needed"),
-        temperature=temperature,
-        timeout=settings.edge_model_timeout,
-        max_retries=2,
-    )
+def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
+    """本地边缘模型（初筛降噪）；thinking=True 开启服务端思考模式。"""
+    kwargs: dict[str, Any] = {
+        "model": EDGE_MODEL_NAME,
+        "base_url": edge_base_url(),
+        "api_key": SecretStr(EDGE_API_KEY),
+        "temperature": temperature,
+        "timeout": settings.edge_model_timeout,
+        "max_retries": 2,
+    }
+    if thinking:
+        # 开启思考：max_tokens 必须调大，否则思考吃光预算导致 content 为空（finish_reason=length）
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
+        kwargs["max_tokens"] = 4096
+    else:
+        kwargs["max_tokens"] = 1024
+    return ChatOpenAI(**kwargs)
 
 
 def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
@@ -80,9 +88,11 @@ def _invoke(llm: ChatOpenAI, system: str, user: str) -> str:
     return str(resp.content)
 
 
-def edge_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
-    """边缘模型（本地）返回 JSON。"""
-    return _extract_json(_invoke(_edge_llm(temperature), system, user))
+def edge_invoke_json(
+    system: str, user: str, temperature: float = 0.0, thinking: bool = False
+) -> dict[str, Any]:
+    """边缘模型（本地）返回 JSON；thinking=True 开启思考模式（仅复杂场景使用）。"""
+    return _extract_json(_invoke(_edge_llm(temperature, thinking), system, user))
 
 
 def flash_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:

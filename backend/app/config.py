@@ -70,9 +70,8 @@ class Settings(BaseSettings):
 
     # 模型（统一 OpenAI 兼容接口）
     # 三层：本地 edge（初筛降噪）→ 云端 flash（日常分析）→ 云端 deep（深度安全分析）
-    edge_model_name: str = "qwen3.8-2b-distill"
-    edge_model_base_url: str = "http://localhost:8080/v1"
-    edge_model_api_key: str = "not-needed"
+    # 注意：edge 的连接信息（api_key/模型名/端口/路径）已固化在 app/edge_config.py，
+    # 环境变量不可覆盖；此处只保留超时等行为参数。
     edge_model_timeout: int = 300
 
     # 云端 one-api 端点（四个云端模型共用；模型名可在后台系统配置里运行时修改）

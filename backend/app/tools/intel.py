@@ -51,7 +51,9 @@ def _http_json(url: str) -> dict[str, Any]:
         return data if isinstance(data, dict) else {"raw": data}
 
 
-def _post_json(url: str, *, data: dict[str, Any] | None = None, json: dict[str, Any] | None = None) -> dict[str, Any]:
+def _post_json(
+    url: str, *, data: dict[str, Any] | None = None, json: dict[str, Any] | None = None
+) -> dict[str, Any]:
     with httpx.Client(timeout=settings.intel_timeout, follow_redirects=True) as client:
         resp = client.post(url, data=data, json=json, headers=_UA)
         resp.raise_for_status()
@@ -140,12 +142,16 @@ def rdap_lookup(ctx: ToolContext) -> dict[str, Any]:
     for ip in ips[:5]:
         if budget <= 0:
             break
-        out["ips"][ip] = _cached(f"rdap:ip:{ip}", lambda ip=ip: _rdap_single(f"ip/{ip}"), settings.intel_cache_ttl)
+        out["ips"][ip] = _cached(
+            f"rdap:ip:{ip}", lambda ip=ip: _rdap_single(f"ip/{ip}"), settings.intel_cache_ttl
+        )
         budget -= 1
     for d in domains:
         if budget <= 0:
             break
-        out["domains"][d] = _cached(f"rdap:domain:{d}", lambda d=d: _rdap_single(f"domain/{d}"), settings.intel_cache_ttl)
+        out["domains"][d] = _cached(
+            f"rdap:domain:{d}", lambda d=d: _rdap_single(f"domain/{d}"), settings.intel_cache_ttl
+        )
         budget -= 1
     return out
 
@@ -155,7 +161,9 @@ def rdap_lookup(ctx: ToolContext) -> dict[str, Any]:
 
 def _malwarebazaar(hash_value: str) -> dict[str, Any]:
     try:
-        data = _post_json("https://mb-api.abuse.ch/api/v1/", data={"query": "get_info", "hash": hash_value})
+        data = _post_json(
+            "https://mb-api.abuse.ch/api/v1/", data={"query": "get_info", "hash": hash_value}
+        )
     except Exception:  # noqa: BLE001
         return {"known": None, "source": "MalwareBazaar", "error": "查询失败/限速"}
     if data.get("query_status") != "ok":
@@ -223,22 +231,30 @@ def threat_lookup(ctx: ToolContext) -> dict[str, Any]:
     for h in iocs["hashes"][:5]:
         if budget <= 0:
             break
-        results["hashes"][h] = _cached(f"threat:hash:{h}", lambda h=h: _malwarebazaar(h), settings.intel_cache_ttl)
+        results["hashes"][h] = _cached(
+            f"threat:hash:{h}", lambda h=h: _malwarebazaar(h), settings.intel_cache_ttl
+        )
         budget -= 1
     for ip in _pick_public(ctx.external_ips or iocs["ips"])[:5]:
         if budget <= 0:
             break
-        results["ips"][ip] = _cached(f"threat:ip:{ip}", lambda ip=ip: _threatfox(ip), settings.intel_cache_ttl)
+        results["ips"][ip] = _cached(
+            f"threat:ip:{ip}", lambda ip=ip: _threatfox(ip), settings.intel_cache_ttl
+        )
         budget -= 1
     for d in iocs["domains"][:5]:
         if budget <= 0:
             break
-        results["domains"][d] = _cached(f"threat:domain:{d}", lambda d=d: _threatfox(d), settings.intel_cache_ttl)
+        results["domains"][d] = _cached(
+            f"threat:domain:{d}", lambda d=d: _threatfox(d), settings.intel_cache_ttl
+        )
         budget -= 1
     for u in iocs["urls"][:5]:
         if budget <= 0:
             break
-        results["urls"][u] = _cached(f"threat:url:{u}", lambda u=u: _urlhaus(u), settings.intel_cache_ttl)
+        results["urls"][u] = _cached(
+            f"threat:url:{u}", lambda u=u: _urlhaus(u), settings.intel_cache_ttl
+        )
         budget -= 1
     return results
 
