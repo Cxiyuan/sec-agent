@@ -11,7 +11,7 @@
 @load base/protocols/dns
 @load base/protocols/http
 @load base/protocols/ssl
-@load base/protocols/files
+@load base/frameworks/files
 @load base/protocols/smtp
 @load base/protocols/ssh
 @load base/protocols/dhcp

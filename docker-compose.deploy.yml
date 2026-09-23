@@ -1,0 +1,123 @@
+# 深瞳 · 安全分析智能体 —— 服务器部署编排
+#
+# 与开发用 docker-compose.yml 的区别：
+#   1) 只从 GHCR 拉取镜像（不在服务器上本地构建，符合项目「只用 GitHub Actions 构建」的规则）
+#   2) Zeek 抓包口默认 ens224（端口镜像/SPAN 口，本机无 IP）
+#   3) CORS 默认放行本机 3000 端口来源
+#
+# 用法（在 /opt/shentong 下）：
+#   docker compose up -d
+#   docker compose ps
+#   docker compose logs -f backend
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: shentong
+      POSTGRES_PASSWORD: shentong
+      POSTGRES_DB: shentong
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
+    environment: &backend-env
+      ST_ES_URL: http://elasticsearch:9200
+      ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
+      ST_REDIS_URL: redis://redis:6379/0
+      ST_CELERY_BROKER_URL: redis://redis:6379/1
+      ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 云端模型 API Key 不走环境变量：在后台「系统配置」页填写、存数据库
+      ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）
+      ST_ZEEK_CONF_DIR: /config
+      ST_ZEEK_IFACE_CONF: /config/interface.conf
+      ST_ZEEK_INTERFACES_JSON: /config/interfaces.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - zeek-config:/config
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    restart: unless-stopped
+
+  celery-worker:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
+    command: celery -A app.workers.celery_app worker -l info --concurrency=2
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    restart: unless-stopped
+
+  celery-beat:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
+    command: celery -A app.workers.celery_app beat -l info
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-frontend:latest
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Zeek 采集（内含 Filebeat，直发 ES）
+  # host 网络 + NET_RAW/NET_ADMIN 才能抓宿主网卡；host 网络下访问 ES 用 localhost:9200
+  zeek:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-zeek:latest
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      ZEEK_CONF_DIR: /config
+      ZEEK_IFACE_CONF: /config/interface.conf
+      ZEEK_INTERFACES_JSON: /config/interfaces.json
+      ZEEK_LOG_DIR: /logs
+      ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
+      ES_URL: ${ZEEK_ES_URL:-http://localhost:9200}
+      ES_USER: ${ES_USER:-}
+      ES_PASSWORD: ${ES_PASSWORD:-}
+    volumes:
+      - zeek-logs:/logs
+      - zeek-config:/config
+    restart: unless-stopped
+
+volumes:
+  es-data:
+  pg-data:
+  zeek-logs:
+  zeek-config:
