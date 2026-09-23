@@ -74,20 +74,17 @@ class Settings(BaseSettings):
     # 环境变量不可覆盖；此处只保留超时等行为参数。
     edge_model_timeout: int = 300
 
-    # 云端 one-api 端点（四个云端模型共用；模型名可在后台系统配置里运行时修改）
-    cloud_model_base_url: str = "http://localhost:3000/v1"
-    cloud_model_api_key: str = ""
+    # 云端模型（MiniMax 国内版）
+    # - chat（flash/deep）走 OpenAI 兼容协议：Authorization Bearer <api_key>，无需 GroupId
+    # - 嵌入（embo）走 MiniMax 自有格式：URL 拼 ?GroupId=，用 type 区分 db/query
+    # 模型名已固化（见 app/models/registry.py）：flash→MiniMax-M2.7，deep→MiniMax-M3，
+    # embo-db/embo-query→embo-01。界面不暴露 MiniMax 模型名，只保留角色名。
+    cloud_model_base_url: str = "https://api.minimaxi.com/v1"
+    cloud_model_api_key: str = ""  # MiniMax API key（环境变量 ST_CLOUD_MODEL_API_KEY）
+    minimax_group_id: str = ""  # 嵌入必需（环境变量 ST_MINIMAX_GROUP_ID，拼 URL ?GroupId=）
     cloud_model_timeout: int = 600
 
-    # 云端模型名（角色分工）
-    flash_model_name: str = "flash"  # 日常分析：异常确认/定级/处置/报告正文
-    deep_model_name: str = "deep"  # 深度分析：攻击链还原/攻击者画像
-    embo_db_model_name: str = "embo-db"  # 向量入库
-    embo_query_model_name: str = "embo-query"  # 向量查询
-
-    # 嵌入（RAG 向量化，走 one-api 的 /v1/embeddings）
-    embedding_base_url: str = ""  # 留空则回退 cloud_model_base_url
-    embedding_api_key: str = ""  # 留空则回退 cloud_model_api_key
+    # 嵌入（RAG 向量化，走 MiniMax embo-01）
     embedding_dim: int = 1536
     embedding_timeout: int = 60
 

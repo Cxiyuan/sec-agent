@@ -19,12 +19,8 @@ from app.runtime_config import invalidate as invalidate_runtime_config
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 # 可配置键及默认值。默认取环境变量；写入 DB 后 DB 值优先。
+# 注意：模型名已固化（MiniMax 国内版，见 registry），不在后台可改列表。
 CONFIG_KEYS: dict[str, Any] = {
-    # 模型名（角色分工，后台可运行时修改；edge 已固化不在可改列表）
-    "model.flash": settings.flash_model_name,
-    "model.deep": settings.deep_model_name,
-    "model.embo_db": settings.embo_db_model_name,
-    "model.embo_query": settings.embo_query_model_name,
     # 升级与报告
     "escalate_score_threshold": settings.escalate_score_threshold,
     "report_min_severity": settings.report_min_severity,
@@ -78,7 +74,7 @@ def update_config(
         db.add(row)
     row.value = {"value": body.value}
     db.commit()
-    # 模型名与 RAG 参数均需即时生效
+    # 配置项均经 runtime_config 即时生效（模型名已固化，无需失效）
     invalidate_model_cache()
     invalidate_runtime_config()
     return {"key": key, "value": body.value}

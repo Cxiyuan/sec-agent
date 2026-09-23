@@ -105,5 +105,15 @@ def test_edge(body: EdgeIpIn, _: Annotated[User, Depends(get_current_user)]):
             "models": [m.get("id") for m in models if isinstance(m, dict)][:10],
         }
     if resp.status_code == 401:
-        return {"ok": False, "status": "auth_failed", "detail": "认证失败（api key 不匹配）", "base_url": base}
-    return {"ok": False, "status": f"http_{resp.status_code}", "detail": f"HTTP {resp.status_code}", "base_url": base}
+        return {
+            "ok": False,
+            "status": "auth_failed",
+            "detail": "认证失败（api key 不匹配）",
+            "base_url": base,
+        }
+    return {
+        "ok": False,
+        "status": f"http_{resp.status_code}",
+        "detail": f"HTTP {resp.status_code}",
+        "base_url": base,
+    }

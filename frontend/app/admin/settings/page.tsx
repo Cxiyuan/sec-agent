@@ -21,15 +21,6 @@ interface Field {
 
 const GROUPS: { name: string; fields: Field[] }[] = [
   {
-    name: "模型（角色分工，可运行时修改）",
-    fields: [
-      { key: "model.flash", label: "flash · 日常分析", type: "text", hint: "异常确认/定级/处置/报告正文" },
-      { key: "model.deep", label: "deep · 深度分析", type: "text", hint: "攻击链还原/攻击者画像" },
-      { key: "model.embo_db", label: "embo-db · 向量入库", type: "text" },
-      { key: "model.embo_query", label: "embo-query · 向量查询", type: "text" },
-    ],
-  },
-  {
     name: "边缘模型思考模式（每场景独立开关）",
     fields: [
       { key: "edge_thinking.semantic_merge", label: "语义关联开思考", type: "bool", hint: "判断两个事件组是否同一次攻击" },
