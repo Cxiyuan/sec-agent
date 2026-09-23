@@ -34,11 +34,9 @@ services:
       ST_REDIS_URL: redis://redis:6379/0
       ST_CELERY_BROKER_URL: redis://redis:6379/1
       ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
-      ST_EDGE_MODEL_NAME: ${EDGE_MODEL_NAME:-qwen3.8-2b-distill}
-      ST_EDGE_MODEL_BASE_URL: ${EDGE_URL:-http://host.docker.internal:8080/v1}
-      ST_CLOUD_MODEL_NAME: ${CLOUD_MODEL_NAME:-minimax-text}
-      ST_CLOUD_MODEL_BASE_URL: ${ONE_API_URL:-http://host.docker.internal:3000/v1}
+      # 云端模型（MiniMax 国内版）：base_url 已内置在 config 默认值，这里只注入密钥
       ST_CLOUD_MODEL_API_KEY: ${CLOUD_API_KEY:-}
+      ST_MINIMAX_GROUP_ID: ${MINIMAX_GROUP_ID:-}
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）
