@@ -217,7 +217,7 @@ def fetch_window_logs(
                 f"{source}: IP 字段类型为 {fields.get('type')}，使用 Python 侧网段过滤"
             )
         kept = [d for d in docs if doc_in_scope(d, fields, nets)]
-        result.notes.append(f"{source}: 拉取 {len(docs)} 条，网段内保留 {kept} 条")
+        result.notes.append(f"{source}: 拉取 {len(docs)} 条，网段内保留 {len(kept)} 条")
         result.logs.extend((source, d) for d in kept)
 
     if "python" in modes and "es_cidr" in modes:
