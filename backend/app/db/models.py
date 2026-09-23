@@ -74,6 +74,7 @@ class EventGroup(Base):
     lookback: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 回溯决策与历史行为摘要
     memory_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 召回的历史记忆摘要
     profile_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 账号/会话画像异常
+    skill_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 命中的技能与工具结果
     attack_chain: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     anomaly: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -308,6 +309,28 @@ class EntityProfile(Base):
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     anomalies: Mapped[list] = mapped_column(JSONB, default=list)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Skill(Base):
+    """安全事件分析技能：SOP（分析流程/方法）+ 关联脚本工具，按事件类型路由。"""
+
+    __tablename__ = "skills"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    sop: Mapped[str] = mapped_column(Text, default="")  # 分析 SOP 正文（注入提示词）
+    event_types: Mapped[list] = mapped_column(JSONB, default=list)  # 路由用的事件类型
+    tools: Mapped[list] = mapped_column(JSONB, default=list)  # 关联工具名
+    source: Mapped[str] = mapped_column(String(16), default="user")  # builtin | user
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)  # 越小越先
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -148,11 +148,25 @@ class Settings(BaseSettings):
     hitl_enabled: bool = False
     hitl_min_severity: str = "high"  # 达到该级别才触发人工确认
 
-    # 威胁情报
+    # 威胁情报（免费在线服务，无需 API key：ip-api/ipwho.is、rdap.org、abuse.ch 家族）
     intel_enabled: bool = True
-    intel_api_url: str = ""
+    intel_api_url: str = ""  # 可选：自定义情报端点（留空则用内置免费服务）
     intel_api_key: str = ""
-    intel_timeout: int = 10
+    intel_timeout: int = 3  # 免费服务单次超时（秒）
+    intel_cache_ttl: int = 600  # 情报结果缓存秒数
+    intel_max_queries_per_group: int = 20  # 单事件组查询条数上限（防打爆免费额度）
+
+    # 技能库（安全事件分析 SOP + 脚本工具）
+    skill_enabled: bool = True
+    skill_max_per_group: int = 3  # 单事件组最多加载几个技能
+    skill_sop_max_chars: int = 3000  # 单技能 SOP 注入提示词前的截断长度
+    active_scan_enabled: bool = False  # 主动探测默认关（仅授权网段 + 结果只作参考）
+    active_scan_timeout: float = 1.0  # 单端口探测超时（秒）
+    active_scan_max_ports: int = 100
+    active_scan_ports: str = (
+        "21,22,23,25,53,80,110,135,139,143,443,445,1433,1521,3306,3389,"
+        "5432,5900,6379,8080,8443,9200"
+    )
 
     # 认证
     jwt_secret: str = "change-me-in-production"

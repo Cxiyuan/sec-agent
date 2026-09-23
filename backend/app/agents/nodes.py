@@ -18,6 +18,7 @@ from app.agents.memory import (
 )
 from app.agents.persistence import (
     get_enabled_rules,
+    get_enabled_skills,
     save_business_context,
     save_groups,
     save_report,
@@ -26,6 +27,7 @@ from app.agents.persistence import (
     update_group_lookback,
     update_group_memory_hits,
     update_group_profile_hits,
+    update_group_skill_hits,
 )
 from app.agents.prefilter import known_asset_ip_set, prefilter
 from app.agents.profile import (
@@ -48,6 +50,8 @@ from app.models.llm import edge_invoke_json, flash_invoke_json, flash_invoke_tex
 from app.rag.context import build_business_context, context_text_for_group
 from app.rules.engine import is_count_rule, match_count_rule, match_rule
 from app.schemas import EventGroup, SuspiciousEvent, UnifiedLog
+from app.tools import execute
+from app.tools.context import ToolContext, is_public_ip
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -478,6 +482,110 @@ def profile_recall_node(state: AgentState) -> dict[str, Any]:
     return {"profile": {**info, "by_group": by_group}}
 
 
+# ---------- 节点 3.66：技能路由 + 工具执行 ----------
+
+
+def _build_tool_context(g: EventGroup) -> ToolContext:
+    """从事件组聚合工具输入（IP / 文本 / URL / 域名 / 请求体）。"""
+    src_ips = g.src_ips or []
+    dst_ips = g.dst_ips or []
+    all_ips = [ip for ip in src_ips + dst_ips if ip]
+    external_ips = [ip for ip in all_ips if is_public_ip(ip)]
+    parts: list[str] = []
+    urls: list[str] = []
+    domains: list[str] = []
+    qs: list[str] = []
+    bodies: list[str] = []
+    for ev in g.events:
+        lg = ev.log
+        for text in (lg.summary, lg.uri_path, lg.query_string, lg.body):
+            if text:
+                parts.append(str(text))
+        if lg.query_string:
+            qs.append(str(lg.query_string))
+        if lg.body:
+            bodies.append(str(lg.body))
+        if lg.uri_path:
+            host = lg.dst_ip or lg.hostname
+            if host:
+                urls.append(f"http://{host}{lg.uri_path}")
+        if lg.event_type == "dns_query" and lg.query:
+            domains.append(str(lg.query))
+    return ToolContext(
+        src_ips=src_ips,
+        dst_ips=dst_ips,
+        external_ips=external_ips,
+        text="\n".join(parts)[:20000],
+        urls=urls[:20],
+        domains=domains[:20],
+        query_strings=qs[:10],
+        bodies=bodies[:10],
+    )
+
+
+def skill_context_text(g: EventGroup, skill_context: dict[str, Any]) -> str:
+    """把命中技能的 SOP + 工具结果拼成提示词文本（无命中则回「无专属技能」）。"""
+    info = skill_context.get(g.fingerprint) or {}
+    skills = info.get("skills") or []
+    if not skills:
+        return "（无专属技能）"
+    tool_results = info.get("tool_results") or {}
+    blocks: list[str] = []
+    for s in skills:
+        sop = (s.get("sop") or "").strip()[: settings.skill_sop_max_chars]
+        block = [f"【技能：{s['name']}】", sop]
+        for tool_name in s.get("tools") or []:
+            result = tool_results.get(tool_name)
+            if result:
+                rendered = json.dumps(result, ensure_ascii=False, default=str)[:1500]
+                block.append(f"[工具 {tool_name} 结果]\n{rendered}")
+        blocks.append("\n".join(block))
+    return "\n\n".join(blocks)
+
+
+def skill_enrich_node(state: AgentState) -> dict[str, Any]:
+    """按事件类型路由技能，确定性执行其工具，产出技能上下文。"""
+    if not settings.skill_enabled:
+        return {"skill_context": {}}
+    groups = state.get("groups", [])
+    if not groups:
+        return {"skill_context": {}}
+    with SessionLocal() as db:
+        skills = get_enabled_skills(db)
+    if not skills:
+        return {"skill_context": {}}
+
+    contexts: dict[str, dict[str, Any]] = {}
+    for g in groups:
+        event_types = {ev.log.event_type for ev in g.events}
+        matched = [s for s in skills if set(s["event_types"]) & event_types]
+        matched = matched[: settings.skill_max_per_group]
+        ctx = _build_tool_context(g)
+        tool_results: dict[str, Any] = {}
+        for skill in matched:
+            for tool_name in skill["tools"]:
+                if tool_name not in tool_results:
+                    tool_results[tool_name] = execute(tool_name, ctx)
+        payload = {
+            "skills": [
+                {
+                    "name": s["name"],
+                    "description": s["description"],
+                    "sop": s["sop"],
+                    "tools": s["tools"],
+                }
+                for s in matched
+            ],
+            "tool_results": tool_results,
+        }
+        contexts[g.fingerprint] = payload
+        update_group_skill_hits(g.fingerprint, payload)
+
+    hit = sum(1 for c in contexts.values() if c["skills"])
+    log.info("技能路由：%d/%d 组命中技能", hit, len(contexts))
+    return {"skill_context": contexts}
+
+
 # ---------- 节点 3.7：回溯决策与历史行为（LLM 决定时长，后端封顶） ----------
 
 
@@ -633,6 +741,7 @@ def severity_node(state: AgentState) -> dict[str, Any]:
                     memory=memory_blob,
                     lookback=lookback_blob,
                     entity_profile=profile_blob,
+                    skill=skill_context_text(g, state.get("skill_context") or {}),
                 ),
             )
             severity = r.get("severity", rule_severity)
@@ -710,6 +819,7 @@ def response_node(state: AgentState) -> dict[str, Any]:
                     chain=json.dumps(chain, ensure_ascii=False, default=str),
                     profile=json.dumps(profile, ensure_ascii=False, default=str),
                     business_context=context_text,
+                    skill=skill_context_text(g, state.get("skill_context") or {}),
                 ),
             )
             suggestions = r.get("suggestions", [])

@@ -46,6 +46,22 @@ def verify_prompts() -> list[str]:
     return problems
 
 
+def verify_skills() -> list[str]:
+    """校验内置技能：事件类型/工具非空，工具名必须存在（防「指向不存在工具」的死技能）。"""
+    from app.skills import BUILTIN_SKILLS
+    from app.tools import tool_names
+
+    known = set(tool_names())
+    problems: list[str] = []
+    for skill in BUILTIN_SKILLS:
+        if not skill.get("event_types"):
+            problems.append(f"{skill.get('name')}: 未声明事件类型，永远不会被路由命中")
+        for tool in skill.get("tools") or []:
+            if tool not in known:
+                problems.append(f"{skill.get('name')}: 引用了不存在的工具 {tool}")
+    return problems
+
+
 def run_startup_selfcheck() -> None:
     """执行全部启动自检，问题以 WARNING 打印（不阻断启动）。"""
     from app.rules.builtin import BUILTIN_RULES
@@ -53,6 +69,9 @@ def run_startup_selfcheck() -> None:
 
     for name in verify_prompts():
         log.warning("提示词自检：%s", name)
+
+    for skill in verify_skills():
+        log.warning("技能自检：%s", skill)
 
     for rule in BUILTIN_RULES:
         for msg in validate_rule_regexes(rule):

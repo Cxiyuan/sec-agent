@@ -36,6 +36,10 @@ CONFIG_KEYS: dict[str, Any] = {
     "rag_enabled": settings.rag_enabled,
     "rag_top_k": settings.rag_top_k,
     "rag_min_score": settings.rag_min_score,
+    # 技能库与主动探测（经 runtime_config 即时生效）
+    "skill_enabled": settings.skill_enabled,
+    "intel_enabled": settings.intel_enabled,
+    "active_scan_enabled": settings.active_scan_enabled,
 }
 
 # 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，

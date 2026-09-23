@@ -14,6 +14,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Sparkles,
   UserSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ const items = [
   { href: "/admin/memories", label: "分析记忆", icon: Brain },
   { href: "/admin/profiles", label: "账号会话画像", icon: UserSearch },
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
+  { href: "/admin/skills", label: "技能库", icon: Sparkles },
   { href: "/admin/reports", label: "报告", icon: ScrollText },
   { href: "/admin/settings", label: "系统配置", icon: Settings },
 ];

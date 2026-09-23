@@ -22,6 +22,7 @@ from app.agents.nodes import (
     report_node,
     response_node,
     severity_node,
+    skill_enrich_node,
     triage_node,
 )
 from app.agents.state import AgentState
@@ -35,6 +36,7 @@ def build_graph(checkpointer: Any = None) -> Any:
     g.add_node("asset_enrich", asset_enrich_node)
     g.add_node("memory_recall", memory_recall_node)
     g.add_node("profile_recall", profile_recall_node)
+    g.add_node("skill_enrich", skill_enrich_node)
     g.add_node("lookback", lookback_node)
     g.add_node("deep_analysis", build_deep_analysis_subgraph())
     g.add_node("severity", severity_node)
@@ -50,9 +52,10 @@ def build_graph(checkpointer: Any = None) -> Any:
     g.add_edge("correlate", "asset_enrich")
     g.add_edge("asset_enrich", "memory_recall")
     g.add_edge("memory_recall", "profile_recall")
-    # 升级判定：升级组先做回溯，再深度分析；否则直接定级
+    g.add_edge("profile_recall", "skill_enrich")
+    # 技能路由后再升级判定：升级组先做回溯，再深度分析；否则直接定级
     g.add_conditional_edges(
-        "profile_recall", escalate_route, {"deep": "lookback", "skip": "severity"}
+        "skill_enrich", escalate_route, {"deep": "lookback", "skip": "severity"}
     )
     g.add_edge("lookback", "deep_analysis")
     g.add_edge("deep_analysis", "severity")

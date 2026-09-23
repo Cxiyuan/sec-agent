@@ -14,6 +14,7 @@ from app.api.routes import (
     profiles,
     reports,
     rules,
+    skills,
     topologies,
     ws,
     zeek,
@@ -29,6 +30,7 @@ api_router.include_router(memories.router)
 api_router.include_router(profiles.router)
 api_router.include_router(events.router)
 api_router.include_router(rules.router)
+api_router.include_router(skills.router)
 api_router.include_router(reports.router)
 api_router.include_router(config.router)
 api_router.include_router(es_admin.router)

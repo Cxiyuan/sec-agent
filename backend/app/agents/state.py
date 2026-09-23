@@ -23,6 +23,10 @@ class AgentState(TypedDict, total=False):
     lookback: dict[str, dict[str, Any]]
     # 本轮拉取与过滤元信息（供 run_summary）
     run_meta: dict[str, Any]
+    # fingerprint -> 账号/会话画像异常（recall_entities 输出 + by_group 映射）
+    profile: dict[str, Any]
+    # fingerprint -> 技能上下文 {"skills": [...], "tool_results": {...}}
+    skill_context: dict[str, dict[str, Any]]
     # fingerprint -> 深度分析结果 {"anomaly":..., "attack_chain":..., "profile":...}
     analyses: dict[str, dict[str, Any]]
     # fingerprint -> "confirm" | "dismiss"

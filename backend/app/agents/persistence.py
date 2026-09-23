@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.base import SessionLocal
-from app.db.models import BaselineStat, Event, EventGroup, Report, Rule
+from app.db.models import BaselineStat, Event, EventGroup, Report, Rule, Skill
 from app.runtime_config import get as runtime_get
 from app.schemas import EventGroup as EventGroupSchema
 from app.workers.pubsub import publish
@@ -35,6 +35,25 @@ def get_enabled_rules(db: Session) -> list[dict[str, Any]]:
             "priority": r.priority,
         }
         for r in rows
+    ]
+
+
+def get_enabled_skills(db: Session) -> list[dict[str, Any]]:
+    """取启用中的技能（按 priority 升序）。"""
+    rows = db.execute(
+        select(Skill).where(Skill.enabled.is_(True)).order_by(Skill.priority)
+    ).scalars()
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "sop": s.sop,
+            "event_types": s.event_types or [],
+            "tools": s.tools or [],
+            "priority": s.priority,
+            "source": s.source,
+        }
+        for s in rows
     ]
 
 
@@ -133,6 +152,17 @@ def update_group_memory_hits(fingerprint: str, memory: dict[str, Any]) -> None:
             db.commit()
 
 
+def update_group_skill_hits(fingerprint: str, skill_hits: dict[str, Any]) -> None:
+    """保存命中的技能与工具结果（供详情页展示）。"""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(EventGroup).where(EventGroup.fingerprint == fingerprint)
+        ).scalar_one_or_none()
+        if row is not None:
+            row.skill_hits = skill_hits
+            db.commit()
+
+
 def update_group_profile_hits(fingerprint: str, profile: dict[str, Any]) -> None:
     """保存账号/会话画像异常（供详情页与驾驶舱展示）。"""
     with SessionLocal() as db:
@@ -226,7 +256,7 @@ def get_baseline(key: str) -> dict[str, float] | None:
             return None
         # 冷启动保护：观测不足 N 天时不报统计异常，避免上线首日大量误报
         # （后台「系统配置」可改，30 秒 TTL 内生效）
-        observe_days = int(runtime_get("baseline_observe_days", settings.baseline_observe_days))
+        observe_days = runtime_get("baseline_observe_days", settings.baseline_observe_days)
         in_observe = (
             observe_days > 0
             and row.first_seen is not None

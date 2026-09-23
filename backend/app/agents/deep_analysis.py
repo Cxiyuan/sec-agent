@@ -9,6 +9,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.memory import memory_text
+from app.agents.nodes import skill_context_text
 from app.agents.persistence import get_baseline, update_baseline
 from app.agents.profile import profile_text
 from app.agents.state import AgentState
@@ -108,6 +109,7 @@ def anomaly_node(state: AgentState) -> dict[str, Any]:
                         memory=_memory_blob(state, g.fingerprint),
                         lookback=_lookback_blob(state, g.fingerprint),
                         entity_profile=_profile_blob(state, g.fingerprint),
+                        skill=skill_context_text(g, state.get("skill_context") or {}),
                     ),
                 )
                 if r.get("is_anomaly"):
@@ -149,6 +151,7 @@ def attack_chain_node(state: AgentState) -> dict[str, Any]:
                     memory=_memory_blob(state, g.fingerprint),
                     lookback=_lookback_blob(state, g.fingerprint),
                     entity_profile=_profile_blob(state, g.fingerprint),
+                    skill=skill_context_text(g, state.get("skill_context") or {}),
                 ),
             )
             stages = r.get("stages", [])
@@ -219,6 +222,7 @@ def profile_node(state: AgentState) -> dict[str, Any]:
                     memory=_memory_blob(state, g.fingerprint),
                     lookback=_lookback_blob(state, g.fingerprint),
                     entity_profile=_profile_blob(state, g.fingerprint),
+                    skill=skill_context_text(g, state.get("skill_context") or {}),
                 ),
             )
             profile = {"basic": r.get("basic", {}), "behavior": r.get("behavior", {})}

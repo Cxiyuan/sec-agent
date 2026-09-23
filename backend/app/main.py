@@ -14,8 +14,9 @@ from app.api.router import api_router
 from app.api.routes.ws import start_listener
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
-from app.db.models import Rule, User
+from app.db.models import Rule, Skill, User
 from app.rules.builtin import BUILTIN_RULES
+from app.skills import BUILTIN_SKILLS
 
 # 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
 _MIGRATIONS = (
@@ -26,6 +27,7 @@ _MIGRATIONS = (
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS lookback JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS memory_hits JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS profile_hits JSONB",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS skill_hits JSONB",
     "ALTER TABLE baseline_stats ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
 )
 
@@ -98,6 +100,19 @@ def _seed() -> None:
                 if rule_spec["name"] in _CONFIG_DRIVEN_RULES:
                     # 依赖配置的规则，启用状态跟随配置
                     exists.enabled = rule_spec.get("enabled", exists.enabled)
+        # 内置技能（分析 SOP + 工具）幂等 upsert：不覆盖用户自建技能
+        for spec in BUILTIN_SKILLS:
+            exists = db.execute(
+                select(Skill).where(Skill.name == spec["name"])
+            ).scalar_one_or_none()
+            if exists is None:
+                db.add(Skill(**{**spec, "source": "builtin"}))
+            elif exists.source == "builtin":
+                exists.description = spec.get("description", "")
+                exists.sop = spec.get("sop", "")
+                exists.event_types = spec.get("event_types", [])
+                exists.tools = spec.get("tools", [])
+                exists.priority = spec.get("priority", exists.priority)
         db.commit()
 
     from app.topology.service import seed_node_types

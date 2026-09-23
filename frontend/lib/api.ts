@@ -428,6 +428,26 @@ export interface RuleItem {
   priority: number;
 }
 
+/** 脚本工具元信息（供技能表单选择） */
+export interface SkillTool {
+  name: string;
+  category: string;
+  description: string;
+}
+
+/** 安全分析技能（SOP + 关联工具，按事件类型路由） */
+export interface SkillItem {
+  id: string;
+  name: string;
+  description: string;
+  sop: string;
+  event_types: string[];
+  tools: string[];
+  source: string;
+  enabled: boolean;
+  priority: number;
+}
+
 /** 事件组详情（含关联事件） */
 export interface EventItem {
   id: string;
