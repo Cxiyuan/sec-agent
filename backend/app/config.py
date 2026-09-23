@@ -63,8 +63,9 @@ class Settings(BaseSettings):
     memory_retention_object_days: int = 180
 
     # ES IP 字段（可用逗号分隔多个；以 mapping 自检结果为准）
-    es_zeek_src_fields: str = "id.orig_h"
-    es_zeek_dst_fields: str = "id.resp_h"
+    # Filebeat 把 Zeek 字段放在 zeek.* 命名空间下（避免与其元数据 host/agent/ecs 撞名）
+    es_zeek_src_fields: str = "zeek.id.orig_h"
+    es_zeek_dst_fields: str = "zeek.id.resp_h"
     es_wazuh_src_fields: str = "data.srcip"
     es_wazuh_dst_fields: str = "data.dstip"
 

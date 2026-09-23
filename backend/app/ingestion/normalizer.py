@@ -268,7 +268,14 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
 
 
 def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
-    ts = _to_dt(doc.get("ts") or doc.get("@timestamp"))
+    # Filebeat 采集时会把 Zeek 字段收在 zeek.* 命名空间下（避免与其元数据
+    # host/agent/ecs 撞名，否则 http.log 的 host 会被覆盖）；这里解包，
+    # 同时兼容旧的扁平结构（其它采集管道/历史数据）。
+    outer = doc
+    nested = doc.get("zeek")
+    if isinstance(nested, dict):
+        doc = nested
+    ts = _to_dt(doc.get("ts") or outer.get("@timestamp"))
     log_type = _zeek_log_type(doc)
     note = doc.get("note")
     conn_state = doc.get("conn_state")
@@ -297,9 +304,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         src_port=_to_int(_get(doc, "id.orig_p")),
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
-        hostname=_str_or_none(doc.get("http_host"))
-        or _str_or_none(doc.get("host"))
-        or _str_or_none(doc.get("server_name")),
+        hostname=_str_or_none(doc.get("host")) or _str_or_none(doc.get("server_name")),
         user=doc.get("user") or doc.get("uid_owner"),
         query=query,
         user_agent=str(doc.get("user_agent") or ""),
