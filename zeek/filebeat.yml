@@ -22,12 +22,19 @@ filebeat.inputs:
     close_removed: true
 
 processors:
-  # 从文件名提取日志类型：conn.log -> conn；conn.10-30-00.log -> conn
-  - dissect:
-      tokenizer: "%{log_type}.%{?rest}"
-      field: log.file.name
-      target_prefix: ""
-      ignore_failure: true
+  # 从路径提取日志类型：/logs/conn.log -> conn；/logs/2026-09-23/conn.14-00-00.log -> conn
+  # 注意①：filestream 输入只提供 log.file.path（没有 log.file.name）
+  # 注意②：本镜像的 Filebeat 构建不含 grok 处理器，故用 JS script 处理器取文件名
+  - script:
+      lang: javascript
+      source: >
+        function process(event) {
+          var p = event.Get("log.file.path") || "";
+          var parts = p.split("/");
+          var nm = parts[parts.length - 1] || "";
+          var t = nm.split(".")[0];
+          if (t) { event.Put("log_type", t); }
+        }
   - drop_event:
       when:
         not:
