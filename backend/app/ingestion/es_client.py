@@ -79,14 +79,28 @@ def in_scope(ip_value: Any, nets: list[Any]) -> bool:
 
 
 def _get_path(doc: dict[str, Any], path: str) -> Any:
-    """取值：支持点号扁平键与嵌套对象两种形态。"""
+    """取值：支持「点号扁平键」与「嵌套对象」两种形态。
+
+    注意：嵌套形态下键名自身可能含点（Zeek 的 id.orig_h 就是这种，经 Filebeat
+    命名空间后变成 zeek -> id.orig_h）。所以逐层下钻时必须**优先匹配最长的键名**，
+    不能简单按点号切分——否则会把 id.orig_h 拆成 id / orig_h 而取不到值。
+    """
     if path in doc:
         return doc[path]
+    parts = path.split(".")
     node: Any = doc
-    for part in path.split("."):
+    i = 0
+    while i < len(parts):
         if not isinstance(node, dict):
             return None
-        node = node.get(part)
+        for j in range(len(parts), i, -1):  # 从最长的键名试起
+            key = ".".join(parts[i:j])
+            if key in node:
+                node = node[key]
+                i = j
+                break
+        else:
+            return None
     return node
 
 
@@ -119,7 +133,11 @@ def _scroll(
     if limit <= 0:
         return out
     resp = es.search(
-        index=index, query=query, size=min(PAGE_SIZE, limit), sort=[{"@timestamp": "asc"}]
+        index=index,
+        query=query,
+        size=min(PAGE_SIZE, limit),
+        sort=[{"@timestamp": "asc"}],
+        scroll="1m",  # 不传 scroll 则拿不到 _scroll_id，只能取到第一页（之前只取 1000 条）
     )
     hits = resp["hits"]["hits"]
     scroll_id = resp.get("_scroll_id")
