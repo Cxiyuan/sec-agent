@@ -84,6 +84,32 @@ services:
       - redis
     restart: unless-stopped
 
+  # 事件驱动检测器：消费 Redis 旁路队列，实时检测 + 短窗聚合后投递摘要给智能体
+  detector:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
+    command: python -m app.detector
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # 采集侧双写：Filebeat/Wazuh → Logstash → ES（历史） + Redis（旁路队列）
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.15.3
+    environment:
+      LS_JAVA_OPTS: -Xms512m -Xmx512m
+      ES_URL: http://elasticsearch:9200
+      REDIS_HOST: redis
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "5044:5044"
+    depends_on:
+      - elasticsearch
+      - redis
+    restart: unless-stopped
+
   frontend:
     # 注意：后端地址在「构建时」烙进 Next 的 rewrites（默认取 compose 服务名 backend），
     # 运行时再设 BACKEND_URL 无效，故此处不声明。
@@ -108,9 +134,9 @@ services:
       ZEEK_INTERFACES_JSON: /config/interfaces.json
       ZEEK_LOG_DIR: /logs
       ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
-      ES_URL: ${ZEEK_ES_URL:-http://localhost:9200}
-      ES_USER: ${ES_USER:-}
-      ES_PASSWORD: ${ES_PASSWORD:-}
+      # 采集侧改为发 Logstash（host 网络下用宿主地址）
+      LOGSTASH_HOST: ${LOGSTASH_HOST:-localhost}
+      LOGSTASH_PORT: ${LOGSTASH_PORT:-5044}
     volumes:
       - zeek-logs:/logs
       - zeek-config:/config

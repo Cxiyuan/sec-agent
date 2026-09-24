@@ -41,10 +41,32 @@ class Settings(BaseSettings):
 
     # 分析窗口
     analysis_interval_minutes: int = (
-        5  # 注意：仅环境变量生效（Celery Beat 启动时读取，改后需重启 beat）
+        15  # 兜底定时任务间隔（仅环境变量生效；实时链路为主，这是全量兜底）
     )
     analysis_window_minutes: int = 5
     baseline_observe_days: int = 7  # 基线观测期：不足 N 天只学习不判异常（防上线首日误报）
+
+    # 数据接入：检测器（旁路队列实时检测）
+    detector_enabled: bool = True
+    detector_raw_queue: str = "shentong:events:raw"
+    detector_digest_queue: str = "shentong:events:digest"
+    detector_processing_queue: str = "shentong:events:processing"
+    detector_handled_key: str = "shentong:handled:docs"
+    detector_handled_ttl: int = 90000  # 已处理登记保留秒数（需 > 兜底最大回补时长）
+    detector_agg_seconds: int = 60  # 短窗聚合时长（源IP+规则）
+    detector_agg_max_keys: int = 5000  # 并发聚合态上限（护栏）
+    detector_batch_seconds: int = 20  # 攒批：最长等待
+    detector_batch_max: int = 5  # 攒批：凑够多少条就触发
+    detector_max_per_batch: int = 50  # 单次投递摘要数上限（护栏）
+    detector_poll_timeout: int = 5  # 队列阻塞读取秒数
+    detector_scope_refresh_seconds: int = 60  # 分析网段刷新间隔
+    detector_stats_log_seconds: int = 300  # 运行统计日志间隔
+    # 频率规则滑动窗口（实时链路用 Redis 滑窗替代“窗口内计数”）
+    freq_window_seconds: int = 300
+    freq_cooldown_seconds: int = 300  # 同一分组触发后的冷却，防重复告警
+    # 兜底任务水位（存 PostgreSQL，跨重启可靠）
+    fallback_watermark_key: str = "fallback.last_run"
+    fallback_max_backfill_hours: int = 24  # 单次最大回补时长（超限截断并告警）
 
     # 拉取护栏 / 检索上限
     max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）

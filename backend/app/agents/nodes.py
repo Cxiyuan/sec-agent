@@ -41,6 +41,7 @@ from app.agents.state import AgentState
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import SystemConfig
+from app.detector.handled import doc_hash
 from app.edge_config import edge_thinking_for, edge_thinking_merge
 from app.ingestion.dedup import dedup_logs
 from app.ingestion.es_client import fetch_window_logs
@@ -89,6 +90,23 @@ def _safe_int(value: Any, default: int) -> int:
 # ---------- 节点 1：拉取 + 规范化 + 去重 ----------
 
 
+def _handled_registry() -> Any | None:
+    """已处理文档登记（供兜底补漏）；Redis 不可用时返回 None（降级为全量分析）。"""
+    try:
+        import redis
+
+        from app.detector.handled import HandledRegistry
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        client.ping()
+        return HandledRegistry(
+            client, settings.detector_handled_key, settings.detector_handled_ttl
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("读取已处理登记失败，兜底将按全量分析: %s", exc)
+        return None
+
+
 def ingest_node(state: AgentState) -> dict[str, Any]:
     start = state.get("window_start") or (
         _now() - timedelta(minutes=settings.analysis_window_minutes)
@@ -99,8 +117,19 @@ def ingest_node(state: AgentState) -> dict[str, Any]:
     cidrs = enabled_cidrs()
     fetched = fetch_window_logs(start, end, cidrs)
 
+    # 兜底补漏：跳过检测器已处理过的文档（否则会与实时链路重复出组/出报告）
+    kept_docs = fetched.logs
+    skipped_handled = 0
+    if settings.detector_enabled and kept_docs:
+        registry = _handled_registry()
+        if registry is not None:
+            hashes = [doc_hash(doc) for _, doc in kept_docs]
+            flags = registry.filter_unhandled(hashes)
+            kept_docs = [d for d, keep in zip(kept_docs, flags, strict=False) if keep]
+            skipped_handled = len(flags) - len(kept_docs)
+
     logs: list[UnifiedLog] = []
-    for source, doc in fetched.logs:
+    for source, doc in kept_docs:
         norm = normalize(source, doc)
         if norm is not None:
             logs.append(norm)
@@ -113,15 +142,17 @@ def ingest_node(state: AgentState) -> dict[str, Any]:
         "fetched_raw": fetched.total,
         "truncated": fetched.truncated,
         "notes": fetched.notes,
+        "skipped_handled": skipped_handled,
         "skipped": "no_scope" if fetched.mode == "no_scope" else None,
     }
     log.info(
-        "窗口 %s ~ %s 拉取 %d 条（模式 %s，网段 %d 个），去重后 %d 条",
+        "窗口 %s ~ %s 拉取 %d 条（模式 %s，网段 %d 个），补漏跳过 %d 条，去重后 %d 条",
         start,
         end,
         fetched.total,
         fetched.mode,
         len(cidrs),
+        skipped_handled,
         len(logs),
     )
     return {
@@ -246,6 +277,79 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         len(candidates),
     )
     return {"suspicious_events": suspicious}
+
+
+# ---------- 节点 2.5：实时入口（检测器投递的聚合摘要）----------
+
+
+def realtime_triage_node(state: AgentState) -> dict[str, Any]:
+    """实时链路入口：把检测器投递的聚合摘要转成可疑事件并做边缘降噪。
+
+    与 triage_node 的区别：规则匹配已在检测器完成，这里只做
+    「摘要 → 可疑事件」转换 + 边缘模型降噪（量已按短窗聚合，成本可控）。
+    聚合规模（次数/目标数/端口）写进 summary 与 edge_reason，供后续
+    报告与定级看到真实规模。
+    """
+    raw_digests = state.get("digests")
+    digests: list[dict[str, Any]] = raw_digests if isinstance(raw_digests, list) else []
+    suspicious: list[SuspiciousEvent] = []
+    reviewed = 0
+    for d in digests:
+        if not isinstance(d, dict):
+            continue
+        rule = str(d.get("rule") or "实时检测")
+        count = _safe_int(d.get("count"), 1)
+        raw_dst_ips = d.get("dst_ips")
+        dst_ips: list[Any] = raw_dst_ips if isinstance(raw_dst_ips, list) else []
+        raw_dst_ports = d.get("dst_ports")
+        dst_ports: list[Any] = raw_dst_ports if isinstance(raw_dst_ports, list) else []
+        label = f"{rule}（实时聚合 {count} 次"
+        if dst_ips:
+            label += f" / {len(dst_ips)} 个目标"
+        if dst_ports:
+            label += f" / 端口 {','.join(str(p) for p in dst_ports[:6])}"
+        label += "）"
+
+        raw_samples = d.get("samples")
+        samples: list[Any] = raw_samples if isinstance(raw_samples, list) else []
+        sample = next((s for s in samples if isinstance(s, dict)), None)
+        if sample is None:
+            continue
+        log_source = str(sample.get("source") or "zeek")
+        raw_doc = sample.get("doc")
+        if not isinstance(raw_doc, dict):
+            continue
+        entry = normalize(log_source, raw_doc)
+        if entry is None:
+            continue
+
+        # 聚合规模带进 summary（会进入定级/报告提示词与界面）
+        entry.summary = f"[实时聚合 ×{count}] {entry.summary}"[:500]
+        score, ok, reason = _edge_review(entry, label)
+        reviewed += 1
+        if not ok:
+            continue
+        suspicious.append(
+            SuspiciousEvent(
+                log=entry,
+                hit_rule=rule,
+                rule_source="user" if d.get("rule_source") == "user" else "builtin",
+                edge_score=score,
+                edge_reason=f"{label}｜{reason}"[:500],
+            )
+        )
+
+    log.info(
+        "实时研判：摘要 %d 条 → 边缘研判 %d 条 → 可疑 %d 条",
+        len(digests),
+        reviewed,
+        len(suspicious),
+    )
+    return {
+        "suspicious_events": suspicious,
+        "window_start": state.get("window_start") or _now(),
+        "window_end": state.get("window_end") or _now(),
+    }
 
 
 # ---------- 节点 3：多源关联（归组） ----------

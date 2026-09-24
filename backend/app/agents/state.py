@@ -27,6 +27,8 @@ class AgentState(TypedDict, total=False):
     profile: dict[str, Any]
     # fingerprint -> 技能上下文 {"skills": [...], "tool_results": {...}}
     skill_context: dict[str, dict[str, Any]]
+    # 实时链路：检测器投递的聚合摘要列表
+    digests: list[dict[str, Any]]
     # fingerprint -> 深度分析结果 {"anomaly":..., "attack_chain":..., "profile":...}
     analyses: dict[str, dict[str, Any]]
     # fingerprint -> "confirm" | "dismiss"

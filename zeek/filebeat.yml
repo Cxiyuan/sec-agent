@@ -1,5 +1,6 @@
-# Filebeat：把 Zeek 的 JSON 日志发运到 Elasticsearch
-# 索引名按日志类型分（zeek-conn-yyyy.MM.dd 等）；索引模板与 ILM 由深瞳后端统一维护。
+# Filebeat：把 Zeek 的 JSON 日志交给 Logstash（由 Logstash 双写 ES + Redis 旁路队列）
+# 说明：Filebeat 只支持单一 output，故采集侧统一发 Logstash，由它分流到 ES 与队列。
+#      索引模板与 ILM 仍由深瞳后端统一维护。
 
 filebeat.inputs:
   - type: filestream
@@ -43,15 +44,8 @@ processors:
         not:
           has_fields: ["log_type"]
 
-output.elasticsearch:
-  hosts: ["${ES_URL:http://localhost:9200}"]
-  username: "${ES_USER:}"
-  password: "${ES_PASSWORD:}"
-  index: "zeek-%{[log_type]}-%{+yyyy.MM.dd}"
-
-# 模板与 ILM 由深瞳后端下发，避免两边互相覆盖
-setup.template.enabled: false
-setup.ilm.enabled: false
+output.logstash:
+  hosts: ["${LOGSTASH_HOST:localhost}:${LOGSTASH_PORT:5044}"]
 
 logging.level: warning
 logging.to_stderr: true
