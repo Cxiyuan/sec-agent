@@ -31,6 +31,15 @@ from app.workers.log import get_logger
 log = get_logger(__name__)
 
 _SOURCES = ("zeek", "wazuh")
+_RATE_KEY = "shentong:detector:delivered"
+_BACKLOG_WARN = 50_000
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _load_rules() -> dict[str, list[dict[str, Any]]]:
@@ -64,6 +73,12 @@ def run() -> None:
     )
     raw_q.recover()
     digest_q.recover()
+    backlog, _ = raw_q.depth()
+    if backlog > _BACKLOG_WARN:
+        log.warning(
+            "raw 队列积压 %d 条（常见原因：采集侧重读了历史日志），将按速率护栏逐步消化",
+            backlog,
+        )
 
     handled = HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
     freq = FreqWindow(client, settings.freq_window_seconds, settings.freq_cooldown_seconds)
@@ -114,19 +129,21 @@ def run() -> None:
             pending_raw >= settings.detector_batch_max
             or time.time() - last_flush >= settings.detector_batch_seconds
         ):
-            _flush(digest_q, stats)
+            if _rate_allow(client, stats):
+                _flush(digest_q, client, stats)
             last_flush = time.time()
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
             log.info(
-                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 摘要 %d / 投递 %d "
+                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 摘要 %d / 投递 %d / 限流 %d "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
                 stats["scanned"],
                 stats["hit"],
                 stats["freq_hit"],
                 stats["digest"],
                 stats["delivered"],
+                stats["throttled"],
                 q_raw,
                 q_proc,
                 agg.pending(),
@@ -134,7 +151,25 @@ def run() -> None:
             last_stats = time.time()
 
 
-def _flush(q: ReliableQueue, stats: Counter[str]) -> None:
+def _rate_allow(client: Any, stats: Counter[str]) -> bool:
+    """投递速率护欄：固定分钟窗内不超上限。超限则本轮不投（摘要留在队列，不丢）。"""
+    cap = settings.detector_max_digests_per_minute
+    if cap <= 0:
+        return True
+    bkey = f"{_RATE_KEY}:{int(time.time() // 60)}"
+    if _to_int(client.get(bkey), 0) >= cap:
+        stats["throttled"] += 1
+        if stats["throttled"] % 20 == 1:
+            log.warning(
+                "投递速率达上限 %d 条/分钟，摘要暂留队列（已限流 %d 次）",
+                cap,
+                stats["throttled"],
+            )
+        return False
+    return True
+
+
+def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
     """取一批摘要投递给 Celery；投递成功才确认（失败留队列重试）。"""
     items: list[tuple[str, dict[str, Any]]] = []
     for _ in range(settings.detector_max_per_batch):
@@ -163,6 +198,9 @@ def _flush(q: ReliableQueue, stats: Counter[str]) -> None:
     for payload, _ in items:
         q.ack(payload)
     stats["delivered"] += len(items)
+    bkey = f"{_RATE_KEY}:{int(time.time() // 60)}"
+    client.incrby(bkey, len(items))
+    client.expire(bkey, 120)
     log.info("已投递 %d 条聚合摘要给智能体分析", len(items))
 
 

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     detector_batch_seconds: int = 20  # 攒批：最长等待
     detector_batch_max: int = 5  # 攒批：凑够多少条就触发
     detector_max_per_batch: int = 50  # 单次投递摘要数上限（护栏）
+    detector_max_digests_per_minute: int = 60  # 投递速率上限（护栏，防打爆分析管线）
     detector_poll_timeout: int = 5  # 队列阻塞读取秒数
     detector_scope_refresh_seconds: int = 60  # 分析网段刷新间隔
     detector_stats_log_seconds: int = 300  # 运行统计日志间隔

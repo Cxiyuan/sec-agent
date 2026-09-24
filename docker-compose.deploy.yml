@@ -140,6 +140,9 @@ services:
     volumes:
       - zeek-logs:/logs
       - zeek-config:/config
+      # Filebeat 注册表持久化：不持久化的话，容器每次重建（改配置/升级镜像）都会
+      # 从头重读 /logs 全部日志 → ES 重复写入 + 旁路队列洪水（生产上已踩到）
+      - zeek-filebeat:/usr/local/bin/data
     restart: unless-stopped
 
 volumes:
@@ -147,3 +150,4 @@ volumes:
   pg-data:
   zeek-logs:
   zeek-config:
+  zeek-filebeat:
