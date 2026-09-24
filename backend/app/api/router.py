@@ -8,6 +8,7 @@ from app.api.routes import (
     auth,
     cloud,
     config,
+    detector,
     documents,
     edge,
     es_admin,
@@ -40,5 +41,6 @@ api_router.include_router(reports.router)
 api_router.include_router(config.router)
 api_router.include_router(es_admin.router)
 api_router.include_router(logstash.router)
+api_router.include_router(detector.router)
 api_router.include_router(zeek.router)
 api_router.include_router(ws.router)

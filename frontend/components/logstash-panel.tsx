@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ApiError, apiFetch, errorText, type LogstashParams, type LogstashStatus } from "@/lib/api";
+import { ApiError, apiFetch, errorText, type DetectorStats, type LogstashParams, type LogstashStatus } from "@/lib/api";
 
 const SELECT_CLS = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
 const AREA_CLS =
@@ -14,6 +14,7 @@ const AREA_CLS =
 /** 采集侧（Logstash）：参数表单 + 管道全文编辑。后端写共享卷，Logstash 自动重载（约 10s）。 */
 export function LogstashPanel() {
   const [data, setData] = React.useState<LogstashStatus | null>(null);
+  const [det, setDet] = React.useState<DetectorStats | null>(null);
   const [params, setParams] = React.useState<LogstashParams | null>(null);
   const [text, setText] = React.useState("");
   const [preview, setPreview] = React.useState("");
@@ -26,6 +27,10 @@ export function LogstashPanel() {
     setParams(d.params);
     setText(d.pipeline);
     setPreview("");
+    // 旁路检测器状态（让「事件被丢弃」可见）
+    apiFetch<DetectorStats>("/api/detector/stats")
+      .then(setDet)
+      .catch(() => {});
   }
 
   React.useEffect(() => {
@@ -142,6 +147,26 @@ export function LogstashPanel() {
             </p>
             {ls && !ls.alive && ls.error && (
               <p className="mt-1 text-destructive">状态读取失败：{ls.error}</p>
+            )}
+            {det && (
+              <p className="mt-1 text-muted-foreground">
+                旁路检测器：本分钟投递 {det.delivered_this_minute ?? "-"}/{det.rate_limit_per_minute}
+                {" · 待检测 "}
+                {det.queue_raw ?? "-"}
+                {" · 待分析 "}
+                {det.queue_digest ?? "-"}
+                {Object.keys(det.dropped).length > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-amber-500">
+                      已丢弃（未进分析）：
+                      {Object.entries(det.dropped)
+                        .map(([k, v]) => `${k} ${v}`)
+                        .join(" / ")}
+                    </span>
+                  </>
+                )}
+              </p>
             )}
             {!data.params_applied && (
               <p className="mt-1 text-muted-foreground">

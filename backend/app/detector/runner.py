@@ -34,8 +34,9 @@ log = get_logger(__name__)
 _SOURCES = ("zeek", "wazuh")
 _RATE_KEY = "shentong:detector:delivered"
 _BACKLOG_WARN = 50_000
-_THROTTLE_LOG_INTERVAL = 60  # 限流告警最小间隔（秒），避免刷屏
+_THROTTLE_LOG_INTERVAL = 60  # 限流/丢弃告警最小间隔（秒），避免刷屏
 _last_throttle_log = 0.0
+_last_drop_log = 0.0
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -45,7 +46,7 @@ def _to_int(value: Any, default: int) -> int:
         return default
 
 
-def _rate_bucket() -> str:
+def rate_bucket() -> str:
     """当前分钟桶的键（固定窗口限流计数）。"""
     return f"{_RATE_KEY}:{_to_int(time.time() // 60, 0)}"
 
@@ -64,8 +65,18 @@ def _load_scopes() -> list[Any]:
 
 
 def _source_of(doc: dict[str, Any]) -> str:
+    """判定日志来源。
+
+    优先看显式标记 source_system（Zeek 的 Filebeat / Logstash 过滤器会补）；
+    缺失时做兜底嗅探——否则一本 Zeek 文档会被当成 Wazuh 解析，
+    导致 event_type 全错、规则静默不命中（隐性漏检）。
+    """
     raw = str(doc.get("source_system") or "").strip().lower()
-    return raw if raw in _SOURCES else "wazuh"
+    if raw in _SOURCES:
+        return raw
+    if "log_type" in doc or isinstance(doc.get("zeek"), dict):
+        return "zeek"
+    return "wazuh"
 
 
 def run() -> None:
@@ -129,28 +140,33 @@ def run() -> None:
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
 
-        # 攒批：凑够 N 条或等待超时即触发一次分析
+        # 攒批：凑够 N 条或等待超时即处理一次
+        # 注意：即使被限流也要走 _flush —— 否则连「清理超龄」都做不了，队列只增不减
         pending_raw, _ = digest_q.depth()
         if pending_raw and (
             pending_raw >= settings.detector_batch_max
             or time.time() - last_flush >= settings.detector_batch_seconds
         ):
-            if _rate_allow(client, stats):
-                _flush(digest_q, client, stats)
+            _flush(digest_q, client, stats)
+            _trim_queue(digest_q, client, stats)
             last_flush = time.time()
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
             log.info(
-                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 摘要 %d / 投递 %d / 限流 %d / 过期丢弃 %d "
+                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 摘要 %d / 投递 %d "
+                "/ 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
                 stats["scanned"],
                 stats["hit"],
                 stats["freq_hit"],
+                stats["duplicate"],
                 stats["digest"],
                 stats["delivered"],
                 stats["throttled"],
-                stats["digest_expired"],
+                stats["requeued"],
+                stats["dropped_expired"],
+                stats["dropped_trimmed"],
                 q_raw,
                 q_proc,
                 agg.pending(),
@@ -158,25 +174,38 @@ def run() -> None:
             last_stats = time.time()
 
 
-def _rate_allow(client: Any, stats: Counter[str]) -> bool:
-    """投递速率护欄：固定分钟窗内不超上限。超限则本轮不投（摘要留在队列，不丢）。"""
-    global _last_throttle_log
+def _rate_remaining(client: Any) -> int:
+    """本分钟还剩多少投递额度（cap<=0 表示不限）。"""
     cap = settings.detector_max_digests_per_minute
     if cap <= 0:
-        return True
-    bkey = _rate_bucket()
-    if _to_int(client.get(bkey), 0) >= cap:
-        stats["throttled"] += 1
-        now = time.time()
-        if now - _last_throttle_log >= _THROTTLE_LOG_INTERVAL:
-            _last_throttle_log = now
-            log.warning(
-                "投递速率达上限 %d 条/分钟，摘要暂留队列（累计限流 %d 次）",
-                cap,
-                stats["throttled"],
-            )
-        return False
-    return True
+        return 1 << 30
+    return max(0, cap - _to_int(client.get(rate_bucket()), 0))
+
+
+def _drop(client: Any, reason: str, count: int, stats: Counter[str]) -> None:
+    """记录被丢弃的摘要，避免「静默漏分析」。
+
+    原因：expired（超龄未及分析）/ trimmed（队列超上限裁掉最老的）。
+    计数写 Redis（跨重启可查），并限频告警。
+    """
+    global _last_drop_log
+    if count <= 0:
+        return
+    stats[f"dropped_{reason}"] += count
+    try:
+        client.hincrby(settings.detector_drop_key, reason, count)
+        client.hset(settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat())
+        client.expire(settings.detector_drop_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入丢弃计数失败: %s", exc)
+    now = time.time()
+    if now - _last_drop_log >= _THROTTLE_LOG_INTERVAL:
+        _last_drop_log = now
+        log.warning(
+            "有摘要被丢弃（%s）本进程累计 %d 条 —— 说明分析能力跟不上产出，这些事件不会进入分析",
+            reason,
+            stats[f"dropped_{reason}"],
+        )
 
 
 def _digest_age(entry: dict[str, Any]) -> float:
@@ -194,13 +223,20 @@ def _digest_age(entry: dict[str, Any]) -> float:
 
 
 def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
-    """取一批摘要投递给 Celery；投递成功才确认（失败留队列重试）。
+    """弹出并处理一批摘要：超龄丢弃 + 按速率额度投递，超出的放回队尾。
 
-    超龄摘要直接丢弃：分析能力远低于产出时，队列会积压；继续分析几小时前的
-    陈旧摘要没有价值，丢掉才能保证分析对象始终是当前事件。
+    要点（修复两处逻辑漏洞）：
+    - **丢弃不受投递限额约束**：否则限流时连清理都做不了，队列只增不减
+    - **严格按剩余额度投递**：不再出现「已用 59 + 整批 50 = 109」的超发
+    - 投递失败的摘要立即放回队列（原来会卡在 processing 里直到重启）
+    - 超龄摘要丢弃时落 Redis 计数 + 告警，不再是静默丢失
     """
-    items: list[tuple[str, dict[str, Any]]] = []
+    global _last_throttle_log
+    budget = _rate_remaining(client)
     max_age = settings.detector_digest_max_age_seconds
+    items: list[tuple[str, dict[str, Any]]] = []
+    surplus: list[str] = []
+    expired = 0
     for _ in range(settings.detector_max_per_batch):
         payload = q.try_consume()
         if payload is None:
@@ -214,10 +250,29 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
             q.ack(payload)
             continue
         if max_age > 0 and _digest_age(digest) > max_age:
-            stats["digest_expired"] += 1
             q.ack(payload)
+            expired += 1
+            continue
+        if len(items) >= budget:
+            surplus.append(payload)  # 额度用完：放回队尾，下轮优先
             continue
         items.append((payload, digest))
+
+    for payload in surplus:
+        q.requeue(payload)
+    if surplus:
+        stats["requeued"] += len(surplus)
+        stats["throttled"] += 1
+        now = time.time()
+        if now - _last_throttle_log >= _THROTTLE_LOG_INTERVAL:
+            _last_throttle_log = now
+            log.warning(
+                "投递额度已用完（%d 条/分钟），%d 条摘要放回队列下轮再投",
+                settings.detector_max_digests_per_minute,
+                len(surplus),
+            )
+    if expired:
+        _drop(client, "expired", expired, stats)
     if not items:
         return
 
@@ -226,15 +281,33 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
     try:
         celery_app.send_task("analysis.analyze_digests", args=[[d for _, d in items]])
     except Exception as exc:  # noqa: BLE001
-        log.warning("投递分析任务失败，摘要保留在队列待重试: %s", exc)
+        log.warning("投递分析任务失败，摘要放回队列待重试: %s", exc)
+        for payload, _ in items:
+            q.requeue(payload)
         return
     for payload, _ in items:
         q.ack(payload)
     stats["delivered"] += len(items)
-    bkey = _rate_bucket()
+    bkey = rate_bucket()
     client.incrby(bkey, len(items))
     client.expire(bkey, 120)
     log.info("已投递 %d 条聚合摘要给智能体分析", len(items))
+
+
+def _trim_queue(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
+    """队列超上限时裁掉最老的（LPUSH 新→旧，故裁尾部），保证积压有界。"""
+    limit = settings.detector_queue_max
+    if limit <= 0:
+        return
+    depth, _ = q.depth()
+    if depth <= limit:
+        return
+    try:
+        client.ltrim(q.raw, 0, limit - 1)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("裁剪摘要队列失败: %s", exc)
+        return
+    _drop(client, "trimmed", depth - limit, stats)
 
 
 def _handle(
@@ -258,6 +331,10 @@ def _handle(
 
     source = _source_of(doc)
     digest_key = doc_hash(doc)
+    # 输入去重：采集侧重试/重放会造成同一文档重复投递，会让聚合次数虚高、产生重复摘要
+    if handled.is_handled(digest_key):
+        stats["duplicate"] += 1
+        return
     handled.mark_many([digest_key])  # 无论是否命中都登记：兜底只补“检测器没看到的”
 
     if scopes and not doc_in_scope(doc, configured_fields(source), scopes):
@@ -274,8 +351,10 @@ def _handle(
     if hit is not None:
         stats["hit"] += 1
         _aggregate(agg, entry, hit, doc, source)
-        return
 
+    # 注意：命中逐条规则后**必须继续**评估频率规则。
+    # 若在此 return，内置逐条规则（如“扫描尝试连接”匹配所有 scan_attempt）会把
+    # 频率规则“饿死”——18 条频率规则几乎永不触发（现场统计：9065 次命中仅触发 14 次）。
     for rule in rules["count"]:
         cond = rule.get("conditions") or {}
         if whitelisted(cond, entry) or not evaluate_conditions(cond, entry):

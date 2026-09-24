@@ -439,6 +439,20 @@ export interface LogstashStatus {
   queue_depth: number | null;
 }
 
+export interface DetectorStats {
+  enabled: boolean;
+  queue_raw: number | null;
+  queue_digest: number | null;
+  queue_processing: number | null;
+  delivered_this_minute: number | null;
+  rate_limit_per_minute: number;
+  queue_max: number;
+  digest_max_age_seconds: number;
+  dropped: Record<string, number>;
+  last_dropped_at: string | null;
+  error?: string;
+}
+
 export interface RuleCondition {
   field?: string;
   op?: string;

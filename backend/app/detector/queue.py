@@ -51,6 +51,14 @@ class ReliableQueue:
     def ack(self, payload: str) -> None:
         self.r.lrem(self.processing, 1, payload)
 
+    def requeue(self, payload: str) -> None:
+        """放回队尾（下轮优先处理）。
+
+        先入队再清 processing：若中间崩溃只会导致重复（可容忍），不会丢消息。
+        """
+        self.r.rpush(self.raw, payload)
+        self.r.lrem(self.processing, 1, payload)
+
     def depth(self) -> tuple[int, int]:
         """返回 (raw 待处理数, processing 在处理数)。"""
         return int(self.r.llen(self.raw)), int(self.r.llen(self.processing))
