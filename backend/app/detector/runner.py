@@ -40,8 +40,13 @@ _last_throttle_log = 0.0
 def _to_int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _rate_bucket() -> str:
+    """当前分钟桶的键（固定窗口限流计数）。"""
+    return f"{_RATE_KEY}:{_to_int(time.time() // 60, 0)}"
 
 
 def _load_rules() -> dict[str, list[dict[str, Any]]]:
@@ -159,7 +164,7 @@ def _rate_allow(client: Any, stats: Counter[str]) -> bool:
     cap = settings.detector_max_digests_per_minute
     if cap <= 0:
         return True
-    bkey = f"{_RATE_KEY}:{int(time.time() // 60)}"
+    bkey = _rate_bucket()
     if _to_int(client.get(bkey), 0) >= cap:
         stats["throttled"] += 1
         now = time.time()
@@ -203,7 +208,7 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
     for payload, _ in items:
         q.ack(payload)
     stats["delivered"] += len(items)
-    bkey = f"{_RATE_KEY}:{int(time.time() // 60)}"
+    bkey = _rate_bucket()
     client.incrby(bkey, len(items))
     client.expire(bkey, 120)
     log.info("已投递 %d 条聚合摘要给智能体分析", len(items))
