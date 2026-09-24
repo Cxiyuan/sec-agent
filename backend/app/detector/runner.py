@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
@@ -143,7 +144,7 @@ def run() -> None:
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
             log.info(
-                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 摘要 %d / 投递 %d / 限流 %d "
+                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 摘要 %d / 投递 %d / 限流 %d / 过期丢弃 %d "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
                 stats["scanned"],
                 stats["hit"],
@@ -151,6 +152,7 @@ def run() -> None:
                 stats["digest"],
                 stats["delivered"],
                 stats["throttled"],
+                stats["digest_expired"],
                 q_raw,
                 q_proc,
                 agg.pending(),
@@ -179,9 +181,28 @@ def _rate_allow(client: Any, stats: Counter[str]) -> bool:
     return True
 
 
+def _digest_age(entry: dict[str, Any]) -> float:
+    """摘要已存在秒数（取 last_seen；解析失败返回 0 视为新鲜）。"""
+    raw = entry.get("last_seen")
+    if not raw:
+        return 0.0
+    try:
+        seen = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return 0.0
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - seen).total_seconds())
+
+
 def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
-    """取一批摘要投递给 Celery；投递成功才确认（失败留队列重试）。"""
+    """取一批摘要投递给 Celery；投递成功才确认（失败留队列重试）。
+
+    超龄摘要直接丢弃：分析能力远低于产出时，队列会积压；继续分析几小时前的
+    陈旧摘要没有价值，丢掉才能保证分析对象始终是当前事件。
+    """
     items: list[tuple[str, dict[str, Any]]] = []
+    max_age = settings.detector_digest_max_age_seconds
     for _ in range(settings.detector_max_per_batch):
         payload = q.try_consume()
         if payload is None:
@@ -191,10 +212,14 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
         except (TypeError, ValueError):
             q.ack(payload)
             continue
-        if isinstance(digest, dict):
-            items.append((payload, digest))
-        else:
+        if not isinstance(digest, dict):
             q.ack(payload)
+            continue
+        if max_age > 0 and _digest_age(digest) > max_age:
+            stats["digest_expired"] += 1
+            q.ack(payload)
+            continue
+        items.append((payload, digest))
     if not items:
         return
 
