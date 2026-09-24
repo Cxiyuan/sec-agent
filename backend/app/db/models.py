@@ -75,6 +75,9 @@ class EventGroup(Base):
     memory_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 召回的历史记忆摘要
     profile_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 账号/会话画像异常
     skill_hits: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 命中的技能与工具结果
+    aggregate: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )  # 聚合规模（实时链路：次数/目标集/端口集/首末时间）
     attack_chain: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     anomaly: Mapped[dict | None] = mapped_column(JSON, nullable=True)

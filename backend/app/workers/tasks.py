@@ -83,7 +83,10 @@ def run_analysis_window() -> dict:
     的漏报永远补不回来；水位驱动则恢复后一次性补齐（带最大回补上限）。
     """
     now = datetime.now(UTC)
-    start = _read_watermark() or (now - timedelta(minutes=settings.analysis_window_minutes))
+    # 无水位时的首次窗口：取一个 beat 间隔（而不是分析窗口），语义上兜底一次覆盖一个调度周期
+    start = _read_watermark() or (
+        now - timedelta(minutes=max(1, settings.analysis_interval_minutes))
+    )
     max_backfill = timedelta(hours=settings.fallback_max_backfill_hours)
     if now - start > max_backfill:
         log.warning(

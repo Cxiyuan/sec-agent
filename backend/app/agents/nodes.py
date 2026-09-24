@@ -16,6 +16,7 @@ from app.agents.memory import (
     write_group,
     write_run,
 )
+from app.agents.metrics import merge_aggregates
 from app.agents.persistence import (
     get_enabled_rules,
     get_enabled_skills,
@@ -334,6 +335,15 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
                 rule_source="user" if d.get("rule_source") == "user" else "builtin",
                 edge_score=score,
                 edge_reason=f"{label}｜{reason}"[:500],
+                # 规模进数据模型（不再只活在文本里）：次数/目标/端口/首末时间
+                aggregate={
+                    "hits": count,
+                    "rules": {rule: count},
+                    "dst_ips": [str(x) for x in dst_ips][:50],
+                    "dst_ports": [str(x) for x in dst_ports][:50],
+                    "first_seen": d.get("first_seen"),
+                    "last_seen": d.get("last_seen"),
+                },
             )
         )
 
@@ -343,18 +353,50 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
         reviewed,
         len(suspicious),
     )
+    # 窗口取摘要的真实首末时间（原来是 now，导致事件组窗口长度为 0 秒）
+    firsts = sorted(s for s in (str(d.get("first_seen") or "") for d in digests) if s)
+    lasts = sorted(s for s in (str(d.get("last_seen") or "") for d in digests) if s)
+    win_start = _parse_dt(firsts[0]) if firsts else None
+    win_end = _parse_dt(lasts[-1]) if lasts else None
     return {
         "suspicious_events": suspicious,
-        "window_start": state.get("window_start") or _now(),
-        "window_end": state.get("window_end") or _now(),
+        "window_start": win_start or state.get("window_start") or _now(),
+        "window_end": win_end or state.get("window_end") or _now(),
     }
 
 
 # ---------- 节点 3：多源关联（归组） ----------
 
 
+def _parse_dt(value: Any) -> datetime | None:
+    """宽松解析 ISO 时间字符串（失败返回 None）。"""
+    if isinstance(value, datetime):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _merge_aggregates(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """合并多个摘要/事件的聚合规模 → 组级规模（实现在 metrics，供多处共用）。"""
+    return merge_aggregates(list(items))
+
+
 def _group_fingerprint(ips: set[str], start: datetime) -> str:
-    key = "|".join(sorted(ips)) + "|" + start.strftime("%Y%m%d%H%M")
+    """事件组指纹：IP 集合 + **时间桶**（默认 30 分钟，见 group_bucket_minutes）。
+
+    原来按“分钟”取整 → 持续攻击每个窗口/每批都会生成新组与新报告（界面被刷屏）。
+    改为按可配时间桶：同一对象在桶内复用同一个组（事件累加、窗口前移）。
+    """
+    bucket_minutes = max(1, _safe_int(settings.group_bucket_minutes, 30))
+    minutes = _safe_int(start.timestamp() // 60, 0)
+    bucket = (minutes // bucket_minutes) * bucket_minutes
+    key = "|".join(sorted(ips)) + "|" + str(bucket)
     return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
@@ -407,6 +449,7 @@ def correlate_node(state: AgentState) -> dict[str, Any]:
                 events=bucket_events,
                 triage_score=score,
                 escalate=False,
+                aggregate=_merge_aggregates([e.aggregate for e in bucket_events]),
             )
         )
 

@@ -84,6 +84,8 @@ class SuspiciousEvent(BaseModel):
     edge_score: float = 0.0  # 边缘模型打分（0~1）
     edge_reason: str = ""
     is_suspicious: bool = True
+    # 实时链路：该事件代表一个聚合摘要时的规模信息（次数/目标集/端口集/时间跨度）
+    aggregate: dict[str, Any] = Field(default_factory=dict)
 
 
 class EventGroup(BaseModel):
@@ -99,6 +101,8 @@ class EventGroup(BaseModel):
     escalate: bool = False
     severity: Severity | None = None
     business_context: dict[str, Any] | None = None
+    # 汇总后的聚合规模（实时链路）：命中次数/目标数/端口数/首末时间
+    aggregate: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentState(BaseModel):

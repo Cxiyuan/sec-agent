@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.metrics import merge_aggregates
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import BaselineStat, Event, EventGroup, Report, Rule, Skill
@@ -61,31 +62,67 @@ def get_enabled_skills(db: Session) -> list[dict[str, Any]]:
 
 
 def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
-    """保存事件组及其事件（幂等：按 fingerprint upsert）。"""
+    """保存事件组及其事件（按 fingerprint 幂等）。
+
+    事件组指纹现在按**时间桶**（默认 30 分钟）——同一对象会在桶内复用同一个组，
+    因此这里必须做两件事，否则会重复膨胀：
+    1) **事件级去重**：同组内相同事件指纹只插一次（否则每批都会重插一遍）
+    2) **已有行字段合并**：IP 并集、窗口前移、分数取最大、聚合规模累加
+    """
+    touched: list[tuple[EventGroupSchema, bool, int]] = []
     with SessionLocal() as db:
         for g in groups:
             row = db.execute(
                 select(EventGroup).where(EventGroup.fingerprint == g.fingerprint)
             ).scalar_one_or_none()
+            created = row is None
             if row is None:
                 row = EventGroup(
                     fingerprint=g.fingerprint,
-                    src_ips=g.src_ips,
-                    dst_ips=g.dst_ips,
+                    src_ips=list(g.src_ips or []),
+                    dst_ips=list(g.dst_ips or []),
                     window_start=g.window_start,
                     window_end=g.window_end,
-                    event_count=len(g.events),
+                    event_count=0,
                     triage_score=g.triage_score,
                     status="analyzing",
-                    thread_id=thread_id,
+                    thread_id=thread_id or None,
+                    aggregate=g.aggregate or {},
                 )
                 db.add(row)
                 db.flush()
+            else:
+                row.src_ips = sorted(set(row.src_ips or []) | set(g.src_ips or []))
+                row.dst_ips = sorted(set(row.dst_ips or []) | set(g.dst_ips or []))
+                if g.window_start and (
+                    row.window_start is None or g.window_start < row.window_start
+                ):
+                    row.window_start = g.window_start
+                if g.window_end and (row.window_end is None or g.window_end > row.window_end):
+                    row.window_end = g.window_end
+                row.triage_score = max(
+                    float(row.triage_score or 0.0), float(g.triage_score or 0.0)
+                )
+                if thread_id:
+                    row.thread_id = thread_id
+                row.aggregate = merge_aggregates([row.aggregate, g.aggregate])
+                row.status = "analyzing"
+
+            existing = {
+                fp
+                for (fp,) in db.execute(
+                    select(Event.fingerprint).where(Event.group_id == row.id)
+                ).all()
+            }
             for ev in g.events:
+                fp = ev.log.fingerprint()
+                if fp in existing:
+                    continue
+                existing.add(fp)
                 db.add(
                     Event(
                         group_id=row.id,
-                        fingerprint=ev.log.fingerprint(),
+                        fingerprint=fp,
                         source_system=ev.log.source_system,
                         ts=ev.log.ts,
                         event_type=ev.log.event_type,
@@ -101,18 +138,20 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                         raw=ev.log.raw,
                     )
                 )
+            row.event_count = len(existing)
+            touched.append((g, created, row.event_count))
         db.commit()
 
     # 推送给驾驶舱 WebSocket（实时）
-    for g in groups:
+    for g, created, event_count in touched:
         publish(
             "shentong:events",
             {
-                "type": "new_group",
+                "type": "new_group" if created else "updated_group",
                 "fingerprint": g.fingerprint,
                 "src_ips": g.src_ips,
                 "dst_ips": g.dst_ips,
-                "event_count": len(g.events),
+                "event_count": event_count,
                 "triage_score": g.triage_score,
             },
         )
@@ -219,15 +258,38 @@ def set_groups_pending(fingerprints: list[str]) -> None:
 def save_report(
     group_fingerprint: str, title: str, severity: str, html: str, pdf_path: str | None
 ) -> None:
+    """保存报告。
+
+    同一事件组在 report_min_interval_minutes 内**只保留一份报告**（更新而不是新增）：
+    事件组按时间桶复用后，持续攻击会反复跑到报告节点，否则会刷出大量重复报告。
+    """
     with SessionLocal() as db:
         grp = db.execute(
             select(EventGroup).where(EventGroup.fingerprint == group_fingerprint)
         ).scalar_one_or_none()
         if grp is None:
             return
-        db.add(
-            Report(group_id=grp.id, title=title, severity=severity, html=html, pdf_path=pdf_path)
-        )
+
+        existing: Report | None = None
+        if settings.report_min_interval_minutes > 0:
+            since = _now() - timedelta(minutes=settings.report_min_interval_minutes)
+            existing = db.execute(
+                select(Report)
+                .where(Report.group_id == grp.id, Report.created_at >= since)
+                .order_by(Report.created_at.desc())
+            ).scalars().first()
+
+        if existing is not None:
+            existing.title = title
+            existing.severity = severity
+            existing.html = html
+            existing.pdf_path = pdf_path
+        else:
+            db.add(
+                Report(
+                    group_id=grp.id, title=title, severity=severity, html=html, pdf_path=pdf_path
+                )
+            )
         grp.status = "report_generated"
         db.commit()
 

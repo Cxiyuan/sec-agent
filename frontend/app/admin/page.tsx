@@ -66,7 +66,15 @@ export default function AdminEventsPage() {
                     </TableCell>
                     <TableCell className="max-w-[140px] truncate">{g.src_ips?.join(", ")}</TableCell>
                     <TableCell className="max-w-[140px] truncate">{g.dst_ips?.join(", ")}</TableCell>
-                    <TableCell>{g.event_count}</TableCell>
+                    <TableCell>
+                      {g.event_count}
+                      {(g.aggregate?.hits ?? 0) > 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          {" / 聚合 "}
+                          {g.aggregate?.hits}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell>{g.triage_score?.toFixed(2)}</TableCell>
                     <TableCell>{g.status}</TableCell>
                     <TableCell>
@@ -105,6 +113,38 @@ export default function AdminEventsPage() {
               <CardTitle>事件组详情</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {detail.aggregate && (detail.aggregate.hits ?? 0) > 0 && (
+                <div>
+                  <h3 className="mb-1 font-medium">聚合规模（实时检测）</h3>
+                  <p className="text-sm">
+                    共命中 <b>{detail.aggregate.hits}</b> 次 · 目标{" "}
+                    {detail.aggregate.dst_ips?.length ?? 0} 个 · 端口{" "}
+                    {detail.aggregate.dst_ports?.length ?? 0} 个
+                    {detail.aggregate.first_seen && (
+                      <>
+                        {" · "}
+                        {String(detail.aggregate.first_seen).slice(0, 19).replace("T", " ")}
+                        {" ~ "}
+                        {String(detail.aggregate.last_seen || "").slice(0, 19).replace("T", " ")}
+                      </>
+                    )}
+                  </p>
+                  {detail.aggregate.rules &&
+                    Object.keys(detail.aggregate.rules).length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        规则分布：
+                        {Object.entries(detail.aggregate.rules)
+                          .map(([r, n]) => `${r}×${n}`)
+                          .join("；")}
+                      </p>
+                    )}
+                  {(detail.aggregate.dst_ports?.length ?? 0) > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      端口：{(detail.aggregate.dst_ports || []).join(", ")}
+                    </p>
+                  )}
+                </div>
+              )}
               {detail.business_context &&
                 ((detail.business_context.assets?.length ?? 0) > 0 ||
                   (detail.business_context.knowledge?.length ?? 0) > 0) && (

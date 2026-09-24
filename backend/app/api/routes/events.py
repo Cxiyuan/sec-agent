@@ -37,6 +37,8 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "profile": g.profile,
         "anomaly": g.anomaly,
         "response_suggestions": g.response_suggestions,
+        # 聚合规模（实时链路）：命中次数/规则分布/目标与端口/首末时间
+        "aggregate": g.aggregate or {},
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
     if with_events:

@@ -28,6 +28,7 @@ _MIGRATIONS = (
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS memory_hits JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS profile_hits JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS skill_hits JSONB",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS aggregate JSONB",
     "ALTER TABLE baseline_stats ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
 )
 

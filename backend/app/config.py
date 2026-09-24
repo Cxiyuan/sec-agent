@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     # 升级与报告阈值（可被系统配置覆盖）
     escalate_score_threshold: float = 0.6
     report_min_severity: str = "medium"  # critical/high/medium/low/info
+    # 事件组时间桶（分钟）：同一对象在桶内复用同一个组，避免持续攻击每分钟新建组/报告
+    group_bucket_minutes: int = 30
+    # 同一组在多少分钟内只留一份报告（0 = 不抑制，每轮都新建）
+    report_min_interval_minutes: int = 30
     hitl_enabled: bool = False
     hitl_min_severity: str = "high"  # 达到该级别才触发人工确认
 

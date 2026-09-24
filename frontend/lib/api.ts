@@ -169,6 +169,16 @@ export interface ResponseSuggestion {
   detail: string;
 }
 
+/** 聚合规模（实时链路）：命中次数 / 规则分布 / 目标与端口 / 首末时间 */
+export interface GroupAggregate {
+  hits?: number;
+  rules?: Record<string, number>;
+  dst_ips?: string[];
+  dst_ports?: string[];
+  first_seen?: string | null;
+  last_seen?: string | null;
+}
+
 export interface EventGroupItem {
   id: string;
   fingerprint: string;
@@ -188,6 +198,8 @@ export interface EventGroupItem {
   profile: Profile | null;
   anomaly: Anomaly | null;
   response_suggestions: ResponseSuggestion[] | null;
+  /** 实时链路的聚合规模（实时入口产生；兜底窗口链路为空） */
+  aggregate?: GroupAggregate | null;
   created_at: string | null;
 }
 

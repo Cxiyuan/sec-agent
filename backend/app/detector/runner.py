@@ -372,7 +372,8 @@ def _aggregate(
     source: str,
 ) -> None:
     agg.add(
-        src_ip=str(entry.src_ip or entry.dst_ip or "-"),
+        # 源 IP 缺失时用 "-"（未知）归并；不能用 dst_ip 代替——那是目标，语义错位
+        src_ip=str(entry.src_ip or "-"),
         rule=str(rule.get("name") or ""),
         severity=str(rule.get("severity") or "medium"),
         source=str(rule.get("source") or "builtin"),

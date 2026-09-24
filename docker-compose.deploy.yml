@@ -34,10 +34,25 @@ services:
       - pg-data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  # Redis：既是 Celery broker/结果后端，也存旁路队列、已处理登记、频率滑窗与聚合态。
+  # 必须开持久化（AOF）——否则重启就丢 handled 登记，兜底任务会把已分析过的日志重分析一遍。
+  # noeviction：内存满时写入报错（采集侧背压）而不是静默淘汰关键状态。
   redis:
     image: redis:7
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 1gb
+      - --maxmemory-policy
+      - noeviction
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
 
   backend:
@@ -151,6 +166,7 @@ services:
 volumes:
   es-data:
   pg-data:
+  redis-data:
   zeek-logs:
   zeek-config:
   zeek-filebeat:
