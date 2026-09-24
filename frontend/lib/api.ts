@@ -404,6 +404,41 @@ export interface DocumentItem {
   uploaded_at: string | null;
 }
 
+/** Logstash 采集：常用参数 */
+export interface LogstashParams {
+  es_enabled: boolean;
+  es_host: string;
+  zeek_index: string;
+  wazuh_index: string;
+  redis_enabled: boolean;
+  redis_host: string;
+  redis_port: number;
+  redis_db: number;
+  redis_key: string;
+}
+
+/** Logstash 采集：状态与配置 */
+export interface LogstashStatus {
+  params: LogstashParams;
+  params_applied: boolean;
+  pipeline: string;
+  default_pipeline: string;
+  config_path: string;
+  backup_path: string;
+  updated_at: string | null;
+  beats: { port: number; hint: string };
+  logstash: {
+    alive: boolean;
+    error?: string;
+    reloads_successes?: number;
+    reloads_failures?: number;
+    events_in?: number;
+    events_filtered?: number;
+    events_out?: number;
+  };
+  queue_depth: number | null;
+}
+
 export interface RuleCondition {
   field?: string;
   op?: string;

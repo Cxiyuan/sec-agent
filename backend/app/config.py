@@ -184,6 +184,14 @@ class Settings(BaseSettings):
         "5432,5900,6379,8080,8443,9200"
     )
 
+    # 采集侧 Logstash 管道（由后台界面维护：写共享卷 → Logstash 自动重载）
+    logstash_pipeline_conf: str = "/logstash/pipeline.conf"
+    logstash_pipeline_backup: str = "/logstash/pipeline.conf.bak"
+    logstash_api_url: str = "http://logstash:9600"
+    logstash_beats_port: int = 5044
+    logstash_seed_on_startup: bool = True
+    logstash_pipeline_max_chars: int = 50000
+
     # 认证
     jwt_secret: str = "change-me-in-production"
     jwt_expire_minutes: int = 720

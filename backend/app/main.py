@@ -119,6 +119,11 @@ def _seed() -> None:
 
     seed_node_types()
 
+    # 采集侧：首次部署播种默认 Logstash 管道（共享卷内无文件才写）
+    from app.api.routes.logstash import seed_if_missing
+
+    seed_if_missing()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

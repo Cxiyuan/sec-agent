@@ -91,6 +91,9 @@ output.logstash:
 3. **填云端模型 API Key**（系统配置 → 云端模型）
 4. 边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
 5. 建议点「边缘模型 → 测试连接」确认可达
+6. 需要时在「系统配置 → 采集侧 · Logstash 管道」调整采集链路
+   （参数表单或管道全文；保存后 Logstash 约 10 秒自动重载，无需重启容器；
+   每次保存自动备份上一版，界面可一键回滚）
 
 ---
 
@@ -105,6 +108,8 @@ output.logstash:
 | `ST_DETECTOR_BATCH_SECONDS` / `ST_DETECTOR_BATCH_MAX` | 20 / 5 | 攒批投递触发条件 |
 | `ST_FREQ_WINDOW_SECONDS` / `ST_FREQ_COOLDOWN_SECONDS` | 300 / 300 | 频率规则滑动窗口与冷却 |
 | `ST_MAX_LOGS_PER_WINDOW` | 20000 | 单次拉取上限 |
+| `ST_LOGSTASH_API_URL` | http://logstash:9600 | Logstash 监控 API（后端读状态用） |
+| `ST_LOGSTASH_PIPELINE_CONF` | /logstash/pipeline.conf | 管道配置路径（共享卷内） |
 
 模型与凭据：
 - 边缘模型：连接信息固化在 `backend/app/edge_config.py`（仅 IP 可在界面改）

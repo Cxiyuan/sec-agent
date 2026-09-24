@@ -12,6 +12,7 @@ from app.api.routes import (
     edge,
     es_admin,
     events,
+    logstash,
     memories,
     profiles,
     reports,
@@ -38,5 +39,6 @@ api_router.include_router(skills.router)
 api_router.include_router(reports.router)
 api_router.include_router(config.router)
 api_router.include_router(es_admin.router)
+api_router.include_router(logstash.router)
 api_router.include_router(zeek.router)
 api_router.include_router(ws.router)

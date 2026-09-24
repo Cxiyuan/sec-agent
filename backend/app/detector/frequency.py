@@ -70,11 +70,7 @@ class FreqWindow:
         count = _to_int(self.r.zcard(cnt_key), 0)
         if count < min_count:
             return False
-        if (
-            distinct_field
-            and min_distinct > 0
-            and _to_int(self.r.zcard(dst_key), 0) < min_distinct
-        ):
+        if distinct_field and min_distinct > 0 and _to_int(self.r.zcard(dst_key), 0) < min_distinct:
             return False
 
         # 冷却：同一分组在冷却期内只触发一次

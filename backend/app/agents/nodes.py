@@ -99,9 +99,7 @@ def _handled_registry() -> Any | None:
 
         client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
         client.ping()
-        return HandledRegistry(
-            client, settings.detector_handled_key, settings.detector_handled_ttl
-        )
+        return HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
     except Exception as exc:  # noqa: BLE001
         log.warning("读取已处理登记失败，兜底将按全量分析: %s", exc)
         return None

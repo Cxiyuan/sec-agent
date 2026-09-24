@@ -1,0 +1,18 @@
+# Logstash 服务端设置（由深瞳提供，只读挂载）
+#
+# 关键：开启管道自动重载 —— 后台「系统配置 → Logstash 管道」保存后写共享卷，
+# Logstash 检测到文件变化即重载（约 10 秒生效），无需重启容器。
+# 性能参数（worker 数、批大小）固化在此，后台界面不暴露（改这里需重启容器）。
+
+http.host: "0.0.0.0"
+api.enabled: true
+
+config.reload.automatic: true
+config.reload.interval: 10s
+
+# 性能（按服务器规格设定；改完需重启 logstash 容器）
+pipeline.workers: 6
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
+
+log.level: info

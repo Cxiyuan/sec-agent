@@ -28,7 +28,11 @@ def analyze_digests(digests: list[dict]) -> dict:
     }
     try:
         result = get_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
-        return {"thread_id": thread_id, "digests": len(digests), "summary": result.get("run_summary", {})}
+        return {
+            "thread_id": thread_id,
+            "digests": len(digests),
+            "summary": result.get("run_summary", {}),
+        }
     except Exception:
         log.exception("实时分析任务失败")
         return {"thread_id": thread_id, "digests": len(digests), "error": "实时分析任务失败"}
@@ -83,7 +87,9 @@ def run_analysis_window() -> dict:
     max_backfill = timedelta(hours=settings.fallback_max_backfill_hours)
     if now - start > max_backfill:
         log.warning(
-            "兜底窗口 %s 超过最大回补 %d 小时，已截断", start.isoformat(), settings.fallback_max_backfill_hours
+            "兜底窗口 %s 超过最大回补 %d 小时，已截断",
+            start.isoformat(),
+            settings.fallback_max_backfill_hours,
         )
         start = now - max_backfill
 

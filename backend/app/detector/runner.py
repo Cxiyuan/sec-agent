@@ -71,9 +71,7 @@ def _source_of(doc: dict[str, Any]) -> str:
 def run() -> None:
     """常驻循环（由 docker compose 的 detector 服务拉起）。"""
     client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-    raw_q = ReliableQueue(
-        client, settings.detector_raw_queue, settings.detector_processing_queue
-    )
+    raw_q = ReliableQueue(client, settings.detector_raw_queue, settings.detector_processing_queue)
     digest_q = ReliableQueue(
         client,
         settings.detector_digest_queue,

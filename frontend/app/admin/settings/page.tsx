@@ -5,6 +5,7 @@ import { Nav } from "@/components/nav";
 import { ScopeManager } from "@/components/scope-manager";
 import { ZeekPanel } from "@/components/zeek-panel";
 import { EsPanel } from "@/components/es-panel";
+import { LogstashPanel } from "@/components/logstash-panel";
 import { EdgePanel } from "@/components/edge-panel";
 import { CloudPanel } from "@/components/cloud-panel";
 import { Button } from "@/components/ui/button";
@@ -157,6 +158,7 @@ export default function SettingsPage() {
           <ScopeManager />
           <ZeekPanel />
           <EsPanel />
+          <LogstashPanel />
           <CloudPanel />
           <EdgePanel />
           {GROUPS.map((g) => (
