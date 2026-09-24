@@ -33,6 +33,8 @@ log = get_logger(__name__)
 _SOURCES = ("zeek", "wazuh")
 _RATE_KEY = "shentong:detector:delivered"
 _BACKLOG_WARN = 50_000
+_THROTTLE_LOG_INTERVAL = 60  # 限流告警最小间隔（秒），避免刷屏
+_last_throttle_log = 0.0
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -153,15 +155,18 @@ def run() -> None:
 
 def _rate_allow(client: Any, stats: Counter[str]) -> bool:
     """投递速率护欄：固定分钟窗内不超上限。超限则本轮不投（摘要留在队列，不丢）。"""
+    global _last_throttle_log
     cap = settings.detector_max_digests_per_minute
     if cap <= 0:
         return True
     bkey = f"{_RATE_KEY}:{int(time.time() // 60)}"
     if _to_int(client.get(bkey), 0) >= cap:
         stats["throttled"] += 1
-        if stats["throttled"] % 20 == 1:
+        now = time.time()
+        if now - _last_throttle_log >= _THROTTLE_LOG_INTERVAL:
+            _last_throttle_log = now
             log.warning(
-                "投递速率达上限 %d 条/分钟，摘要暂留队列（已限流 %d 次）",
+                "投递速率达上限 %d 条/分钟，摘要暂留队列（累计限流 %d 次）",
                 cap,
                 stats["throttled"],
             )

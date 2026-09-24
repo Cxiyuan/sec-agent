@@ -126,8 +126,12 @@ start_filebeat() {
 
 # ---------- 4) 保留 3 天（只清已轮转文件，不动正在写的活动日志）----------
 cleanup_once() {
-  # 轮转后的日志位于日期子目录（mindepth 2），活动日志在顶层不动
-  find "$LOG_DIR" -mindepth 2 -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+  # 轮转命名由 Log::default_rotation_date_format 决定，当前是「<name>.<YYYY-MM-DD>.log」
+  # 放在**顶层**（不是日期子目录）。原来只按 mindepth 2 找子目录 → 永远清不掉，
+  # /logs 会无限增长（生产上一天涨到 1.3G，并导致 Filebeat 重读洪水）。
+  # 两种布局都清，避免任一种漏掉；只删已轮转文件，活动日志（*.log）不动。
+  find "$LOG_DIR" -xdev -mindepth 2 -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+  find "$LOG_DIR" -xdev -maxdepth 1 -type f -name "*.????-??-??.log" -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
 }
 
 start_cleanup_loop() {
