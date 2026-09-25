@@ -48,6 +48,25 @@ def _parse_dt(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def digest_age(digest: dict[str, Any], *, now: datetime | None = None) -> float:
+    """摘要「存了多久」（秒）：取 last_seen（事件时间），解析失败按 0（视为新鲜）。
+
+    为什么解析失败要当新鲜：解析不出来就丢掉会**静默漏分析**；宁可多分析一条。
+
+    这个判据被两处使用（缺一不可）：
+    - **投递侧**（detector.runner._flush）：超龄摘要在投递前丢弃，并落丢弃计数；
+    - **任务侧**（workers.tasks.analyze_digests）：再次把关。
+      为什么任务侧也要查：Celery 开了 ``acks_late``，worker 被杀死（发布重启、OOM、超时）
+      时 broker 会把**同一个任务消息原样重投**，里面带着当初那批摘要 —— 这条路径完全
+      绕过了投递侧的检查。部署实测：11:00 的摘要在 14:09 被重新分析，产出窗口很旧的事件组。
+    """
+    seen = _parse_dt(digest.get("last_seen"))
+    if seen is None:
+        return 0.0
+    current = now or datetime.now(UTC)
+    return max(0.0, (current - seen).total_seconds())
+
+
 def bucket_start_of(first_seen: Any) -> datetime | None:
     """摘要归属的时间桶起点（与事件组指纹同一起点、同桶宽）。"""
     ts = _parse_dt(first_seen)

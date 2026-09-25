@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.agents.runner import get_graph
 from app.config import settings
-from app.detector.analyzed import AnalyzedRegistry
+from app.detector.analyzed import AnalyzedRegistry, digest_age
 from app.workers.celery_app import celery_app
 from app.workers.log import get_logger
 
@@ -19,9 +19,18 @@ log = get_logger(__name__)
 
 @celery_app.task(name="analysis.analyze_digests")
 def analyze_digests(digests: list[dict]) -> dict:
-    """实时链路：分析检测器投递的一批聚合摘要（一次图运行处理一批）。"""
+    """实时链路：分析检测器投递的一批聚合摘要（一次图运行处理一批）。
+
+    入口先做一次「超龄过滤」：投递侧已有同样的检查，但 Celery 开了 ``acks_late``，
+    worker 被杀时 broker 会把**同一个任务消息原样重投**（带着当初那批摘要），
+    这条路径完全绕过了投递侧 —— 部署实测过：11:00 的摘要在 14:09 被重跑，
+    产出窗口很旧的事件组。
+    """
+    digests, expired = _drop_stale_digests(digests)
+    if expired:
+        _count_digests_expired(expired)
     if not digests:
-        return {"summary": {"total_groups": 0, "reports": 0}, "digests": 0}
+        return {"summary": {"total_groups": 0, "reports": 0}, "digests": 0, "expired": expired}
     now = datetime.now(UTC)
     thread_id = str(uuid.uuid4())
     initial = {
@@ -61,6 +70,38 @@ def _count_task_failed(count: int) -> None:
         client.expire(settings.detector_task_failed_key, 30 * 24 * 3600)
     except Exception as exc:  # noqa: BLE001
         log.debug("写入分析失败计数失败: %s", exc)
+
+
+def _drop_stale_digests(digests: list[dict]) -> tuple[list[dict], int]:
+    """丢掉超龄摘要，返回 (保留的摘要, 丢掉的数量)。
+
+    判据与投递侧同一个（analyzed.digest_age，取 last_seen 事件时间）。
+    """
+    max_age = settings.detector_digest_max_age_seconds
+    if max_age <= 0:
+        return digests, 0
+    kept = [d for d in digests if digest_age(d) <= max_age]
+    expired = len(digests) - len(kept)
+    if expired:
+        log.warning(
+            "跳过 %d 条超龄摘要（>%d 秒）：多为 worker 重启后 acks_late 重投递的旧消息，不再进入分析",
+            expired,
+            max_age,
+        )
+    return kept, expired
+
+
+def _count_digests_expired(count: int) -> None:
+    """超龄丢弃计数：与检测器共用同一哈希（字段区分来源，接口上一眼能看到）。"""
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        client.hincrby(settings.detector_drop_key, "expired_task", count)
+        client.hset(settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat())
+        client.expire(settings.detector_drop_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入超龄丢弃计数失败: %s", exc)
 
 
 def _read_watermark() -> datetime | None:

@@ -61,7 +61,9 @@ def render_report(
     """
     if event_count is None:
         declared = getattr(group, "event_count", None)
-        event_count = int(declared) if declared is not None else len(getattr(group, "events", []) or [])
+        event_count = (
+            int(declared) if declared is not None else len(getattr(group, "events", []) or [])
+        )
     if suggestions is None:
         suggestions = getattr(group, "response_suggestions", None) or []
     html = _render_html(group, analysis, body, event_count=event_count, suggestions=suggestions)

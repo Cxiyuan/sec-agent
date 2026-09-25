@@ -21,7 +21,7 @@ from app.agents.persistence import get_enabled_rules
 from app.config import settings
 from app.db.base import SessionLocal
 from app.detector.aggregate import Aggregator
-from app.detector.analyzed import AnalyzedRegistry, digest_fingerprint
+from app.detector.analyzed import AnalyzedRegistry, digest_age, digest_fingerprint
 from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
 from app.detector.leader import Leader
@@ -247,17 +247,11 @@ def _drop(client: Any, reason: str, count: int, stats: Counter[str]) -> None:
 
 
 def _digest_age(entry: dict[str, Any]) -> float:
-    """摘要已存在秒数（取 last_seen；解析失败返回 0 视为新鲜）。"""
-    raw = entry.get("last_seen")
-    if not raw:
-        return 0.0
-    try:
-        seen = datetime.fromisoformat(str(raw))
-    except ValueError:
-        return 0.0
-    if seen.tzinfo is None:
-        seen = seen.replace(tzinfo=UTC)
-    return max(0.0, (datetime.now(UTC) - seen).total_seconds())
+    """摘要已存在秒数（取 last_seen；解析失败返回 0 视为新鲜）。
+
+    实现放在 ``analyzed.digest_age``：任务侧（workers.tasks）也要用同一个判据。
+    """
+    return digest_age(entry)
 
 
 def _flush(

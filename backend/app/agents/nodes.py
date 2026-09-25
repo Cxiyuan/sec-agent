@@ -1242,7 +1242,9 @@ def report_node(state: AgentState) -> dict[str, Any]:
         sev = g.severity or "info"
         if SEVERITY_RANK.get(sev, 0) < SEVERITY_RANK.get(min_sev, 2):
             continue
-        eligible.append((g, analyses.get(g.fingerprint) or {}, sev, responses.get(g.fingerprint) or []))
+        eligible.append(
+            (g, analyses.get(g.fingerprint) or {}, sev, responses.get(g.fingerprint) or [])
+        )
 
     # 只并发"写正文"（网络 IO）；渲染 PDF 与落库仍串行——
     # WeasyPrint 是本机重活，多线程不稳且更吃内存，串行反而更快更稳
