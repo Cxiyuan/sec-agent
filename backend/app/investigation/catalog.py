@@ -328,6 +328,10 @@ def mapping_types(index: str) -> dict[str, str]:
     - ``text`` 字段不能直接聚合（会报 fielddata 错误）也不能 term 精确匹配，必须走 ``.keyword``；
     - ``keyword`` 字段没有 ``.keyword`` 子字段，拼上去会静默返回空结果。
     只有拿到真实类型才能选对路径，避免「静默空结果」误导模型。
+
+    **必须合并所有匹配索引的 mapping**：Zeek 按 log_type 分索引（zeek-conn-* / zeek-http-* /
+    zeek-dns-* …），``zeek-*`` 会匹到十几个索引。只看第一个（可能只是 zeek-dns-*）
+    会把字段白名单缩成个位数，模型就会被告知"这些字段不可查"（部署时真实踩到：60 个字段只剩 3 个）。
     """
     now = time.monotonic()
     hit = _mapping_cache.get(index)
@@ -336,32 +340,43 @@ def mapping_types(index: str) -> dict[str, str]:
     types: dict[str, str] = {}
     try:
         from app.ingestion.es_client import get_es
-        from app.ingestion.es_schema import es_mapping
 
-        props = es_mapping(get_es(), index)
-
-        def walk(node: Any, prefix: str, depth: int = 0) -> None:
-            if depth > 6 or not isinstance(node, dict):
-                return
-            for key, val in node.items():
-                full = f"{prefix}.{key}" if prefix else str(key)
-                if isinstance(val, dict) and "type" not in val:
-                    inner = val.get("properties")
-                    if isinstance(inner, dict):
-                        walk(inner, full, depth + 1)
-                    else:
-                        walk(val, full, depth + 1)
-                else:
-                    types[full] = (
-                        str((val or {}).get("type") or "") if isinstance(val, dict) else ""
-                    )
-
-        walk(props, "")
+        raw = get_es().indices.get_mapping(index=index)
+        for body in (raw or {}).values():
+            props = (body.get("mappings") or {}).get("properties") or {}
+            if isinstance(props, dict):
+                _collect_types(props, types)
     except Exception as exc:  # noqa: BLE001
         log.debug("读取 ES mapping 失败（本次不做字段过滤）: %s", exc)
         types = {}
     _mapping_cache[index] = (now, types)
     return types
+
+
+def _collect_types(
+    props: dict[str, Any], out: dict[str, str], prefix: str = "", depth: int = 0
+) -> None:
+    """递归展开 properties，把「**完整路径** → 类型」写进 out（含 text 字段的 .keyword 子字段）。
+
+    注意必须累积父路径前缀：嵌套对象的字段名是 ``zeek`` → ``id`` → ``orig_h``，
+    真正的查询路径是 ``zeek.id.orig_h``；只收集叶子名会让白名单对不上（静默缩水）。
+    """
+    if depth > 6:
+        return
+    for key, val in props.items():
+        if not isinstance(val, dict):
+            continue
+        full = f"{prefix}.{key}" if prefix else str(key)
+        inner = val.get("properties")
+        if isinstance(inner, dict):
+            _collect_types(inner, out, full, depth + 1)
+        else:
+            out[full] = str(val.get("type") or "")
+        subs = val.get("fields")
+        if isinstance(subs, dict):
+            for sub, sub_spec in subs.items():
+                spec = sub_spec if isinstance(sub_spec, dict) else {}
+                out[f"{full}.{sub}"] = str(spec.get("type") or "")
 
 
 def es_type(index: str, path: str) -> str | None:
