@@ -109,15 +109,14 @@ def _cloud_retry(call: Callable[[], T]) -> T:
     attempts = max(1, _as_int(settings.cloud_max_retries, 3))
     base = max(0.1, _as_float(settings.cloud_retry_base_seconds, 2.0))
     for attempt in range(attempts):
-        limit = _as_int(
-            runtime_get("cloud_max_concurrency", settings.cloud_max_concurrency), 4
-        )
+        limit = _as_int(runtime_get("cloud_max_concurrency", settings.cloud_max_concurrency), 4)
         try:
             with _LIMITER.slot(limit):
                 return call()
         except Exception as exc:
-            retryable = _is_retryable(exc) and attempt < attempts - 1
-            if not retryable:
+            if not _is_retryable(exc):
+                raise
+            if attempt >= attempts - 1:
                 raise
             delay = base * (2**attempt)
             log.warning(

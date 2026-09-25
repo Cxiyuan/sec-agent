@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
-from app import runtime_config
+from app.agents.concurrency import (
+    cloud_concurrency as _cloud_concurrency,
+    parallel_map as _parallel_map,
+)
 from app.agents.memory import (
     cleanup as memory_cleanup,
     memory_text,
@@ -200,56 +201,6 @@ def _edge_review(entry: UnifiedLog, rule_label: str) -> tuple[float, bool, str]:
 def _excluded_reason_text(name: str) -> str:
     """被排除事件的理由文本（详情页直接展示）。"""
     return f"已排除过滤「{name}」命中，跳过模型分析"[:500]
-
-
-def _edge_concurrency() -> int:
-    """批内并发度（后台可调，默认 8）。
-
-    服务器实测（2026-09-25 预热后）：并发 1 → ~5 次/分，4 → 17，8 → 23，16 → 26.5。
-    CPU 上合批是唯一的吞吐杠杆（多请求共享同一次权重读取），所以并发度直接决定吞吐。
-    上限 16 对齐服务器槽位（--parallel 16），再多只会排队。
-    """
-    try:
-        workers = int(
-            runtime_config.get("edge_review_concurrency", settings.edge_review_concurrency)
-        )
-    except (TypeError, ValueError):
-        workers = settings.edge_review_concurrency
-    return max(1, min(workers, 16))
-
-
-def _cloud_concurrency() -> int:
-    """云端并发度（后台可调，默认 4）。
-
-    与 llm.py 里的云端闸门取同一个配置：闸门控真实峰值，这里控线程池大小
-    （池子开得比名额大只会白占线程，不会提高吞吐）。
-    """
-    return max(
-        1,
-        min(
-            _safe_int(
-                runtime_config.get("cloud_max_concurrency", settings.cloud_max_concurrency), 4
-            ),
-            16,
-        ),
-    )
-
-
-def _parallel_map(
-    fn: Callable[[Any], Any], items: list[Any], prefix: str, *, workers: int | None = None
-) -> list[Any]:
-    """批内并发（线程池）；返回顺序与输入严格一致。
-
-    调用方是同步阻塞的 HTTP 请求（边缘模型 / 云端模型），用线程池即可。
-    workers=1 或只有 1 条时退化为串行（省线程开销）。
-    """
-    if not items:
-        return []
-    pool_size = min(max(1, workers if workers is not None else _edge_concurrency()), len(items))
-    if pool_size <= 1:
-        return [fn(item) for item in items]
-    with ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix=prefix) as pool:
-        return list(pool.map(fn, items))
 
 
 def edge_review_many(items: list[tuple[UnifiedLog, str]]) -> list[tuple[float, bool, str]]:
@@ -1221,9 +1172,7 @@ def response_node(state: AgentState) -> dict[str, Any]:
             return raw if isinstance(raw, list) else []
         except Exception as exc:  # noqa: BLE001
             log.warning("处置建议生成失败: %s", exc)
-            return [
-                {"category": "incident_response", "action": "人工复核", "detail": "模型不可用"}
-            ]
+            return [{"category": "incident_response", "action": "人工复核", "detail": "模型不可用"}]
 
     for (g, _prompt), suggestions in zip(
         pending,
