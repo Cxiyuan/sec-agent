@@ -168,6 +168,27 @@ export function LogstashPanel() {
                 )}
               </p>
             )}
+            {det && (det.dedup || det.task_failed || det.leader) && (
+              <p className="mt-1 text-muted-foreground">
+                去重闸门：{det.dedup?.enabled ? "开" : "关"}
+                {" · 已省重复分析 "}
+                {det.dedup?.skipped_total ?? 0}
+                {" 条（在途 "}
+                {det.dedup?.inflight ?? 0}
+                {" / 已完结 "}
+                {det.dedup?.done ?? 0}
+                {"）"}
+                {(det.task_failed?.failed_total ?? 0) > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-amber-500">
+                      分析失败 {det.task_failed?.failed_total} 条（在途超时后会重投）
+                    </span>
+                  </>
+                )}
+                {det.leader?.holder ? ` · 主实例 ${det.leader.holder}` : ""}
+              </p>
+            )}
             {!data.params_applied && (
               <p className="mt-1 text-muted-foreground">
                 当前管道为<b>自定义内容</b>（非参数生成）；用下方表单保存会覆盖它。

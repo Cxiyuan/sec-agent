@@ -39,6 +39,8 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "response_suggestions": g.response_suggestions,
         # 聚合规模（实时链路）：命中次数/规则分布/目标与端口/首末时间
         "aggregate": g.aggregate or {},
+        # 被排除过滤命中：事件可见、可回溯，但不参与模型分析与报告
+        "excluded": g.status == "excluded",
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
     if with_events:
@@ -57,6 +59,7 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
                 "hit_rule": e.hit_rule,
                 "edge_score": e.edge_score,
                 "summary": e.summary,
+                "excluded": e.excluded,
             }
             for e in g.events
         ]
@@ -69,6 +72,7 @@ def list_groups(
     _: Annotated[User, Depends(get_current_user)],
     status: str | None = None,
     severity: str | None = None,
+    include_excluded: bool = False,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -77,6 +81,10 @@ def list_groups(
     if status:
         count_q = count_q.where(EventGroup.status == status)
         q = q.where(EventGroup.status == status)
+    elif not include_excluded:
+        # 默认不显示“已排除”组（噪声不刷屏）；要看就传 status=excluded 或 include_excluded=true
+        count_q = count_q.where(EventGroup.status != "excluded")
+        q = q.where(EventGroup.status != "excluded")
     if severity:
         count_q = count_q.where(EventGroup.severity == severity)
         q = q.where(EventGroup.severity == severity)

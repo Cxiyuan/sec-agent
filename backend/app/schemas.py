@@ -86,6 +86,9 @@ class SuspiciousEvent(BaseModel):
     is_suspicious: bool = True
     # 实时链路：该事件代表一个聚合摘要时的规模信息（次数/目标集/端口集/时间跨度）
     aggregate: dict[str, Any] = Field(default_factory=dict)
+    # 被排除过滤命中：仍进事件组（可查、可回溯），但跳过全部模型调用与报告生成
+    excluded: bool = False
+    exclude_reason: str = ""
 
 
 class EventGroup(BaseModel):
@@ -103,6 +106,8 @@ class EventGroup(BaseModel):
     business_context: dict[str, Any] | None = None
     # 汇总后的聚合规模（实时链路）：命中次数/目标数/端口数/首末时间
     aggregate: dict[str, Any] = Field(default_factory=dict)
+    # 整组都是被排除的事件（独立成组，不跑模型与报告）
+    excluded: bool = False
 
 
 class AgentState(BaseModel):

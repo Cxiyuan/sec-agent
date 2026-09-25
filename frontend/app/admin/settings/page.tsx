@@ -8,6 +8,7 @@ import { EsPanel } from "@/components/es-panel";
 import { LogstashPanel } from "@/components/logstash-panel";
 import { EdgePanel } from "@/components/edge-panel";
 import { CloudPanel } from "@/components/cloud-panel";
+import { ExclusionsPanel } from "@/components/exclusions-panel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -161,6 +162,7 @@ export default function SettingsPage() {
           <LogstashPanel />
           <CloudPanel />
           <EdgePanel />
+          <ExclusionsPanel />
           {GROUPS.map((g) => (
             <Card key={g.name}>
               <CardHeader>

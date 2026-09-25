@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+from app.detector.analyzed import AnalyzedRegistry
 from app.detector.runner import rate_bucket
 from app.workers.log import get_logger
 
@@ -36,6 +37,17 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         "last_dropped_at": None,
         # 选主状态：谁在消费（另一个实例在待命热备）
         "leader": None,
+        # 投递前去重（省重复 LLM 调用）
+        "dedup": {
+            "enabled": settings.dedup_enabled,
+            "inflight_ttl_seconds": settings.dedup_inflight_ttl_seconds,
+            "skipped_total": 0,
+            "last_skipped_at": None,
+            "inflight": 0,
+            "done": 0,
+        },
+        # 投递了但分析失败（原来只有一行日志，看不出来是否在漏分析）
+        "task_failed": {"failed_total": 0, "last_failed_at": None},
     }
     try:
         import redis
@@ -58,6 +70,24 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
             "holder": str(holder) if holder else None,
             "ttl_seconds": max(0, int(client.ttl(settings.detector_leader_key) or 0)),
         }
+        dedup_raw = client.hgetall(settings.detector_dedup_key)
+        dedup_stats = dedup_raw if isinstance(dedup_raw, dict) else {}
+        out["dedup"].update(
+            {
+                "skipped_total": int(dedup_stats.get("skipped") or 0),
+                "last_skipped_at": dedup_stats.get("last_skipped_at"),
+            }
+        )
+        failed_raw = client.hgetall(settings.detector_task_failed_key)
+        failed_stats = failed_raw if isinstance(failed_raw, dict) else {}
+        out["task_failed"].update(
+            {
+                "failed_total": int(failed_stats.get("failed") or 0),
+                "last_failed_at": failed_stats.get("last_failed_at"),
+            }
+        )
+        if settings.dedup_enabled:
+            out["dedup"].update(AnalyzedRegistry().counts())
     except Exception as exc:  # noqa: BLE001
         log.warning("读取检测器状态失败: %s", exc)
         out["error"] = str(exc)[:200]

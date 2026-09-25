@@ -23,8 +23,13 @@ _MAX_SAMPLES = 3
 _MAX_SET = 50
 
 
-def _agg_key(src_ip: str, rule: str) -> str:
-    raw = f"{src_ip}|{rule}".encode()
+def _agg_key(src_ip: str, rule: str, excluded: bool = False) -> str:
+    """聚合键：源IP + 规则（+ 排除位）。
+
+    排除位必须入键：一条排除条件可能只针对部分命中（如“只排 dst_port=22”），
+    若与未排除的命中共用聚合态，会把两类事件混进同一份摘要。
+    """
+    raw = f"{src_ip}|{rule}|{'x' if excluded else '-'}".encode()
     return f"{_PREFIX}:{hashlib.sha256(raw).hexdigest()[:20]}"
 
 
@@ -50,11 +55,17 @@ class Aggregator:
         entry: UnifiedLog,
         raw_doc: dict[str, Any],
         log_source: str,
+        excluded: bool = False,
+        exclude_reason: str = "",
         now: float | None = None,
     ) -> None:
-        """累计一次命中（含样例文档，供后续分析构造事件）。"""
+        """累计一次命中（含样例文档，供后续分析构造事件）。
+
+        excluded=True：该命中被排除过滤命中 —— 仍会产出摘要并投递（事件要可查），
+        但图内会跳过全部模型调用与报告。
+        """
         ts = time.time() if now is None else now
-        key = _agg_key(src_ip, rule)
+        key = _agg_key(src_ip, rule, excluded)
         state = self._load(key)
         if state is None:
             state = {
@@ -70,6 +81,8 @@ class Aggregator:
                 "first_seen": _iso(ts),
                 "first_seen_ts": ts,
                 "last_seen": _iso(ts),
+                "excluded": excluded,
+                "exclude_reason": exclude_reason,
             }
         state["count"] = _to_int(state.get("count", 0), 0) + 1
         state["last_seen"] = _iso(ts)

@@ -58,9 +58,13 @@ class Settings(BaseSettings):
     detector_batch_seconds: int = 20  # 攒批：最长等待
     detector_batch_max: int = 5  # 攒批：凑够多少条就触发
     detector_max_per_batch: int = 50  # 单次投递摘要数上限（护栏）
-    detector_max_digests_per_minute: int = 60  # 投递速率上限（护栏，防打爆分析管线）
+    detector_max_digests_per_minute: int = (
+        8  # 投递速率上限（护栏）= 边缘模型实测容量（3~4 条/分钟）留一倍余量
+    )
     detector_queue_max: int = 20000  # 摘要队列上限（超过则裁掉最老的，保证有界）
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
+    detector_dedup_key: str = "shentong:detector:dedup"  # 去重拦下计数（跨重启可查）
+    detector_task_failed_key: str = "shentong:detector:task_failed"  # 分析任务失败计数
     detector_digest_max_age_seconds: int = 1800  # 摘要最长安存秒数（超龄丢弃，保证分析的是新事件）
     detector_poll_timeout: int = 5  # 队列阻塞读取秒数
     detector_scope_refresh_seconds: int = 60  # 分析网段刷新间隔
@@ -69,13 +73,23 @@ class Settings(BaseSettings):
     detector_leader_key: str = "shentong:detector:leader"
     detector_leader_ttl_seconds: int = 30  # 租约 TTL，须 ≥ 续约间隔×2，否则会在两次续约间被抢主
     detector_leader_renew_seconds: int = 10  # 续约间隔（也决定待命实例的轮询节奏）
+    # 投递前去重闸门：按「规则|源IP|时间桶」指纹查库，已分析过的不再重复投（省完整 LLM 链）
+    dedup_enabled: bool = True
+    dedup_inflight_ttl_seconds: int = (
+        2400  # 在途标记有效期：须 > 任务硬超时（1800s），否则任务还在跑就被当失败重投
+    )
+    analyzed_retention_days: int = 7  # 已完结指纹保留天数（供查询排查）
+    # 用户自定义排除过滤（命中则仍记事件，但跳过全部模型调用与报告）
+    exclusion_cache_seconds: int = 30  # 过滤器配置缓存秒数（跨进程最迟这么久生效）
     # 频率规则滑动窗口（实时链路用 Redis 滑窗替代“窗口内计数”）
     freq_window_seconds: int = 300
     freq_cooldown_seconds: int = 300  # 同一分组触发后的冷却，防重复告警
     # 兜底任务水位（存 PostgreSQL，跨重启可靠）
     fallback_watermark_key: str = "fallback.last_run"
     fallback_max_backfill_hours: int = 24  # 单次最大回补时长（超限截断并告警）
-    fallback_lag_seconds: int = 60  # 兜底窗口右边界后退量：留时间给检测器先处理，避开重叠竞态（0=关）
+    fallback_lag_seconds: int = (
+        60  # 兜底窗口右边界后退量：留时间给检测器先处理，避开重叠竞态（0=关）
+    )
 
     # 拉取护栏 / 检索上限
     max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）

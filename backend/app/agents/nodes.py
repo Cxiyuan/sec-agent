@@ -44,6 +44,7 @@ from app.db.base import SessionLocal
 from app.db.models import SystemConfig
 from app.detector.handled import doc_hash
 from app.edge_config import edge_thinking_for, edge_thinking_merge
+from app.ingestion import exclusion
 from app.ingestion.dedup import dedup_logs
 from app.ingestion.es_client import fetch_window_logs
 from app.ingestion.normalizer import normalize
@@ -193,6 +194,11 @@ def _edge_review(entry: UnifiedLog, rule_label: str) -> tuple[float, bool, str]:
     )
 
 
+def _excluded_reason_text(name: str) -> str:
+    """被排除事件的理由文本（详情页直接展示）。"""
+    return f"已排除过滤「{name}」命中，跳过模型分析"[:500]
+
+
 def triage_node(state: AgentState) -> dict[str, Any]:
     """四层漏斗：逐条规则 → 频率规则 → 边缘模型审查 → 兜底预筛（防漏报）。"""
     logs = state.get("raw_logs", [])
@@ -204,9 +210,32 @@ def triage_node(state: AgentState) -> dict[str, Any]:
 
     suspicious: list[SuspiciousEvent] = []
     handled: set[str] = set()
-    rule_hits = count_hits = fallback_hits = 0
+    rule_hits = count_hits = fallback_hits = excluded_hits = 0
 
     def add(entry: UnifiedLog, rule: dict[str, Any], extra: str = "") -> bool:
+        nonlocal excluded_hits
+        # 排除过滤：命中则不调边缘模型，事件仍进事件组（可查、可回溯），只是不进入模型分析
+        excluded_reason = exclusion.check_filter(
+            entry,
+            rule_name=str(rule.get("name") or ""),
+            rule_source=str(rule.get("source") or ""),
+            rule_severity=str(rule.get("severity") or ""),
+        )
+        if excluded_reason:
+            excluded_hits += 1
+            exclusion.record_hit(excluded_reason, entry, rule_name=str(rule.get("name") or ""))
+            suspicious.append(
+                SuspiciousEvent(
+                    log=entry,
+                    hit_rule=rule["name"],
+                    rule_source=rule["source"],
+                    edge_score=0.0,
+                    edge_reason=_excluded_reason_text(excluded_reason),
+                    excluded=True,
+                    exclude_reason=excluded_reason,
+                )
+            )
+            return False
         score, ok, reason = _edge_review(entry, rule["name"])
         if not ok:
             return False
@@ -250,6 +279,27 @@ def triage_node(state: AgentState) -> dict[str, Any]:
     )
     for cand in candidates:
         label = f"兜底预筛（{'；'.join(cand.reasons)}）"
+        excluded_reason = exclusion.check_filter(
+            cand.log,
+            rule_name="兜底预筛",
+            rule_source="builtin",
+            rule_severity=cand.log.severity,
+        )
+        if excluded_reason:
+            excluded_hits += 1
+            exclusion.record_hit(excluded_reason, cand.log, rule_name="兜底预筛")
+            suspicious.append(
+                SuspiciousEvent(
+                    log=cand.log,
+                    hit_rule="兜底预筛",
+                    rule_source="builtin",
+                    edge_score=0.0,
+                    edge_reason=_excluded_reason_text(excluded_reason),
+                    excluded=True,
+                    exclude_reason=excluded_reason,
+                )
+            )
+            continue
         score, ok, reason = _edge_review(cand.log, label)
         if not ok:
             continue
@@ -265,13 +315,14 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         )
 
     log.info(
-        "研判降噪：%d 条 → 可疑 %d（逐条规则 %d / 频率 %d / 兜底 %d）；"
+        "研判降噪：%d 条 → 可疑 %d（逐条规则 %d / 频率 %d / 兜底 %d / 排除 %d）；"
         "规则漏掉 %d 条，兜底候选 %d 条",
         len(logs),
         len(suspicious),
         rule_hits,
         count_hits,
         fallback_hits,
+        excluded_hits,
         len(missed),
         len(candidates),
     )
@@ -293,6 +344,7 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
     digests: list[dict[str, Any]] = raw_digests if isinstance(raw_digests, list) else []
     suspicious: list[SuspiciousEvent] = []
     reviewed = 0
+    excluded_n = 0
     for d in digests:
         if not isinstance(d, dict):
             continue
@@ -324,10 +376,16 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
 
         # 聚合规模带进 summary（会进入定级/报告提示词与界面）
         entry.summary = f"[实时聚合 ×{count}] {entry.summary}"[:500]
-        score, ok, reason = _edge_review(entry, label)
-        reviewed += 1
-        if not ok:
-            continue
+        excluded_reason = str(d.get("exclude_reason") or "")
+        if excluded_reason:
+            # 排除过滤命中：不调边缘模型（省调用），事件照常进组供界面查看
+            score, reason = 0.0, _excluded_reason_text(excluded_reason)
+            excluded_n += 1
+        else:
+            score, ok, reason = _edge_review(entry, label)
+            reviewed += 1
+            if not ok:
+                continue
         suspicious.append(
             SuspiciousEvent(
                 log=entry,
@@ -335,6 +393,8 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
                 rule_source="user" if d.get("rule_source") == "user" else "builtin",
                 edge_score=score,
                 edge_reason=f"{label}｜{reason}"[:500],
+                excluded=bool(excluded_reason),
+                exclude_reason=excluded_reason,
                 # 规模进数据模型（不再只活在文本里）：次数/目标/端口/首末时间
                 aggregate={
                     "hits": count,
@@ -348,9 +408,10 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
         )
 
     log.info(
-        "实时研判：摘要 %d 条 → 边缘研判 %d 条 → 可疑 %d 条",
+        "实时研判：摘要 %d 条 → 边缘研判 %d 条（排除跳过 %d）→ 可疑 %d 条",
         len(digests),
         reviewed,
+        excluded_n,
         len(suspicious),
     )
     # 窗口取摘要的真实首末时间（原来是 now，导致事件组窗口长度为 0 秒）
@@ -387,25 +448,32 @@ def _merge_aggregates(items: list[dict[str, Any]]) -> dict[str, Any]:
     return merge_aggregates(list(items))
 
 
-def _group_fingerprint(ips: set[str], start: datetime) -> str:
+def _group_fingerprint(ips: set[str], start: datetime, excluded: bool = False) -> str:
     """事件组指纹：IP 集合 + **时间桶**（默认 30 分钟，见 group_bucket_minutes）。
 
     原来按“分钟”取整 → 持续攻击每个窗口/每批都会生成新组与新报告（界面被刷屏）。
     改为按可配时间桶：同一对象在桶内复用同一个组（事件累加、窗口前移）。
+
+    excluded=True 走独立命名空间：被排除的事件不能和正常事件合并成同一个组，
+    否则整组会被拉去跑模型，“跳过模型”就失效了。
     """
     bucket_minutes = max(1, _safe_int(settings.group_bucket_minutes, 30))
     minutes = _safe_int(start.timestamp() // 60, 0)
     bucket = (minutes // bucket_minutes) * bucket_minutes
-    key = "|".join(sorted(ips)) + "|" + str(bucket)
+    key = ("ex|" if excluded else "") + "|".join(sorted(ips)) + "|" + str(bucket)
     return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
-def correlate_node(state: AgentState) -> dict[str, Any]:
-    events = state.get("suspicious_events", [])
-    window_start = state.get("window_start") or _now()
-    window_end = state.get("window_end") or window_start
-
-    # 确定性归组：按 IP（源或目的）+ 时间窗口做 union-find
+def _build_groups(
+    events: list[SuspiciousEvent],
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    excluded: bool,
+) -> list[EventGroup]:
+    """按 IP（源或目的）做确定性 union-find 归组（排除组用独立指纹命名空间）。"""
+    if not events:
+        return []
     parent: dict[int, int] = {i: i for i in range(len(events))}
 
     def find(x: int) -> int:
@@ -438,7 +506,7 @@ def correlate_node(state: AgentState) -> dict[str, Any]:
         src_ips = sorted({e.log.src_ip for e in bucket_events if e.log.src_ip})
         dst_ips = sorted({e.log.dst_ip for e in bucket_events if e.log.dst_ip})
         score = max((e.edge_score for e in bucket_events), default=0.0)
-        fp = _group_fingerprint(set(src_ips) | set(dst_ips), window_start)
+        fp = _group_fingerprint(set(src_ips) | set(dst_ips), window_start, excluded=excluded)
         groups.append(
             EventGroup(
                 fingerprint=fp,
@@ -450,25 +518,45 @@ def correlate_node(state: AgentState) -> dict[str, Any]:
                 triage_score=score,
                 escalate=False,
                 aggregate=_merge_aggregates([e.aggregate for e in bucket_events]),
+                excluded=excluded,
             )
         )
+    return groups
 
-    # 语义关联（补充）：对高分组之间用边缘模型判断是否同一次攻击（限流）
+
+def correlate_node(state: AgentState) -> dict[str, Any]:
+    events = state.get("suspicious_events", [])
+    window_start = state.get("window_start") or _now()
+    window_end = state.get("window_end") or window_start
+
+    # 排除事件独立成组：既保证“跳过模型”确实省下调用，也避免噪声污染正常组的规模与定级
+    groups = _build_groups(
+        [ev for ev in events if not ev.excluded], window_start, window_end, excluded=False
+    )
+    excluded_groups = _build_groups(
+        [ev for ev in events if ev.excluded], window_start, window_end, excluded=True
+    )
+
+    # 语义关联（补充）：对高分组之间用边缘模型判断是否同一次攻击（限流）；排除组不参与
     groups = _semantic_merge(groups)
+    groups.extend(excluded_groups)
 
-    # 升级判定（阈值打分）
+    # 升级判定（阈值打分）；排除组不升级（不跑深度分析）
     with SessionLocal() as db:
         threshold = _safe_float(
             _config(db, "escalate_score_threshold", settings.escalate_score_threshold),
             settings.escalate_score_threshold,
         )
     for g in groups:
-        g.escalate = g.triage_score >= threshold
+        g.escalate = (not g.excluded) and g.triage_score >= threshold
 
     # 持久化事件组，供后台/驾驶舱即时可见
     save_groups(groups, state.get("thread_id", ""))
     log.info(
-        "关联归组：%d 个事件组，其中升级 %d 个", len(groups), sum(1 for g in groups if g.escalate)
+        "关联归组：%d 个事件组（其中已排除 %d 个），升级 %d 个",
+        len(groups),
+        len(excluded_groups),
+        sum(1 for g in groups if g.escalate),
     )
     return {"groups": groups}
 
@@ -558,6 +646,8 @@ def asset_enrich_node(state: AgentState) -> dict[str, Any]:
     groups = state.get("groups", [])
     contexts: dict[str, dict[str, Any]] = {}
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的组不查业务背景（省检索），事件本身仍可在界面查看
         query = " ".join(e.log.summary for e in g.events[:10] if e.log.summary)
         try:
             ctx = build_business_context(g.src_ips, g.dst_ips, query)
@@ -585,6 +675,8 @@ def memory_recall_node(state: AgentState) -> dict[str, Any]:
     groups = state.get("groups", [])
     recalled: dict[str, dict[str, Any]] = {}
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的组不查历史记忆（省一次检索）
         info = recall_memory(
             sorted(set(g.src_ips + g.dst_ips)),
             _group_asset_ids(state, g.fingerprint),
@@ -616,6 +708,8 @@ def profile_recall_node(state: AgentState) -> dict[str, Any]:
 
     by_group: dict[str, dict[str, Any]] = {}
     for g in state.get("groups", []):
+        if g.excluded:
+            continue  # 画像异常只挂到正常组（排除组不展示、不落库）
         group_ips = set(g.src_ips + g.dst_ips)
         related = [e for e in entities if group_ips & set(e.get("src_ips") or [])]
         payload = {
@@ -706,6 +800,8 @@ def skill_enrich_node(state: AgentState) -> dict[str, Any]:
 
     contexts: dict[str, dict[str, Any]] = {}
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的组不走技能与工具（含情报查询/主动探测，最该省的部分）
         event_types = {ev.log.event_type for ev in g.events}
         matched = [s for s in skills if set(s["event_types"]) & event_types]
         matched = matched[: settings.skill_max_per_group]
@@ -777,8 +873,18 @@ def _rule_hit_events(
             continue
         if norm.src_ip not in ip_set and norm.dst_ip not in ip_set:
             continue
-        if any(match_rule(r, norm) for r in rules):
-            out.append(norm)
+        hit = next((r for r in rules if match_rule(r, norm)), None)
+        if hit is None:
+            continue
+        # 排除过滤同样作用于回溯：否则被排除的噪声会从“历史行为”里复活
+        if exclusion.check_filter(
+            norm,
+            rule_name=str(hit.get("name") or ""),
+            rule_source=str(hit.get("source") or ""),
+            rule_severity=str(hit.get("severity") or ""),
+        ):
+            continue
+        out.append(norm)
     out.sort(key=lambda x: x.ts)
     return out[: settings.lookback_max_events]
 
@@ -858,17 +964,26 @@ def lookback_node(state: AgentState) -> dict[str, Any]:
 # ---------- 节点 5：定级 ----------
 
 
+def _rule_severity(g: EventGroup) -> str:
+    """组内命中规则的最高严重度（不含模型判断，可作回退与排除组定级）。"""
+    out = "info"
+    for ev in g.events:
+        sev = ev.log.severity
+        if sev in SEVERITY_RANK and SEVERITY_RANK[sev] > SEVERITY_RANK[out]:
+            out = sev
+    return out
+
+
 def severity_node(state: AgentState) -> dict[str, Any]:
     groups = state.get("groups", [])
     analyses = state.get("analyses", {})
     for g in groups:
-        rule_severity = "info"
-        for ev in g.events:
-            if (
-                ev.log.severity in SEVERITY_RANK
-                and SEVERITY_RANK[ev.log.severity] > SEVERITY_RANK[rule_severity]
-            ):
-                rule_severity = ev.log.severity
+        rule_severity = _rule_severity(g)
+        if g.excluded:
+            # 被排除的组不调云端定级：按规则严重度落库即可（界面仍可查）
+            update_group_analysis(g.fingerprint, severity=rule_severity)
+            g.severity = rule_severity  # type: ignore[assignment]
+            continue
         chain = (analyses.get(g.fingerprint) or {}).get("attack_chain", {})
         profile = (analyses.get(g.fingerprint) or {}).get("profile", {})
         context_text = context_text_for_group(
@@ -918,7 +1033,8 @@ def hitl_node(state: AgentState) -> dict[str, Any]:
     pending = [
         g
         for g in groups
-        if (g.severity or "info") in SEVERITY_RANK
+        if not g.excluded
+        and (g.severity or "info") in SEVERITY_RANK
         and SEVERITY_RANK[g.severity or "info"] >= SEVERITY_RANK.get(min_sev, 3)
     ]
 
@@ -952,6 +1068,8 @@ def response_node(state: AgentState) -> dict[str, Any]:
     analyses = state.get("analyses", {})
     confirmations = state.get("confirmations", {})
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的组不等人工确认、不做处置建议
         if confirmations.get(g.fingerprint) == "dismiss":
             update_group_analysis(g.fingerprint, status="dismissed")
             continue
@@ -1022,6 +1140,8 @@ def report_node(state: AgentState) -> dict[str, Any]:
 
     summary = {"total_groups": len(groups), "reports": 0}
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的组不出报告（不出报告也就不调报告模型）
         if confirmations.get(g.fingerprint) == "dismiss":
             continue
         sev = g.severity or "info"
@@ -1082,6 +1202,8 @@ def memory_write_node(state: AgentState) -> dict[str, Any]:
     look_map = state.get("lookback") or {}
 
     for g in groups:
+        if g.excluded:
+            continue  # 被排除的噪声不进分析记忆（否则污染后续研判）
         analysis = analyses.get(g.fingerprint) or {}
         persistence = (mem_map.get(g.fingerprint) or {}).get("persistence") or {}
         write_group(
@@ -1164,6 +1286,8 @@ def hitl_route(state: AgentState) -> str:
         min_sev = str(_config(db, "hitl_min_severity", settings.hitl_min_severity))
     for g in groups:
         sev = g.severity or "info"
+        if g.excluded:
+            continue  # 被排除的组不触发人工确认
         if SEVERITY_RANK.get(sev, 0) >= SEVERITY_RANK.get(min_sev, 3):
             return "confirm"
     return "pass"

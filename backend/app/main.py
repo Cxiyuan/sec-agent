@@ -30,6 +30,8 @@ _MIGRATIONS = (
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS skill_hits JSONB",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS aggregate JSONB",
     "ALTER TABLE baseline_stats ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
+    "ALTER TABLE events ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE",
+    "CREATE INDEX IF NOT EXISTS ix_events_excluded ON events (excluded)",
 )
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）

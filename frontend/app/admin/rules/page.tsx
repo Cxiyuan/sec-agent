@@ -8,39 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ApiError, apiFetch, errorText, type RuleItem } from "@/lib/api";
-
-/** 可与规则匹配的字段（见 app/schemas.py: UnifiedLog） */
-const FIELDS = [
-  "event_type",
-  "log_type",
-  "source_system",
-  "src_ip",
-  "dst_ip",
-  "src_port",
-  "dst_port",
-  "protocol",
-  "hostname",
-  "user",
-  "process",
-  "command",
-  "query",
-  "user_agent",
-  "status_code",
-  "bytes_out",
-  "rule_id",
-  "rule_groups",
-  "mitre",
-  "severity",
-  "summary",
-];
-const OPS = ["eq", "ne", "in", "contains", "regex", "gt", "gte", "lt", "lte", "exists"];
-const SELECT_CLS = "h-9 rounded-md border border-input bg-transparent px-2 text-sm";
-
-interface Cond {
-  field: string;
-  op: string;
-  value: string;
-}
+import {
+  ConditionEditor,
+  RULE_FIELDS,
+  SELECT_CLS,
+  condsToRules,
+  type Cond,
+} from "@/components/condition-editor";
 
 function ruleType(r: RuleItem): string {
   const c = (r.conditions || {}) as { mode?: string; key?: string[]; min_count?: number };
@@ -76,28 +50,7 @@ export default function RulesPage() {
   }
 
   function buildConditions() {
-    const rules = conds
-      .filter((c) => c.field && c.op)
-      .map((c) => {
-        if (c.op === "exists") return { field: c.field, op: c.op };
-        if (c.op === "in") {
-          return {
-            field: c.field,
-            op: c.op,
-            value: c.value
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .map((s) => (/^-?\d+$/.test(s) ? Number(s) : s)),
-          };
-        }
-        if (["gt", "gte", "lt", "lte"].includes(c.op)) {
-          return { field: c.field, op: c.op, value: Number(c.value) };
-        }
-        return { field: c.field, op: c.op, value: c.value };
-      });
-
-    const base: Record<string, unknown> = { logic, rules };
+    const base: Record<string, unknown> = { logic, rules: condsToRules(conds) };
     if (mode === "count") {
       base.mode = "count";
       base.key = keys.split(",").map((s) => s.trim()).filter(Boolean);
@@ -202,67 +155,17 @@ export default function RulesPage() {
               </div>
             </div>
 
-            <div className="space-y-2 rounded-md border p-3">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-muted-foreground">条件组合：</span>
-                <select value={logic} onChange={(e) => setLogic(e.target.value)} className={SELECT_CLS}>
-                  <option value="and">全部满足（AND）</option>
-                  <option value="or">任一满足（OR）</option>
-                </select>
-              </div>
-              {conds.map((c, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <select
-                    value={c.field}
-                    onChange={(e) => setCond(i, { field: e.target.value })}
-                    className={SELECT_CLS}
-                  >
-                    {FIELDS.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={c.op}
-                    onChange={(e) => setCond(i, { op: e.target.value })}
-                    className={SELECT_CLS}
-                  >
-                    {OPS.map((o) => (
-                      <option key={o} value={o}>
-                        {o}
-                      </option>
-                    ))}
-                  </select>
-                  <Input
-                    value={c.value}
-                    disabled={c.op === "exists"}
-                    onChange={(e) => setCond(i, { value: e.target.value })}
-                    placeholder={
-                      c.op === "in"
-                        ? "逗号分隔，如 4444,5555"
-                        : c.op === "regex"
-                          ? "(?i)(sqlmap|nikto)"
-                          : "值"
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-                  >
-                    删
-                  </Button>
-                </div>
-              ))}
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setConds((cs) => [...cs, { field: "dst_port", op: "in", value: "" }])}
-              >
-                加条件
-              </Button>
-            </div>
+            <ConditionEditor
+              fields={RULE_FIELDS}
+              conds={conds}
+              logic={logic}
+              onLogic={setLogic}
+              onChange={setCond}
+              onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+              onAdd={() =>
+                setConds((cs) => [...cs, { field: "dst_port", op: "in", value: "" }])
+              }
+            />
 
             <div className="flex items-end gap-3 rounded-md border p-3">
               <div>

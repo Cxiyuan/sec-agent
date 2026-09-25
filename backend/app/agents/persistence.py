@@ -21,6 +21,14 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """安全转 float：库/图状态里的脏值不该让整批保存失败。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # ---------- 规则 ----------
 
 
@@ -85,7 +93,7 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                     window_end=g.window_end,
                     event_count=0,
                     triage_score=g.triage_score,
-                    status="analyzing",
+                    status="excluded" if g.excluded else "analyzing",
                     thread_id=thread_id or None,
                     aggregate=g.aggregate or {},
                 )
@@ -100,11 +108,12 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                     row.window_start = g.window_start
                 if g.window_end and (row.window_end is None or g.window_end > row.window_end):
                     row.window_end = g.window_end
-                row.triage_score = max(float(row.triage_score or 0.0), float(g.triage_score or 0.0))
+                row.triage_score = max(_safe_float(row.triage_score), _safe_float(g.triage_score))
                 if thread_id:
                     row.thread_id = thread_id
                 row.aggregate = merge_aggregates([row.aggregate, g.aggregate])
-                row.status = "analyzing"
+                # 排除组固定为 excluded 状态：后续节点对它们全部跳过，不会再改写
+                row.status = "excluded" if g.excluded else "analyzing"
 
             existing = {
                 fp
@@ -134,6 +143,7 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                         edge_score=ev.edge_score,
                         summary=ev.log.summary,
                         raw=ev.log.raw,
+                        excluded=ev.excluded,
                     )
                 )
             row.event_count = len(existing)
@@ -151,6 +161,7 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                 "dst_ips": g.dst_ips,
                 "event_count": event_count,
                 "triage_score": g.triage_score,
+                "excluded": g.excluded,
             },
         )
 

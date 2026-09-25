@@ -21,10 +21,12 @@ from app.agents.persistence import get_enabled_rules
 from app.config import settings
 from app.db.base import SessionLocal
 from app.detector.aggregate import Aggregator
+from app.detector.analyzed import AnalyzedRegistry, digest_fingerprint
 from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue
+from app.ingestion import exclusion
 from app.ingestion.es_client import build_networks, doc_in_scope
 from app.ingestion.es_schema import configured_fields
 from app.ingestion.normalizer import normalize
@@ -95,6 +97,8 @@ def run() -> None:
     handled = HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
     freq = FreqWindow(client, settings.freq_window_seconds, settings.freq_cooldown_seconds)
     agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
+    # 投递前去重闸门（按「规则|源IP|时间桶」指纹查库，已分析过的不再重复投）
+    analyzed = AnalyzedRegistry()
     # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
     leader = Leader(client)
     elected = False  # 本次持有租约期间是否已做过启动回灌
@@ -120,6 +124,14 @@ def run() -> None:
         len(scopes),
         settings.detector_agg_seconds,
     )
+    if analyzed.enabled:
+        removed = analyzed.cleanup()
+        log.info(
+            "投递前去重：开启（在途 TTL %ds / 完结保留 %d 天），启动清理过期指纹 %d 条",
+            analyzed.ttl,
+            analyzed.retention_days,
+            removed,
+        )
 
     while True:
         if not leader.try_acquire():
@@ -170,23 +182,25 @@ def run() -> None:
             pending_raw >= settings.detector_batch_max
             or time.time() - last_flush >= settings.detector_batch_seconds
         ):
-            _flush(digest_q, client, stats)
+            _flush(digest_q, client, stats, analyzed)
             _trim_queue(digest_q, client, stats)
             last_flush = time.time()
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
             log.info(
-                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 摘要 %d / 投递 %d "
-                "/ 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
+                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
+                "/ 投递 %d / 去重跳过 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
                 leader.me,
                 stats["scanned"],
                 stats["hit"],
                 stats["freq_hit"],
                 stats["duplicate"],
+                stats["excluded"],
                 stats["digest"],
                 stats["delivered"],
+                stats["dedup_skipped"],
                 stats["throttled"],
                 stats["requeued"],
                 stats["dropped_expired"],
@@ -246,11 +260,17 @@ def _digest_age(entry: dict[str, Any]) -> float:
     return max(0.0, (datetime.now(UTC) - seen).total_seconds())
 
 
-def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
-    """弹出并处理一批摘要：超龄丢弃 + 按速率额度投递，超出的放回队尾。
+def _flush(
+    q: ReliableQueue,
+    client: Any,
+    stats: Counter[str],
+    analyzed: AnalyzedRegistry | None = None,
+) -> None:
+    """弹出并处理一批摘要：超龄丢弃 → 投递前去重 → 按速率额度投递，超出的放回队尾。
 
-    要点（修复两处逻辑漏洞）：
+    要点：
     - **丢弃不受投递限额约束**：否则限流时连清理都做不了，队列只增不减
+    - **去重在限额之前**：被去重的不占投递额度
     - **严格按剩余额度投递**：不再出现「已用 59 + 整批 50 = 109」的超发
     - 投递失败的摘要立即放回队列（原来会卡在 processing 里直到重启）
     - 超龄摘要丢弃时落 Redis 计数 + 告警，不再是静默丢失
@@ -259,7 +279,6 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
     budget = _rate_remaining(client)
     max_age = settings.detector_digest_max_age_seconds
     items: list[tuple[str, dict[str, Any]]] = []
-    surplus: list[str] = []
     expired = 0
     for _ in range(settings.detector_max_per_batch):
         payload = q.try_consume()
@@ -277,11 +296,17 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
             q.ack(payload)
             expired += 1
             continue
-        if len(items) >= budget:
-            surplus.append(payload)  # 额度用完：放回队尾，下轮优先
-            continue
         items.append((payload, digest))
 
+    # 投递前去重（在限额之前）：被去重的不占投递额度，也不该再跑一遍 LLM 尾部
+    items, dedup_skipped = _apply_dedup(q, items, analyzed)
+    if dedup_skipped:
+        stats["dedup_skipped"] += dedup_skipped
+        _count_dedup(client, dedup_skipped)
+
+    # 严格按剩余额度投递：超出的放回队尾（下轮优先）
+    surplus = [payload for payload, _ in items[budget:]]
+    items = items[:budget]
     for payload in surplus:
         q.requeue(payload)
     if surplus:
@@ -311,11 +336,59 @@ def _flush(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
         return
     for payload, _ in items:
         q.ack(payload)
+    if analyzed is not None and analyzed.enabled:
+        # 登记“在途”：投递到分析完结之间的窗口也必须拦住重复投递
+        analyzed.mark_inflight([(d, fp) for _, d in items if (fp := digest_fingerprint(d))])
     stats["delivered"] += len(items)
     bkey = rate_bucket()
     client.incrby(bkey, len(items))
     client.expire(bkey, 120)
     log.info("已投递 %d 条聚合摘要给智能体分析", len(items))
+
+
+def _analyzed_label(analyzed: AnalyzedRegistry | None) -> str:
+    """统计日志里的去重状态标记（关闭时不刷无用信息）。"""
+    return "开" if analyzed is not None and analyzed.enabled else "关"
+
+
+def _count_dedup(client: Any, count: int) -> None:
+    """记录被去重拦下的摘要数（写 Redis，跨重启可查，供 /api/detector/stats 展示）。"""
+    try:
+        client.hincrby(settings.detector_dedup_key, "skipped", count)
+        client.hset(settings.detector_dedup_key, "last_skipped_at", datetime.now(UTC).isoformat())
+        client.expire(settings.detector_dedup_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入去重计数失败: %s", exc)
+
+
+def _apply_dedup(
+    q: ReliableQueue,
+    items: list[tuple[str, dict[str, Any]]],
+    analyzed: AnalyzedRegistry | None,
+) -> tuple[list[tuple[str, dict[str, Any]]], int]:
+    """按指纹去重：已分析/在途未过期的摘要直接 ack（不再投递），返回 (待投递, 跳过数)。
+
+    指纹算不出来（缺规则名/首末时间）的摘要照常投递，不能因为算不出指纹就丢事件；
+    同批内指纹重复的只留第一条（同一桶内可能弹出多份同键摘要）。
+    """
+    if analyzed is None or not analyzed.enabled or not items:
+        return items, 0
+    kept_fps = {fp for _, fp in analyzed.filter_new([d for _, d in items])}
+    deliver: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    skipped = 0
+    for payload, digest in items:
+        fp = digest_fingerprint(digest)
+        if fp is not None and (fp not in kept_fps or fp in seen):
+            q.ack(payload)
+            skipped += 1
+            continue
+        if fp is not None:
+            seen.add(fp)
+        deliver.append((payload, digest))
+    if skipped:
+        log.info("投递前去重：本批 %d 条中 %d 条已分析/在途，跳过", len(items), skipped)
+    return deliver, skipped
 
 
 def _trim_queue(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
@@ -374,7 +447,7 @@ def _handle(
     hit = next((r for r in rules["per_event"] if match_rule(r, entry)), None)
     if hit is not None:
         stats["hit"] += 1
-        _aggregate(agg, entry, hit, doc, source)
+        _aggregate(agg, entry, hit, doc, source, **_exclusion_of(entry, hit, stats))
 
     # 注意：命中逐条规则后**必须继续**评估频率规则。
     # 若在此 return，内置逐条规则（如“扫描尝试连接”匹配所有 scan_attempt）会把
@@ -385,7 +458,28 @@ def _handle(
             continue
         if freq.observe(rule, entry):
             stats["freq_hit"] += 1
-            _aggregate(agg, entry, rule, doc, source)
+            _aggregate(agg, entry, rule, doc, source, **_exclusion_of(entry, rule, stats))
+
+
+def _exclusion_of(entry: Any, rule: dict[str, Any], stats: Counter[str]) -> dict[str, Any]:
+    """规则命中后判一次排除过滤，命中则返回 {excluded, exclude_reason}。
+
+    检查点必须在“规则命中之后”：条件要能引用命中规则元数据（规则名/来源/严重度），
+    这是“关掉某条规则的全部噪声”的关键；代价只是规则匹配照跑（极廉价）。
+    求值异常在 exclusion 内部按“未命中”处理（fail-open，宁可多分析不漏报）。
+    """
+    rule_name = str(rule.get("name") or "")
+    name = exclusion.check_filter(
+        entry,
+        rule_name=rule_name,
+        rule_source=str(rule.get("source") or ""),
+        rule_severity=str(rule.get("severity") or ""),
+    )
+    if not name:
+        return {}
+    stats["excluded"] += 1
+    exclusion.record_hit(name, entry, rule_name=rule_name)
+    return {"excluded": True, "exclude_reason": name}
 
 
 def _aggregate(
@@ -394,6 +488,9 @@ def _aggregate(
     rule: dict[str, Any],
     doc: dict[str, Any],
     source: str,
+    *,
+    excluded: bool = False,
+    exclude_reason: str = "",
 ) -> None:
     agg.add(
         # 源 IP 缺失时用 "-"（未知）归并；不能用 dst_ip 代替——那是目标，语义错位
@@ -404,4 +501,6 @@ def _aggregate(
         entry=entry,
         raw_doc=doc,
         log_source=source,
+        excluded=excluded,
+        exclude_reason=exclude_reason,
     )

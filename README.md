@@ -94,6 +94,27 @@ output.logstash:
 6. 需要时在「系统配置 → 采集侧 · Logstash 管道」调整采集链路
    （参数表单或管道全文；保存后 Logstash 约 10 秒自动重载，无需重启容器；
    每次保存自动备份上一版，界面可一键回滚）
+7. 需要时在「系统配置 → 排除过滤」加降噪规则（可选；详见下节）
+
+---
+
+## 四之二、投递前去重与排除过滤
+
+**投递前去重（默认开）**：检测器投递前会按「规则 + 源 IP + 30 分钟时间桶」指纹查库，
+同一事件组在桶内只投一次，避免同一事件反复跑完整 LLM 链（最多可省 ~30 次/桶）。
+
+- 两态标记：`inflight`（已投递、图在跑，检测器写）→ `done`（图正常跑完，worker 写）
+- 失败不会永久吞事件：任务异常保持 `inflight`，超过在途 TTL（40 分钟）后允许重投
+- 代价：被拦下的摘要，其命中次数不会补进事件组（事件在、桶内规模可能低估）
+- 关掉：`ST_DEDUP_ENABLED=false`；状态看「采集侧」面板的「去重闸门」一行
+
+**排除过滤（可选）**：命中排除条件的事件**仍进事件列表**（状态为“已排除”、默认折叠）且可回溯，
+但跳过边缘研判、深度分析、定级、处置、报告生成与记忆写入，因此不花模型成本。
+
+- 条件可引用日志字段 + 命中规则元数据（`hit_rule` / `rule_source` / `rule_severity`），
+  检查点在「规则命中之后」，所以能“把某条规则的全部噪声关掉”
+- 保存时三道校验：拒绝空条件、拒绝未知字段、校验正则；运行时读配置失败按“不排除”处理（宁可多分析，不漏报）
+- 生效最多 30 秒（`ST_EXCLUSION_CACHE_SECONDS`）；「排除过滤」面板能看到每个过滤器排掉了多少、最近排掉了什么
 
 ---
 
@@ -106,6 +127,11 @@ output.logstash:
 | `ST_DETECTOR_ENABLED` | true | 关掉则退化为「纯定时拉取」 |
 | `ST_DETECTOR_AGG_SECONDS` | 60 | 短窗聚合时长（源IP+规则） |
 | `ST_DETECTOR_BATCH_SECONDS` / `ST_DETECTOR_BATCH_MAX` | 20 / 5 | 攒批投递触发条件 |
+| `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE` | 8 | 投递速率上限（对齐边缘模型实测容量 3~4 条/分钟） |
+| `ST_DEDUP_ENABLED` | true | 投递前去重闸门（按指纹查库，已分析过的不再重复投） |
+| `ST_DEDUP_INFLIGHT_TTL_SECONDS` | 2400 | 在途标记有效期（需 > 任务硬超时 1800s） |
+| `ST_ANALYZED_RETENTION_DAYS` | 7 | 已完结指纹保留天数 |
+| `ST_EXCLUSION_CACHE_SECONDS` | 30 | 排除过滤配置缓存（跨进程生效延迟上限） |
 | `ST_FREQ_WINDOW_SECONDS` / `ST_FREQ_COOLDOWN_SECONDS` | 300 / 300 | 频率规则滑动窗口与冷却 |
 | `ST_MAX_LOGS_PER_WINDOW` | 20000 | 单次拉取上限 |
 | `ST_LOGSTASH_API_URL` | http://logstash:9600 | Logstash 监控 API（后端读状态用） |

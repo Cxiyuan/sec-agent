@@ -12,15 +12,21 @@ export default function AdminEventsPage() {
   const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
   const [selected, setSelected] = React.useState<EventGroupItem | null>(null);
   const [detail, setDetail] = React.useState<GroupDetail | null>(null);
+  // 被排除的事件默认不看（噪声不刷屏），需要排查时再打开
+  const [showExcluded, setShowExcluded] = React.useState(false);
 
   async function load() {
-    const d = await apiFetch<{ items: EventGroupItem[] }>("/api/events/groups?limit=100");
+    const suffix = showExcluded ? "&include_excluded=true" : "";
+    const d = await apiFetch<{ items: EventGroupItem[] }>(
+      `/api/events/groups?limit=100${suffix}`
+    );
     setGroups(d.items);
   }
 
   React.useEffect(() => {
     load().catch(() => {});
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showExcluded]);
 
   async function openDetail(g: EventGroupItem) {
     setSelected(g);
@@ -42,7 +48,17 @@ export default function AdminEventsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-2xl font-bold">事件列表</h1>
+        <div className="mb-4 flex items-center justify-between">
+          <h1 className="text-2xl font-bold">事件列表</h1>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={showExcluded}
+              onChange={(e) => setShowExcluded(e.target.checked)}
+            />
+            显示已排除的事件（被排除过滤命中，不跑模型）
+          </label>
+        </div>
         <Card>
           <CardContent className="p-0">
             <Table>
@@ -76,7 +92,13 @@ export default function AdminEventsPage() {
                       )}
                     </TableCell>
                     <TableCell>{g.triage_score?.toFixed(2)}</TableCell>
-                    <TableCell>{g.status}</TableCell>
+                    <TableCell>
+                      {g.excluded ? (
+                        <Badge variant="outline">已排除</Badge>
+                      ) : (
+                        g.status
+                      )}
+                    </TableCell>
                     <TableCell>
                       {g.window_start ? new Date(g.window_start).toLocaleString() : "-"}
                     </TableCell>
@@ -84,7 +106,7 @@ export default function AdminEventsPage() {
                       <Button size="sm" variant="outline" onClick={() => openDetail(g)}>
                         详情
                       </Button>
-                      {g.status === "pending_confirmation" && (
+                      {g.status === "pending_confirmation" && !g.excluded && (
                         <>
                           <Button size="sm" className="ml-2" onClick={() => confirm(g, "confirm")}>
                             确认
@@ -236,6 +258,7 @@ export default function AdminEventsPage() {
                 {(detail.events || []).slice(0, 20).map((e) => (
                   <p key={e.id} className="font-mono text-xs text-muted-foreground">
                     {e.ts} | {e.event_type} | {e.src_ip} → {e.dst_ip}
+                    {e.excluded ? " | 已排除" : ""}
                   </p>
                 ))}
               </div>

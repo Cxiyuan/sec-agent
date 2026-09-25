@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.agents.runner import get_graph
 from app.config import settings
+from app.detector.analyzed import AnalyzedRegistry
 from app.workers.celery_app import celery_app
 from app.workers.log import get_logger
 
@@ -28,6 +29,8 @@ def analyze_digests(digests: list[dict]) -> dict:
     }
     try:
         result = get_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
+        # 分析完结标记：必须落在图正常返回之后（异常则保持“在途”，等 TTL 到期后可重投）
+        AnalyzedRegistry().mark_done(digests, thread_id)
         return {
             "thread_id": thread_id,
             "digests": len(digests),
@@ -35,7 +38,25 @@ def analyze_digests(digests: list[dict]) -> dict:
         }
     except Exception:
         log.exception("实时分析任务失败")
+        _count_task_failed(len(digests))
         return {"thread_id": thread_id, "digests": len(digests), "error": "实时分析任务失败"}
+
+
+def _count_task_failed(count: int) -> None:
+    """记录“投递了但分析失败”的摘要数（原来只有一行日志，看不出来是否在漏分析）。"""
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        client.hincrby(settings.detector_task_failed_key, "failed", count)
+        client.hset(
+            settings.detector_task_failed_key,
+            "last_failed_at",
+            datetime.now(UTC).isoformat(),
+        )
+        client.expire(settings.detector_task_failed_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入分析失败计数失败: %s", exc)
 
 
 def _read_watermark() -> datetime | None:
@@ -83,6 +104,10 @@ def run_analysis_window() -> dict:
     的漏报永远补不回来；水位驱动则恢复后一次性补齐（带最大回补上限）。
     """
     now = datetime.now(UTC)
+    # 顺手清理过期的去重指纹（inflight 超时 / done 超保留期）——每轮兜底跑一次，无需额外调度
+    removed = AnalyzedRegistry().cleanup()
+    if removed:
+        log.info("清理过期去重指纹 %d 条", removed)
     # 右边界后退 lag：给检测器留出先处理这批日志的时间，避开与实时链路的重叠竞态
     end = now - timedelta(seconds=max(0, settings.fallback_lag_seconds))
     # 无水位时的首次窗口：取一个 beat 间隔（而不是分析窗口），语义上兜底一次覆盖一个调度周期

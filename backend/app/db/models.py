@@ -111,6 +111,8 @@ class Event(Base):
     edge_score: Mapped[float] = mapped_column(Float, default=0.0)
     summary: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 被排除过滤命中（仍落库可查，但不参与模型分析与报告）
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     group: Mapped[EventGroup] = relationship(back_populates="events")
 
@@ -329,6 +331,50 @@ class Skill(Base):
     event_types: Mapped[list] = mapped_column(JSONB, default=list)  # 路由用的事件类型
     tools: Mapped[list] = mapped_column(JSONB, default=list)  # 关联工具名
     source: Mapped[str] = mapped_column(String(16), default="user")  # builtin | user
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)  # 越小越先
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AnalyzedFingerprint(Base):
+    """已投递/已分析的事件指纹（投递前去重闸门）。
+
+    两态：inflight（已投递、图还在跑）→ done（图正常跑完）。
+    只有 done、或**未过期**的 inflight 才拦重复投递：否则任务失败的事件会被永久吞掉。
+    指纹为**摘要级**（规则|源IP|时间桶）—— 检测器手里只有摘要，算不出事件/组级指纹。
+    """
+
+    __tablename__ = "analyzed_fingerprints"
+
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    rule: Mapped[str] = mapped_column(String(128), default="")  # 便于排查与界面展示
+    src_ip: Mapped[str] = mapped_column(String(64), default="")
+    bucket_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="inflight", index=True)  # inflight|done
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ExclusionFilter(Base):
+    """用户自定义排除过滤：命中则事件仍落库，但跳过全部模型调用与报告生成。
+
+    条件语法复用规则引擎（conditions 结构与规则一致），另支持命中规则的元数据字段
+    （hit_rule / rule_source / rule_severity）。
+    """
+
+    __tablename__ = "exclusion_filters"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    conditions: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=100)  # 越小越先
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

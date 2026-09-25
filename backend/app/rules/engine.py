@@ -32,13 +32,18 @@ from app.schemas import UnifiedLog
 _DECODE_FIELDS = {"query", "query_string", "uri_path", "body", "referer", "filename"}
 
 
-def _get_field(log: UnifiedLog, field: str) -> Any:
+def _get_field(log: UnifiedLog, field: str, extra: dict[str, Any] | None = None) -> Any:
+    """取字段值：先查 extra（排除过滤用的虚拟字段：命中规则元数据），再查日志字段。"""
+    if extra and field in extra:
+        return extra[field]
     return getattr(log, field, None)
 
 
-def _text_candidates(log: UnifiedLog, field: str) -> list[str]:
+def _text_candidates(
+    log: UnifiedLog, field: str, extra: dict[str, Any] | None = None
+) -> list[str]:
     """返回待匹配文本：原文 + URL 解码变体（用于 contains/regex）。"""
-    actual = _get_field(log, field)
+    actual = _get_field(log, field, extra)
     if actual is None:
         return []
     text = str(actual)
@@ -54,11 +59,11 @@ def _text_candidates(log: UnifiedLog, field: str) -> list[str]:
     return texts
 
 
-def _match(cond: dict[str, Any], log: UnifiedLog) -> bool:
+def _match(cond: dict[str, Any], log: UnifiedLog, extra: dict[str, Any] | None = None) -> bool:
     field = cond.get("field")
     op = cond.get("op", "eq")
     expected = cond.get("value")
-    actual = _get_field(log, field) if field else None
+    actual = _get_field(log, field, extra) if field else None
 
     if op == "exists":
         # 非空才算存在（空字符串不应视为存在，否则 JA3/MITRE 等规则会全量误报）
@@ -68,13 +73,15 @@ def _match(cond: dict[str, Any], log: UnifiedLog) -> bool:
     if op == "ne":
         return actual != expected
     if op == "contains":
-        return any(str(expected) in text for text in _text_candidates(log, str(field or "")))
+        return any(
+            str(expected) in text for text in _text_candidates(log, str(field or ""), extra)
+        )
     if op == "regex":
         try:
             pattern = re.compile(str(expected))
         except re.error:
             return False
-        return any(pattern.search(text) for text in _text_candidates(log, str(field or "")))
+        return any(pattern.search(text) for text in _text_candidates(log, str(field or ""), extra))
     if op in ("gt", "gte", "lt", "lte"):
         try:
             a, b = float(actual), float(expected)  # type: ignore[arg-type]
@@ -86,22 +93,28 @@ def _match(cond: dict[str, Any], log: UnifiedLog) -> bool:
     return False
 
 
-def _eval_node(node: Any, log: UnifiedLog) -> bool:
+def _eval_node(node: Any, log: UnifiedLog, extra: dict[str, Any] | None = None) -> bool:
     """评估单个节点：支持 not 取反 / 嵌套组 / 单条件。"""
     if not isinstance(node, dict):
         return False
     if "not" in node:
         inner = node["not"]
         if isinstance(inner, dict) and "rules" in inner:
-            return not evaluate_conditions(inner, log)
-        return not _match(inner if isinstance(inner, dict) else {}, log)
+            return not evaluate_conditions(inner, log, extra)
+        return not _match(inner if isinstance(inner, dict) else {}, log, extra)
     if "rules" in node:
-        return evaluate_conditions(node, log)
-    return _match(node, log)
+        return evaluate_conditions(node, log, extra)
+    return _match(node, log, extra)
 
 
-def evaluate_conditions(conditions: dict[str, Any], log: UnifiedLog) -> bool:
-    """递归评估条件树。空条件视为命中（嵌套组用；顶级规则不适用）。"""
+def evaluate_conditions(
+    conditions: dict[str, Any], log: UnifiedLog, extra: dict[str, Any] | None = None
+) -> bool:
+    """递归评估条件树。空条件视为命中（嵌套组用；顶级规则不适用）。
+
+    extra：额外的虚拟字段（排除过滤用来注入命中规则元数据：hit_rule/rule_source/rule_severity）。
+    默认 None，对规则匹配完全无影响。
+    """
     if not conditions:
         return True
     logic = (conditions.get("logic") or "and").lower()
@@ -109,21 +122,23 @@ def evaluate_conditions(conditions: dict[str, Any], log: UnifiedLog) -> bool:
     if not rules:
         return True
 
-    results = [_eval_node(r, log) for r in rules]
+    results = [_eval_node(r, log, extra) for r in rules]
     if logic == "or":
         return any(results)
     return all(results)
 
 
-def whitelisted(conditions: dict[str, Any], log: UnifiedLog) -> bool:
+def whitelisted(
+    conditions: dict[str, Any], log: UnifiedLog, extra: dict[str, Any] | None = None
+) -> bool:
     """规则级白名单：命中任一白名单条件 → 该规则对该日志放过。"""
     whitelist = conditions.get("whitelist")
     if not whitelist:
         return False
     if isinstance(whitelist, list):
-        return any(_eval_node(item, log) for item in whitelist)
+        return any(_eval_node(item, log, extra) for item in whitelist)
     if isinstance(whitelist, dict):
-        return evaluate_conditions(whitelist, log)
+        return evaluate_conditions(whitelist, log, extra)
     return False
 
 

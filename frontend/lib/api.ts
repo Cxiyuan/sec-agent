@@ -200,7 +200,50 @@ export interface EventGroupItem {
   response_suggestions: ResponseSuggestion[] | null;
   /** 实时链路的聚合规模（实时入口产生；兜底窗口链路为空） */
   aggregate?: GroupAggregate | null;
+  /** 被排除过滤命中：可见可回溯，但不参与模型分析与报告 */
+  excluded?: boolean;
   created_at: string | null;
+}
+
+/** 排除过滤条件（结构与规则一致，另支持命中规则元数据字段） */
+export interface ExclusionConditions {
+  logic?: string;
+  rules?: RuleCondition[];
+}
+
+/** 用户自定义排除过滤：命中则事件仍落库，但跳过全部模型调用与报告 */
+export interface ExclusionFilterItem {
+  id: string;
+  name: string;
+  description: string;
+  conditions: ExclusionConditions;
+  enabled: boolean;
+  priority: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 排除命中的样例（最多留 3 条，用来核对“到底排掉了什么”） */
+export interface ExclusionSample {
+  at: string;
+  ts: string;
+  rule: string;
+  src_ip: string;
+  dst_ip: string;
+  event_type: string;
+  summary: string;
+}
+
+export interface ExclusionStats {
+  counts: Record<string, number>;
+  last_hit_at: string | null;
+  samples: Record<string, ExclusionSample[]>;
+}
+
+export interface ExclusionFields {
+  fields: string[];
+  rule_fields: string[];
+  operators: string[];
 }
 
 /** 分析网段组 */
@@ -462,6 +505,19 @@ export interface DetectorStats {
   digest_max_age_seconds: number;
   dropped: Record<string, number>;
   last_dropped_at: string | null;
+  /** 投递前去重：省下的重复 LLM 调用 */
+  dedup?: {
+    enabled: boolean;
+    inflight_ttl_seconds: number;
+    skipped_total: number;
+    last_skipped_at: string | null;
+    inflight: number;
+    done: number;
+  };
+  /** 投递了但分析失败（漏分析可见性） */
+  task_failed?: { failed_total: number; last_failed_at: string | null };
+  /** 选主状态：谁在消费 */
+  leader?: { holder: string | null; ttl_seconds: number } | null;
   error?: string;
 }
 
@@ -524,6 +580,8 @@ export interface EventItem {
   hit_rule?: string | null;
   edge_score?: number;
   summary?: string;
+  /** 该事件被排除过滤命中（仍可见，但不参与模型分析） */
+  excluded?: boolean;
 }
 
 export interface GroupDetail extends EventGroupItem {
