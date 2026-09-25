@@ -307,6 +307,27 @@ def _stage_evidence(chain: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _fill_stage_refs(stages: list[dict[str, Any]], items: list[dict[str, Any]]) -> None:
+    """用条目上的阶段标记**反向回填** stages[].evidence_refs。
+
+    为什么必须回填：固定深度分析的 stages 只有 evidence（摘要）没有 refs，
+    不回填就会出现"阶段显示 0 条证据、而证据却标着该阶段"的自相矛盾（部署后实测到）。
+    """
+    linked: dict[str, list[str]] = {}
+    for item in items:
+        ref = str(item.get("ref") or "")
+        if not ref:
+            continue
+        for stage_name in item.get("stages") or []:
+            bucket = linked.setdefault(str(stage_name), [])
+            if ref not in bucket:
+                bucket.append(ref)
+    for st in stages:
+        stage_name = str(st.get("stage") or "")
+        if not st.get("evidence_refs") and stage_name in linked:
+            st["evidence_refs"] = linked[stage_name]
+
+
 @router.get("/groups/{group_id}/evidence")
 def get_group_evidence(
     group_id: str,
@@ -384,6 +405,8 @@ def get_group_evidence(
             for st in stages:
                 if item["ref"] in st["evidence_refs"] and st["stage"] not in marked:
                     marked.append(st["stage"])
+    # 两个视图必须一致：把匹配到的证据回填到阶段上
+    _fill_stage_refs(stages, all_items)
 
     return {
         "group_id": g.id,
