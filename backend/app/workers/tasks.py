@@ -83,27 +83,34 @@ def run_analysis_window() -> dict:
     的漏报永远补不回来；水位驱动则恢复后一次性补齐（带最大回补上限）。
     """
     now = datetime.now(UTC)
+    # 右边界后退 lag：给检测器留出先处理这批日志的时间，避开与实时链路的重叠竞态
+    end = now - timedelta(seconds=max(0, settings.fallback_lag_seconds))
     # 无水位时的首次窗口：取一个 beat 间隔（而不是分析窗口），语义上兜底一次覆盖一个调度周期
     start = _read_watermark() or (
-        now - timedelta(minutes=max(1, settings.analysis_interval_minutes))
+        end - timedelta(minutes=max(1, settings.analysis_interval_minutes))
     )
     max_backfill = timedelta(hours=settings.fallback_max_backfill_hours)
-    if now - start > max_backfill:
+    if end - start > max_backfill:
         log.warning(
             "兜底窗口 %s 超过最大回补 %d 小时，已截断",
             start.isoformat(),
             settings.fallback_max_backfill_hours,
         )
-        start = now - max_backfill
+        start = end - max_backfill
+    if end <= start:
+        # 空窗口（例：刚跑过手动任务、或 beat 间隔小于 lag）：不动水位，直接跳过
+        log.info("兜底窗口为空（%s ~ %s），本轮跳过", start.isoformat(), end.isoformat())
+        return {"skipped": "empty_window"}
 
     thread_id = str(uuid.uuid4())
-    initial = {"window_start": start, "window_end": now, "thread_id": thread_id}
+    initial = {"window_start": start, "window_end": end, "thread_id": thread_id}
     try:
         result = get_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
     except Exception:
         log.exception("兜底分析任务失败（水位不前移，下轮重试同一窗口）")
         return {"thread_id": thread_id, "error": "兜底分析任务失败"}
-    _write_watermark(now)
+    # 水位只推进到实际覆盖到的右边界（不是 now），保证下轮不重叠、不断层
+    _write_watermark(end)
     return {"thread_id": thread_id, "summary": result.get("run_summary", {})}
 
 

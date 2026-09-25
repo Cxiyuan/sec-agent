@@ -100,9 +100,7 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                     row.window_start = g.window_start
                 if g.window_end and (row.window_end is None or g.window_end > row.window_end):
                     row.window_end = g.window_end
-                row.triage_score = max(
-                    float(row.triage_score or 0.0), float(g.triage_score or 0.0)
-                )
+                row.triage_score = max(float(row.triage_score or 0.0), float(g.triage_score or 0.0))
                 if thread_id:
                     row.thread_id = thread_id
                 row.aggregate = merge_aggregates([row.aggregate, g.aggregate])
@@ -273,11 +271,15 @@ def save_report(
         existing: Report | None = None
         if settings.report_min_interval_minutes > 0:
             since = _now() - timedelta(minutes=settings.report_min_interval_minutes)
-            existing = db.execute(
-                select(Report)
-                .where(Report.group_id == grp.id, Report.created_at >= since)
-                .order_by(Report.created_at.desc())
-            ).scalars().first()
+            existing = (
+                db.execute(
+                    select(Report)
+                    .where(Report.group_id == grp.id, Report.created_at >= since)
+                    .order_by(Report.created_at.desc())
+                )
+                .scalars()
+                .first()
+            )
 
         if existing is not None:
             existing.title = title

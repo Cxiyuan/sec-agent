@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import atexit
 import json
+import signal
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -21,6 +23,7 @@ from app.db.base import SessionLocal
 from app.detector.aggregate import Aggregator
 from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
+from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue
 from app.ingestion.es_client import build_networks, doc_in_scope
 from app.ingestion.es_schema import configured_fields
@@ -88,18 +91,19 @@ def run() -> None:
         settings.detector_digest_queue,
         f"{settings.detector_digest_queue}:processing",
     )
-    raw_q.recover()
-    digest_q.recover()
-    backlog, _ = raw_q.depth()
-    if backlog > _BACKLOG_WARN:
-        log.warning(
-            "raw 队列积压 %d 条（常见原因：采集侧重读了历史日志），将按速率护栏逐步消化",
-            backlog,
-        )
 
     handled = HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
     freq = FreqWindow(client, settings.freq_window_seconds, settings.freq_cooldown_seconds)
     agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
+    # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
+    leader = Leader(client)
+    elected = False  # 本次持有租约期间是否已做过启动回灌
+
+    def _on_term(_signum: int, _frame: Any) -> None:
+        raise SystemExit(0)  # 让退出路径（atexit）能执行让位
+
+    signal.signal(signal.SIGTERM, _on_term)
+    atexit.register(leader.release)
 
     rules = _load_rules()
     scopes = _load_scopes()
@@ -118,6 +122,25 @@ def run() -> None:
     )
 
     while True:
+        if not leader.try_acquire():
+            # 非持锁实例：待命热备，不消费 / 不聚合 / 不投递
+            if elected and not leader.is_leader:
+                log.warning("检测器已失去主身份，转为待命")
+                elected = False
+            time.sleep(leader.renew_seconds)
+            continue
+        if not elected:
+            elected = True
+            # 每次当选只做一次：回灌上次未确认的消息（避免反复回灌正在处理的项）
+            raw_q.recover()
+            digest_q.recover()
+            backlog, _ = raw_q.depth()
+            if backlog > _BACKLOG_WARN:
+                log.warning(
+                    "raw 队列积压 %d 条（常见原因：采集侧重读了历史日志），将按速率护栏逐步消化",
+                    backlog,
+                )
+
         now = time.time()
         if now - last_rule_load >= 60:  # 规则可能被后台改动
             rules = _load_rules()
@@ -154,9 +177,10 @@ def run() -> None:
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
             log.info(
-                "检测器统计：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 摘要 %d / 投递 %d "
+                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 摘要 %d / 投递 %d "
                 "/ 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
+                leader.me,
                 stats["scanned"],
                 stats["hit"],
                 stats["freq_hit"],

@@ -34,6 +34,8 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         "digest_max_age_seconds": settings.detector_digest_max_age_seconds,
         "dropped": {},
         "last_dropped_at": None,
+        # 选主状态：谁在消费（另一个实例在待命热备）
+        "leader": None,
     }
     try:
         import redis
@@ -51,6 +53,11 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
             if key != "last_dropped_at" and str(val).isdigit()
         }
         out["last_dropped_at"] = raw_dropped.get("last_dropped_at")
+        holder = client.get(settings.detector_leader_key)
+        out["leader"] = {
+            "holder": str(holder) if holder else None,
+            "ttl_seconds": max(0, int(client.ttl(settings.detector_leader_key) or 0)),
+        }
     except Exception as exc:  # noqa: BLE001
         log.warning("读取检测器状态失败: %s", exc)
         out["error"] = str(exc)[:200]

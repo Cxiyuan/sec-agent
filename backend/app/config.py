@@ -65,12 +65,17 @@ class Settings(BaseSettings):
     detector_poll_timeout: int = 5  # 队列阻塞读取秒数
     detector_scope_refresh_seconds: int = 60  # 分析网段刷新间隔
     detector_stats_log_seconds: int = 300  # 运行统计日志间隔
+    # 选主（Redis 租约）：只有持锁实例才消费，多实例时其余待命做热备
+    detector_leader_key: str = "shentong:detector:leader"
+    detector_leader_ttl_seconds: int = 30  # 租约 TTL，须 ≥ 续约间隔×2，否则会在两次续约间被抢主
+    detector_leader_renew_seconds: int = 10  # 续约间隔（也决定待命实例的轮询节奏）
     # 频率规则滑动窗口（实时链路用 Redis 滑窗替代“窗口内计数”）
     freq_window_seconds: int = 300
     freq_cooldown_seconds: int = 300  # 同一分组触发后的冷却，防重复告警
     # 兜底任务水位（存 PostgreSQL，跨重启可靠）
     fallback_watermark_key: str = "fallback.last_run"
     fallback_max_backfill_hours: int = 24  # 单次最大回补时长（超限截断并告警）
+    fallback_lag_seconds: int = 60  # 兜底窗口右边界后退量：留时间给检测器先处理，避开重叠竞态（0=关）
 
     # 拉取护栏 / 检索上限
     max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）
