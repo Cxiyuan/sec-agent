@@ -26,7 +26,7 @@ def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
         "api_key": SecretStr(EDGE_API_KEY),
         "temperature": temperature,
         "timeout": settings.edge_model_timeout,
-        "max_retries": 2,
+        "max_retries": 1,  # 重试会再占一个槽位（服务器 16 槽）；故障时最多重试 1 次
     }
     if thinking:
         # 开启思考：max_tokens 必须调大，否则思考吃光预算导致 content 为空（finish_reason=length）

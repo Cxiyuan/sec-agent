@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -217,19 +218,27 @@ def _edge_concurrency() -> int:
     return max(1, min(workers, 16))
 
 
-def edge_review_many(items: list[tuple[UnifiedLog, str]]) -> list[tuple[float, bool, str]]:
-    """并发调边缘模型做降噪；返回顺序与输入严格一致。
+def _parallel_map(fn: Callable[[Any], Any], items: list[Any], prefix: str) -> list[Any]:
+    """批内并发（线程池）；返回顺序与输入严格一致。
 
-    - 单条失败已在 _edge_review 内部兜底（返回“可疑”），不会拖垮整批
-    - workers=1 或只有 1 条时退化为串行（省线程开销）
+    边缘模型调用是同步阻塞的 HTTP 请求，用线程池即可。workers=1 或只有 1 条时
+    退化为串行（省线程开销）。
     """
     if not items:
         return []
     workers = min(_edge_concurrency(), len(items))
     if workers <= 1:
-        return [_edge_review(entry, label) for entry, label in items]
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="edge-review") as pool:
-        return list(pool.map(lambda item: _edge_review(item[0], item[1]), items))
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix) as pool:
+        return list(pool.map(fn, items))
+
+
+def edge_review_many(items: list[tuple[UnifiedLog, str]]) -> list[tuple[float, bool, str]]:
+    """并发调边缘模型做降噪；返回顺序与输入严格一致。
+
+    单条失败已在 _edge_review 内部兜底（返回“可疑”），不会拖垮整批。
+    """
+    return _parallel_map(lambda item: _edge_review(item[0], item[1]), list(items), "edge-review")
 
 
 def _digest_aggregate(
@@ -661,35 +670,39 @@ def _semantic_merge(groups: list[EventGroup], max_calls: int = 20) -> list[Event
         if ra != rb:
             parent[rb] = ra
 
-    calls = 0
+    # 先把候选对全部筛出来（高分 + 无共享 IP），再并发问模型；合并仍按原顺序应用。
+    # 为什么要并发：这一步用的是 thinking 模式（单次 16~29s），串行 20 次 = 5 分钟以上。
+    pairs: list[tuple[int, int]] = []
     for p in range(n):
         for q in range(p + 1, n):
-            if calls >= max_calls:
+            if len(pairs) >= max_calls:
                 break
-            if find(p) == find(q):
-                continue
             a, b = groups[high_idx[p]], groups[high_idx[q]]
             if set(a.src_ips) & set(b.src_ips) or set(a.dst_ips) & set(b.dst_ips):
                 continue
-            calls += 1
-            try:
-                r = edge_invoke_json(
-                    prompts.GROUP_SEMANTIC_SYSTEM,
-                    prompts.GROUP_SEMANTIC_USER.format(
-                        event_a=json.dumps(
-                            [e.log.summary for e in a.events[:5]], ensure_ascii=False
-                        ),
-                        event_b=json.dumps(
-                            [e.log.summary for e in b.events[:5]], ensure_ascii=False
-                        ),
-                    ),
-                    thinking=edge_thinking_merge(),
-                )
-                if r.get("same_attack"):
-                    union(p, q)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("语义关联失败: %s", exc)
-                continue
+            pairs.append((p, q))
+
+    def ask(pair: tuple[int, int]) -> tuple[int, int, bool]:
+        p, q = pair
+        a, b = groups[high_idx[p]], groups[high_idx[q]]
+        try:
+            r = edge_invoke_json(
+                prompts.GROUP_SEMANTIC_SYSTEM,
+                prompts.GROUP_SEMANTIC_USER.format(
+                    event_a=json.dumps([e.log.summary for e in a.events[:5]], ensure_ascii=False),
+                    event_b=json.dumps([e.log.summary for e in b.events[:5]], ensure_ascii=False),
+                ),
+                thinking=edge_thinking_merge(),
+            )
+            return p, q, bool(r.get("same_attack"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("语义关联失败: %s", exc)
+            return p, q, False
+
+    # pool.map 保序 → 并查集的合并顺序与串行版一致（对已同组的对做 union 本就是空操作，语义等价）
+    for p, q, same_attack in _parallel_map(ask, pairs, "edge-merge"):
+        if same_attack:
+            union(p, q)
 
     # 按根聚合：根组吸收同组其它组的事件 / IP / 分数，只删除被吸收的组
     buckets: dict[int, list[int]] = {}
