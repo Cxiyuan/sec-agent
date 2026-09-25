@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.concurrency import cloud_concurrency, parallel_map
 from app.agents.memory import memory_text
 from app.agents.nodes import skill_context_text
-from app.agents.persistence import get_baseline, update_baseline
+from app.agents.persistence import get_baseline, update_baseline, update_group_analysis
 from app.agents.profile import profile_text
 from app.agents.state import AgentState
 from app.intel.threat_intel import enrich_profile
@@ -297,6 +297,21 @@ def profile_node(state: AgentState) -> dict[str, Any]:
         strict=False,
     ):
         analyses.setdefault(g.fingerprint, {})["profile"] = profile
+        # 把三种深度分析结果落库。
+        # 为什么必须在这里写：图状态里的 analyses **不会自动进数据库**，而
+        # update_group_analysis 虽然支持 attack_chain/profile/anomaly 三个参数，
+        # 之前**没有任何调用点传它们** → 界面与报告里攻击链/画像永远是空的，
+        # 等于花了两次 deep 调用的钱把结果丢掉（部署后实測：攻击链非空 = 0）。
+        entry = analyses.get(g.fingerprint) or {}
+        try:
+            update_group_analysis(
+                g.fingerprint,
+                attack_chain=entry.get("attack_chain") or None,
+                profile=profile,
+                anomaly=entry.get("anomaly") or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("深度分析结果落库失败 %s: %s", g.fingerprint, exc)
     return {"analyses": analyses}
 
 
