@@ -42,6 +42,13 @@ CONFIG_KEYS: dict[str, Any] = {
     # 边缘模型批内并发度（经 runtime_config 即时生效）：上限 16 对齐服务器槽位；
     # 实测并发 8 → 23 次/分、串行仅 ~5，改大即提速（受服务器容量约束）
     "edge_review_concurrency": settings.edge_review_concurrency,
+    # 自主取证调查（经 runtime_config 即时生效）
+    "investigation_enabled": settings.investigation_enabled,
+    "investigation_min_severity": settings.investigation_min_severity,
+    "investigation_max_steps": settings.investigation_max_steps,
+    "investigation_max_queries": settings.investigation_max_queries,
+    "investigation_cooldown_minutes": settings.investigation_cooldown_minutes,
+    "investigation_max_rounds_per_day": settings.investigation_max_rounds_per_day,
 }
 
 # 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，

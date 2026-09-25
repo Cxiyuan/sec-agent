@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Brain,
   FileText,
+  Fingerprint,
   LayoutDashboard,
   ListOrdered,
   Network,
@@ -24,6 +25,7 @@ import { Button } from "@/components/ui/button";
 const items = [
   { href: "/dashboard", label: "驾驶舱", icon: LayoutDashboard },
   { href: "/admin", label: "事件列表", icon: ListOrdered },
+  { href: "/admin/cases", label: "攻击者案件", icon: Fingerprint },
   { href: "/admin/assets", label: "资产管理", icon: Server },
   { href: "/admin/documents", label: "知识文档", icon: FileText },
   { href: "/admin/topology", label: "网络拓扑", icon: Network },

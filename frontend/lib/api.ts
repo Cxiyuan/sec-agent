@@ -137,6 +137,16 @@ export interface AttackChain {
   stages?: AttackStage[];
   summary?: string;
   confidence?: number;
+  /** 自主取证调查写入的增量字段（旧数据没有，界面自动跳过） */
+  case_id?: string;
+  path?: InvestigationStage[];
+  timeline?: InvestigationTimelineItem[];
+  lateral?: InvestigationLateral[];
+  exfil?: InvestigationExfil[];
+  iocs?: InvestigationIoc[];
+  assets_impacted?: InvestigationAsset[];
+  gaps?: InvestigationGap[];
+  status?: string;
 }
 
 export interface Profile {
@@ -666,4 +676,204 @@ export interface TopologyItem {
 
 export interface TopologyDetail extends TopologyItem {
   graph: TopoGraph;
+}
+
+// ---------- 攻击者案件与自主取证调查 ----------
+
+/** 完整路径里的一个阶段（带证据引用） */
+export interface InvestigationStage {
+  stage: string;
+  description?: string;
+  start?: string | null;
+  end?: string | null;
+  assets?: string[];
+  evidence_refs?: string[];
+}
+
+export interface InvestigationTimelineItem {
+  ts?: string | null;
+  type?: string;
+  src?: string;
+  dst?: string;
+  summary?: string;
+  ref?: string;
+}
+
+export interface InvestigationLateral {
+  src?: string;
+  dst?: string;
+  method?: string;
+  evidence_refs?: string[];
+}
+
+export interface InvestigationExfil {
+  dst?: string;
+  bytes?: number;
+  evidence_refs?: string[];
+}
+
+export interface InvestigationIoc {
+  type?: string;
+  value?: string;
+  intel?: Record<string, unknown>;
+  evidence_refs?: string[];
+}
+
+export interface InvestigationAsset {
+  ip?: string;
+  asset?: string;
+  importance?: string;
+  role?: string;
+}
+
+export interface InvestigationGap {
+  missing?: string;
+  why?: string;
+  next_action?: string;
+}
+
+export interface InvestigationBudget {
+  steps?: number;
+  queries?: number;
+  llm_calls?: number;
+  tokens_est?: number;
+  elapsed_ms?: number;
+  stop_reason?: string;
+  limits?: { max_steps?: number; max_queries?: number; max_llm_calls?: number; timeout_seconds?: number };
+}
+
+export interface InvestigationQueryItem {
+  step?: number;
+  tool?: string;
+  params?: Record<string, unknown>;
+  result_count?: number | null;
+  error?: string | null;
+  ms?: number;
+}
+
+/** 一轮调查的结果（与后端 event_groups.attack_chain 超集同结构） */
+export interface InvestigationResult {
+  version?: number;
+  case_id?: string;
+  round?: number;
+  kind?: string;
+  status?: string;
+  confidence?: number;
+  summary?: string;
+  path?: InvestigationStage[];
+  timeline?: InvestigationTimelineItem[];
+  lateral?: InvestigationLateral[];
+  exfil?: InvestigationExfil[];
+  iocs?: InvestigationIoc[];
+  assets_impacted?: InvestigationAsset[];
+  gaps?: InvestigationGap[];
+  dropped?: string[];
+  attacker?: {
+    identity?: string;
+    basic?: Profile["basic"];
+    behavior?: Profile["behavior"];
+    ttps?: string[];
+    src_ips?: string[];
+  };
+  /** 兼容旧界面/报告的攻击链字段 */
+  stages?: AttackStage[];
+  query_trail?: InvestigationQueryItem[];
+  budget?: InvestigationBudget;
+}
+
+/** 攻击者案件（列表项） */
+export interface AttackerCaseItem {
+  id: string;
+  attacker_key: string;
+  title: string;
+  keys: Record<string, string[]>;
+  status: string;
+  severity: string | null;
+  src_ips: string[];
+  dst_ips: string[];
+  group_fingerprints: string[];
+  group_count: number;
+  event_count: number;
+  event_types: string[];
+  first_seen: string | null;
+  last_seen: string | null;
+  rounds_total: number;
+  rounds_today: number;
+  last_dispatched_at: string | null;
+  next_allowed_at: string | null;
+  last_error: string;
+  merge_suggestion: { case_ids?: string[]; reason?: string; at?: string } | null;
+  created_at: string | null;
+  updated_at: string | null;
+  pending_signal: Record<string, unknown>;
+  /** 列表接口附加：最新结论摘要 / 置信度 / 阶段名 */
+  summary?: string;
+  confidence?: number;
+  path_stages?: string[];
+  investigation?: InvestigationResult | null;
+}
+
+/** 案件成员事件组（简表） */
+export interface CaseGroupBrief {
+  fingerprint: string;
+  window_start: string | null;
+  window_end: string | null;
+  src_ips: string[];
+  dst_ips: string[];
+  event_count: number;
+  severity: string | null;
+  status: string;
+  triage_score: number;
+}
+
+export interface AttackerCaseDetail extends AttackerCaseItem {
+  groups: CaseGroupBrief[];
+}
+
+/** 调查轮次（含查询轨迹与预算，取证可审计） */
+export interface InvestigationRound {
+  id: string;
+  round: number;
+  kind: string;
+  instruction: string;
+  status: string;
+  steps: number;
+  llm_calls: number;
+  tokens: number;
+  elapsed_ms: number;
+  error: string;
+  query_trail: InvestigationQueryItem[];
+  budget: InvestigationBudget;
+  result: InvestigationResult | null;
+  created_at: string | null;
+  finished_at: string | null;
+}
+
+/** 调查运行统计 */
+export interface InvestigationStats {
+  enabled: boolean;
+  min_severity: string;
+  cases_total: number;
+  cases_by_status: Record<string, number>;
+  rounds_today: number;
+  max_rounds_per_day: number;
+  cooldown_minutes: number;
+  rounds_by_status: Record<string, number>;
+  tokens_est_total: number;
+  queue_depth?: number | null;
+  reports?: number;
+  limits: Record<string, number>;
+  queue_error?: string;
+}
+
+/** 证据清单条目（含原始证据，已脱敏） */
+export interface EvidenceItem {
+  ref: string;
+  kind?: string;
+  ts?: string | null;
+  source_system?: string;
+  summary?: string;
+  raw?: Record<string, unknown>;
+  note?: string;
+  error?: string;
 }

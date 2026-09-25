@@ -39,15 +39,66 @@ def _render_html(group: Any, analysis: dict[str, Any], body: str = "") -> str:
 def render_report(group: Any, analysis: dict[str, Any], body: str = "") -> tuple[str, str | None]:
     """渲染报告 HTML 并生成 PDF，返回 (html, pdf_path)。PDF 失败时返回 (html, None)。"""
     html = _render_html(group, analysis, body)
+    return html, _write_pdf(html, f"{group.fingerprint}_{uuid.uuid4().hex[:8]}")
+
+
+def _write_pdf(html: str, name: str) -> str | None:
+    """HTML → PDF；WeasyPrint 依赖系统库，失败时降级为仅 HTML（返回 None）。"""
     try:
         from weasyprint import HTML  # type: ignore[import-not-found]
 
         os.makedirs(settings.report_storage_dir, exist_ok=True)
-        pdf_path = os.path.join(
-            settings.report_storage_dir, f"{group.fingerprint}_{uuid.uuid4().hex[:8]}.pdf"
-        )
+        pdf_path = os.path.join(settings.report_storage_dir, f"{name}.pdf")
         HTML(string=html).write_pdf(pdf_path)
-        return html, pdf_path
+        return pdf_path
     except Exception:  # noqa: BLE001
-        # WeasyPrint 依赖系统库，失败时降级为仅 HTML
-        return html, None
+        return None
+
+
+def render_forensic_report(
+    case: dict[str, Any],
+    investigation: dict[str, Any],
+    *,
+    include_trail: bool = True,
+) -> tuple[str, str | None]:
+    """渲染案件取证报告（完整路径 + 证据引用 + 缺口 + 查询轨迹附录）。
+
+    ``investigation`` 是调查结果超集（与 ``event_groups.attack_chain`` 同结构），
+    因此本函数对“轮次结果”与“案件最新结果”都适用。
+    """
+    keys = case.get("keys") or {}
+    keys_text = "；".join(f"{k}: {', '.join(str(v) for v in vals[:5])}" for k, vals in keys.items() if vals)
+    template = _env.get_template("forensic_report.html")
+    html = template.render(
+        severity=str(case.get("severity") or "info").upper(),
+        severity_cls=str(case.get("severity") or "info").lower(),
+        status=investigation.get("status") or case.get("status") or "-",
+        confidence=investigation.get("confidence", 0.0),
+        attacker_key=case.get("attacker_key") or "-",
+        title=case.get("title") or "攻击者案件",
+        keys_text=keys_text,
+        keys=keys,
+        src_ips=case.get("src_ips") or [],
+        dst_ips=case.get("dst_ips") or [],
+        first_seen=case.get("first_seen"),
+        last_seen=case.get("last_seen"),
+        group_count=case.get("group_count") or 0,
+        event_count=case.get("event_count") or 0,
+        round_no=investigation.get("round") or 0,
+        rounds_total=case.get("rounds_total") or 0,
+        inv_status=investigation.get("status") or "-",
+        summary=investigation.get("summary") or "",
+        path=investigation.get("path") or [],
+        timeline=investigation.get("timeline") or [],
+        lateral=investigation.get("lateral") or [],
+        exfil=investigation.get("exfil") or [],
+        iocs=investigation.get("iocs") or [],
+        assets_impacted=investigation.get("assets_impacted") or [],
+        attacker=investigation.get("attacker") or {},
+        gaps=investigation.get("gaps") or [],
+        dropped=investigation.get("dropped") or [],
+        query_trail=investigation.get("query_trail") or [],
+        budget=investigation.get("budget") or {},
+        include_trail=include_trail,
+    )
+    return html, _write_pdf(html, f"case_{case.get('id')}_{uuid.uuid4().hex[:8]}")

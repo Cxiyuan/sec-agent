@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import select
 
 from app.agents.runner import get_graph
 from app.config import settings
@@ -31,6 +34,7 @@ def analyze_digests(digests: list[dict]) -> dict:
         result = get_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
         # 分析完结标记：必须落在图正常返回之后（异常则保持“在途”，等 TTL 到期后可重投）
         AnalyzedRegistry().mark_done(digests, thread_id)
+        _dispatch_cases(result.get("groups") or [])
         return {
             "thread_id": thread_id,
             "digests": len(digests),
@@ -136,7 +140,108 @@ def run_analysis_window() -> dict:
         return {"thread_id": thread_id, "error": "兜底分析任务失败"}
     # 水位只推进到实际覆盖到的右边界（不是 now），保证下轮不重叠、不断层
     _write_watermark(end)
+    _dispatch_cases(result.get("groups") or [])
     return {"thread_id": thread_id, "summary": result.get("run_summary", {})}
+
+
+# ---------- 自主取证调查（攻击者跨组案件）----------
+
+
+def _group_ref(group: Any) -> dict:
+    """把升级事件组压成案件归集引用（键抽取在此完成，任务端只做归集）。"""
+    from app.investigation.cases import group_ref
+
+    events = list(getattr(group, "events", None) or [])
+    return group_ref(
+        fingerprint=str(getattr(group, "fingerprint", "")),
+        src_ips=list(getattr(group, "src_ips", None) or []),
+        dst_ips=list(getattr(group, "dst_ips", None) or []),
+        severity=getattr(group, "severity", None),
+        event_types=sorted({str(e.log.event_type) for e in events}),
+        texts=[str(e.log.summary) for e in events][:20],
+        raws=[e.log.raw for e in events][:20],
+        event_count=len(events),
+        first_seen=getattr(group, "window_start", None),
+        last_seen=getattr(group, "window_end", None),
+    )
+
+
+def _dispatch_cases(groups: list[Any]) -> None:
+    """图跑完后：把**升级组**投给案件归集（独立队列，不阻塞实时链路）。
+
+    为什么放在图之后而不是图里：调查是跨组、跨时间的异步长任务（最多几分钟），
+    放进图里会拖长实时分析并占用实时 worker。
+    """
+    refs: list[dict] = []
+    for group in groups or []:
+        if not getattr(group, "escalate", False) or getattr(group, "excluded", False):
+            continue
+        try:
+            refs.append(_group_ref(group))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("案件归集引用抽取失败（跳过该组）: %s", exc)
+    if not refs:
+        return
+    try:
+        # 用 send_task 按名字投递（不依赖任务对象的 .apply_async，类型检查也更干净）
+        celery_app.send_task("analysis.build_cases", args=[refs], queue="investigation")
+    except Exception as exc:  # noqa: BLE001
+        # 归集失败不能影响主分析链路（图已经跑完了）
+        log.warning("案件归集任务投递失败: %s", exc)
+
+
+@celery_app.task(name="analysis.build_cases")
+def build_cases(refs: list[dict]) -> dict:
+    """案件归集：把升级事件组挂到案件，并对需要调查的案件派发调查任务。"""
+    from app.investigation import cases as case_service, service as investigation_service
+
+    try:
+        outcome = case_service.upsert_from_groups(refs)
+    except Exception:
+        log.exception("案件归集失败")
+        return {"error": "案件归集失败"}
+    dispatched = 0
+    for item in outcome.get("dispatch") or []:
+        result = investigation_service.dispatch(str(item.get("case_id")), kind="auto")
+        if result.get("ok"):
+            dispatched += 1
+    log.info(
+        "案件归集：新建 %s / 挂载 %s / 跳过 %s / 派发调查 %d",
+        outcome.get("created"),
+        outcome.get("linked"),
+        outcome.get("skipped"),
+        dispatched,
+    )
+    return {**outcome, "dispatched": dispatched}
+
+
+@celery_app.task(name="analysis.investigate_case")
+def investigate_case(case_id: str, kind: str = "auto", instruction: str = "") -> dict:
+    """执行一轮自主取证调查（investigation 队列，独立 worker）。"""
+    from app.investigation.service import investigate
+
+    return investigate(case_id, kind=kind, instruction=instruction)  # type: ignore[arg-type]
+
+
+@celery_app.task(name="analysis.retry_failed_cases")
+def retry_failed_cases() -> dict:
+    """失败案件自动重试（受单案每日轮次上限与冷却约束，不会无限烧钱）。"""
+    from app.db.base import SessionLocal
+    from app.db.models import AttackerCase
+    from app.investigation import cases as case_service, service as investigation_service
+
+    retried = 0
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(AttackerCase).where(AttackerCase.status == "failed").limit(10)
+        ).scalars().all()
+        candidates = [(row.id, case_service.should_investigate(row, is_new=False)) for row in rows]
+    for case_id, (ok, _reason) in candidates:
+        if not ok:
+            continue
+        if investigation_service.dispatch(case_id, kind="auto").get("ok"):
+            retried += 1
+    return {"failed_cases": len(candidates), "retried": retried}
 
 
 class IndexFailedError(Exception):

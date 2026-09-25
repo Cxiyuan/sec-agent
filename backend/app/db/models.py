@@ -405,3 +405,94 @@ class AnalysisMemory(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class AttackerCase(Base):
+    """攻击者案件：把跨时间桶的多个事件组归到同一攻击者的调查单元。
+
+    为什么需要它：事件组指纹是「IP 集合 + 30 分钟桶」，同一攻击者跨时段的活动会
+    分裂成多个组；只有把组聚合到案件，才能还原「完整路径」而不是碎片。
+    """
+
+    __tablename__ = "attacker_cases"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    # 主显示键（优先级：外部源 IP > 账号 > 域名 > hash > 内网源 IP）
+    attacker_key: Mapped[str] = mapped_column(String(256), index=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    # {ips, hosts, accounts, domains, hashes}：任一键命中即归并（多键并集）
+    keys: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    src_ips: Mapped[list] = mapped_column(JSONB, default=list)
+    dst_ips: Mapped[list] = mapped_column(JSONB, default=list)
+    group_fingerprints: Mapped[list] = mapped_column(JSONB, default=list)
+    event_types: Mapped[list] = mapped_column(JSONB, default=list)
+    group_count: Mapped[int] = mapped_column(Integer, default=0)
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 最新一轮调查结果（超集结构；逐轮完整留档见 CaseInvestigation）
+    investigation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 冷却期内累积的新证据信号（新阶段/新 IOC/严重度上升）
+    pending_signal: Mapped[dict] = mapped_column(JSONB, default=dict)
+    rounds_total: Mapped[int] = mapped_column(Integer, default=0)
+    rounds_today: Mapped[int] = mapped_column(Integer, default=0)
+    rounds_day: Mapped[str] = mapped_column(String(10), default="")  # 跨天重置用（YYYY-MM-DD）
+    last_dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_allowed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    # 桥接情形（新组同时命中两个案件）时提示人工合并
+    merge_suggestion: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CaseInvestigation(Base):
+    """案件调查轮次（每轮一行）：取证留档，含查询轨迹与预算消耗。"""
+
+    __tablename__ = "case_investigations"
+    __table_args__ = (Index("ix_case_investigations_case_round", "case_id", "round"),)
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    case_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("attacker_cases.id", ondelete="CASCADE"), index=True
+    )
+    round: Mapped[int] = mapped_column(Integer, default=1)
+    kind: Mapped[str] = mapped_column(String(16), default="auto")  # auto|manual|followup
+    instruction: Mapped[str] = mapped_column(Text, default="")  # 人工指令（追问）
+    status: Mapped[str] = mapped_column(String(24), default="running", index=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    query_trail: Mapped[list] = mapped_column(JSONB, default=list)
+    budget: Mapped[dict] = mapped_column(JSONB, default=dict)
+    steps: Mapped[int] = mapped_column(Integer, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    elapsed_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CaseReport(Base):
+    """案件取证报告（与组级 reports 分开：案件不绑定单个事件组）。"""
+
+    __tablename__ = "case_reports"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    case_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("attacker_cases.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="info")
+    html: Mapped[str] = mapped_column(Text, default="")
+    pdf_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

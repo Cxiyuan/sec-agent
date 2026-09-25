@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { Nav } from "@/components/nav";
 import { Badge, severityVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -245,6 +246,34 @@ export default function AdminEventsPage() {
                   </div>
                 ))}
               </div>
+              {detail.attack_chain?.case_id && (
+                <div>
+                  <h3 className="mb-1 font-medium">自主取证调查</h3>
+                  <p className="text-sm">
+                    该事件组已归入攻击者案件 ——{" "}
+                    <Link
+                      className="text-primary hover:underline"
+                      href={`/admin/cases/${detail.attack_chain.case_id}`}
+                    >
+                      查看完整路径与证据
+                    </Link>
+                  </p>
+                  {(detail.attack_chain.iocs || []).length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      IOC：
+                      {(detail.attack_chain.iocs || [])
+                        .slice(0, 8)
+                        .map((v) => `${v.type}:${v.value}`)
+                        .join("、")}
+                    </p>
+                  )}
+                  {(detail.attack_chain.gaps || []).length > 0 && (
+                    <p className="text-xs text-amber-500">
+                      未解缺口 {(detail.attack_chain.gaps || []).length} 处（案件页可下追问指令）
+                    </p>
+                  )}
+                </div>
+              )}
               <div>
                 <h3 className="mb-1 font-medium">处置建议</h3>
                 {(detail.response_suggestions || []).map((s, i) => (

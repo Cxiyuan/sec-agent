@@ -30,10 +30,23 @@ celery_app.conf.update(
     # 人工确认接口会用 resume_graph 继续。
     task_time_limit=1800,
     task_soft_time_limit=1500,
+    # 队列隔离：自主调查很慢（单轮最多 240s，带多步模型调用），绝不能让它与实时分析抢 worker，
+    # 否则检测器投递的摘要会在队列里排队、超过 "摘要最长安存" 被白丢。
+    task_default_queue="celery",
+    task_routes={
+        "analysis.build_cases": {"queue": "investigation"},
+        "analysis.investigate_case": {"queue": "investigation"},
+        "analysis.retry_failed_cases": {"queue": "investigation"},
+    },
     beat_schedule={
         "run-analysis-every-interval": {
             "task": "analysis.run_window",
             "schedule": settings.analysis_interval_minutes * 60.0,
-        }
+        },
+        # 失败案件的自动重试（受单案每日轮次上限约束，不会无限烧钱）
+        "retry-failed-investigations": {
+            "task": "analysis.retry_failed_cases",
+            "schedule": 600.0,
+        },
     },
 )

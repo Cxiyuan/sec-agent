@@ -59,6 +59,20 @@ services:
       - redis
       - elasticsearch
 
+  # 自主取证调查 worker：独立队列（-Q investigation）+ 并发 1
+  # 为什么不共用实时 worker：单轮调查最长 240s，会占死实时分析的槽位，
+  # 导致检测器投递的摘要在队列里排队超龄被丢。
+  celery-investigation:
+    build: ./backend
+    command: >
+      celery -A app.workers.celery_app worker -l info
+      -Q investigation --concurrency=1
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+
   celery-beat:
     build: ./backend
     command: celery -A app.workers.celery_app beat -l info

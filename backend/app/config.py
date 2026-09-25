@@ -193,6 +193,27 @@ class Settings(BaseSettings):
     hitl_enabled: bool = False
     hitl_min_severity: str = "high"  # 达到该级别才触发人工确认
 
+    # 自主取证调查（深度分析路径上的「有界自主」：按需查询 → 还原完整攻击路径）
+    # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
+    investigation_enabled: bool = True
+    investigation_min_severity: str = "high"  # 只对 ≥ 该级别的案件开调查
+    investigation_max_steps: int = 8  # 循环步数上限
+    investigation_max_queries: int = 12  # 查询类工具调用上限
+    investigation_max_llm_calls: int = 6  # 模型调用次数上限
+    investigation_timeout_seconds: int = 240  # 单轮墙钟上限（秒）
+    investigation_max_docs_per_query: int = 2000  # 单次查询文档上限（硬顶 5000）
+    investigation_raw_evidence_max: int = 20  # 单轮原始证据条数上限
+    investigation_observation_chars: int = 1500  # 单步观察压缩上限（防 token 爆炸）
+    investigation_keep_observations: int = 3  # 保留完整观察的最近步数
+    investigation_max_prompt_chars: int = 24000  # 单轮提示词上限
+    investigation_tool_timeout_seconds: float = 20.0  # 单工具超时
+    investigation_cooldown_minutes: int = 60  # 增量重跑冷却（冷却内只累积新证据）
+    investigation_max_rounds_per_day: int = 6  # 单案每日调查轮次上限
+    investigation_link_window_hours: int = 24  # 案件归集「相似」判定的时间窗
+    investigation_link_max_calls: int = 3  # 每批模型裁定次数上限
+    investigation_max_lookback_days: int = 30  # 调查自身取证跨度上限（默认=ES 保留期）
+    investigation_keep_fixed_deep: bool = True  # 保留固定深度分析作为即时结果与兜底
+
     # 威胁情报（免费在线服务，无需 API key：ip-api/ipwho.is、rdap.org、abuse.ch 家族）
     intel_enabled: bool = True
     intel_api_url: str = ""  # 可选：自定义情报端点（留空则用内置免费服务）

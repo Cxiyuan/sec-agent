@@ -55,6 +55,17 @@ const GROUPS: { name: string; fields: Field[] }[] = [
       { key: "rag_min_score", label: "检索相似度下限（0~1）", type: "number" },
     ],
   },
+  {
+    name: "自主取证调查（攻击者案件）",
+    fields: [
+      { key: "investigation_enabled", label: "启用自主调查", type: "bool", hint: "关闭后不再自动调查，人工也无法发起" },
+      { key: "investigation_min_severity", label: "准入级别", type: "select", options: ["critical", "high", "medium", "low"], hint: "只对 ≥ 该级别的案件开调查" },
+      { key: "investigation_max_steps", label: "单轮最大步数", type: "number", hint: "每步 = 一次查询 + 一次模型决策" },
+      { key: "investigation_max_queries", label: "单轮最大查询数", type: "number" },
+      { key: "investigation_cooldown_minutes", label: "重跑冷却（分钟）", type: "number", hint: "冷却内新证据只累积、不重跑" },
+      { key: "investigation_max_rounds_per_day", label: "单案每日轮次上限", type: "number" },
+    ],
+  },
 ];
 
 const SELECT_CLS =

@@ -92,6 +92,20 @@ services:
       - elasticsearch
     restart: unless-stopped
 
+  # 自主取证调查 worker：独立队列（-Q investigation）+ 并发 1。
+  # 与实时 worker 分离：单轮调查最长 240s，混在一起会把实时分析排队到摘要超龄被丢。
+  celery-investigation:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
+    command: >
+      celery -A app.workers.celery_app worker -l info
+      -Q investigation --concurrency=1
+    environment: *backend-env
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    restart: unless-stopped
+
   celery-beat:
     image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
     command: celery -A app.workers.celery_app beat -l info

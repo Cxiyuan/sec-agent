@@ -14,6 +14,7 @@ from app.api.routes import (
     es_admin,
     events,
     exclusions,
+    investigation,
     logstash,
     memories,
     profiles,
@@ -37,6 +38,8 @@ api_router.include_router(memories.router)
 api_router.include_router(profiles.router)
 api_router.include_router(events.router)
 api_router.include_router(exclusions.router)
+api_router.include_router(investigation.router)
+api_router.include_router(investigation.tools_router)
 api_router.include_router(rules.router)
 api_router.include_router(skills.router)
 api_router.include_router(reports.router)
