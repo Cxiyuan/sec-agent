@@ -49,6 +49,9 @@ CONFIG_KEYS: dict[str, Any] = {
     "investigation_max_queries": settings.investigation_max_queries,
     "investigation_cooldown_minutes": settings.investigation_cooldown_minutes,
     "investigation_max_rounds_per_day": settings.investigation_max_rounds_per_day,
+    # 云端模型并发峰值（经 runtime_config 即时生效）：节点里的"逐个事件组"已改并发，
+    # 这是限流闸门——云端有 RPM/TPM 限制，改大要看着 429 调
+    "cloud_max_concurrency": settings.cloud_max_concurrency,
 }
 
 # 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，

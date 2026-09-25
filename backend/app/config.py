@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # api_key 由后台界面录入、存数据库（不落环境变量），见 app/cloud_config.py
     cloud_model_base_url: str = "https://api.minimaxi.com/v1"
     cloud_model_timeout: int = 600
+    # 云端并发与重试（节点里"逐个事件组"的循环改成并发后，必须自己控峰值，
+    # 否则很容易吃 429；max_retries 设 3 次、指数退避）
+    cloud_max_concurrency: int = 4  # 同时最多几个云端请求（后台可改，即时生效）
+    cloud_max_retries: int = 3  # 仅对 429/5xx/超时退避重试；401 等配置错误不重试
+    cloud_retry_base_seconds: float = 2.0  # 退避基数（2s → 4s → 8s）
 
     # 嵌入（RAG 向量化，走 MiniMax embo-01）
     embedding_dim: int = 1536

@@ -218,18 +218,37 @@ def _edge_concurrency() -> int:
     return max(1, min(workers, 16))
 
 
-def _parallel_map(fn: Callable[[Any], Any], items: list[Any], prefix: str) -> list[Any]:
+def _cloud_concurrency() -> int:
+    """云端并发度（后台可调，默认 4）。
+
+    与 llm.py 里的云端闸门取同一个配置：闸门控真实峰值，这里控线程池大小
+    （池子开得比名额大只会白占线程，不会提高吞吐）。
+    """
+    return max(
+        1,
+        min(
+            _safe_int(
+                runtime_config.get("cloud_max_concurrency", settings.cloud_max_concurrency), 4
+            ),
+            16,
+        ),
+    )
+
+
+def _parallel_map(
+    fn: Callable[[Any], Any], items: list[Any], prefix: str, *, workers: int | None = None
+) -> list[Any]:
     """批内并发（线程池）；返回顺序与输入严格一致。
 
-    边缘模型调用是同步阻塞的 HTTP 请求，用线程池即可。workers=1 或只有 1 条时
-    退化为串行（省线程开销）。
+    调用方是同步阻塞的 HTTP 请求（边缘模型 / 云端模型），用线程池即可。
+    workers=1 或只有 1 条时退化为串行（省线程开销）。
     """
     if not items:
         return []
-    workers = min(_edge_concurrency(), len(items))
-    if workers <= 1:
+    pool_size = min(max(1, workers if workers is not None else _edge_concurrency()), len(items))
+    if pool_size <= 1:
         return [fn(item) for item in items]
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix) as pool:
+    with ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix=prefix) as pool:
         return list(pool.map(fn, items))
 
 
@@ -1062,8 +1081,14 @@ def _rule_severity(g: EventGroup) -> str:
 
 
 def severity_node(state: AgentState) -> dict[str, Any]:
+    """定级：先把各组的提示词拼好，再**并发**调云端，最后按原顺序落库。
+
+    为什么要并发：原来"逐个事件组等云端回话"，一批 5 组就是 5 次串行等待。
+    云端调用是网络 IO，线程池即可（并发峰值由 llm.py 的云端闸门控制）。
+    """
     groups = state.get("groups", [])
     analyses = state.get("analyses", {})
+    pending: list[tuple[EventGroup, str, str]] = []  # (组, 规则定级, 提示词)
     for g in groups:
         rule_severity = _rule_severity(g)
         if g.excluded:
@@ -1081,26 +1106,37 @@ def severity_node(state: AgentState) -> dict[str, Any]:
             ((state.get("lookback") or {}).get(g.fingerprint) or {}).get("summary") or "（无回溯）"
         )
         profile_blob = _profile_text_for_group(state, g.fingerprint)
+        # 拼提示词放在 try 外面：模板占位符缺一个就必须响亮地报错，
+        # 而不是被 except 吞掉变成"静默回退规则定级"（本项目踩过这个坑）
+        user_prompt = prompts.SEVERITY_USER.format(
+            chain=json.dumps(chain, ensure_ascii=False, default=str),
+            profile=json.dumps(profile, ensure_ascii=False, default=str),
+            rule_severity=rule_severity,
+            business_context=context_text,
+            memory=memory_blob,
+            lookback=lookback_blob,
+            entity_profile=profile_blob,
+            skill=skill_context_text(g, state.get("skill_context") or {}),
+        )
+        pending.append((g, rule_severity, user_prompt))
+
+    def ask(item: tuple[EventGroup, str, str]) -> str:
+        _g, rule_severity, user_prompt = item
         try:
-            r = flash_invoke_json(
-                prompts.SEVERITY_SYSTEM,
-                prompts.SEVERITY_USER.format(
-                    chain=json.dumps(chain, ensure_ascii=False, default=str),
-                    profile=json.dumps(profile, ensure_ascii=False, default=str),
-                    rule_severity=rule_severity,
-                    business_context=context_text,
-                    memory=memory_blob,
-                    lookback=lookback_blob,
-                    entity_profile=profile_blob,
-                    skill=skill_context_text(g, state.get("skill_context") or {}),
-                ),
-            )
-            severity = r.get("severity", rule_severity)
+            r = flash_invoke_json(prompts.SEVERITY_SYSTEM, user_prompt)
+            severity = str(r.get("severity", rule_severity))
         except Exception as exc:  # noqa: BLE001
             log.warning("云端定级失败，回退规则定级: %s", exc)
             severity = rule_severity
-        if severity not in SEVERITY_RANK:
-            severity = rule_severity
+        return severity if severity in SEVERITY_RANK else rule_severity
+
+    # 注意：解包变量名不要用 _rule_severity —— 它是本模块的函数名，
+    # 一旦作为循环变量出现就会被 Python 当成函数局部名，前面那句 _rule_severity(g) 会 UnboundLocalError
+    for (g, _rs, _prompt), severity in zip(
+        pending,
+        _parallel_map(ask, pending, "cloud-severity", workers=_cloud_concurrency()),
+        strict=False,
+    ):
         update_group_analysis(g.fingerprint, severity=severity)
         g.severity = severity  # type: ignore[assignment]
     return {"groups": groups}
@@ -1151,9 +1187,11 @@ def hitl_node(state: AgentState) -> dict[str, Any]:
 
 
 def response_node(state: AgentState) -> dict[str, Any]:
+    """处置建议：拼好提示词 → 并发调云端 → 按原顺序落库。"""
     groups = state.get("groups", [])
     analyses = state.get("analyses", {})
     confirmations = state.get("confirmations", {})
+    pending: list[tuple[EventGroup, str]] = []  # (组, 提示词)
     for g in groups:
         if g.excluded:
             continue  # 被排除的组不等人工确认、不做处置建议
@@ -1165,23 +1203,33 @@ def response_node(state: AgentState) -> dict[str, Any]:
         context_text = context_text_for_group(
             g, state.get("business_context", {}).get(g.fingerprint)
         )
+        # 同上：模板错误要响亮，不能被 except 吞成"模型不可用"
+        user_prompt = prompts.RESPONSE_USER.format(
+            severity=g.severity,
+            chain=json.dumps(chain, ensure_ascii=False, default=str),
+            profile=json.dumps(profile, ensure_ascii=False, default=str),
+            business_context=context_text,
+            skill=skill_context_text(g, state.get("skill_context") or {}),
+        )
+        pending.append((g, user_prompt))
+
+    def ask(item: tuple[EventGroup, str]) -> list[dict[str, Any]]:
+        _g, user_prompt = item
         try:
-            r = flash_invoke_json(
-                prompts.RESPONSE_SYSTEM,
-                prompts.RESPONSE_USER.format(
-                    severity=g.severity,
-                    chain=json.dumps(chain, ensure_ascii=False, default=str),
-                    profile=json.dumps(profile, ensure_ascii=False, default=str),
-                    business_context=context_text,
-                    skill=skill_context_text(g, state.get("skill_context") or {}),
-                ),
-            )
-            suggestions = r.get("suggestions", [])
+            r = flash_invoke_json(prompts.RESPONSE_SYSTEM, user_prompt)
+            raw = r.get("suggestions")
+            return raw if isinstance(raw, list) else []
         except Exception as exc:  # noqa: BLE001
             log.warning("处置建议生成失败: %s", exc)
-            suggestions = [
+            return [
                 {"category": "incident_response", "action": "人工复核", "detail": "模型不可用"}
             ]
+
+    for (g, _prompt), suggestions in zip(
+        pending,
+        _parallel_map(ask, pending, "cloud-response", workers=_cloud_concurrency()),
+        strict=False,
+    ):
         update_group_analysis(g.fingerprint, response_suggestions=suggestions)
     return {}
 
@@ -1226,6 +1274,7 @@ def report_node(state: AgentState) -> dict[str, Any]:
         min_sev = str(_config(db, "report_min_severity", settings.report_min_severity))
 
     summary = {"total_groups": len(groups), "reports": 0}
+    eligible: list[tuple[EventGroup, dict[str, Any], str]] = []
     for g in groups:
         if g.excluded:
             continue  # 被排除的组不出报告（不出报告也就不调报告模型）
@@ -1234,9 +1283,18 @@ def report_node(state: AgentState) -> dict[str, Any]:
         sev = g.severity or "info"
         if SEVERITY_RANK.get(sev, 0) < SEVERITY_RANK.get(min_sev, 2):
             continue
-        analysis = analyses.get(g.fingerprint) or {}
+        eligible.append((g, analyses.get(g.fingerprint) or {}, sev))
+
+    # 只并发"写正文"（网络 IO）；渲染 PDF 与落库仍串行——
+    # WeasyPrint 是本机重活，多线程不稳且更吃内存，串行反而更快更稳
+    bodies = _parallel_map(
+        lambda item: _report_body(item[0], item[1]),
+        eligible,
+        "cloud-report",
+        workers=_cloud_concurrency(),
+    )
+    for (g, analysis, sev), body in zip(eligible, bodies, strict=False):
         try:
-            body = _report_body(g, analysis)
             html, pdf_path = render_report(g, analysis, body)
             save_report(g.fingerprint, f"安全事件报告 - {sev}", sev, html, pdf_path)
             summary["reports"] += 1

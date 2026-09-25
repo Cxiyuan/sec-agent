@@ -38,6 +38,17 @@ const GROUPS: { name: string; fields: Field[] }[] = [
     ],
   },
   {
+    name: "云端模型调用（限流）",
+    fields: [
+      {
+        key: "cloud_max_concurrency",
+        label: "云端并发峰值",
+        type: "number",
+        hint: "同时最多几个云端请求（默认 4）。定级/处置/报告已改成并发调用，这是限流闸门；改大要盯是否吃 429（重试为 3 次指数退避，仅对 429/5xx/超时生效）",
+      },
+    ],
+  },
+  {
     name: "分析",
     fields: [
       { key: "escalate_score_threshold", label: "升级阈值（0~1）", type: "number" },

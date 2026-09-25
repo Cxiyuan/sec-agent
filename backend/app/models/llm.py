@@ -1,12 +1,20 @@
 """统一模型封装：按角色（edge / flash / deep）调 OpenAI 兼容接口。
 
 角色 → 模型名由 app.models.registry 解析，支持后台「系统配置」运行时切换。
+
+云端调用统一经过 ``_cloud_retry``：**并发闸门 + 限流退避**。
+为什么需要：节点里的"逐个事件组"循环会同时发多个云端请求，不限制并发很容易吃
+429/5xx，而隐性重试（客户端自带 max_retries）又无法计数、无法统一退避。
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+import threading
+import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any, TypeVar
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -16,6 +24,112 @@ from app.cloud_config import cloud_api_key, cloud_base_url
 from app.config import settings
 from app.edge_config import EDGE_API_KEY, EDGE_MODEL_NAME, edge_base_url
 from app.models.registry import resolve_model
+from app.runtime_config import get as runtime_get
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
+
+T = TypeVar("T")
+
+
+class _CloudLimiter:
+    """云端并发闸门（**动态上限**：后台改并发数无需重启）。
+
+    用条件变量而不是 Semaphore：Semaphore 容量在创建时固定，而本项目允许热调并发上限。
+    等待带超时轮询：任何异常路径也不会把自己永久卡死。
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._active = 0
+
+    @contextmanager
+    def slot(self, limit: int):
+        limit = max(1, _as_int(limit, 1))
+        with self._cond:
+            while self._active >= limit:
+                self._cond.wait(timeout=5.0)
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._active -= 1
+                self._cond.notify()
+
+
+_LIMITER = _CloudLimiter()
+
+# 可重试的错误特征（限流 / 网关与超时）；401 这类配置错误**不**重试
+_RETRY_HINTS = (
+    "429",
+    "rate limit",
+    "ratelimit",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "502",
+    "503",
+    "504",
+    "overload",
+    "temporarily",
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    if isinstance(status, int):
+        return status == 429 or 500 <= status < 600
+    text = str(exc).lower()
+    return any(hint in text for hint in _RETRY_HINTS)
+
+
+def _as_int(value: Any, default: int) -> int:
+    """安全转 int（配置可能是字符串或脏值）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cloud_retry(call: Callable[[], T]) -> T:
+    """云端调用：并发闸门 + 限流/超时指数退避。
+
+    只对「可重试」错误退避；401（密钥错）等直接抛出交给上层兜底——
+    否则会把一个明确的配置错误重试成几分钟的等待。
+    """
+    attempts = max(1, _as_int(settings.cloud_max_retries, 3))
+    base = max(0.1, _as_float(settings.cloud_retry_base_seconds, 2.0))
+    for attempt in range(attempts):
+        limit = _as_int(
+            runtime_get("cloud_max_concurrency", settings.cloud_max_concurrency), 4
+        )
+        try:
+            with _LIMITER.slot(limit):
+                return call()
+        except Exception as exc:
+            retryable = _is_retryable(exc) and attempt < attempts - 1
+            if not retryable:
+                raise
+            delay = base * (2**attempt)
+            log.warning(
+                "云端调用失败（第 %d/%d 次，%s），%.1fs 后重试：%s",
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+                delay,
+                str(exc)[:160],
+            )
+            time.sleep(delay)
+    raise RuntimeError("云端调用失败（重试耗尽）")
 
 
 def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
@@ -40,14 +154,17 @@ def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
 
 
 def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
-    """云端模型（flash 日常 / deep 深度），共用同一 MiniMax 端点。"""
+    """云端模型（flash 日常 / deep 深度），共用同一 MiniMax 端点。
+
+    ``max_retries=0``：重试统一由 ``_cloud_retry`` 负责（能计数、能统一退避、能受并发闸门约束）。
+    """
     return ChatOpenAI(
         model=resolve_model(role),
         base_url=cloud_base_url(),
         api_key=SecretStr(cloud_api_key() or "not-needed"),
         temperature=temperature,
         timeout=settings.cloud_model_timeout,
-        max_retries=2,
+        max_retries=0,
     )
 
 
@@ -100,14 +217,17 @@ def edge_invoke_json(
 
 def flash_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
     """云端 flash（日常分析）返回 JSON。"""
-    return _extract_json(_invoke(_cloud_llm("flash", temperature), system, user))
+    llm = _cloud_llm("flash", temperature)
+    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user)))
 
 
 def deep_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
     """云端 deep（深度分析）返回 JSON。"""
-    return _extract_json(_invoke(_cloud_llm("deep", temperature), system, user))
+    llm = _cloud_llm("deep", temperature)
+    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user)))
 
 
 def flash_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
     """云端 flash 返回纯文本。"""
-    return _invoke(_cloud_llm("flash", temperature), system, user)
+    llm = _cloud_llm("flash", temperature)
+    return _cloud_retry(lambda: _invoke(llm, system, user))

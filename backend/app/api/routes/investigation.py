@@ -209,6 +209,14 @@ def get_report(case_id: str, _: Annotated[User, Depends(get_current_user)]):
     return HTMLResponse(content=html)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """安全转 int（Redis 返回值/外部输入可能是字符串或脏值）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @tools_router.get("/tools")
 def list_tools(_: Annotated[User, Depends(get_current_user)]):
     """工具与字段目录（排错用：模型能查什么字段、有哪些工具）。"""
@@ -229,7 +237,7 @@ def investigation_stats(
         from app.config import settings
 
         client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-        queue_depth = int(client.llen("investigation") or 0)
+        queue_depth = _safe_int(client.llen("investigation"))
     except Exception as exc:  # noqa: BLE001
         data["queue_error"] = str(exc)[:200]
     data["queue_depth"] = queue_depth
@@ -242,4 +250,4 @@ def _report_count(db: Session) -> int:
 
     from app.db.models import CaseReport
 
-    return int(db.scalar(select(func.count()).select_from(CaseReport)) or 0)
+    return _safe_int(db.scalar(select(func.count()).select_from(CaseReport)))
