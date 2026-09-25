@@ -1174,20 +1174,29 @@ def response_node(state: AgentState) -> dict[str, Any]:
             log.warning("处置建议生成失败: %s", exc)
             return [{"category": "incident_response", "action": "人工复核", "detail": "模型不可用"}]
 
+    responses: dict[str, list[dict[str, Any]]] = {}
     for (g, _prompt), suggestions in zip(
         pending,
         _parallel_map(ask, pending, "cloud-response", workers=_cloud_concurrency()),
         strict=False,
     ):
         update_group_analysis(g.fingerprint, response_suggestions=suggestions)
-    return {}
+        responses[g.fingerprint] = suggestions
+    # 同时放进图状态：报告节点要把它写进报告正文与模板
+    return {"responses": responses}
 
 
 # ---------- 节点 7：报告输出 ----------
 
 
-def _report_body(g: Any, analysis: dict[str, Any]) -> str:
-    """用 flash 生成报告正文；失败返回空串（不阻断报告生成）。"""
+def _report_body(
+    g: Any, analysis: dict[str, Any], suggestions: list[dict[str, Any]] | None = None
+) -> str:
+    """用 flash 生成报告正文；失败返回空串（不阻断报告生成）。
+
+    ``suggestions`` 必须由调用方传入：图状态里的 ``schemas.EventGroup`` 没有
+    response_suggestions 字段（那只是数据库列），直接取属性会 AttributeError。
+    """
     try:
         overview = {
             "src_ips": g.src_ips,
@@ -1203,9 +1212,7 @@ def _report_body(g: Any, analysis: dict[str, Any]) -> str:
                 overview=json.dumps(overview, ensure_ascii=False, default=str),
                 chain=json.dumps(analysis.get("attack_chain", {}), ensure_ascii=False, default=str),
                 profile=json.dumps(analysis.get("profile", {}), ensure_ascii=False, default=str),
-                suggestions=json.dumps(
-                    g.response_suggestions or [], ensure_ascii=False, default=str
-                ),
+                suggestions=json.dumps(suggestions or [], ensure_ascii=False, default=str),
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -1223,7 +1230,10 @@ def report_node(state: AgentState) -> dict[str, Any]:
         min_sev = str(_config(db, "report_min_severity", settings.report_min_severity))
 
     summary = {"total_groups": len(groups), "reports": 0}
-    eligible: list[tuple[EventGroup, dict[str, Any], str]] = []
+    # 处置建议在 response_node 里放入图状态（只落库的话，报告节点拿不到：
+    # 图状态里的 schemas.EventGroup 没有 response_suggestions 字段）
+    responses = state.get("responses") or {}
+    eligible: list[tuple[EventGroup, dict[str, Any], str, list[dict[str, Any]]]] = []
     for g in groups:
         if g.excluded:
             continue  # 被排除的组不出报告（不出报告也就不调报告模型）
@@ -1232,19 +1242,21 @@ def report_node(state: AgentState) -> dict[str, Any]:
         sev = g.severity or "info"
         if SEVERITY_RANK.get(sev, 0) < SEVERITY_RANK.get(min_sev, 2):
             continue
-        eligible.append((g, analyses.get(g.fingerprint) or {}, sev))
+        eligible.append((g, analyses.get(g.fingerprint) or {}, sev, responses.get(g.fingerprint) or []))
 
     # 只并发"写正文"（网络 IO）；渲染 PDF 与落库仍串行——
     # WeasyPrint 是本机重活，多线程不稳且更吃内存，串行反而更快更稳
     bodies = _parallel_map(
-        lambda item: _report_body(item[0], item[1]),
+        lambda item: _report_body(item[0], item[1], item[3]),
         eligible,
         "cloud-report",
         workers=_cloud_concurrency(),
     )
-    for (g, analysis, sev), body in zip(eligible, bodies, strict=False):
+    for (g, analysis, sev, suggestions), body in zip(eligible, bodies, strict=False):
         try:
-            html, pdf_path = render_report(g, analysis, body)
+            html, pdf_path = render_report(
+                g, analysis, body, event_count=len(g.events), suggestions=suggestions
+            )
             save_report(g.fingerprint, f"安全事件报告 - {sev}", sev, html, pdf_path)
             summary["reports"] += 1
         except Exception as exc:  # noqa: BLE001

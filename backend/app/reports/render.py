@@ -15,7 +15,14 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=True)
 
 
-def _render_html(group: Any, analysis: dict[str, Any], body: str = "") -> str:
+def _render_html(
+    group: Any,
+    analysis: dict[str, Any],
+    body: str = "",
+    *,
+    event_count: int = 0,
+    suggestions: list[dict[str, Any]] | None = None,
+) -> str:
     template = _env.get_template("report.html")
     return template.render(
         title="安全事件报告",
@@ -24,21 +31,40 @@ def _render_html(group: Any, analysis: dict[str, Any], body: str = "") -> str:
         dst_ips=group.dst_ips,
         window_start=group.window_start.isoformat(),
         window_end=group.window_end.isoformat(),
-        event_count=group.event_count,
+        event_count=event_count,
         triage_score=round(group.triage_score, 3),
         attack_chain=(analysis.get("attack_chain") or {}).get("stages", []),
         chain_summary=(analysis.get("attack_chain") or {}).get("summary", ""),
         profile=analysis.get("profile") or {},
         anomaly=(analysis.get("anomaly") or {}).get("findings", []),
-        suggestions=group.response_suggestions or [],
+        suggestions=suggestions or [],
         business_context=group.business_context or {},
         body=body,
     )
 
 
-def render_report(group: Any, analysis: dict[str, Any], body: str = "") -> tuple[str, str | None]:
-    """渲染报告 HTML 并生成 PDF，返回 (html, pdf_path)。PDF 失败时返回 (html, None)。"""
-    html = _render_html(group, analysis, body)
+def render_report(
+    group: Any,
+    analysis: dict[str, Any],
+    body: str = "",
+    *,
+    event_count: int | None = None,
+    suggestions: list[dict[str, Any]] | None = None,
+) -> tuple[str, str | None]:
+    """渲染组报告 HTML 并尽力生成 PDF，返回 (html, pdf_path)。
+
+    为什么要把 ``event_count`` 与 ``suggestions`` 做成显式参数：
+    图状态里传递的是 ``schemas.EventGroup``（pydantic），它**没有** event_count、
+    也没有 response_suggestions——这两个字段只存在于数据库行上。直接 getattr 会
+    AttributeError，结果就是**报告一直生成不出来**（只是在日志里报一句警告，很容易漏掉）。
+    两者都给了兼容回退：不传时优先读对象属性，再退到 events 长度。
+    """
+    if event_count is None:
+        declared = getattr(group, "event_count", None)
+        event_count = int(declared) if declared is not None else len(getattr(group, "events", []) or [])
+    if suggestions is None:
+        suggestions = getattr(group, "response_suggestions", None) or []
+    html = _render_html(group, analysis, body, event_count=event_count, suggestions=suggestions)
     return html, _write_pdf(html, f"{group.fingerprint}_{uuid.uuid4().hex[:8]}")
 
 

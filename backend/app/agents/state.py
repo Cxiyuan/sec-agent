@@ -27,6 +27,9 @@ class AgentState(TypedDict, total=False):
     profile: dict[str, Any]
     # fingerprint -> 技能上下文 {"skills": [...], "tool_results": {...}}
     skill_context: dict[str, dict[str, Any]]
+    # fingerprint -> 处置建议（response_node 产出，供 report_node 写进报告正文/模板；
+    # 图状态里的 EventGroup 没有 response_suggestions 字段，必须单独带过来）
+    responses: dict[str, list[dict[str, Any]]]
     # 实时链路：检测器投递的聚合摘要列表
     digests: list[dict[str, Any]]
     # fingerprint -> 深度分析结果 {"anomaly":..., "attack_chain":..., "profile":...}
