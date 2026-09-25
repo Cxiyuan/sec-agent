@@ -877,3 +877,58 @@ export interface EvidenceItem {
   note?: string;
   error?: string;
 }
+
+// ---------- 事件组证据链 ----------
+
+/** 一条证据（组内命中日志或调查引用的证据），可用 ref 回指原始记录 */
+export interface EvidenceChainItem {
+  ref: string;
+  kind: string; // event | es_doc | note
+  ts?: string | null;
+  event_type?: string | null;
+  source_system?: string | null;
+  src?: string | null;
+  dst?: string | null;
+  protocol?: string | null;
+  severity?: string | null;
+  hit_rule?: string | null;
+  edge_score?: number | null;
+  summary?: string;
+  excluded?: boolean;
+  /** 该证据支撑了哪些攻击阶段（证据链的核心：把证据链到结论上） */
+  stages?: string[];
+  raw?: Record<string, unknown> | { _truncated?: boolean; _preview?: string; _chars?: number };
+  error?: string;
+}
+
+/** 攻击链阶段及其引用的证据 */
+export interface EvidenceChainStage {
+  stage: string;
+  description?: string;
+  evidence_refs: string[];
+}
+
+export interface EvidenceChain {
+  group_id: string;
+  fingerprint: string;
+  severity: string | null;
+  stages: EvidenceChainStage[];
+  items: EvidenceChainItem[];
+  investigation: {
+    case_id?: string | null;
+    status?: string | null;
+    round?: number | null;
+    confidence?: number | null;
+    has_result: boolean;
+  };
+  counts: {
+    events: number;
+    investigation_refs: number;
+    total: number;
+    stages: number;
+    linked: number;
+    events_truncated: boolean;
+    raw_max_chars: number;
+    raw_enabled: boolean;
+  };
+}

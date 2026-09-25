@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { apiFetch, type EventGroupItem, type GroupDetail } from "@/lib/api";
+import { apiFetch, type EventGroupItem, type GroupDetail, type EvidenceChain } from "@/lib/api";
 import { formatDateTime, severityText, statusText } from "@/lib/format";
 
 export default function AdminEventsPage() {
@@ -17,6 +17,10 @@ export default function AdminEventsPage() {
   const [detail, setDetail] = React.useState<GroupDetail | null>(null);
   const [detailError, setDetailError] = React.useState("");
   const [loadingDetail, setLoadingDetail] = React.useState(false);
+  // 证据链：单独拉（带原始记录，体积大），不阻塞详情
+  const [evidence, setEvidence] = React.useState<EvidenceChain | null>(null);
+  const [evidenceError, setEvidenceError] = React.useState("");
+  const [loadingEvidence, setLoadingEvidence] = React.useState(false);
   // 被排除的事件默认不看（噪声不刷屏），需要排查时再打开
   const [showExcluded, setShowExcluded] = React.useState(false);
 
@@ -40,21 +44,29 @@ export default function AdminEventsPage() {
     setSelected(g);
     setDetail(null);
     setDetailError("");
+    setEvidence(null);
+    setEvidenceError("");
     setLoadingDetail(true);
-    try {
-      const d = await apiFetch<GroupDetail>(`/api/events/groups/${g.id}`);
-      setDetail(d);
-    } catch (e) {
-      setDetailError(e instanceof Error ? e.message : "详情加载失败");
-    } finally {
-      setLoadingDetail(false);
-    }
+    setLoadingEvidence(true);
+    // 两个请求各自容错：证据拉失败不能让详情也看不见（反之亦然）
+    await Promise.allSettled([
+      apiFetch<GroupDetail>(`/api/events/groups/${g.id}`)
+        .then(setDetail)
+        .catch((e) => setDetailError(e instanceof Error ? e.message : "详情加载失败"))
+        .finally(() => setLoadingDetail(false)),
+      apiFetch<EvidenceChain>(`/api/events/groups/${g.id}/evidence`)
+        .then(setEvidence)
+        .catch((e) => setEvidenceError(e instanceof Error ? e.message : "证据链加载失败"))
+        .finally(() => setLoadingEvidence(false)),
+    ]);
   }
 
   function closeDetail() {
     setSelected(null);
     setDetail(null);
     setDetailError("");
+    setEvidence(null);
+    setEvidenceError("");
   }
 
   async function confirm(g: EventGroupItem, action: "confirm" | "dismiss") {
@@ -330,6 +342,93 @@ export default function AdminEventsPage() {
                 {!detail.attack_chain?.stages?.length && (
                   <p className="text-sm text-muted-foreground">尚无攻击链（未升级或深度分析未完成）</p>
                 )}
+              </div>
+
+              <div>
+                <h3 className="mb-1 font-medium">
+                  证据链
+                  {evidence && (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      共 {evidence.counts.total} 条（组内日志 {evidence.counts.events} · 调查引用{" "}
+                      {evidence.counts.investigation_refs}）
+                      {evidence.counts.stages > 0 && ` · 覆盖 ${evidence.counts.stages} 个阶段`}
+                      {evidence.counts.linked > 0 && ` · ${evidence.counts.linked} 条已链到阶段`}
+                    </span>
+                  )}
+                </h3>
+                {loadingEvidence && <p className="text-sm text-muted-foreground">证据加载中…</p>}
+                {evidenceError && (
+                  <p className="text-sm text-destructive">证据链加载失败：{evidenceError}</p>
+                )}
+                {evidence?.investigation.case_id && (
+                  <p className="text-xs text-muted-foreground">
+                    含自主取证证据（第 {evidence.investigation.round ?? "-"} 轮，置信{" "}
+                    {evidence.investigation.confidence ?? "-"}）——{" "}
+                    <Link
+                      className="text-primary hover:underline"
+                      href={`/admin/cases/${evidence.investigation.case_id}`}
+                    >
+                      查看案件
+                    </Link>
+                  </p>
+                )}
+                {evidence && evidence.counts.events_truncated && (
+                  <p className="text-xs text-amber-500">
+                    该组事件较多，仅列出前 100 条证据（完整数据在 ES 索引里）
+                  </p>
+                )}
+
+                {evidence && evidence.stages.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {evidence.stages.map((st, i) => (
+                      <div key={i} className="rounded border p-2 text-xs">
+                        <span className="font-medium">{st.stage}</span>
+                        <span className="ml-2 text-muted-foreground">
+                          {st.evidence_refs.length > 0
+                            ? `引用 ${st.evidence_refs.length} 条证据`
+                            : "无直接证据（阶段描述仅供参考）"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-2 space-y-1">
+                  {(evidence?.items || []).map((it, i) => (
+                    <details key={`${it.ref}-${i}`} className="rounded border p-2 text-xs">
+                      <summary className="cursor-pointer">
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {it.ts ? formatDateTime(it.ts) : "时间未知"}
+                        </span>
+                        {" | "}
+                        {it.event_type || it.kind}
+                        {it.src ? ` | ${it.src} → ${it.dst}` : ""}
+                        {it.hit_rule ? ` | ${it.hit_rule}` : ""}
+                        {it.edge_score !== null && it.edge_score !== undefined
+                          ? ` | 分 ${it.edge_score}`
+                          : ""}
+                        {it.stages?.length ? (
+                          <span className="ml-1 text-primary">［{it.stages.join("·")}］</span>
+                        ) : null}
+                        {it.error ? <span className="ml-1 text-destructive">（{it.error}）</span> : null}
+                      </summary>
+                      <div className="mt-1 space-y-1">
+                        {it.summary && <p className="text-muted-foreground">{it.summary}</p>}
+                        <p className="font-mono text-[10px] text-muted-foreground">
+                          证据引用 {it.ref || "-"}
+                          {it.source_system ? ` · 来源 ${it.source_system}` : ""}
+                          {it.protocol ? ` · ${it.protocol}` : ""}
+                        </p>
+                        <pre className="max-h-56 overflow-auto rounded bg-muted p-2 text-[10px]">
+                          {JSON.stringify(it.raw ?? {}, null, 2)}
+                        </pre>
+                      </div>
+                    </details>
+                  ))}
+                  {evidence && !evidence.items.length && (
+                    <p className="text-sm text-muted-foreground">无证据</p>
+                  )}
+                </div>
               </div>
 
               {detail.attack_chain?.case_id && (
