@@ -58,6 +58,8 @@ services:
   backend:
     image: ghcr.io/cxiyuan/sec-agent/shentong-backend:latest
     environment: &backend-env
+      # 统一北京时间：容器日志与界面时间口径一致（数据仍按 UTC 存储）
+      TZ: Asia/Shanghai
       ST_ES_URL: http://elasticsearch:9200
       ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
       ST_REDIS_URL: redis://redis:6379/0
@@ -158,6 +160,8 @@ services:
     # 注意：后端地址在「构建时」烙进 Next 的 rewrites（默认取 compose 服务名 backend），
     # 运行时再设 BACKEND_URL 无效，故此处不声明。
     image: ghcr.io/cxiyuan/sec-agent/shentong-frontend:latest
+    environment:
+      TZ: Asia/Shanghai  # 服务端渲染与容器日志统一北京时间
     ports:
       - "3000:3000"
     depends_on:

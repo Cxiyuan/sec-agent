@@ -9,14 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiFetch, getToken, type AttackerCaseItem, type InvestigationStats } from "@/lib/api";
-
-const STATUS_LABEL: Record<string, string> = {
-  open: "待调查",
-  investigating: "调查中",
-  investigated: "已调查",
-  failed: "失败",
-  closed: "已关闭",
-};
+import { STATUS_LABEL, formatDateTime, severityText, statusText } from "@/lib/format";
 
 async function downloadEvidence(c: AttackerCaseItem, format: "zip" | "json") {
   const token = getToken();
@@ -153,13 +146,13 @@ export default function CasesPage() {
                     </TableCell>
                     <TableCell>
                       {c.severity ? (
-                        <Badge variant={severityVariant(c.severity)}>{c.severity}</Badge>
+                        <Badge variant={severityVariant(c.severity)}>{severityText(c.severity)}</Badge>
                       ) : (
                         "-"
                       )}
                     </TableCell>
                     <TableCell>
-                      {STATUS_LABEL[c.status] || c.status}
+                      {statusText(c.status)}
                       {c.last_error ? (
                         <span className="ml-1 text-[11px] text-destructive" title={c.last_error}>
                           ⚠
@@ -176,7 +169,7 @@ export default function CasesPage() {
                       {c.group_count} / {c.event_count}
                     </TableCell>
                     <TableCell className="text-xs">
-                      {c.last_seen ? new Date(c.last_seen).toLocaleString() : "-"}
+                      {formatDateTime(c.last_seen)}
                     </TableCell>
                     <TableCell className="text-xs">
                       {c.rounds_total}

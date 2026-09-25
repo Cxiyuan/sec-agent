@@ -29,6 +29,8 @@ services:
   backend:
     build: ./backend
     environment: &backend-env
+      # 统一北京时间：容器日志与界面时间口径一致（数据仍按 UTC 存储）
+      TZ: Asia/Shanghai
       ST_ES_URL: http://elasticsearch:9200
       ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
       ST_REDIS_URL: redis://redis:6379/0
@@ -84,6 +86,8 @@ services:
   frontend:
     # 后端地址在构建时烙进 rewrites（默认 backend:8000，见 next.config.mjs）
     build: ./frontend
+    environment:
+      TZ: Asia/Shanghai  # 服务端渲染与容器日志统一北京时间
     ports:
       - "3000:3000"
     depends_on:

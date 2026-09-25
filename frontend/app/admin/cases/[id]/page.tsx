@@ -17,22 +17,7 @@ import {
   type InvestigationResult,
   type InvestigationRound,
 } from "@/lib/api";
-
-const STATUS_LABEL: Record<string, string> = {
-  open: "待调查",
-  investigating: "调查中",
-  investigated: "已调查",
-  failed: "失败",
-  closed: "已关闭",
-};
-
-const ROUND_STATUS_LABEL: Record<string, string> = {
-  running: "进行中",
-  succeeded: "完成",
-  partial: "部分完成",
-  budget_exhausted: "预算耗尽",
-  failed: "失败",
-};
+import { formatDateTime, severityText, statusText } from "@/lib/format";
 
 async function downloadFile(path: string, filename: string, method = "GET", body?: unknown) {
   const token = getToken();
@@ -132,8 +117,8 @@ export default function CaseDetailPage() {
             ← 攻击者案件
           </Link>
           <h1 className="font-mono text-xl font-bold">{data.attacker_key}</h1>
-          {data.severity && <Badge variant={severityVariant(data.severity)}>{data.severity}</Badge>}
-          <Badge variant="outline">{STATUS_LABEL[data.status] || data.status}</Badge>
+          {data.severity && <Badge variant={severityVariant(data.severity)}>{severityText(data.severity)}</Badge>}
+          <Badge variant="outline">{statusText(data.status)}</Badge>
           {current && current.confidence !== undefined && (
             <span className="text-xs text-muted-foreground">置信度 {current.confidence}</span>
           )}
@@ -220,8 +205,8 @@ export default function CaseDetailPage() {
                 <div>目标地址：<span className="font-mono text-xs">{data.dst_ips.join(", ") || "-"}</span></div>
                 <div>成员组 / 事件：{data.group_count} / {data.event_count}</div>
                 <div>轮次：共 {data.rounds_total}（今日 {data.rounds_today}）</div>
-                <div>首次：{data.first_seen ? new Date(data.first_seen).toLocaleString() : "-"}</div>
-                <div>最近：{data.last_seen ? new Date(data.last_seen).toLocaleString() : "-"}</div>
+                <div>首次：{formatDateTime(data.first_seen)}</div>
+                <div>最近：{formatDateTime(data.last_seen)}</div>
               </div>
               {keys.length > 0 && (
                 <div className="mt-2">
@@ -247,7 +232,7 @@ export default function CaseDetailPage() {
                 <option value="">最新结果</option>
                 {rounds.map((r) => (
                   <option key={r.id} value={r.round}>
-                    第 {r.round} 轮 · {ROUND_STATUS_LABEL[r.status] || r.status} · {r.kind}
+                    第 {r.round} 轮 · {statusText(r.status)} · {r.kind}
                   </option>
                 ))}
               </select>
@@ -474,8 +459,8 @@ export default function CaseDetailPage() {
                   <div key={g.fingerprint} className="rounded border p-2">
                     <div className="font-mono text-[10px] text-muted-foreground">{g.fingerprint}</div>
                     <div>
-                      {g.window_start ? new Date(g.window_start).toLocaleString() : "-"}　事件{" "}
-                      {g.event_count}　{g.severity || "-"}
+                      {formatDateTime(g.window_start)}　事件{" "}
+                      {g.event_count}　{severityText(g.severity)}
                     </div>
                     <div className="font-mono text-[10px] text-muted-foreground">
                       {g.src_ips.join(", ")} → {g.dst_ips.join(", ")}

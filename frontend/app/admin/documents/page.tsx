@@ -13,6 +13,7 @@ import {
   errorText,
   type DocumentItem,
 } from "@/lib/api";
+import { formatDateTime, statusText } from "@/lib/format";
 
 function statusVariant(s: string): "low" | "high" | "info" {
   if (s === "indexed") return "low";
@@ -132,9 +133,9 @@ export default function DocumentsPage() {
                     <TableCell className="text-muted-foreground">{d.filename}</TableCell>
                     <TableCell>{fmtSize(d.size)}</TableCell>
                     <TableCell>
-                      <Badge variant={statusVariant(d.status)}>{d.status}</Badge>
+                      <Badge variant={statusVariant(d.status)}>{statusText(d.status)}</Badge>
                     </TableCell>
-                    <TableCell>{d.uploaded_at ? new Date(d.uploaded_at).toLocaleString() : "-"}</TableCell>
+                    <TableCell>{formatDateTime(d.uploaded_at)}</TableCell>
                     <TableCell>
                       <Button size="sm" variant="outline" onClick={() => reindex(d)}>
                         重算

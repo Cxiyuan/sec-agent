@@ -6,7 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Drawer } from "@/components/ui/drawer";
 import { ApiError, apiFetch, errorText, type EntityProfileItem } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 const SELECT_CLS = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
 
@@ -127,7 +129,7 @@ export default function ProfilesPage() {
                       {topPairs(p.src_ips, 3)}
                     </TableCell>
                     <TableCell className="text-xs">
-                      {p.last_seen ? p.last_seen.slice(0, 19).replace("T", " ") : "-"}
+                      {p.last_seen ? formatDateTime(p.last_seen) : "-"}
                     </TableCell>
                     <TableCell>
                       <Button size="sm" variant="outline" onClick={() => setDetail(p)}>
@@ -148,18 +150,24 @@ export default function ProfilesPage() {
           </CardContent>
         </Card>
 
-        {detail && (
-          <Card className="mt-4">
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-sm">
-                {detail.kind === "account" ? "账号" : "会话"}画像明细 ·{" "}
-                <span className="font-mono">{detail.entity_display || detail.entity_key}</span>
-              </CardTitle>
-              <Button size="sm" variant="outline" onClick={() => setDetail(null)}>
-                关闭
-              </Button>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4 text-xs">
+        <Drawer
+          open={detail !== null}
+          onClose={() => setDetail(null)}
+          title={
+            detail ? (
+              <div className="flex flex-col gap-1">
+                <span className="font-semibold">
+                  {detail.kind === "account" ? "账号" : "会话"}画像明细
+                </span>
+                <span className="font-mono text-xs text-muted-foreground">
+                  {detail.entity_display || detail.entity_key}
+                </span>
+              </div>
+            ) : null
+          }
+        >
+          {detail && (
+            <div className="grid grid-cols-2 gap-4 text-xs">
               <div>
                 <p className="mb-1 text-muted-foreground">常见源 IP</p>
                 <p className="font-mono">{topPairs(detail.src_ips, 10) || "-"}</p>
@@ -177,8 +185,8 @@ export default function ProfilesPage() {
                 </p>
                 <p className="mb-1 mt-3 text-muted-foreground">观测</p>
                 <p>
-                  首次 {detail.first_seen?.slice(0, 19).replace("T", " ") || "-"} · 最近{" "}
-                  {detail.last_seen?.slice(0, 19).replace("T", " ") || "-"} · 共 {detail.obs_count} 次
+                  首次 {formatDateTime(detail.first_seen)} · 最近 {formatDateTime(detail.last_seen)} · 共{" "}
+                  {detail.obs_count} 次
                 </p>
                 {detail.anomalies?.length > 0 && (
                   <>
@@ -191,9 +199,9 @@ export default function ProfilesPage() {
                   </>
                 )}
               </div>
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          )}
+        </Drawer>
       </main>
     </div>
   );

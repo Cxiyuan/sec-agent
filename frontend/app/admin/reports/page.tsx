@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiFetch, getToken } from "@/lib/api";
+import { formatDateTime, severityText } from "@/lib/format";
 
 interface ReportItem {
   id: string;
@@ -62,8 +63,8 @@ export default function ReportsPage() {
                 {reports.map((r) => (
                   <TableRow key={r.id}>
                     <TableCell>{r.title}</TableCell>
-                    <TableCell><Badge variant={severityVariant(r.severity)}>{r.severity}</Badge></TableCell>
-                    <TableCell>{r.created_at ? new Date(r.created_at).toLocaleString() : "-"}</TableCell>
+                    <TableCell><Badge variant={severityVariant(r.severity)}>{severityText(r.severity)}</Badge></TableCell>
+                    <TableCell>{formatDateTime(r.created_at)}</TableCell>
                     <TableCell>
                       <Button
                         size="sm"

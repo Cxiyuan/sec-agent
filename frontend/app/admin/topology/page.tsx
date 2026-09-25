@@ -37,6 +37,7 @@ import {
   type TopologyItem,
   type TopologyNodeType,
 } from "@/lib/api";
+import { formatDateTime, statusText } from "@/lib/format";
 
 const nodeTypes = { topoNode: TopoNodeView };
 const GRID = 20;
@@ -159,7 +160,7 @@ function TopologyInner() {
   }
 
   async function createTopology() {
-    const nm = name.trim() || `新拓扑 ${new Date().toLocaleString()}`;
+    const nm = name.trim() || `新拓扑 ${formatDateTime(new Date())}`;
     try {
       const d = await apiFetch<TopologyDetail>("/api/topologies", {
         method: "POST",
@@ -449,7 +450,7 @@ function TopologyInner() {
                             t.status === "indexed" ? "low" : t.status === "failed" ? "high" : "info"
                           }
                         >
-                          {t.status}
+                          {statusText(t.status)}
                         </Badge>
                         <button
                           className="underline"
@@ -713,8 +714,8 @@ function TopologyInner() {
                     placeholder="拓扑说明（会一起进入知识库）"
                   />
                   <p className="text-muted-foreground">
-                    状态：{current.status}
-                    {current.indexed_at ? ` · 最近向量化 ${current.indexed_at.slice(0, 19)}` : ""}
+                    状态：{statusText(current.status)}
+                    {current.indexed_at ? ` · 最近向量化 ${formatDateTime(current.indexed_at)}` : ""}
                   </p>
                   <p className="text-muted-foreground">
                     提示：跳数/节点上限由后端配置（ST_TOPOLOGY_HOPS / ST_TOPOLOGY_MAX_NODES）

@@ -5,9 +5,10 @@ import { Nav } from "@/components/nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Drawer } from "@/components/ui/drawer";
 import { ApiError, apiFetch, errorText, type MemoryItem } from "@/lib/api";
+import { formatDateTime, severityText } from "@/lib/format";
 
 const SELECT_CLS = "h-9 rounded-md border border-input bg-transparent px-3 text-sm";
 
@@ -106,7 +107,7 @@ export default function MemoriesPage() {
                         {m.kind === "group" ? "对象" : "轮次"}
                       </Badge>
                     </TableCell>
-                    <TableCell>{m.severity || "-"}</TableCell>
+                    <TableCell>{severityText(m.severity)}</TableCell>
                     <TableCell className="max-w-[420px] truncate" title={m.summary}>
                       {m.summary}
                     </TableCell>
@@ -114,7 +115,7 @@ export default function MemoriesPage() {
                       {(m.ips || []).slice(0, 3).join(", ")}
                       {(m.ips || []).length > 3 ? ` 等${m.ips.length}个` : ""}
                     </TableCell>
-                    <TableCell>{m.created_at ? m.created_at.slice(0, 19).replace("T", " ") : "-"}</TableCell>
+                    <TableCell>{formatDateTime(m.created_at)}</TableCell>
                     <TableCell>
                       <Button size="sm" variant="outline" onClick={() => setDetail(m)}>
                         明细
@@ -134,23 +135,20 @@ export default function MemoriesPage() {
           </CardContent>
         </Card>
 
-        {detail && (
-          <Card className="mt-4">
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-sm">记忆明细</CardTitle>
-              <Button size="sm" variant="outline" onClick={() => setDetail(null)}>
-                关闭
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-2 text-xs">
+        <Drawer
+          open={detail !== null}
+          onClose={() => setDetail(null)}
+          title={<span className="font-semibold">记忆明细</span>}
+        >
+          {detail && (
+            <div className="space-y-2 text-xs">
               <p>
                 <span className="text-muted-foreground">指纹：</span>
                 <span className="font-mono">{detail.fingerprint}</span>
               </p>
               <p>
                 <span className="text-muted-foreground">窗口：</span>
-                {detail.window_start?.slice(0, 19).replace("T", " ") || "-"} ~{" "}
-                {detail.window_end?.slice(0, 19).replace("T", " ") || "-"}
+                {formatDateTime(detail.window_start)} ~ {formatDateTime(detail.window_end)}
               </p>
               <p>
                 <span className="text-muted-foreground">关联资产：</span>{" "}
@@ -162,9 +160,9 @@ export default function MemoriesPage() {
                   {JSON.stringify(detail.detail, null, 2)}
                 </pre>
               )}
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          )}
+        </Drawer>
       </main>
     </div>
   );

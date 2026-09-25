@@ -6,6 +6,7 @@ import { Chart } from "@/components/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, severityVariant } from "@/components/ui/badge";
 import { apiFetch, type EventGroupItem, type EntityProfileItem, type PersistentItem } from "@/lib/api";
+import { formatDateTime, severityText } from "@/lib/format";
 import type { EChartsOption } from "echarts";
 
 export default function DashboardPage() {
@@ -125,7 +126,7 @@ export default function DashboardPage() {
                     <span className="font-mono">{p.ip}</span>
                     <span className="text-muted-foreground">
                       {p.count} 次
-                      {p.last_seen ? ` · 最近 ${p.last_seen.slice(0, 19).replace("T", " ")}` : ""}
+                      {p.last_seen ? ` · 最近 ${formatDateTime(p.last_seen)}` : ""}
                     </span>
                   </div>
                 ))}
@@ -163,7 +164,7 @@ export default function DashboardPage() {
                 {highGroups.map((g) => (
                   <div key={g.id} className="rounded-md border p-3">
                     <div className="mb-2 flex items-center gap-2">
-                      <Badge variant={severityVariant(g.severity)}>{g.severity}</Badge>
+                      <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
                       <span className="text-sm font-medium">{g.src_ips?.join(", ")} → {g.dst_ips?.join(", ")}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
