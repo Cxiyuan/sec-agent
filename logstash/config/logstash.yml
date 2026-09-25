@@ -7,14 +7,13 @@
 http.host: "0.0.0.0"
 api.enabled: true
 
-# 管道配置目录：指向**共享卷**挂载点（compose 把 logstash-pipeline 卷挂到 /logstash）。
-#
-# 为什么不用镜像默认的 /usr/share/logstash/pipeline：Logstash 会把管道目录里**所有**
-# *.conf 拼成一个管道，而官方镜像自带一份 logstash.conf（含 beats 5044 输入 + stdout 输出），
-# 它会和我们后端播种的 pipeline.conf 同时生效 → 两个 beats 输入抢 5044 端口，
-# 第二个每 7 秒报 "Address already in use" 后重启，并且把每条事件重复写到容器日志里。
-# 指向专用目录后，镜像自带文件完全不再参与。
-path.config: /logstash
+# 管道目录：由 compose 把共享卷**挂在镜像默认位置** /usr/share/logstash/pipeline 上，
+# 后端往卷里写 logstash.conf（文件名与镜像自带的示例管道相同 → 正好把它覆盖）。
+# 因此这里**不需要**设 path.config，也不要用 pipelines.yml 去改目录：
+# Logstash 的优先级是 命令行 > pipelines.yml > 本文件，绕来绕去很容易让管道来源变得不明。
+# 历史教训：曾用 path.config 指向 /logstash 且同时存在镜像的 pipelines.yml，最终加载的
+# 管道里混进了镜像示例管道（两个 beats 抢 5044、多一个 stdout），排查了很久。
+# 现在只有一条规则：**管道目录 = 共享卷 = 只放后端写的 logstash.conf**。
 
 config.reload.automatic: true
 config.reload.interval: 10s

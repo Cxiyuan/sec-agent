@@ -135,7 +135,7 @@ output.logstash:
 | `ST_FREQ_WINDOW_SECONDS` / `ST_FREQ_COOLDOWN_SECONDS` | 300 / 300 | 频率规则滑动窗口与冷却 |
 | `ST_MAX_LOGS_PER_WINDOW` | 20000 | 单次拉取上限 |
 | `ST_LOGSTASH_API_URL` | http://logstash:9600 | Logstash 监控 API（后端读状态用） |
-| `ST_LOGSTASH_PIPELINE_CONF` | /logstash/pipeline.conf | 管道配置路径（共享卷内） |
+| `ST_LOGSTASH_PIPELINE_CONF` | /logstash/logstash.conf | 管道配置路径（共享卷内；文件名必须叫 logstash.conf，否则会与镜像自带示例管道同时被加载） |
 
 模型与凭据：
 - 边缘模型：连接信息固化在 `backend/app/edge_config.py`（仅 IP 可在界面改）

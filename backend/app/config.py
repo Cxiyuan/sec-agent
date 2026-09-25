@@ -240,8 +240,10 @@ class Settings(BaseSettings):
     )
 
     # 采集侧 Logstash 管道（由后台界面维护：写共享卷 → Logstash 自动重载）
-    logstash_pipeline_conf: str = "/logstash/pipeline.conf"
-    logstash_pipeline_backup: str = "/logstash/pipeline.conf.bak"
+    logstash_pipeline_conf: str = (
+        "/logstash/logstash.conf"  # 必须叫 logstash.conf：它正好覆盖镜像自带的示例管道
+    )
+    logstash_pipeline_backup: str = "/logstash/logstash.conf.bak"
     logstash_api_url: str = "http://logstash:9600"
     logstash_beats_port: int = 5044
     logstash_seed_on_startup: bool = True

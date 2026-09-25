@@ -63,6 +63,9 @@ services:
       ST_REDIS_URL: redis://redis:6379/0
       ST_CELERY_BROKER_URL: redis://redis:6379/1
       ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 管道文件名必须叫 logstash.conf（与镜像自带示例同名，才能把它覆盖掉）
+      ST_LOGSTASH_PIPELINE_CONF: /logstash/logstash.conf
+      ST_LOGSTASH_PIPELINE_BACKUP: /logstash/logstash.conf.bak
       # 云端模型 API Key 不走环境变量：在后台「系统配置」页填写、存数据库
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -132,9 +135,12 @@ services:
     environment:
       LS_JAVA_OPTS: -Xms512m -Xmx512m
     volumes:
-      # 管道目录指向共享卷（不用镜像默认的 /usr/share/logstash/pipeline：
-      # 那里自带一份 logstash.conf，会与后端播种的管道拼成同一个管道 → 两个 beats 抢 5044）
-      - logstash-pipeline:/logstash
+      # 共享卷**直接挂在镜像默认管道目录**上：后端往卷里写 logstash.conf，
+      # 文件名与镜像自带的示例管道相同 → 正好覆盖它，目录里只剩我们这一份管道。
+      # （踩过的坑：以前后端写的是 pipeline.conf，与镜像自带的 logstash.conf 同时被加载
+      #  → 同一个管道里两个 beats 抢 5044 端口，第二个每 7 秒报 Address already in use；
+      #   还多一个 stdout 输出把全量事件刷进容器日志。）
+      - logstash-pipeline:/usr/share/logstash/pipeline
       - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
     ports:
       - "5044:5044" # Beats 输入（Zeek / Wazuh）

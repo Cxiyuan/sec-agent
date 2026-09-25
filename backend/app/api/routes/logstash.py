@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
@@ -64,6 +65,8 @@ def read_pipeline() -> str:
 
 def write_pipeline(text: str) -> str | None:
     """备份上一版 → 原子写。成功返回 None，失败返回错误说明。"""
+    # 保存前也检查一次：卷里冒出别的 conf 就会把管道搞成两份拼接
+    disable_foreign_configs()
     path = settings.logstash_pipeline_conf
     current = read_pipeline()
     if current.strip():
@@ -83,8 +86,46 @@ def write_pipeline(text: str) -> str | None:
     return None
 
 
+def disable_foreign_configs() -> list[str]:
+    """把管道目录里**不属于我们**的 `*.conf` 改名停用，返回被停用的文件名。
+
+    为什么必须做：Logstash 会把管道目录里**所有** *.conf 拼成一个管道。而官方镜像自带
+    `/usr/share/logstash/pipeline/logstash.conf`（示例管道：beats 输入 + ES + stdout）。
+    当我们把共享卷挂到那个目录时，Docker 会把镜像那份**拷进卷里**，于是同一个管道里出现
+    两个 beats 输入抢 5044 端口（第二个每 7 秒报 "Address already in use" 后重启），
+    并且全量事件被额外 stdout 一遍刷爆容器日志。部署到服务器时真实踩到。
+
+    这里选择“改名停用”而不是“删除”：保留现场便于排查，同时不再被 Logstash 加载。
+    """
+    managed = Path(settings.logstash_pipeline_conf)
+    renamed: list[str] = []
+    try:
+        entries = sorted(managed.parent.glob("*.conf"))
+    except OSError as exc:
+        log.warning("扫描 Logstash 管道目录失败: %s", exc)
+        return renamed
+    for entry in entries:
+        if entry.name == managed.name:
+            continue
+        target = entry.with_name(f"{entry.name}.disabled")
+        try:
+            if target.exists():
+                target.unlink()
+            entry.rename(target)
+            renamed.append(entry.name)
+        except OSError as exc:
+            log.warning("停用多余管道文件失败 %s: %s", entry, exc)
+    if renamed:
+        log.warning(
+            "检测到多余的 Logstash 管道文件并已改名停用（多个 conf 会被拼成一个管道）：%s", renamed
+        )
+    return renamed
+
+
 def seed_if_missing() -> bool:
     """首次部署时播种默认管道（卷内无文件才写）。"""
+    # 不管是否播种，先把多余管道文件停用（否则会和我们的管道拼接生效）
+    disable_foreign_configs()
     if not settings.logstash_seed_on_startup:
         return False
     if read_pipeline().strip():
