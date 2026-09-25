@@ -65,7 +65,9 @@ services:
       ST_CELERY_RESULT_BACKEND: redis://redis:6379/2
       # 管道文件名必须叫 logstash.conf（与镜像自带示例同名，才能把它覆盖掉）
       ST_LOGSTASH_PIPELINE_CONF: /logstash/logstash.conf
-      ST_LOGSTASH_PIPELINE_BACKUP: /logstash/logstash.conf.bak
+      # 备份必须放到**别的目录**（单独一个卷）：Logstash 会把管道目录里所有文件当配置读，
+      # 备份放进去就会变成第二个管道（两个 beats 抢 5044）
+      ST_LOGSTASH_PIPELINE_BACKUP: /logstash-backup/logstash.conf.bak
       # 云端模型 API Key 不走环境变量：在后台「系统配置」页填写、存数据库
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -79,6 +81,8 @@ services:
       - zeek-config:/config
       # 采集侧管道配置：后端写、Logstash 读（自动重载）
       - logstash-pipeline:/logstash
+      # 管道备份单独一个卷：**不能**跟管道同目录（否则被当成第二个管道）
+      - logstash-backup:/logstash-backup
     depends_on:
       - postgres
       - redis
@@ -193,3 +197,4 @@ volumes:
   zeek-config:
   zeek-filebeat:
   logstash-pipeline:
+  logstash-backup:

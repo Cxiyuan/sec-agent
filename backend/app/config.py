@@ -243,7 +243,9 @@ class Settings(BaseSettings):
     logstash_pipeline_conf: str = (
         "/logstash/logstash.conf"  # 必须叫 logstash.conf：它正好覆盖镜像自带的示例管道
     )
-    logstash_pipeline_backup: str = "/logstash/logstash.conf.bak"
+    # 备份**不能**放在管道目录里：Logstash 会把目录里所有文件当配置读（不看扩展名），
+    # 备份一放进去就会变成第二个管道（两个 beats 抢 5044）。所以单独一个卷。
+    logstash_pipeline_backup: str = "/logstash-backup/logstash.conf.bak"
     logstash_api_url: str = "http://logstash:9600"
     logstash_beats_port: int = 5044
     logstash_seed_on_startup: bool = True

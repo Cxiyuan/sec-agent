@@ -65,8 +65,8 @@ def read_pipeline() -> str:
 
 def write_pipeline(text: str) -> str | None:
     """备份上一版 → 原子写。成功返回 None，失败返回错误说明。"""
-    # 保存前也检查一次：卷里冒出别的 conf 就会把管道搞成两份拼接
-    disable_foreign_configs()
+    # 保存前也清一次：管道目录里冒出别的文件就会把管道变成两份拼接
+    remove_foreign_configs()
     path = settings.logstash_pipeline_conf
     current = read_pipeline()
     if current.strip():
@@ -86,46 +86,49 @@ def write_pipeline(text: str) -> str | None:
     return None
 
 
-def disable_foreign_configs() -> list[str]:
-    """把管道目录里**不属于我们**的 `*.conf` 改名停用，返回被停用的文件名。
+def remove_foreign_configs() -> list[str]:
+    """把管道目录里**不属于我们**的文件删掉，返回被删的文件名。
 
-    为什么必须做：Logstash 会把管道目录里**所有** *.conf 拼成一个管道。而官方镜像自带
-    `/usr/share/logstash/pipeline/logstash.conf`（示例管道：beats 输入 + ES + stdout）。
-    当我们把共享卷挂到那个目录时，Docker 会把镜像那份**拷进卷里**，于是同一个管道里出现
-    两个 beats 输入抢 5044 端口（第二个每 7 秒报 "Address already in use" 后重启），
-    并且全量事件被额外 stdout 一遍刷爆容器日志。部署到服务器时真实踩到。
+    为什么必须删（而不仅仅是改名停用）：Logstash 把管道目录里**所有文件**都当配置读，
+    **不看扩展名**。实测启动日志的 ``pipeline.sources`` 里同时列出了
+    ``logstash.conf``、``logstash.conf.disabled``、``pipeline.conf.disabled`` ——
+    改名为 .disabled 根本拦不住它。而官方镜像自带
+    ``/usr/share/logstash/pipeline/logstash.conf``（示例管道：beats + ES + stdout），
+    当我们把共享卷挂到那个目录时 Docker 会把它拷进卷里，于是同一个管道里出现两个
+    beats 输入抢 5044 端口（第二个每 7 秒报 "Address already in use" 后重启），
+    并且全量事件被额外 stdout 一遍刷爆容器日志。
 
-    这里选择“改名停用”而不是“删除”：保留现场便于排查，同时不再被 Logstash 加载。
+    不变式：**管道目录里永远只能有 logstash.conf 一个文件**（包括备份文件也不能放这里）。
     """
     managed = Path(settings.logstash_pipeline_conf)
-    renamed: list[str] = []
+    removed: list[str] = []
     try:
-        entries = sorted(managed.parent.glob("*.conf"))
+        entries = [p for p in sorted(managed.parent.iterdir()) if p.is_file()]
     except OSError as exc:
         log.warning("扫描 Logstash 管道目录失败: %s", exc)
-        return renamed
+        return removed
     for entry in entries:
         if entry.name == managed.name:
             continue
-        target = entry.with_name(f"{entry.name}.disabled")
         try:
-            if target.exists():
-                target.unlink()
-            entry.rename(target)
-            renamed.append(entry.name)
+            size = entry.stat().st_size
+            entry.unlink()
+            removed.append(f"{entry.name}({size}B)")
         except OSError as exc:
-            log.warning("停用多余管道文件失败 %s: %s", entry, exc)
-    if renamed:
+            log.warning("删除多余管道文件失败 %s: %s", entry, exc)
+    if removed:
         log.warning(
-            "检测到多余的 Logstash 管道文件并已改名停用（多个 conf 会被拼成一个管道）：%s", renamed
+            "管道目录里存在多余文件并已删除（Logstash 会把目录里所有文件拼成一个管道，"
+            "不看扩展名；否则会出现两个 beats 抢 5044 端口）：%s",
+            removed,
         )
-    return renamed
+    return removed
 
 
 def seed_if_missing() -> bool:
     """首次部署时播种默认管道（卷内无文件才写）。"""
-    # 不管是否播种，先把多余管道文件停用（否则会和我们的管道拼接生效）
-    disable_foreign_configs()
+    # 不管是否播种，先把多余文件清掉（否则会和我们的管道拼接生效）
+    remove_foreign_configs()
     if not settings.logstash_seed_on_startup:
         return False
     if read_pipeline().strip():
