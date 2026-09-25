@@ -413,6 +413,7 @@ export default function AdminEventsPage() {
                         {it.error ? <span className="ml-1 text-destructive">（{it.error}）</span> : null}
                       </summary>
                       <div className="mt-1 space-y-1">
+                        {it.note && <p className="text-xs text-amber-500">{it.note}</p>}
                         {it.summary && <p className="text-muted-foreground">{it.summary}</p>}
                         <p className="font-mono text-[10px] text-muted-foreground">
                           证据引用 {it.ref || "-"}

@@ -158,6 +158,7 @@ def _case_context(
     history: list[dict[str, Any]],
     kind: str = "auto",
     instruction: str = "",
+    finalize: bool = False,
 ) -> dict[str, str]:
     """组装案件背景（成员事件、历史组、资产）——全部来自 PG，不消耗 ES 查询。"""
     fps = list(case.get("group_fingerprints") or [])
@@ -199,11 +200,19 @@ def _case_context(
         "transcript": _transcript(
             history, keep_full=max(1, settings.investigation_keep_observations)
         ),
-        "task": _task_text(kind, instruction),
+        "task": _task_text(kind, instruction, finalize),
     }
 
 
-def _task_text(kind: str, instruction: str) -> str:
+def _task_text(kind: str, instruction: str, finalize: bool = False) -> str:
+    if finalize:
+        # 为什么单开一句：实测上限 6 时调查**全部**撞限就停——模型一直在查，
+        # 没机会输出结论，于是 path/gaps/IOC 全空。把最后一次专门留给收束。
+        return (
+            "⏰ **预算即将用尽：这是最后一次机会**。必须立即输出 action=finish，"
+            "把已确认的阶段（record_finding 记过的、或本轮已核实的事实）、已取到的证据引用、"
+            "以及还没查清的点（gaps）全部整理出来。宁可结论留缺口，也不要再发起新查询。"
+        )
     if kind == "followup" and instruction:
         return (
             f"这是**追问轮**：分析师要求「{instruction}」。"
@@ -249,10 +258,17 @@ def run(
             budget.stop_reason = reason
             break
 
+        # 最后一次调用专用于收束结论（否则预算会被查询吃光、产出为空）
+        finalize = budget.llm_calls >= budget.max_llm_calls - 1
         try:
             prompt = _build_prompt(
                 _case_context(
-                    case, events=events, history=history, kind=kind, instruction=instruction
+                    case,
+                    events=events,
+                    history=history,
+                    kind=kind,
+                    instruction=instruction,
+                    finalize=finalize,
                 )
             )
         except KeyError as exc:  # 提示词占位符与调用点不一致 → 明确报错而不是静默
@@ -335,6 +351,18 @@ def run(
         )
 
     # 预算耗尽/失败：用已记录的内容产出部分结果（不留空手）
+    if not ctx.findings and not ctx.gaps:
+        # 显式记缺口：否则界面与报告上就是"什么都没有"，看不出是没查到还是没跑
+        ctx.gaps.append(
+            {
+                "missing": "未记录可验证的攻击阶段",
+                "why": budget.stop_reason or "调查未产生可落库的结论",
+                "next_action": (
+                    "可提高「模型调用上限」（系统配置 → 自主取证调查，即时生效），"
+                    "或人工下发追问指令（指定时间范围 / 重点 IP）"
+                ),
+            }
+        )
     partial = schema.validate_result(
         {
             "kind": kind,
@@ -369,7 +397,6 @@ def build_group_context(
             case, events=events, history=[], kind=kind, instruction=instruction
         ),
     }
-
 
 def empty_result(case_id: str, reason: str) -> schema.InvestigationResult:
     """失败占位结果（保证界面与报告永远有结构可渲染）。"""

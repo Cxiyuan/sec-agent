@@ -142,6 +142,8 @@ def _evidence_item_from_event(e: Event) -> dict[str, Any]:
         "source_system": e.source_system,
         "src": f"{e.src_ip}:{e.src_port}" if e.src_port else e.src_ip,
         "dst": f"{e.dst_ip}:{e.dst_port}" if e.dst_port else e.dst_ip,
+        "src_ip": e.src_ip,
+        "dst_ip": e.dst_ip,
         "protocol": e.protocol,
         "severity": e.severity,
         "hit_rule": e.hit_rule,
@@ -177,6 +179,8 @@ def _normalize_resolved(row: dict[str, Any]) -> dict[str, Any]:
             "severity": row.get("severity"),
             "hit_rule": row.get("hit_rule"),
             "edge_score": None,
+            "src_ip": row.get("src_ip"),
+            "dst_ip": row.get("dst_ip"),
             "summary": str(row.get("summary") or "")[:300],
             "excluded": False,
             "raw": _clip_raw(row.get("raw") or {}),
@@ -194,11 +198,80 @@ def _normalize_resolved(row: dict[str, Any]) -> dict[str, Any]:
         "severity": None,
         "hit_rule": None,
         "edge_score": None,
+        "src_ip": None,
+        "dst_ip": None,
         "summary": "原始证据文档" if not error else str(error)[:300],
         "excluded": False,
         "raw": {} if error else _clip_raw(row.get("raw") or {}),
         "error": error,
     }
+
+
+def _link_fixed_stage_evidence(
+    chain: dict[str, Any], items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """把**固定深度分析**的阶段证据链到组内事件上。
+
+    固定版 ``stages[].evidence`` 里是已被 attack_chain_node 映射回真实日志的摘要
+    （type/src/dst/summary）。按「摘要前 120 字 + 源/目的 IP」精确匹配：
+    - 匹配上 → 给那条证据打上阶段标记（证据链建立）；
+    - 匹配不上 → 单列一条 kind=stage_evidence 并声明出处，**绝不错链**
+      （错链比不链更糟：会让人以为某条日志支撑了某个结论）。
+    """
+    stages = chain.get("stages")
+    if not isinstance(stages, list):
+        return []
+    index: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for it in items:
+        key = (
+            str(it.get("summary") or "")[:120],
+            str(it.get("src_ip") or ""),
+            str(it.get("dst_ip") or ""),
+        )
+        index.setdefault(key, it)
+    out: list[dict[str, Any]] = []
+    for st in stages:
+        if not isinstance(st, dict):
+            continue
+        stage = str(st.get("stage") or "")
+        evidence = st.get("evidence")
+        for ev in evidence if isinstance(evidence, list) else []:
+            if not isinstance(ev, dict):
+                continue
+            key = (
+                str(ev.get("summary") or "")[:120],
+                str(ev.get("src") or ""),
+                str(ev.get("dst") or ""),
+            )
+            target = index.get(key)
+            if target is not None:
+                marked = target.setdefault("stages", [])
+                if stage and stage not in marked:
+                    marked.append(stage)
+                continue
+            out.append(
+                {
+                    "ref": "",
+                    "kind": "stage_evidence",
+                    "ts": None,
+                    "event_type": str(ev.get("type") or ""),
+                    "source_system": None,
+                    "src": str(ev.get("src") or "") or None,
+                    "dst": str(ev.get("dst") or "") or None,
+                    "src_ip": str(ev.get("src") or "") or None,
+                    "dst_ip": str(ev.get("dst") or "") or None,
+                    "protocol": None,
+                    "severity": None,
+                    "hit_rule": None,
+                    "edge_score": None,
+                    "summary": str(ev.get("summary") or "")[:300],
+                    "excluded": False,
+                    "raw": {},
+                    "stages": [stage] if stage else [],
+                    "note": "来自攻击链分析（未在本组事件列表中找到对应条目）",
+                }
+            )
+    return out
 
 
 def _stage_evidence(chain: dict[str, Any]) -> list[dict[str, Any]]:
@@ -301,20 +374,23 @@ def get_group_evidence(
             )
 
     stages = _stage_evidence(chain)
+    # 固定深度分析的阶段证据 → 链到组内事件（链不上的单列，不错链）
+    stage_items = _link_fixed_stage_evidence(chain, items)
     stage_refs = {r for st in stages for r in st["evidence_refs"]}
-    for item in items:
-        if item["ref"] in stage_refs:
-            item["stages"] = [st["stage"] for st in stages if item["ref"] in st["evidence_refs"]]
-    for item in resolved:
+    all_items = [*items, *stage_items, *resolved]
+    for item in all_items:
         if item["ref"] and item["ref"] in stage_refs:
-            item["stages"] = [st["stage"] for st in stages if item["ref"] in st["evidence_refs"]]
+            marked = item.setdefault("stages", [])
+            for st in stages:
+                if item["ref"] in st["evidence_refs"] and st["stage"] not in marked:
+                    marked.append(st["stage"])
 
     return {
         "group_id": g.id,
         "fingerprint": g.fingerprint,
         "severity": g.severity,
         "stages": stages,
-        "items": [*items, *resolved],
+        "items": all_items,
         "investigation": {
             "case_id": chain.get("case_id"),
             "status": chain.get("status"),
@@ -324,10 +400,11 @@ def get_group_evidence(
         },
         "counts": {
             "events": len(items),
+            "stage_evidence": len(stage_items),
             "investigation_refs": len(resolved),
-            "total": len(items) + len(resolved),
+            "total": len(all_items),
             "stages": len(stages),
-            "linked": sum(1 for i in [*items, *resolved] if i.get("stages")),
+            "linked": sum(1 for i in all_items if i.get("stages")),
             "events_truncated": len(all_events) > MAX_EVIDENCE_EVENTS,
             "raw_max_chars": MAX_RAW_CHARS,
             "raw_enabled": settings.investigation_raw_evidence_max > 0,

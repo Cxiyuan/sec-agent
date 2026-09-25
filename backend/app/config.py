@@ -202,9 +202,11 @@ class Settings(BaseSettings):
     # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
     investigation_enabled: bool = True
     investigation_min_severity: str = "high"  # 只对 ≥ 该级别的案件开调查
-    investigation_max_steps: int = 8  # 循环步数上限
+    investigation_max_steps: int = 10  # 循环步数上限
     investigation_max_queries: int = 12  # 查询类工具调用上限
-    investigation_max_llm_calls: int = 6  # 模型调用次数上限
+    # 为什么抬到 10：实测上限 6 时调查**全部**撞限就停（模型把预算花在查询上，
+    # 没机会输出结论）→ path/gaps/IOC 全空、事件组上的取证结果也是空的。
+    investigation_max_llm_calls: int = 10  # 模型调用次数上限
     investigation_timeout_seconds: int = 240  # 单轮墙钟上限（秒）
     investigation_max_docs_per_query: int = 2000  # 单次查询文档上限（硬顶 5000）
     investigation_raw_evidence_max: int = 20  # 单轮原始证据条数上限

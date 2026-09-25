@@ -893,6 +893,10 @@ export interface EvidenceChainItem {
   severity?: string | null;
   hit_rule?: string | null;
   edge_score?: number | null;
+  src_ip?: string | null;
+  dst_ip?: string | null;
+  /** 阶段证据的出处说明（如"来自攻击链分析"） */
+  note?: string;
   summary?: string;
   excluded?: boolean;
   /** 该证据支撑了哪些攻击阶段（证据链的核心：把证据链到结论上） */
