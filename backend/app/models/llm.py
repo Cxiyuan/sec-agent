@@ -60,7 +60,11 @@ class _CloudLimiter:
 
 _LIMITER = _CloudLimiter()
 
-# 可重试的错误特征（限流 / 网关与超时）；401 这类配置错误**不**重试
+# 可重试的错误特征（限流 / 网关 / 超时 / **瞬时网络错误**）；401 这类配置错误**不**重试
+#
+# 为什么要包含连接类错误：api.minimaxi.com 会解析出十几个 CDN 地址，部分地址在客户网络里
+# 不通（部署实测），于是会出现"时而成功时而 Connection error"的间歇失败。
+# 不重试的话，一次网络抖动就会降级成规则定级（表现为大量事件组都是 info、不出报告）。
 _RETRY_HINTS = (
     "429",
     "rate limit",
@@ -68,7 +72,15 @@ _RETRY_HINTS = (
     "too many requests",
     "timeout",
     "timed out",
+    "connection error",
     "connection reset",
+    "connection aborted",
+    "connection refused",
+    "connect timeout",
+    "read timeout",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "eof occurred",
     "502",
     "503",
     "504",
