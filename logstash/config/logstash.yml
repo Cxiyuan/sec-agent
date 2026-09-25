@@ -7,6 +7,15 @@
 http.host: "0.0.0.0"
 api.enabled: true
 
+# 管道配置目录：指向**共享卷**挂载点（compose 把 logstash-pipeline 卷挂到 /logstash）。
+#
+# 为什么不用镜像默认的 /usr/share/logstash/pipeline：Logstash 会把管道目录里**所有**
+# *.conf 拼成一个管道，而官方镜像自带一份 logstash.conf（含 beats 5044 输入 + stdout 输出），
+# 它会和我们后端播种的 pipeline.conf 同时生效 → 两个 beats 输入抢 5044 端口，
+# 第二个每 7 秒报 "Address already in use" 后重启，并且把每条事件重复写到容器日志里。
+# 指向专用目录后，镜像自带文件完全不再参与。
+path.config: /logstash
+
 config.reload.automatic: true
 config.reload.interval: 10s
 
