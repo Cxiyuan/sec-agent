@@ -67,7 +67,9 @@ def render_forensic_report(
     因此本函数对“轮次结果”与“案件最新结果”都适用。
     """
     keys = case.get("keys") or {}
-    keys_text = "；".join(f"{k}: {', '.join(str(v) for v in vals[:5])}" for k, vals in keys.items() if vals)
+    keys_text = "；".join(
+        f"{k}: {', '.join(str(v) for v in vals[:5])}" for k, vals in keys.items() if vals
+    )
     template = _env.get_template("forensic_report.html")
     html = template.render(
         severity=str(case.get("severity") or "info").upper(),

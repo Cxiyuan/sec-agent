@@ -442,9 +442,7 @@ class AttackerCase(Base):
     last_dispatched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    next_allowed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    next_allowed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     # 桥接情形（新组同时命中两个案件）时提示人工合并
     merge_suggestion: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

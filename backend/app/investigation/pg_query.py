@@ -41,9 +41,7 @@ def assets_by_ips(ips: list[str]) -> list[dict[str, Any]]:
     with SessionLocal() as db:
         rows = db.scalars(select(Asset)).all()
         extra_hits = [
-            r
-            for r in rows
-            if r.ip not in wanted and wanted & {str(x) for x in (r.extra_ips or [])}
+            r for r in rows if r.ip not in wanted and wanted & {str(x) for x in (r.extra_ips or [])}
         ]
         primary = [r for r in rows if r.ip in wanted]
     out: list[dict[str, Any]] = []
@@ -118,9 +116,9 @@ def topology_neighbors(ips: list[str], hops: int = 1) -> dict[str, Any]:
                     "node_type": data.get("node_type"),
                     "zone": data.get("zone"),
                     "note": str(data.get("note") or "")[:200],
-                    "ips": [
-                        tag_by_id[i] for i in (data.get("asset_ids") or []) if i in tag_by_id
-                    ][:10],
+                    "ips": [tag_by_id[i] for i in (data.get("asset_ids") or []) if i in tag_by_id][
+                        :10
+                    ],
                     "hit": nid in hit_ids,
                 }
             )
@@ -247,7 +245,9 @@ def event_by_id(event_id: str) -> dict[str, Any] | None:
     }
 
 
-def group_events(fingerprints: list[str], *, per_group: int = 30) -> dict[str, list[dict[str, Any]]]:
+def group_events(
+    fingerprints: list[str], *, per_group: int = 30
+) -> dict[str, list[dict[str, Any]]]:
     """取案件成员组的事件（组内取证的第一手材料）。"""
     fps = [str(f) for f in fingerprints if f]
     if not fps:

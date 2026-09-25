@@ -196,7 +196,9 @@ def _case_context(
             catalog.catalog_text(kind, es_query.index_pattern(kind))
             for kind in catalog.default_sources()
         ),
-        "transcript": _transcript(history, keep_full=max(1, settings.investigation_keep_observations)),
+        "transcript": _transcript(
+            history, keep_full=max(1, settings.investigation_keep_observations)
+        ),
         "task": _task_text(kind, instruction),
     }
 
@@ -208,7 +210,9 @@ def _task_text(kind: str, instruction: str) -> str:
             "优先回答该要求，仍按同一证据纪律记录阶段与缺口。"
         )
     if kind == "manual" and instruction:
-        return f"人工发起的调查，附加要求：「{instruction}」。先看历史与已确认事实，再做针对性取证。"
+        return (
+            f"人工发起的调查，附加要求：「{instruction}」。先看历史与已确认事实，再做针对性取证。"
+        )
     return (
         "自动调查：还原该攻击者的**完整攻击路径**（入口 → 立足 → 横向 → 外泄）。"
         "优先确认：怎么进来的、在哪里立足、横向到哪些机器、有没有数据外泄。"
@@ -263,7 +267,9 @@ def run(
             budget.stop_reason = f"模型调用失败：{exc}"
             break
         budget.llm_calls += 1
-        budget.tokens_est += _estimate_tokens(prompts.INVESTIGATION_SYSTEM, prompt, _clip_json(reply, 2000))
+        budget.tokens_est += _estimate_tokens(
+            prompts.INVESTIGATION_SYSTEM, prompt, _clip_json(reply, 2000)
+        )
 
         action = str((reply or {}).get("action") or "").strip()
         params = (reply or {}).get("params")
@@ -291,7 +297,7 @@ def run(
                 {
                     "action": "（无效输出）",
                     "params": {},
-                    "observation": "没有解析出 action 字段。请严格输出 JSON：{\"action\":\"…\",\"params\":{…}}",
+                    "observation": '没有解析出 action 字段。请严格输出 JSON：{"action":"…","params":{…}}',
                     "brief": "无效输出",
                 }
             )
@@ -320,7 +326,9 @@ def run(
                 "step": budget.steps,
                 "tool": action,
                 "params": params if isinstance(params, dict) else {},
-                "result_count": result.get("returned") or result.get("found") or result.get("fetched"),
+                "result_count": result.get("returned")
+                or result.get("found")
+                or result.get("fetched"),
                 "error": result.get("error"),
                 "ms": elapsed,
             }
@@ -336,9 +344,17 @@ def run(
         valid_refs=ctx.valid_refs,
         findings=ctx.findings,
         gaps=ctx.gaps,
-        base={"case_id": str(case.get("id") or ""), "round": _safe_int(case.get("round")), "kind": kind},
+        base={
+            "case_id": str(case.get("id") or ""),
+            "round": _safe_int(case.get("round")),
+            "kind": kind,
+        },
     )
-    partial.status = "budget_exhausted" if budget.stop_reason.startswith(("步数", "查询", "模型调用", "耗时")) else "partial"
+    partial.status = (
+        "budget_exhausted"
+        if budget.stop_reason.startswith(("步数", "查询", "模型调用", "耗时"))
+        else "partial"
+    )
     return partial, ctx, budget, trail
 
 

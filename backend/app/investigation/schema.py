@@ -195,7 +195,13 @@ def _sanitize_path(items: Any, valid: set[str], dropped: list[str]) -> list[Path
 
 
 def _sanitize_items(
-    items: Any, model: type[BaseModel], ref_field: list[str], valid: set[str], limit: int, dropped: list[str], label: str
+    items: Any,
+    model: type[BaseModel],
+    ref_field: list[str],
+    valid: set[str],
+    limit: int,
+    dropped: list[str],
+    label: str,
 ) -> list[Any]:
     out: list[Any] = []
     for raw in items if isinstance(items, list) else []:
@@ -376,7 +382,10 @@ def to_group_attack_chain(result: InvestigationResult) -> dict[str, Any]:
         {
             "stage": st.stage,
             "description": st.description,
-            "evidence": [{"id": ref, "type": "ref", "src": "", "dst": "", "summary": ref} for ref in st.evidence_refs],
+            "evidence": [
+                {"id": ref, "type": "ref", "src": "", "dst": "", "summary": ref}
+                for ref in st.evidence_refs
+            ],
         }
         for st in result.path
     ]

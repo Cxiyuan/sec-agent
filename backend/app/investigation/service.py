@@ -97,7 +97,9 @@ def investigate(case_id: str, *, kind: RoundKind = "auto", instruction: str = ""
         log.exception("案件 %s 调查失败", case_id)
         failure = planner.empty_result(case_id, f"调查异常：{exc}")
         payload = _payload(failure, budget=planner.Budget(), trail=[], raw_evidence=[])
-        cases.finish_round(inv_id, result=payload, budget={}, trail=[], status="failed", error=str(exc))
+        cases.finish_round(
+            inv_id, result=payload, budget={}, trail=[], status="failed", error=str(exc)
+        )
         cases.apply_result(case_id, payload, status="failed")
         return {"ok": False, "case_id": case_id, "round": round_no, "error": str(exc)}
     finally:

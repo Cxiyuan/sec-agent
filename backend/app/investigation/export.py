@@ -44,7 +44,7 @@ def _refs_of(investigation: dict[str, Any]) -> list[str]:
     for stage in investigation.get("path") or []:
         if isinstance(stage, dict):
             add(stage.get("evidence_refs"))
-    for item in (investigation.get("timeline") or []):
+    for item in investigation.get("timeline") or []:
         if isinstance(item, dict):
             add(item.get("ref"))
     for key in ("lateral", "exfil", "iocs"):
@@ -74,12 +74,19 @@ def _fetch_evidence(ref: str) -> dict[str, Any]:
         from app.investigation.es_query import QUERY_TIMEOUT, _es
 
         resp = _es().get(index=index, id=doc_id, request_timeout=QUERY_TIMEOUT)
-        return {"ref": ref, "kind": "es_doc", "index": index, "raw": _sanitize_raw(resp.get("_source") or {})}
+        return {
+            "ref": ref,
+            "kind": "es_doc",
+            "index": index,
+            "raw": _sanitize_raw(resp.get("_source") or {}),
+        }
     except Exception as exc:  # noqa: BLE001
         return {"ref": ref, "error": f"读取失败：{exc}"}
 
 
-def collect_evidence(investigation: dict[str, Any], *, with_raw: bool = True) -> list[dict[str, Any]]:
+def collect_evidence(
+    investigation: dict[str, Any], *, with_raw: bool = True
+) -> list[dict[str, Any]]:
     """按引用收集证据清单；``with_raw`` 为 False 时只出引用（不含原始文档）。"""
     refs = _refs_of(investigation)
     if not with_raw:
@@ -152,7 +159,9 @@ def build_evidence_zip(case: dict[str, Any], investigation: dict[str, Any]) -> b
             "status": investigation.get("status"),
             "confidence": investigation.get("confidence"),
             "summary": investigation.get("summary"),
-            "path_stages": [p.get("stage") for p in (investigation.get("path") or []) if isinstance(p, dict)],
+            "path_stages": [
+                p.get("stage") for p in (investigation.get("path") or []) if isinstance(p, dict)
+            ],
             "gaps": investigation.get("gaps") or [],
             "query_trail": investigation.get("query_trail") or [],
             "budget": investigation.get("budget") or {},
@@ -162,7 +171,9 @@ def build_evidence_zip(case: dict[str, Any], investigation: dict[str, Any]) -> b
     }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2, default=str))
+        zf.writestr(
+            "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2, default=str)
+        )
         zf.writestr(
             "evidence.jsonl",
             "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in evidence) + "\n",

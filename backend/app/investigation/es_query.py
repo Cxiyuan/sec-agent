@@ -144,7 +144,7 @@ def build_clause(kind: str, name: str, value: Any) -> dict[str, Any]:
             raise QueryError(f"字段 {name} 的取值列表为空")
         terms = catalog.term_paths(index, path)
         if not terms:
-            raise QueryError(f"字段 {name} 不支持精确匹配，请用 {{\"contains\": \"…\"}}")
+            raise QueryError(f'字段 {name} 不支持精确匹配，请用 {{"contains": "…"}}')
         return {"terms": {terms[0]: values}}
 
     if isinstance(value, dict):
@@ -168,11 +168,17 @@ def build_clause(kind: str, name: str, value: Any) -> dict[str, Any]:
                 raise QueryError(f"字段 {name} 的 prefix 不能为空")
             return _dual(_text_paths(path), lambda p: {"prefix": {p: {"value": needle}}})
         if "exists" in ops:
-            return {"exists": {"field": path}} if value.get("exists") else {"bool": {"must_not": {"exists": {"field": path}}}}
+            return (
+                {"exists": {"field": path}}
+                if value.get("exists")
+                else {"bool": {"must_not": {"exists": {"field": path}}}}
+            )
         if ops & {"gte", "lte", "gt", "lt"}:
             if fkind not in ("num", "date"):
                 raise QueryError(f"字段 {name}（{fkind}）不支持范围查询，请用精确值或 contains")
-            body = {op: _coerce(name, value[op]) for op in ("gte", "lte", "gt", "lt") if op in value}
+            body = {
+                op: _coerce(name, value[op]) for op in ("gte", "lte", "gt", "lt") if op in value
+            }
             return {"range": {path: body}}
         if "ne" in ops:
             terms = catalog.term_paths(index, path) or [path]
@@ -183,7 +189,7 @@ def build_clause(kind: str, name: str, value: Any) -> dict[str, Any]:
 
     terms = catalog.term_paths(index, path)
     if not terms:
-        raise QueryError(f"字段 {name} 是文本字段，请用 {{\"contains\": \"…\"}} 而不能精确匹配")
+        raise QueryError(f'字段 {name} 是文本字段，请用 {{"contains": "…"}} 而不能精确匹配')
     return {"term": {terms[0]: _coerce(name, value)}}
 
 
@@ -191,7 +197,7 @@ def build_filters(kind: str, filters: Any) -> list[dict[str, Any]]:
     if filters is None:
         return []
     if not isinstance(filters, dict):
-        raise QueryError("filters 必须是对象，如 {\"src_ip\": \"1.2.3.4\"}")
+        raise QueryError('filters 必须是对象，如 {"src_ip": "1.2.3.4"}')
     out: list[dict[str, Any]] = []
     for name, value in filters.items():
         if value is None or value == "":
@@ -208,9 +214,7 @@ def _time_clause(start: Any, end: Any) -> tuple[dict[str, Any], str, str]:
 def keyword_clause(kind: str, keyword: str, fields: list[str] | None = None) -> dict[str, Any]:
     """自由文本检索：在若干文本字段上做 simple_query_string（保守、不会语法报错）。"""
     names = fields or [
-        n
-        for n in catalog.SUMMARY_FIELDS.get(kind, [])
-        if catalog.kind_of(n) in ("text", "keyword")
+        n for n in catalog.SUMMARY_FIELDS.get(kind, []) if catalog.kind_of(n) in ("text", "keyword")
     ]
     paths = [p for p in (catalog.resolve(kind, n) for n in names) if p]
     for extra in ("zeek.body", "data.command", "rule.description"):
@@ -328,10 +332,19 @@ def aggregate(
     body = {
         "size": 0,
         "query": query,
-        "aggs": {agg_name: {"terms": {"field": catalog.agg_path(index, path), "size": max(1, min(_safe_int(size, 20), AGG_SIZE_MAX))}}},
+        "aggs": {
+            agg_name: {
+                "terms": {
+                    "field": catalog.agg_path(index, path),
+                    "size": max(1, min(_safe_int(size, 20), AGG_SIZE_MAX)),
+                }
+            }
+        },
     }
     try:
-        resp = _es().search(index=index, track_total_hits=True, request_timeout=QUERY_TIMEOUT, **body)
+        resp = _es().search(
+            index=index, track_total_hits=True, request_timeout=QUERY_TIMEOUT, **body
+        )
     except Exception as exc:
         raise QueryError(f"ES 聚合失败：{exc}") from exc
     buckets = (resp.get("aggregations") or {}).get(agg_name, {}).get("buckets", [])
@@ -345,14 +358,23 @@ def aggregate(
     }
 
 
-def count(kind: str, *, filters: Any = None, keyword: str | None = None, start: Any = None, end: Any = None) -> int:
+def count(
+    kind: str,
+    *,
+    filters: Any = None,
+    keyword: str | None = None,
+    start: Any = None,
+    end: Any = None,
+) -> int:
     index = index_pattern(kind)
     time_clause, _, _ = _time_clause(start, end)
     must: list[dict[str, Any]] = [time_clause, *build_filters(kind, filters)]
     if keyword:
         must.append(keyword_clause(kind, str(keyword)))
     try:
-        resp = _es().count(index=index, query={"bool": {"filter": must}}, request_timeout=QUERY_TIMEOUT)
+        resp = _es().count(
+            index=index, query={"bool": {"filter": must}}, request_timeout=QUERY_TIMEOUT
+        )
     except Exception as exc:
         raise QueryError(f"ES 计数失败：{exc}") from exc
     return _safe_int(resp.get("count"))
@@ -361,7 +383,13 @@ def count(kind: str, *, filters: Any = None, keyword: str | None = None, start: 
 def time_bounds(kind: str) -> dict[str, Any]:
     """索引内真实数据时间范围（让模型知道"能查到多久以前"，而不是瞎猜）。"""
     index = index_pattern(kind)
-    body = {"size": 0, "aggs": {"min_ts": {"min": {"field": "@timestamp"}}, "max_ts": {"max": {"field": "@timestamp"}}}}
+    body = {
+        "size": 0,
+        "aggs": {
+            "min_ts": {"min": {"field": "@timestamp"}},
+            "max_ts": {"max": {"field": "@timestamp"}},
+        },
+    }
     try:
         resp = _es().search(index=index, request_timeout=QUERY_TIMEOUT, **body)
     except Exception as exc:  # noqa: BLE001

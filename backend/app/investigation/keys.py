@@ -97,7 +97,7 @@ def _dedup(values: list[str], limit: int = _MAX_PER_TYPE) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for value in values:
-        key = str(value).strip()[: _MAX_KEY_LEN]
+        key = str(value).strip()[:_MAX_KEY_LEN]
         if not key or key in seen:
             continue
         seen.add(key)

@@ -232,9 +232,11 @@ def retry_failed_cases() -> dict:
 
     retried = 0
     with SessionLocal() as db:
-        rows = db.execute(
-            select(AttackerCase).where(AttackerCase.status == "failed").limit(10)
-        ).scalars().all()
+        rows = (
+            db.execute(select(AttackerCase).where(AttackerCase.status == "failed").limit(10))
+            .scalars()
+            .all()
+        )
         candidates = [(row.id, case_service.should_investigate(row, is_new=False)) for row in rows]
     for case_id, (ok, _reason) in candidates:
         if not ok:

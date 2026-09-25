@@ -63,7 +63,9 @@ def _params(args: Any) -> dict[str, Any]:
     return args
 
 
-def _str_param(args: dict[str, Any], name: str, *, required: bool = False, default: str = "") -> str:
+def _str_param(
+    args: dict[str, Any], name: str, *, required: bool = False, default: str = ""
+) -> str:
     value = args.get(name, default)
     if value in (None, ""):
         if required:
@@ -107,7 +109,7 @@ def _filters_param(args: dict[str, Any], source: str) -> dict[str, Any]:
     if value in (None, ""):
         return {}
     if not isinstance(value, dict):
-        raise TypeError("参数 filters 需要对象，如 {\"src_ip\": \"1.2.3.4\"}")
+        raise TypeError('参数 filters 需要对象，如 {"src_ip": "1.2.3.4"}')
     return value
 
 
@@ -187,7 +189,9 @@ def _agg_multi(
     out: dict[str, Any] = {"field": field, "by_source": {}, "notes": []}
     for source in sources:
         try:
-            result = es_query.aggregate(source, field, filters=filters, start=start, end=end, size=size)
+            result = es_query.aggregate(
+                source, field, filters=filters, start=start, end=end, size=size
+            )
         except es_query.QueryError as exc:
             out["notes"].append(f"{source}: {exc}")
             continue
@@ -381,13 +385,28 @@ def _tls_fingerprints(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
         sort="asc",
     )
     ja3 = _agg_multi(
-        _resolve_sources(args), "ja3", filters={"log_type": "ssl", "src_ip": ip}, start=args.get("start"), end=args.get("end"), size=20
+        _resolve_sources(args),
+        "ja3",
+        filters={"log_type": "ssl", "src_ip": ip},
+        start=args.get("start"),
+        end=args.get("end"),
+        size=20,
     )
     sni = _agg_multi(
-        _resolve_sources(args), "server_name", filters={"log_type": "ssl", "src_ip": ip}, start=args.get("start"), end=args.get("end"), size=20
+        _resolve_sources(args),
+        "server_name",
+        filters={"log_type": "ssl", "src_ip": ip},
+        start=args.get("start"),
+        end=args.get("end"),
+        size=20,
     )
     ctx.register_refs(result)
-    return {"hits": result.get("hits"), "notes": result.get("notes"), "ja3_top": ja3.get("by_source"), "sni_top": sni.get("by_source")}
+    return {
+        "hits": result.get("hits"),
+        "notes": result.get("notes"),
+        "ja3_top": ja3.get("by_source"),
+        "sni_top": sni.get("by_source"),
+    }
 
 
 def _web_requests(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
@@ -463,7 +482,9 @@ def _raw_evidence(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
         if not index or not doc_id:
             raise ValueError("es: 引用格式应为 es:<索引>/<文档id>")
         try:
-            resp = es_query._es().get(index=index, id=doc_id, request_timeout=es_query.QUERY_TIMEOUT)
+            resp = es_query._es().get(
+                index=index, id=doc_id, request_timeout=es_query.QUERY_TIMEOUT
+            )
         except Exception as exc:
             raise ValueError(f"读取 ES 文档失败：{exc}") from exc
         source = resp.get("_source") or {}
@@ -504,7 +525,9 @@ def _memory_recall(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     ips = _list_param(args, "ips") or _present_ips(ctx)
     return {
         "ips": ips,
-        "memories": pg_query.memory_recall([str(x) for x in ips], limit=_int_param(args, "limit", default=8, lo=1, hi=20)),
+        "memories": pg_query.memory_recall(
+            [str(x) for x in ips], limit=_int_param(args, "limit", default=8, lo=1, hi=20)
+        ),
     }
 
 
@@ -531,9 +554,19 @@ def _threat_intel(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     from app.tools.intel import dns_resolve, geoip_lookup, rdap_lookup, threat_lookup
 
     if kind == "ip":
-        return {"ip": indicator, "geo": geoip_lookup(tool_ctx), "rdap": rdap_lookup(tool_ctx), "reputation": threat_lookup(tool_ctx)}
+        return {
+            "ip": indicator,
+            "geo": geoip_lookup(tool_ctx),
+            "rdap": rdap_lookup(tool_ctx),
+            "reputation": threat_lookup(tool_ctx),
+        }
     if kind == "domain":
-        return {"domain": indicator, "dns": dns_resolve(tool_ctx), "rdap": rdap_lookup(tool_ctx), "reputation": threat_lookup(tool_ctx)}
+        return {
+            "domain": indicator,
+            "dns": dns_resolve(tool_ctx),
+            "rdap": rdap_lookup(tool_ctx),
+            "reputation": threat_lookup(tool_ctx),
+        }
     if kind == "hash":
         tool_ctx.text = indicator
         return {"hash": indicator, "reputation": threat_lookup(tool_ctx)}
@@ -591,16 +624,36 @@ def _note_gap(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
 
 
 TOOLS: dict[str, dict[str, Any]] = {
-    "describe_data": {"run": _describe_data, "desc": "可用数据源、真实时间范围、字段清单与案件已知事实（先调它避免编字段）", "params": {}},
+    "describe_data": {
+        "run": _describe_data,
+        "desc": "可用数据源、真实时间范围、字段清单与案件已知事实（先调它避免编字段）",
+        "params": {},
+    },
     "search_events": {
         "run": _search_events,
         "desc": "定向检索事件（时间范围 + 字段过滤 + 关键词）",
-        "params": {"source": "zeek|wazuh|both", "filters": "对象，字段用逻辑名", "keyword": "自由文本", "start": "ISO 时间", "end": "ISO 时间", "limit": "条数", "sort": "asc|desc", "with_body": "是否带 HTTP 正文"},
+        "params": {
+            "source": "zeek|wazuh|both",
+            "filters": "对象，字段用逻辑名",
+            "keyword": "自由文本",
+            "start": "ISO 时间",
+            "end": "ISO 时间",
+            "limit": "条数",
+            "sort": "asc|desc",
+            "with_body": "是否带 HTTP 正文",
+        },
     },
     "aggregate_events": {
         "run": _aggregate_events,
         "desc": "按字段 top-N 聚合（找横向目标/外联目的地/端口分布）",
-        "params": {"field": "可聚合字段（见 describe_data）", "source": "zeek|wazuh|both", "filters": "对象", "start": "ISO", "end": "ISO", "size": "桶数"},
+        "params": {
+            "field": "可聚合字段（见 describe_data）",
+            "source": "zeek|wazuh|both",
+            "filters": "对象",
+            "start": "ISO",
+            "end": "ISO",
+            "size": "桶数",
+        },
     },
     "timeline": {
         "run": _timeline,
@@ -615,7 +668,13 @@ TOOLS: dict[str, dict[str, Any]] = {
     "dns_queries": {
         "run": _dns_queries,
         "desc": "DNS 查询记录（隧道、DGA、C2 域名解析）",
-        "params": {"domain": "域名（模糊）", "ip": "发起解析的主机", "start": "ISO", "end": "ISO", "limit": "条数"},
+        "params": {
+            "domain": "域名（模糊）",
+            "ip": "发起解析的主机",
+            "start": "ISO",
+            "end": "ISO",
+            "limit": "条数",
+        },
     },
     "tls_fingerprints": {
         "run": _tls_fingerprints,
@@ -625,30 +684,78 @@ TOOLS: dict[str, dict[str, Any]] = {
     "web_requests": {
         "run": _web_requests,
         "desc": "HTTP 请求（含方法/UA/状态码；可选请求正文）",
-        "params": {"ip": "源 IP", "uri": "URL 片段", "status_code": "状态码", "include_body": "是否带正文", "start": "ISO", "end": "ISO", "limit": "条数"},
+        "params": {
+            "ip": "源 IP",
+            "uri": "URL 片段",
+            "status_code": "状态码",
+            "include_body": "是否带正文",
+            "start": "ISO",
+            "end": "ISO",
+            "limit": "条数",
+        },
     },
     "file_hashes": {
         "run": _file_hashes,
         "desc": "文件传输与哈希（落地文件、外泄文件）",
-        "params": {"ip": "IP", "hash": "sha256", "filename": "文件名片段", "start": "ISO", "end": "ISO", "limit": "条数"},
+        "params": {
+            "ip": "IP",
+            "hash": "sha256",
+            "filename": "文件名片段",
+            "start": "ISO",
+            "end": "ISO",
+            "limit": "条数",
+        },
     },
     "raw_evidence": {
         "run": _raw_evidence,
         "desc": "取原始证据文档（只能引用本轮已查到的 ref；用于证据包）",
         "params": {"ref": "ev:<id> 或 es:<index>/<id>"},
     },
-    "asset_lookup": {"run": _asset_lookup, "desc": "资产与业务背景（重要性/网络区/所属系统）", "params": {"ips": "IP 数组"}},
-    "topology_neighbors": {"run": _topology_neighbors, "desc": "网络拓扑上的位置与上下游（判断横向路径）", "params": {"ips": "IP 数组", "hops": "跳数 1-3"}},
-    "entity_profile": {"run": _entity_profile, "desc": "账号/会话长期画像与异常点", "params": {"kind": "account|session", "keys": "账号或会话键数组"}},
-    "memory_recall": {"run": _memory_recall, "desc": "历史分析记忆（同一对象以前的结论与持续性）", "params": {"ips": "IP 数组", "limit": "条数"}},
-    "group_history": {"run": _group_history, "desc": "该 IP 的历史事件组与定级（跨时间桶，路径主线索）", "params": {"ips": "IP 数组", "days": "天数"}},
-    "threat_intel": {"run": _threat_intel, "desc": "威胁情报（GeoIP/RDAP/DNS/恶意 IOC 信誉）", "params": {"indicator": "IP/域名/hash/URL", "kind": "auto|ip|domain|hash|url"}},
+    "asset_lookup": {
+        "run": _asset_lookup,
+        "desc": "资产与业务背景（重要性/网络区/所属系统）",
+        "params": {"ips": "IP 数组"},
+    },
+    "topology_neighbors": {
+        "run": _topology_neighbors,
+        "desc": "网络拓扑上的位置与上下游（判断横向路径）",
+        "params": {"ips": "IP 数组", "hops": "跳数 1-3"},
+    },
+    "entity_profile": {
+        "run": _entity_profile,
+        "desc": "账号/会话长期画像与异常点",
+        "params": {"kind": "account|session", "keys": "账号或会话键数组"},
+    },
+    "memory_recall": {
+        "run": _memory_recall,
+        "desc": "历史分析记忆（同一对象以前的结论与持续性）",
+        "params": {"ips": "IP 数组", "limit": "条数"},
+    },
+    "group_history": {
+        "run": _group_history,
+        "desc": "该 IP 的历史事件组与定级（跨时间桶，路径主线索）",
+        "params": {"ips": "IP 数组", "days": "天数"},
+    },
+    "threat_intel": {
+        "run": _threat_intel,
+        "desc": "威胁情报（GeoIP/RDAP/DNS/恶意 IOC 信誉）",
+        "params": {"indicator": "IP/域名/hash/URL", "kind": "auto|ip|domain|hash|url"},
+    },
     "record_finding": {
         "run": _record_finding,
         "desc": "记录一个攻击阶段与它的证据引用（必须带 ref，否则被拒）",
-        "params": {"stage": "侦察|入侵|立足|横向|外泄", "description": "说明", "evidence_refs": "ref 数组", "assets": "涉及资产 IP 数组"},
+        "params": {
+            "stage": "侦察|入侵|立足|横向|外泄",
+            "description": "说明",
+            "evidence_refs": "ref 数组",
+            "assets": "涉及资产 IP 数组",
+        },
     },
-    "note_gap": {"run": _note_gap, "desc": "记录无法验证的点与建议的下一步", "params": {"missing": "缺什么", "why": "为什么查不到", "next_action": "建议动作"}},
+    "note_gap": {
+        "run": _note_gap,
+        "desc": "记录无法验证的点与建议的下一步",
+        "params": {"missing": "缺什么", "why": "为什么查不到", "next_action": "建议动作"},
+    },
 }
 
 
@@ -689,7 +796,10 @@ def execute(name: str, args: Any, ctx: ToolCtx) -> dict[str, Any]:
 def spec_for_api() -> dict[str, Any]:
     """给排错接口用的工具/字段元信息。"""
     return {
-        "tools": {name: {"desc": TOOLS[name]["desc"], "params": TOOLS[name]["params"]} for name in tool_names()},
+        "tools": {
+            name: {"desc": TOOLS[name]["desc"], "params": TOOLS[name]["params"]}
+            for name in tool_names()
+        },
         "sources": [
             {
                 "source": item["source"],

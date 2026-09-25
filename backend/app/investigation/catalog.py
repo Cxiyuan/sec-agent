@@ -43,7 +43,12 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "ip",
         "desc": "目的地址",
     },
-    "src_port": {"zeek": "zeek.id.orig_p", "wazuh": "data.srcport", "kind": "num", "desc": "源端口"},
+    "src_port": {
+        "zeek": "zeek.id.orig_p",
+        "wazuh": "data.srcport",
+        "kind": "num",
+        "desc": "源端口",
+    },
     "dst_port": {
         "zeek": "zeek.id.resp_p",
         "wazuh": "data.dstport",
@@ -51,31 +56,101 @@ FIELDS: dict[str, dict[str, Any]] = {
         "desc": "目的端口",
     },
     "proto": {"zeek": "zeek.proto", "wazuh": "data.protocol", "kind": "keyword", "desc": "协议"},
-    "source_system": {"zeek": "source_system", "wazuh": "source_system", "kind": "keyword", "desc": "来源系统"},
-    "log_type": {"zeek": "log_type", "wazuh": None, "kind": "keyword", "desc": "Zeek 日志类型 conn/http/dns/ssl/files/ssh/smtp/notice"},
+    "source_system": {
+        "zeek": "source_system",
+        "wazuh": "source_system",
+        "kind": "keyword",
+        "desc": "来源系统",
+    },
+    "log_type": {
+        "zeek": "log_type",
+        "wazuh": None,
+        "kind": "keyword",
+        "desc": "Zeek 日志类型 conn/http/dns/ssl/files/ssh/smtp/notice",
+    },
     # ---------- 连接/流量 ----------
-    "conn_state": {"zeek": "zeek.conn_state", "wazuh": None, "kind": "keyword", "desc": "连接状态 S0/SF/REJ…"},
-    "service": {"zeek": "zeek.service", "wazuh": None, "kind": "keyword", "desc": "应用层协议识别（http/dns/ssl…）"},
+    "conn_state": {
+        "zeek": "zeek.conn_state",
+        "wazuh": None,
+        "kind": "keyword",
+        "desc": "连接状态 S0/SF/REJ…",
+    },
+    "service": {
+        "zeek": "zeek.service",
+        "wazuh": None,
+        "kind": "keyword",
+        "desc": "应用层协议识别（http/dns/ssl…）",
+    },
     "duration": {"zeek": "zeek.duration", "wazuh": None, "kind": "num", "desc": "连接时长（秒）"},
-    "bytes_out": {"zeek": "zeek.orig_bytes", "wazuh": None, "kind": "num", "desc": "上行字节（外泄看这个）"},
+    "bytes_out": {
+        "zeek": "zeek.orig_bytes",
+        "wazuh": None,
+        "kind": "num",
+        "desc": "上行字节（外泄看这个）",
+    },
     "bytes_in": {"zeek": "zeek.resp_bytes", "wazuh": None, "kind": "num", "desc": "下行字节"},
     # ---------- HTTP ----------
-    "method": {"zeek": "zeek.method", "wazuh": "data.method", "kind": "keyword", "desc": "HTTP 方法"},
+    "method": {
+        "zeek": "zeek.method",
+        "wazuh": "data.method",
+        "kind": "keyword",
+        "desc": "HTTP 方法",
+    },
     "host": {"zeek": "zeek.host", "wazuh": None, "kind": "keyword", "desc": "HTTP Host 头/域名"},
-    "uri": {"zeek": "zeek.uri", "wazuh": "data.url", "kind": "text", "desc": "请求 URL（含路径与参数）"},
-    "user_agent": {"zeek": "zeek.user_agent", "wazuh": "data.user_agent", "kind": "text", "desc": "User-Agent"},
-    "status_code": {"zeek": "zeek.status_code", "wazuh": "data.status", "kind": "num", "desc": "HTTP 状态码"},
-    "referrer": {"zeek": "zeek.referrer", "wazuh": "data.referer", "kind": "text", "desc": "Referer"},
-    "body": {"zeek": "zeek.body", "wazuh": "data.request_body", "kind": "text", "desc": "请求正文（可能为空，体积大慎查）"},
+    "uri": {
+        "zeek": "zeek.uri",
+        "wazuh": "data.url",
+        "kind": "text",
+        "desc": "请求 URL（含路径与参数）",
+    },
+    "user_agent": {
+        "zeek": "zeek.user_agent",
+        "wazuh": "data.user_agent",
+        "kind": "text",
+        "desc": "User-Agent",
+    },
+    "status_code": {
+        "zeek": "zeek.status_code",
+        "wazuh": "data.status",
+        "kind": "num",
+        "desc": "HTTP 状态码",
+    },
+    "referrer": {
+        "zeek": "zeek.referrer",
+        "wazuh": "data.referer",
+        "kind": "text",
+        "desc": "Referer",
+    },
+    "body": {
+        "zeek": "zeek.body",
+        "wazuh": "data.request_body",
+        "kind": "text",
+        "desc": "请求正文（可能为空，体积大慎查）",
+    },
     # ---------- TLS ----------
     "ja3": {"zeek": "zeek.ja3", "wazuh": None, "kind": "keyword", "desc": "TLS 客户端指纹"},
     "ja3s": {"zeek": "zeek.ja3s", "wazuh": None, "kind": "keyword", "desc": "TLS 服务端指纹"},
-    "server_name": {"zeek": "zeek.server_name", "wazuh": None, "kind": "keyword", "desc": "TLS SNI"},
+    "server_name": {
+        "zeek": "zeek.server_name",
+        "wazuh": None,
+        "kind": "keyword",
+        "desc": "TLS SNI",
+    },
     "tls_version": {"zeek": "zeek.version", "wazuh": None, "kind": "keyword", "desc": "TLS 版本"},
     "cert_issuer": {"zeek": "zeek.issuer", "wazuh": None, "kind": "text", "desc": "证书签发者"},
     # ---------- DNS ----------
-    "query": {"zeek": "zeek.query", "wazuh": None, "kind": "text", "desc": "DNS 查询名 / 通用查询串"},
-    "qtype": {"zeek": "zeek.qtype_name", "wazuh": None, "kind": "keyword", "desc": "查询类型 A/AAAA/TXT…"},
+    "query": {
+        "zeek": "zeek.query",
+        "wazuh": None,
+        "kind": "text",
+        "desc": "DNS 查询名 / 通用查询串",
+    },
+    "qtype": {
+        "zeek": "zeek.qtype_name",
+        "wazuh": None,
+        "kind": "keyword",
+        "desc": "查询类型 A/AAAA/TXT…",
+    },
     "rcode": {"zeek": "zeek.rcode_name", "wazuh": None, "kind": "keyword", "desc": "DNS 响应码"},
     "answers": {"zeek": "zeek.answers", "wazuh": None, "kind": "text", "desc": "DNS 应答（列表）"},
     # ---------- 文件 ----------
@@ -87,20 +162,50 @@ FIELDS: dict[str, dict[str, Any]] = {
     "sha256": {"zeek": "zeek.sha256", "wazuh": None, "kind": "keyword", "desc": "文件 SHA256"},
     # ---------- SSH / 账号 ----------
     "user": {"zeek": "zeek.user", "wazuh": "data.user", "kind": "keyword", "desc": "账号"},
-    "auth_success": {"zeek": "zeek.auth_success", "wazuh": None, "kind": "bool", "desc": "SSH 登录是否成功"},
-    "auth_attempts": {"zeek": "zeek.auth_attempts", "wazuh": None, "kind": "num", "desc": "SSH 尝试次数"},
+    "auth_success": {
+        "zeek": "zeek.auth_success",
+        "wazuh": None,
+        "kind": "bool",
+        "desc": "SSH 登录是否成功",
+    },
+    "auth_attempts": {
+        "zeek": "zeek.auth_attempts",
+        "wazuh": None,
+        "kind": "num",
+        "desc": "SSH 尝试次数",
+    },
     "client": {"zeek": "zeek.client", "wazuh": None, "kind": "text", "desc": "SSH 客户端版本串"},
     # ---------- Zeek 告警 ----------
     "note": {"zeek": "zeek.note", "wazuh": None, "kind": "keyword", "desc": "Zeek notice 类型"},
     "msg": {"zeek": "zeek.msg", "wazuh": None, "kind": "text", "desc": "Zeek notice 说明"},
     # ---------- Wazuh ----------
     "rule_id": {"zeek": None, "wazuh": "rule.id", "kind": "keyword", "desc": "Wazuh 规则 id"},
-    "rule_level": {"zeek": None, "wazuh": "rule.level", "kind": "num", "desc": "Wazuh 告警级别 0-15"},
+    "rule_level": {
+        "zeek": None,
+        "wazuh": "rule.level",
+        "kind": "num",
+        "desc": "Wazuh 告警级别 0-15",
+    },
     "rule_groups": {"zeek": None, "wazuh": "rule.groups", "kind": "text", "desc": "Wazuh 规则组"},
-    "rule_desc": {"zeek": None, "wazuh": "rule.description", "kind": "text", "desc": "Wazuh 规则描述"},
+    "rule_desc": {
+        "zeek": None,
+        "wazuh": "rule.description",
+        "kind": "text",
+        "desc": "Wazuh 规则描述",
+    },
     "mitre": {"zeek": None, "wazuh": "rule.mitre.id", "kind": "text", "desc": "MITRE 技术编号"},
-    "agent_name": {"zeek": None, "wazuh": "agent.name", "kind": "keyword", "desc": "Wazuh 被采集主机名"},
-    "process": {"zeek": None, "wazuh": "data.process", "kind": "text", "desc": "进程名（命令执行证据）"},
+    "agent_name": {
+        "zeek": None,
+        "wazuh": "agent.name",
+        "kind": "keyword",
+        "desc": "Wazuh 被采集主机名",
+    },
+    "process": {
+        "zeek": None,
+        "wazuh": "data.process",
+        "kind": "text",
+        "desc": "进程名（命令执行证据）",
+    },
     "command": {"zeek": None, "wazuh": "data.command", "kind": "text", "desc": "命令行"},
     "wazuh_url": {"zeek": None, "wazuh": "data.url", "kind": "text", "desc": "Wazuh 记录的 URL"},
 }
@@ -247,7 +352,9 @@ def mapping_types(index: str) -> dict[str, str]:
                     else:
                         walk(val, full, depth + 1)
                 else:
-                    types[full] = str((val or {}).get("type") or "") if isinstance(val, dict) else ""
+                    types[full] = (
+                        str((val or {}).get("type") or "") if isinstance(val, dict) else ""
+                    )
 
         walk(props, "")
     except Exception as exc:  # noqa: BLE001

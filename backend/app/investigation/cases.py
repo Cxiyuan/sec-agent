@@ -79,7 +79,9 @@ def case_dict(row: AttackerCase, *, with_investigation: bool = True) -> dict[str
         "last_seen": row.last_seen.isoformat() if row.last_seen else None,
         "rounds_total": row.rounds_total,
         "rounds_today": row.rounds_today,
-        "last_dispatched_at": row.last_dispatched_at.isoformat() if row.last_dispatched_at else None,
+        "last_dispatched_at": row.last_dispatched_at.isoformat()
+        if row.last_dispatched_at
+        else None,
         "next_allowed_at": row.next_allowed_at.isoformat() if row.next_allowed_at else None,
         "last_error": row.last_error,
         "merge_suggestion": row.merge_suggestion,
@@ -97,9 +99,7 @@ def _find_cases_by_keys(wanted: set[str]) -> list[AttackerCase]:
     if not wanted:
         return []
     with SessionLocal() as db:
-        rows = db.scalars(
-            select(AttackerCase).where(AttackerCase.status.in_(_ACTIVE_STATUS))
-        ).all()
+        rows = db.scalars(select(AttackerCase).where(AttackerCase.status.in_(_ACTIVE_STATUS))).all()
         # 先把需要的字段读出来（避免会话关闭后再访问 ORM 属性）
         return list(rows)
 
@@ -158,11 +158,19 @@ def _similar(row: AttackerCase, ref: dict[str, Any]) -> bool:
     ref_first = _dt(ref.get("first_seen")) or ref_last
     case_last = row.last_seen or row.created_at or _now()
     case_first = row.first_seen or row.created_at or case_last
-    if min(abs((ref_first - case_last).total_seconds()), abs((case_first - ref_last).total_seconds())) > window * 3600:
+    if (
+        min(
+            abs((ref_first - case_last).total_seconds()),
+            abs((case_first - ref_last).total_seconds()),
+        )
+        > window * 3600
+    ):
         return False
     if not ({str(x) for x in (ref.get("dst_ips") or [])} & {str(x) for x in (row.dst_ips or [])}):
         return False
-    return bool({str(x) for x in (ref.get("event_types") or [])} & {str(x) for x in (row.event_types or [])})
+    return bool(
+        {str(x) for x in (ref.get("event_types") or [])} & {str(x) for x in (row.event_types or [])}
+    )
 
 
 def _adjudicate(ref: dict[str, Any], candidates: list[AttackerCase]) -> tuple[str | None, str]:
@@ -241,7 +249,10 @@ def _merge_signal(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
 
 def _has_new_evidence(signal: dict[str, Any]) -> bool:
     return bool(
-        signal.get("groups") or signal.get("iocs") or signal.get("hashes") or signal.get("event_types")
+        signal.get("groups")
+        or signal.get("iocs")
+        or signal.get("hashes")
+        or signal.get("event_types")
     )
 
 
@@ -360,16 +371,25 @@ def _attach(
     row.group_fingerprints = fps[:500]
     row.src_ips = sorted({*(row.src_ips or []), *(str(x) for x in (ref.get("src_ips") or []))})
     row.dst_ips = sorted({*(row.dst_ips or []), *(str(x) for x in (ref.get("dst_ips") or []))})
-    row.event_types = sorted({*(row.event_types or []), *(str(x) for x in (ref.get("event_types") or []))})[:50]
+    row.event_types = sorted(
+        {*(row.event_types or []), *(str(x) for x in (ref.get("event_types") or []))}
+    )[:50]
     row.keys = key_utils.merge_keys(row.keys, ref.get("keys"))
     row.attacker_key = key_utils.primary_key(row.keys)
     if _severity_rank(ref.get("severity")) > _severity_rank(row.severity):
         row.severity = str(ref.get("severity"))
-    for attr, value in (("first_seen", _dt(ref.get("first_seen"))), ("last_seen", _dt(ref.get("last_seen")))):
+    for attr, value in (
+        ("first_seen", _dt(ref.get("first_seen"))),
+        ("last_seen", _dt(ref.get("last_seen"))),
+    ):
         current = getattr(row, attr)
         if value is None:
             continue
-        if current is None or (attr == "first_seen" and value < current) or (attr == "last_seen" and value > current):
+        if (
+            current is None
+            or (attr == "first_seen" and value < current)
+            or (attr == "last_seen" and value > current)
+        ):
             setattr(row, attr, value)
     if not is_new:
         row.pending_signal = _merge_signal(row.pending_signal or {}, _signal_for(ref))
@@ -393,7 +413,9 @@ def mark_dispatched(case_id: str, *, error: str = "") -> None:
             return
         now = _now()
         row.last_dispatched_at = now
-        row.next_allowed_at = now + timedelta(minutes=max(0, settings.investigation_cooldown_minutes))
+        row.next_allowed_at = now + timedelta(
+            minutes=max(0, settings.investigation_cooldown_minutes)
+        )
         row.status = "investigating"
         if error:
             row.last_error = error[:1000]
@@ -461,8 +483,12 @@ def apply_result(case_id: str, result: dict[str, Any], *, status: str) -> None:
         row.investigation = result
         # 案件状态只有 open/investigating/investigated/failed/closed；
         # 轮次的细节状态（partial/budget_exhausted）存在 case_investigations 与 pending_signal 里
-        row.status = "investigated" if status in ("succeeded", "partial", "budget_exhausted") else "failed"
-        row.last_error = "" if status != "failed" else str(result.get("summary") or "调查失败")[:1000]
+        row.status = (
+            "investigated" if status in ("succeeded", "partial", "budget_exhausted") else "failed"
+        )
+        row.last_error = (
+            "" if status != "failed" else str(result.get("summary") or "调查失败")[:1000]
+        )
         row.pending_signal = {
             **(row.pending_signal or {}),
             "groups": [],
@@ -472,9 +498,16 @@ def apply_result(case_id: str, result: dict[str, Any], *, status: str) -> None:
             "last_round_status": status,
         }
         if result.get("confidence") is not None:
-            row.pending_signal = {**(row.pending_signal or {}), "confidence": result.get("confidence")}
+            row.pending_signal = {
+                **(row.pending_signal or {}),
+                "confidence": result.get("confidence"),
+            }
         fps = list(row.group_fingerprints or [])
-        groups = db.scalars(select(EventGroup).where(EventGroup.fingerprint.in_(fps))).all() if fps else []
+        groups = (
+            db.scalars(select(EventGroup).where(EventGroup.fingerprint.in_(fps))).all()
+            if fps
+            else []
+        )
         for group in groups:
             group.attack_chain = result
             profile = result.get("attacker") or {}
@@ -504,7 +537,9 @@ def merge_cases(target_id: str, source_id: str) -> dict[str, Any]:
         source = db.get(AttackerCase, source_id)
         if target is None or source is None:
             return {"ok": False, "error": "案件不存在"}
-        target.group_fingerprints = sorted({*(target.group_fingerprints or []), *(source.group_fingerprints or [])})
+        target.group_fingerprints = sorted(
+            {*(target.group_fingerprints or []), *(source.group_fingerprints or [])}
+        )
         target.group_count = len(target.group_fingerprints)
         target.event_count = _safe_int(target.event_count) + _safe_int(source.event_count)
         target.src_ips = sorted({*(target.src_ips or []), *(source.src_ips or [])})
@@ -525,7 +560,9 @@ def merge_cases(target_id: str, source_id: str) -> dict[str, Any]:
             target.pending_signal or {}, {"groups": source.group_fingerprints or []}
         )
         target.merge_suggestion = None
-        for inv in db.scalars(select(CaseInvestigation).where(CaseInvestigation.case_id == source_id)).all():
+        for inv in db.scalars(
+            select(CaseInvestigation).where(CaseInvestigation.case_id == source_id)
+        ).all():
             inv.case_id = target_id
         db.delete(source)
         db.commit()
@@ -680,7 +717,9 @@ def stats() -> dict[str, Any]:
 def acquire_lock(case_id: str) -> bool:
     try:
         client = redis.Redis.from_url(settings.redis_url)
-        return bool(client.set(f"shentong:investigation:lock:{case_id}", "1", nx=True, ex=_LOCK_TTL))
+        return bool(
+            client.set(f"shentong:investigation:lock:{case_id}", "1", nx=True, ex=_LOCK_TTL)
+        )
     except Exception as exc:  # noqa: BLE001
         # Redis 不可用时**放行**（宁可重复调查，也不要因为锁拿不到就永远不调查）
         log.warning("获取调查锁失败（放行）: %s", exc)
@@ -720,7 +759,9 @@ def list_cases(
             inv = row.investigation or {}
             item["summary"] = str(inv.get("summary") or "")[:300]
             item["confidence"] = inv.get("confidence")
-            item["path_stages"] = [p.get("stage") for p in (inv.get("path") or []) if isinstance(p, dict)]
+            item["path_stages"] = [
+                p.get("stage") for p in (inv.get("path") or []) if isinstance(p, dict)
+            ]
         return {"total": len(items), "items": items}
 
 
@@ -732,7 +773,11 @@ def get_case(case_id: str) -> dict[str, Any] | None:
         data = case_dict(row)
         fps = list(row.group_fingerprints or [])
         groups = (
-            db.scalars(select(EventGroup).where(EventGroup.fingerprint.in_(fps)).order_by(EventGroup.window_start)).all()
+            db.scalars(
+                select(EventGroup)
+                .where(EventGroup.fingerprint.in_(fps))
+                .order_by(EventGroup.window_start)
+            ).all()
             if fps
             else []
         )
