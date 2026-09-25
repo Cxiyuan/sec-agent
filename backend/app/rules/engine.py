@@ -39,9 +39,7 @@ def _get_field(log: UnifiedLog, field: str, extra: dict[str, Any] | None = None)
     return getattr(log, field, None)
 
 
-def _text_candidates(
-    log: UnifiedLog, field: str, extra: dict[str, Any] | None = None
-) -> list[str]:
+def _text_candidates(log: UnifiedLog, field: str, extra: dict[str, Any] | None = None) -> list[str]:
     """返回待匹配文本：原文 + URL 解码变体（用于 contains/regex）。"""
     actual = _get_field(log, field, extra)
     if actual is None:
@@ -73,9 +71,7 @@ def _match(cond: dict[str, Any], log: UnifiedLog, extra: dict[str, Any] | None =
     if op == "ne":
         return actual != expected
     if op == "contains":
-        return any(
-            str(expected) in text for text in _text_candidates(log, str(field or ""), extra)
-        )
+        return any(str(expected) in text for text in _text_candidates(log, str(field or ""), extra))
     if op == "regex":
         try:
             pattern = re.compile(str(expected))

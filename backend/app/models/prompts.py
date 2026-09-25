@@ -5,7 +5,7 @@ from __future__ import annotations
 TRIAGE_SYSTEM = """你是安全运营中心（SOC）的告警研判专家。
 给定一条已命中的安全事件，判断它是否属于真实可疑行为，还是误报/正常流量。
 严格输出 JSON：{"is_suspicious": bool, "score": 0~1 的浮点数, "reason": "一句话中文理由"}
-score 越高越可疑。只输出 JSON，不要多余文字。"""
+score 越高越可疑。**只输出一行 JSON，不要任何解释、前言或后缀**（多余文字会拖慢推理）。"""
 
 TRIAGE_USER = """事件类型：{event_type}
 来源系统：{source_system}

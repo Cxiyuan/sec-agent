@@ -115,9 +115,7 @@ def load_filters(force: bool = False) -> list[dict[str, Any]]:
                 .scalars()
                 .all()
             )
-            items = [
-                {"id": r.id, "name": r.name, "conditions": r.conditions or {}} for r in rows
-            ]
+            items = [{"id": r.id, "name": r.name, "conditions": r.conditions or {}} for r in rows]
     except Exception as exc:  # noqa: BLE001
         log.warning("读取排除过滤器失败，沿用上次配置（%d 条）: %s", len(cached), exc)
         return cached

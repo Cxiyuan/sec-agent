@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from app import runtime_config
 from app.agents.memory import (
     cleanup as memory_cleanup,
     memory_text,
@@ -199,6 +201,55 @@ def _excluded_reason_text(name: str) -> str:
     return f"已排除过滤「{name}」命中，跳过模型分析"[:500]
 
 
+def _edge_concurrency() -> int:
+    """批内并发度（后台可调，默认 8）。
+
+    服务器实测（2026-09-25 预热后）：并发 1 → ~5 次/分，4 → 17，8 → 23，16 → 26.5。
+    CPU 上合批是唯一的吞吐杠杆（多请求共享同一次权重读取），所以并发度直接决定吞吐。
+    上限 16 对齐服务器槽位（--parallel 16），再多只会排队。
+    """
+    try:
+        workers = int(
+            runtime_config.get("edge_review_concurrency", settings.edge_review_concurrency)
+        )
+    except (TypeError, ValueError):
+        workers = settings.edge_review_concurrency
+    return max(1, min(workers, 16))
+
+
+def edge_review_many(items: list[tuple[UnifiedLog, str]]) -> list[tuple[float, bool, str]]:
+    """并发调边缘模型做降噪；返回顺序与输入严格一致。
+
+    - 单条失败已在 _edge_review 内部兜底（返回“可疑”），不会拖垮整批
+    - workers=1 或只有 1 条时退化为串行（省线程开销）
+    """
+    if not items:
+        return []
+    workers = min(_edge_concurrency(), len(items))
+    if workers <= 1:
+        return [_edge_review(entry, label) for entry, label in items]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="edge-review") as pool:
+        return list(pool.map(lambda item: _edge_review(item[0], item[1]), items))
+
+
+def _digest_aggregate(
+    digest: dict[str, Any],
+    count: int,
+    rule: str,
+    dst_ips: list[Any],
+    dst_ports: list[Any],
+) -> dict[str, Any]:
+    """将聚合规模写进数据模型（不再只活在文本里）：次数/目标/端口/首末时间。"""
+    return {
+        "hits": count,
+        "rules": {rule: count},
+        "dst_ips": [str(x) for x in dst_ips][:50],
+        "dst_ports": [str(x) for x in dst_ports][:50],
+        "first_seen": digest.get("first_seen"),
+        "last_seen": digest.get("last_seen"),
+    }
+
+
 def triage_node(state: AgentState) -> dict[str, Any]:
     """四层漏斗：逐条规则 → 频率规则 → 边缘模型审查 → 兜底预筛（防漏报）。"""
     logs = state.get("raw_logs", [])
@@ -212,9 +263,30 @@ def triage_node(state: AgentState) -> dict[str, Any]:
     handled: set[str] = set()
     rule_hits = count_hits = fallback_hits = excluded_hits = 0
 
-    def add(entry: UnifiedLog, rule: dict[str, Any], extra: str = "") -> bool:
-        nonlocal excluded_hits
-        # 排除过滤：命中则不调边缘模型，事件仍进事件组（可查、可回溯），只是不进入模型分析
+    # 第 1/2 层：先做纯本地判定（谁命中了哪条规则），把要花模型的攒起来一次性并发研判。
+    # 批内 N 条 = N 并发而非 N 次串行（实测服务器：8 并发 23 次/分 vs 串行 ~5 次/分）。
+    hits: list[tuple[str, UnifiedLog, dict[str, Any], str]] = []  # (层, 事件, 规则, 附加说明)
+    for entry in logs:
+        hit = next((r for r in per_log_rules if match_rule(r, entry)), None)
+        if hit is None:
+            continue
+        handled.add(entry.fingerprint())
+        hits.append(("rule", entry, hit, ""))
+
+    for rule in count_rules:
+        for key, matched in match_count_rule(rule, logs):
+            if not matched:
+                continue
+            rep = max(matched, key=lambda x: x.ts)
+            for m in matched:
+                handled.add(m.fingerprint())
+            hits.append(("count", rep, rule, f"{key} × {len(matched)} 次"))
+
+    # 第 3 层：排除过滤（本地判定，零成本）→ 边缘模型研判（并发）
+    # 排除命中的事件仍进事件组（可查、可回溯），只是不进入模型分析
+    decisions: list[SuspiciousEvent | None] = [None] * len(hits)
+    pending: list[tuple[int, str]] = []  # (decisions 下标, 规则名)
+    for idx, (_tier, entry, rule, _extra) in enumerate(hits):
         excluded_reason = exclusion.check_filter(
             entry,
             rule_name=str(rule.get("name") or ""),
@@ -224,51 +296,35 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         if excluded_reason:
             excluded_hits += 1
             exclusion.record_hit(excluded_reason, entry, rule_name=str(rule.get("name") or ""))
-            suspicious.append(
-                SuspiciousEvent(
-                    log=entry,
-                    hit_rule=rule["name"],
-                    rule_source=rule["source"],
-                    edge_score=0.0,
-                    edge_reason=_excluded_reason_text(excluded_reason),
-                    excluded=True,
-                    exclude_reason=excluded_reason,
-                )
-            )
-            return False
-        score, ok, reason = _edge_review(entry, rule["name"])
-        if not ok:
-            return False
-        suspicious.append(
-            SuspiciousEvent(
+            decisions[idx] = SuspiciousEvent(
                 log=entry,
                 hit_rule=rule["name"],
                 rule_source=rule["source"],
-                edge_score=score,
-                edge_reason=(f"{extra}｜{reason}" if extra else reason)[:500],
+                edge_score=0.0,
+                edge_reason=_excluded_reason_text(excluded_reason),
+                excluded=True,
+                exclude_reason=excluded_reason,
             )
-        )
-        return True
+        else:
+            pending.append((idx, str(rule.get("name") or "规则命中")))
 
-    # 第 1/2 层：逐条规则（已按 priority 排序：用户规则 > 内置规则，命中即停）
-    for entry in logs:
-        hit = next((r for r in per_log_rules if match_rule(r, entry)), None)
-        if hit is None:
+    results = edge_review_many([(hits[i][1], label) for i, label in pending])
+    for (idx, _label), (score, ok, reason) in zip(pending, results, strict=False):
+        if not ok:
             continue
-        handled.add(entry.fingerprint())
-        if add(entry, hit):
+        tier, entry, rule, extra = hits[idx]
+        decisions[idx] = SuspiciousEvent(
+            log=entry,
+            hit_rule=rule["name"],
+            rule_source=rule["source"],
+            edge_score=score,
+            edge_reason=(f"{extra}｜{reason}" if extra else reason)[:500],
+        )
+        if tier == "count":
+            count_hits += 1
+        else:
             rule_hits += 1
-
-    # 第 3 层：频率规则（扫描/爆破/目录爆破的真实特征是频率）
-    for rule in count_rules:
-        for key, matched in match_count_rule(rule, logs):
-            if not matched:
-                continue
-            rep = max(matched, key=lambda x: x.ts)
-            for m in matched:
-                handled.add(m.fingerprint())
-            if add(rep, rule, extra=f"{key} × {len(matched)} 次"):
-                count_hits += 1
+    suspicious.extend(ev for ev in decisions if ev is not None)
 
     # 第 4 层：兜底预筛——规则漏掉的高风险行为，交边缘模型复筛（防漏报）
     missed = [entry for entry in logs if entry.fingerprint() not in handled]
@@ -277,7 +333,9 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         scope_cidrs=(state.get("run_meta") or {}).get("scope_cidrs") or [],
         known_asset_ips=known_asset_ip_set(),
     )
-    for cand in candidates:
+    cand_decisions: list[SuspiciousEvent | None] = [None] * len(candidates)
+    cand_pending: list[tuple[int, str]] = []  # (cand_decisions 下标, 标签)
+    for idx, cand in enumerate(candidates):
         label = f"兜底预筛（{'；'.join(cand.reasons)}）"
         excluded_reason = exclusion.check_filter(
             cand.log,
@@ -288,31 +346,32 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         if excluded_reason:
             excluded_hits += 1
             exclusion.record_hit(excluded_reason, cand.log, rule_name="兜底预筛")
-            suspicious.append(
-                SuspiciousEvent(
-                    log=cand.log,
-                    hit_rule="兜底预筛",
-                    rule_source="builtin",
-                    edge_score=0.0,
-                    edge_reason=_excluded_reason_text(excluded_reason),
-                    excluded=True,
-                    exclude_reason=excluded_reason,
-                )
-            )
-            continue
-        score, ok, reason = _edge_review(cand.log, label)
-        if not ok:
-            continue
-        fallback_hits += 1
-        suspicious.append(
-            SuspiciousEvent(
+            cand_decisions[idx] = SuspiciousEvent(
                 log=cand.log,
                 hit_rule="兜底预筛",
                 rule_source="builtin",
-                edge_score=max(score, cand.score),
-                edge_reason=f"启发式 {cand.score}：{'；'.join(cand.reasons)}｜{reason}"[:500],
+                edge_score=0.0,
+                edge_reason=_excluded_reason_text(excluded_reason),
+                excluded=True,
+                exclude_reason=excluded_reason,
             )
+        else:
+            cand_pending.append((idx, label))
+
+    cand_results = edge_review_many([(candidates[i].log, label) for i, label in cand_pending])
+    for (idx, _label), (score, ok, reason) in zip(cand_pending, cand_results, strict=False):
+        if not ok:
+            continue
+        cand = candidates[idx]
+        fallback_hits += 1
+        cand_decisions[idx] = SuspiciousEvent(
+            log=cand.log,
+            hit_rule="兜底预筛",
+            rule_source="builtin",
+            edge_score=max(score, cand.score),
+            edge_reason=f"启发式 {cand.score}：{'；'.join(cand.reasons)}｜{reason}"[:500],
         )
+    suspicious.extend(ev for ev in cand_decisions if ev is not None)
 
     log.info(
         "研判降噪：%d 条 → 可疑 %d（逐条规则 %d / 频率 %d / 兜底 %d / 排除 %d）；"
@@ -342,10 +401,12 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
     """
     raw_digests = state.get("digests")
     digests: list[dict[str, Any]] = raw_digests if isinstance(raw_digests, list) else []
-    suspicious: list[SuspiciousEvent] = []
+    decisions: list[SuspiciousEvent | None] = [None] * len(digests)
+    pending: list[tuple[int, UnifiedLog, str, dict[str, Any], str, Literal["user", "builtin"]]] = []
+    # 元素：(下标, 事件, 标签, 聚合规模, 规则名, 规则来源)
     reviewed = 0
     excluded_n = 0
-    for d in digests:
+    for idx, d in enumerate(digests):
         if not isinstance(d, dict):
             continue
         rule = str(d.get("rule") or "实时检测")
@@ -379,33 +440,46 @@ def realtime_triage_node(state: AgentState) -> dict[str, Any]:
         excluded_reason = str(d.get("exclude_reason") or "")
         if excluded_reason:
             # 排除过滤命中：不调边缘模型（省调用），事件照常进组供界面查看
-            score, reason = 0.0, _excluded_reason_text(excluded_reason)
             excluded_n += 1
-        else:
-            score, ok, reason = _edge_review(entry, label)
-            reviewed += 1
-            if not ok:
-                continue
-        suspicious.append(
-            SuspiciousEvent(
+            decisions[idx] = SuspiciousEvent(
                 log=entry,
                 hit_rule=rule,
                 rule_source="user" if d.get("rule_source") == "user" else "builtin",
-                edge_score=score,
-                edge_reason=f"{label}｜{reason}"[:500],
-                excluded=bool(excluded_reason),
+                edge_score=0.0,
+                edge_reason=f"{label}｜{_excluded_reason_text(excluded_reason)}"[:500],
+                excluded=True,
                 exclude_reason=excluded_reason,
-                # 规模进数据模型（不再只活在文本里）：次数/目标/端口/首末时间
-                aggregate={
-                    "hits": count,
-                    "rules": {rule: count},
-                    "dst_ips": [str(x) for x in dst_ips][:50],
-                    "dst_ports": [str(x) for x in dst_ports][:50],
-                    "first_seen": d.get("first_seen"),
-                    "last_seen": d.get("last_seen"),
-                },
+                aggregate=_digest_aggregate(d, count, rule, dst_ips, dst_ports),
             )
+        else:
+            pending.append(
+                (
+                    idx,
+                    entry,
+                    label,
+                    _digest_aggregate(d, count, rule, dst_ips, dst_ports),
+                    rule,
+                    "user" if d.get("rule_source") == "user" else "builtin",
+                )
+            )
+
+    # 边缘研判：批内并发（实测服务器 8 并发 23 次/分，串行仅 ~5 次/分）
+    results = edge_review_many([(entry, label) for _i, entry, label, _a, _r, _s in pending])
+    for (idx, entry, label, agg, rule, rule_source), (score, ok, reason) in zip(
+        pending, results, strict=False
+    ):
+        reviewed += 1
+        if not ok:
+            continue
+        decisions[idx] = SuspiciousEvent(
+            log=entry,
+            hit_rule=rule,
+            rule_source=rule_source,
+            edge_score=score,
+            edge_reason=f"{label}｜{reason}"[:500],
+            aggregate=agg,
         )
+    suspicious = [ev for ev in decisions if ev is not None]
 
     log.info(
         "实时研判：摘要 %d 条 → 边缘研判 %d 条（排除跳过 %d）→ 可疑 %d 条",

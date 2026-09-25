@@ -24,8 +24,14 @@ interface Field {
 
 const GROUPS: { name: string; fields: Field[] }[] = [
   {
-    name: "边缘模型思考模式（每场景独立开关）",
+    name: "边缘模型调用",
     fields: [
+      {
+        key: "edge_review_concurrency",
+        label: "批内并发度（1~16）",
+        type: "number",
+        hint: "一次研判里同时调用边缘模型的条数。服务器实测：并发 8 → 23 次/分，串行仅 ~5。改大即提速（上限 16 = 服务器槽位数）",
+      },
       { key: "edge_thinking.semantic_merge", label: "语义关联开思考", type: "bool", hint: "判断两个事件组是否同一次攻击" },
       { key: "edge_thinking.triage_complex", label: "复杂研判开思考", type: "bool", hint: "Web攻击/恶意软件/C2/横向移动等" },
       { key: "edge_thinking.triage_simple", label: "简单研判开思考", type: "bool", hint: "扫描/爆破/常规连接" },
@@ -101,6 +107,7 @@ export default function SettingsPage() {
     if (f.type === "bool") {
       return (
         <select
+          id={f.key}
           value={String(v ?? false)}
           onChange={(e) => set(f.key, e.target.value === "true")}
           className={SELECT_CLS}
@@ -113,6 +120,7 @@ export default function SettingsPage() {
     if (f.type === "select") {
       return (
         <select
+          id={f.key}
           value={String(v ?? "")}
           onChange={(e) => set(f.key, e.target.value)}
           className={SELECT_CLS}
@@ -128,6 +136,7 @@ export default function SettingsPage() {
     if (f.type === "number") {
       return (
         <Input
+          id={f.key}
           type="number"
           step="any"
           value={v === undefined || v === null ? "" : String(v)}
@@ -137,6 +146,7 @@ export default function SettingsPage() {
     }
     return (
       <Input
+        id={f.key}
         value={v === undefined || v === null ? "" : String(v)}
         onChange={(e) => set(f.key, e.target.value)}
       />
@@ -171,7 +181,12 @@ export default function SettingsPage() {
               <CardContent className="grid grid-cols-3 gap-4">
                 {g.fields.map((f) => (
                   <div key={f.key}>
-                    <label className="mb-1 block text-xs text-muted-foreground">{f.label}</label>
+                    <label
+                      htmlFor={f.key}
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      {f.label}
+                    </label>
                     {renderField(f)}
                     {f.hint && <p className="mt-1 text-[11px] text-muted-foreground">{f.hint}</p>}
                   </div>

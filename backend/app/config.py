@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     detector_batch_max: int = 5  # 攒批：凑够多少条就触发
     detector_max_per_batch: int = 50  # 单次投递摘要数上限（护栏）
     detector_max_digests_per_minute: int = (
-        8  # 投递速率上限（护栏）= 边缘模型实测容量（3~4 条/分钟）留一倍余量
+        20  # 投递速率上限（护栏）= 边缘模型实测容量（8~16 并发 23~26 条/分钟）留余量
     )
     detector_queue_max: int = 20000  # 摘要队列上限（超过则裁掉最老的，保证有界）
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # 注意：edge 的连接信息（api_key/模型名/端口/路径）已固化在 app/edge_config.py，
     # 环境变量不可覆盖；此处只保留超时等行为参数。
     edge_model_timeout: int = 300
+    # 边缘模型调用参数（2026-09-25 实测：并发 8 → 23 次/分，串行仅 ~5；故批内并发是最大红利）
+    edge_review_concurrency: int = 8  # 批内并发度（1=串行）
+    edge_max_tokens: int = 512  # 非思考输出上限（实测纯 JSON 约 60~120 token，512 足够且不截断）
+    edge_max_tokens_thinking: int = 4096  # 思考模式输出上限（实测 ≤579，余量充足）
 
     # 云端模型（MiniMax 国内版；模型名固化见 registry）
     # api_key 由后台界面录入、存数据库（不落环境变量），见 app/cloud_config.py

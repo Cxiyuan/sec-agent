@@ -31,9 +31,11 @@ def _edge_llm(temperature: float = 0.0, thinking: bool = False) -> ChatOpenAI:
     if thinking:
         # 开启思考：max_tokens 必须调大，否则思考吃光预算导致 content 为空（finish_reason=length）
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
-        kwargs["max_tokens"] = 4096
+        kwargs["max_tokens"] = settings.edge_max_tokens_thinking
     else:
-        kwargs["max_tokens"] = 1024
+        # 非思考：收紧输出上限（实测纯 JSON 仅 60~120 token）—— CPU 上 decode 每 token 都要读
+        # 一遍权重，少输出即少耗时（实测单次 14.4s 中大头是生成时间）
+        kwargs["max_tokens"] = settings.edge_max_tokens
     return ChatOpenAI(**kwargs)
 
 

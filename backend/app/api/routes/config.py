@@ -39,6 +39,9 @@ CONFIG_KEYS: dict[str, Any] = {
     "edge_thinking.semantic_merge": True,
     "edge_thinking.triage_complex": True,
     "edge_thinking.triage_simple": False,
+    # 边缘模型批内并发度（经 runtime_config 即时生效）：上限 16 对齐服务器槽位；
+    # 实测并发 8 → 23 次/分、串行仅 ~5，改大即提速（受服务器容量约束）
+    "edge_review_concurrency": settings.edge_review_concurrency,
 }
 
 # 说明：analysis_interval_minutes 不在后台可改列表 —— Celery Beat 调度在启动时读取，
