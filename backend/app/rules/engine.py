@@ -17,6 +17,10 @@
 }
 
 操作符: eq / ne / contains / regex / gt / gte / lt / lte / in / exists
+
+虚拟字段（不是日志字段，由引擎计算）：``src_internal`` / ``dst_internal`` / ``src_external`` /
+``dst_external`` —— **内外网方向**。用于“内外有别”的规则与排除过滤，
+避免把某个客户的网段写死进规则（例：内网巡检的扫摸不该当攻击）。
 """
 
 from __future__ import annotations
@@ -26,16 +30,41 @@ from typing import Any
 from urllib.parse import unquote, unquote_plus
 
 from app.schemas import UnifiedLog
+from app.tools.context import is_public_ip
 
 # 对这些字段做 contains/regex 时，额外匹配 URL 解码后的文本
 # （攻击者常对 payload 做 URL 编码，只匹配原文会漏报）
 _DECODE_FIELDS = {"query", "query_string", "uri_path", "body", "referer", "filename"}
 
 
+def _is_internal(ip: Any) -> bool:
+    """是否内网地址（非公网）。地址缺失返回 False（不把脏数据当内网放行）。"""
+    value = str(ip or "").strip()
+    if not value:
+        return False
+    return not is_public_ip(value)
+
+
+# **内外网方向虚拟字段**。
+#
+# 为什么做成字段：规则与排除过滤经常需要“内外有别”，但**哪个网段算内网是环境相关的**
+# —— 不能在规则里写死 “src_ip contains 172.16.”（那样产品就绑死在某个客户环境了）。
+# 统一用“是否公网”判定，与情报工具、界面里的内外网口径一致。
+VIRTUAL_FIELDS: dict[str, Any] = {
+    "src_internal": lambda log: _is_internal(log.src_ip),
+    "dst_internal": lambda log: _is_internal(log.dst_ip),
+    "src_external": lambda log: is_public_ip(str(log.src_ip or "")),
+    "dst_external": lambda log: is_public_ip(str(log.dst_ip or "")),
+}
+
+
 def _get_field(log: UnifiedLog, field: str, extra: dict[str, Any] | None = None) -> Any:
-    """取字段值：先查 extra（排除过滤用的虚拟字段：命中规则元数据），再查日志字段。"""
+    """取字段值：extra（排除过滤的规则元数据）→ 虚拟字段（内外网方向）→ 日志字段。"""
     if extra and field in extra:
         return extra[field]
+    getter = VIRTUAL_FIELDS.get(field)
+    if getter is not None:
+        return getter(log)
     return getattr(log, field, None)
 
 

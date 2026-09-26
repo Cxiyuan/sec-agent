@@ -4,6 +4,8 @@
 - api_key / 模型名（真实路径）/ 端口 / 路径 均在此固化
 - 唯一可变的是 IP：后台「边缘模型」面板输入，存 SystemConfig「edge.model.ip」
 - 模型名对外统一映射为「edge」，不暴露真实路径字符串
+- **默认 IP 用回环地址**（环境无关）：产品不能把某个客户环境的推理服务器 IP 写进代码，
+  部署时在后台填自己的地址即可。
 
 思考模式（reasoning）：服务端默认关闭，请求级按需开启（chat_template_kwargs.enable_thinking）。
 启用场景规则（后台可配，见 edge_thinking_*）：
@@ -21,7 +23,7 @@ EDGE_API_KEY = "qaz@7410"
 EDGE_MODEL_NAME = "/opt/models/Qwen3.8-2B-Q8_0.gguf"
 EDGE_PORT = 8080
 EDGE_BASE_PATH = "/v1"
-EDGE_DEFAULT_IP = "172.16.196.80"
+EDGE_DEFAULT_IP = "127.0.0.1"  # 环境无关的回环默认值；部署时在后台填真实地址
 EDGE_MODEL_LABEL = "edge"  # 对外展示名（不暴露真实路径）
 
 # 复杂研判事件类型：triage 里这些类型值得开思考（payload 语义复杂，需多步推理判真伪）
@@ -44,7 +46,7 @@ COMPLEX_TRIAGE_EVENT_TYPES = {
 
 
 def edge_current_ip() -> str:
-    """当前生效的 IP（后台配置优先，默认用文档实测值）。"""
+    """当前生效的 IP（后台配置优先，未配置时用回环地址）。"""
     ip = str(runtime_get("edge.model.ip", EDGE_DEFAULT_IP) or "").strip()
     return ip or EDGE_DEFAULT_IP
 

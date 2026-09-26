@@ -78,7 +78,7 @@ export function EdgePanel() {
             <Input
               value={ip}
               onChange={(e) => setIp(e.target.value)}
-              placeholder="如 172.16.196.80"
+              placeholder="如 10.0.0.5（本机部署就填 127.0.0.1）"
             />
           </div>
           <Button variant="outline" onClick={test} disabled={testing}>

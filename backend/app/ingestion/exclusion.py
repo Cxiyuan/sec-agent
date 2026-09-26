@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import ExclusionFilter
-from app.rules.engine import evaluate_conditions, validate_rule_regexes
+from app.rules.engine import VIRTUAL_FIELDS, evaluate_conditions, validate_rule_regexes
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -42,8 +42,12 @@ _client_cache: Any | None = None
 
 
 def allowed_fields() -> set[str]:
-    """允许在排除条件里引用的字段（UnifiedLog 全字段 + 命中规则元数据）。"""
-    return set(UnifiedLog.model_fields) | set(EXTRA_FIELDS)
+    """允许在排除条件里引用的字段：日志字段 + 命中规则元数据 + **内外网方向虚拟字段**。
+
+    方向字段（src_internal / dst_internal / src_external / dst_external）让“内外有别”
+    的过滤不必把客户网段写死（不用再写 src_ip contains "172.16."）。
+    """
+    return set(UnifiedLog.model_fields) | set(EXTRA_FIELDS) | set(VIRTUAL_FIELDS)
 
 
 def _walk_fields(conds: Any, out: list[str]) -> None:
