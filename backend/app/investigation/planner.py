@@ -398,6 +398,7 @@ def build_group_context(
         ),
     }
 
+
 def empty_result(case_id: str, reason: str) -> schema.InvestigationResult:
     """失败占位结果（保证界面与报告永远有结构可渲染）。"""
     result = schema.InvestigationResult(case_id=case_id, status="failed", summary=reason[:500])

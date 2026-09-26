@@ -18,6 +18,7 @@ from app.config import settings
 from app.db.base import get_db
 from app.db.models import Event, EventGroup, User
 from app.investigation import export as investigation_export
+from app.tools.context import is_public_ip
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
@@ -25,6 +26,70 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 MAX_EVIDENCE_EVENTS = 100
 MAX_EVIDENCE_RESOLVED = 60
 MAX_RAW_CHARS = 4000
+# 详情页突出展示的关键 IP 个数（其余折叠，避免把这一批涉及的 IP 全铺开）
+MAX_KEY_IPS = 5
+
+
+def _key_ips(g: EventGroup) -> dict[str, Any]:
+    """挑出**真正有问题**的 IP（详情只突出这些，不把本批涉及的 IP 全列出来）。
+
+    为什么需要：一个事件组是按 IP 集合归并出来的，里面往往包含十几个源/目标 IP
+    （同网段的一批机器），全列出来会让人分不清“到底是谁有问题”。
+
+    判定依据（可解释、可回溯）：
+    - 只统计**命中事件**（被排除的不算）：源侧按命中次数排序 = 可疑来源，
+      目标侧按命中次数排序 = 被打目标；
+    - **外网来源优先置顶**（真正的外部攻击者）；内网源多为漏扫/监控等运维流量，
+      需要人工核对；
+    - 带上该 IP 命中的规则与时间范围，供人工判断；
+    - 只给前 MAX_KEY_IPS 个，其余放进 other_* 供界面折叠展开。
+    """
+    src_stat: dict[str, dict[str, Any]] = {}
+    dst_stat: dict[str, dict[str, Any]] = {}
+    for e in g.events:
+        if e.excluded:
+            continue
+        ts = e.ts.isoformat() if e.ts else None
+        if e.src_ip:
+            s = src_stat.setdefault(
+                str(e.src_ip), {"hits": 0, "rules": [], "types": [], "first": None, "last": None}
+            )
+            s["hits"] += 1
+            if e.hit_rule and e.hit_rule not in s["rules"]:
+                s["rules"].append(e.hit_rule)
+            if e.event_type and e.event_type not in s["types"]:
+                s["types"].append(e.event_type)
+            if ts:
+                s["first"] = min(s["first"] or ts, ts)
+                s["last"] = max(s["last"] or ts, ts)
+        if e.dst_ip:
+            d = dst_stat.setdefault(str(e.dst_ip), {"hits": 0, "rules": [], "ports": []})
+            d["hits"] += 1
+            if e.hit_rule and e.hit_rule not in d["rules"]:
+                d["rules"].append(e.hit_rule)
+            if e.dst_port is not None and int(e.dst_port) not in d["ports"]:
+                d["ports"].append(int(e.dst_port))
+
+    def rank(stat: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = [{"ip": ip, "external": is_public_ip(ip), **s} for ip, s in stat.items()]
+        rows.sort(key=lambda r: (not r["external"], -int(r["hits"]), str(r["ip"])))
+        return rows
+
+    actors = rank(src_stat)
+    targets = rank(dst_stat)
+    group_src = [str(x) for x in (g.src_ips or [])]
+    group_dst = [str(x) for x in (g.dst_ips or [])]
+    key_src = {str(r["ip"]) for r in actors[:MAX_KEY_IPS]}
+    key_dst = {str(r["ip"]) for r in targets[:MAX_KEY_IPS]}
+    return {
+        "actors": actors[:MAX_KEY_IPS],
+        "targets": targets[:MAX_KEY_IPS],
+        "external_actors": [r for r in actors if r["external"]][:MAX_KEY_IPS],
+        "other_src": [ip for ip in group_src if ip not in key_src][:50],
+        "other_dst": [ip for ip in group_dst if ip not in key_dst][:50],
+        "total_src": len(group_src),
+        "total_dst": len(group_dst),
+    }
 
 
 def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
@@ -53,6 +118,8 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
     if with_events:
+        # 关键 IP：详情只突出真正有问题的（外网优先、按命中排序），其余折叠
+        data["key_ips"] = _key_ips(g)
         data["events"] = [
             {
                 "id": e.id,
@@ -288,7 +355,9 @@ def _stage_evidence(chain: dict[str, Any]) -> list[dict[str, Any]]:
                     "stage": str(st.get("stage") or ""),
                     "description": str(st.get("description") or "")[:200],
                     "evidence_refs": (
-                        [str(r) for r in refs if isinstance(r, str)] if isinstance(refs, list) else []
+                        [str(r) for r in refs if isinstance(r, str)]
+                        if isinstance(refs, list)
+                        else []
                     ),
                 }
             )
@@ -437,6 +506,7 @@ def get_group_evidence(
 
 class ConfirmRequest(BaseModel):
     action: str  # "confirm" | "dismiss"
+
 
 @router.post("/groups/{group_id}/confirm")
 async def confirm_group(

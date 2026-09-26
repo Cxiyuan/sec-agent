@@ -596,6 +596,39 @@ export interface EventItem {
 
 export interface GroupDetail extends EventGroupItem {
   events: EventItem[];
+  /** 关键 IP：只突出真正有问题的（外网来源置顶、按命中排序），其余折叠在 other_* */
+  key_ips?: KeyIps;
+}
+
+/** 详情里的可疑来源 IP（命中事件的源地址） */
+export interface KeyIpActor {
+  ip: string;
+  external: boolean;
+  hits: number;
+  rules: string[];
+  types?: string[];
+  first?: string | null;
+  last?: string | null;
+}
+
+/** 详情里的被打目标 IP（命中事件的目的地址） */
+export interface KeyIpTarget {
+  ip: string;
+  external: boolean;
+  hits: number;
+  rules: string[];
+  ports: number[];
+}
+
+export interface KeyIps {
+  actors: KeyIpActor[];
+  targets: KeyIpTarget[];
+  external_actors: KeyIpActor[];
+  /** 本组涉及但未命中任何事件的 IP（详情默认折叠） */
+  other_src: string[];
+  other_dst: string[];
+  total_src: number;
+  total_dst: number;
 }
 
 /** CSV 导入预览报告 */

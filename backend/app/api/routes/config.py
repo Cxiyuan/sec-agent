@@ -52,6 +52,12 @@ CONFIG_KEYS: dict[str, Any] = {
     # 云端模型并发峰值（经 runtime_config 即时生效）：节点里的"逐个事件组"已改并发，
     # 这是限流闸门——云端有 RPM/TPM 限制，改大要看着 429 调
     "cloud_max_concurrency": settings.cloud_max_concurrency,
+    # 兜底预筛（防漏报）：规则未命中的日志经启发式打分后交边缘模型复筛
+    # 可热调：实测 0.3 门槛会把大量正常连接（conn_established/generic）当可疑（占其命中 91%），
+    # 故抬到 0.5 并开放后台可调
+    "prefilter_min_score": settings.prefilter_min_score,
+    "prefilter_enabled": settings.prefilter_enabled,
+    "prefilter_max_candidates": settings.prefilter_max_candidates,
     # 自主调查的模型调用上限（即时生效）：实测 6 会全撞限、产出为空，故抬到 10 并可后台调
     "investigation_max_llm_calls": settings.investigation_max_llm_calls,
 }

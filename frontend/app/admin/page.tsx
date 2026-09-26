@@ -221,13 +221,6 @@ export default function AdminEventsPage() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div>
-                  源地址：<span className="font-mono text-xs">{detail.src_ips?.join(", ") || "-"}</span>
-                </div>
-                <div>
-                  目标地址：
-                  <span className="font-mono text-xs">{detail.dst_ips?.join(", ") || "-"}</span>
-                </div>
-                <div>
                   窗口：<span className="text-xs">{formatDateTime(detail.window_start)}</span>
                 </div>
                 <div>
@@ -235,6 +228,71 @@ export default function AdminEventsPage() {
                   {(detail.aggregate?.hits ?? 0) > 0 && ` / 聚合 ${detail.aggregate?.hits}`}
                 </div>
               </div>
+
+              {/* 关键 IP：事件组是按 IP 集合归并的，一个组可能涉及十几个 IP ——
+                  详情只突出**真正有问题的**（外网来源置顶、按命中排序），其余折叠。 */}
+              {detail.key_ips && (
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 font-medium">
+                    关键 IP
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      本组共涉及 {detail.key_ips.total_src} 个源 IP / {detail.key_ips.total_dst}{" "}
+                      个目标 IP，下面只列命中的
+                    </span>
+                  </h3>
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <p className="mb-1 text-muted-foreground">
+                        疑似来源（{detail.key_ips.actors.length}）
+                      </p>
+                      {detail.key_ips.actors.length === 0 && (
+                        <p className="text-muted-foreground">（无命中来源）</p>
+                      )}
+                      {detail.key_ips.actors.map((a) => (
+                        <div key={a.ip} className="mb-1 flex flex-wrap items-center gap-2">
+                          {a.external && <Badge variant="high">外网</Badge>}
+                          <span className="font-mono">{a.ip}</span>
+                          <span className="text-muted-foreground">命中 {a.hits} 次</span>
+                          <span className="text-muted-foreground">
+                            {(a.rules || []).slice(0, 2).join("、")}
+                          </span>
+                          <span className="text-muted-foreground">{formatDateTime(a.first)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="mb-1 text-muted-foreground">
+                        被打目标（{detail.key_ips.targets.length}）
+                      </p>
+                      {detail.key_ips.targets.map((t) => (
+                        <div key={t.ip} className="mb-1 flex flex-wrap items-center gap-2">
+                          <span className="font-mono">{t.ip}</span>
+                          <span className="text-muted-foreground">命中 {t.hits} 次</span>
+                          {(t.ports || []).length > 0 && (
+                            <span className="text-muted-foreground">
+                              端口 {(t.ports || []).slice(0, 8).join(",")}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {(detail.key_ips.other_src.length > 0 ||
+                      detail.key_ips.other_dst.length > 0) && (
+                      <details className="text-muted-foreground">
+                        <summary className="cursor-pointer">
+                          展开查看本组其余 IP（本批涉及但未命中事件）
+                        </summary>
+                        <p className="mt-1 font-mono">
+                          源：{(detail.key_ips.other_src || []).join(", ") || "-"}
+                        </p>
+                        <p className="mt-1 font-mono">
+                          目标：{(detail.key_ips.other_dst || []).join(", ") || "-"}
+                        </p>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {detail.aggregate && (detail.aggregate.hits ?? 0) > 0 && (
                 <div>
