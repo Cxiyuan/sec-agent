@@ -40,6 +40,15 @@ export const STATUS_LABEL: Record<string, string> = {
   indexed: "已索引",
 };
 
+/** 内外网方向 → 中文（界面上不出现 in→in 这种符号） */
+export const DIRECTION_LABEL: Record<string, string> = {
+  "in→in": "内→内",
+  "in→out": "内→外",
+  "out→in": "外→内",
+  "out→out": "外→外",
+  unknown: "方向未知",
+};
+
 /** 级别 → 中文（未知值原样返回，空值显示"未定级"） */
 export function severityText(severity?: string | null): string {
   const key = String(severity || "").toLowerCase();
@@ -52,6 +61,12 @@ export function statusText(status?: string | null): string {
   const key = String(status || "").toLowerCase();
   if (!key) return "-";
   return STATUS_LABEL[key] ?? String(status);
+}
+
+/** 方向 → 中文（未知值原样返回，空值返回空串） */
+export function directionText(value?: string | null): string {
+  if (!value) return "";
+  return DIRECTION_LABEL[value] ?? value;
 }
 
 function toDate(value?: string | Date | null): Date | null {

@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiFetch, type EventGroupItem, type GroupDetail, type EvidenceChain } from "@/lib/api";
-import { formatDateTime, severityText, statusText } from "@/lib/format";
+import { directionText, formatDateTime, severityText, statusText } from "@/lib/format";
 
 export default function AdminEventsPage() {
   const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
@@ -23,6 +23,10 @@ export default function AdminEventsPage() {
   const [loadingEvidence, setLoadingEvidence] = React.useState(false);
   // 被排除的事件默认不看（噪声不刷屏），需要排查时再打开
   const [showExcluded, setShowExcluded] = React.useState(false);
+  // 误报治理：同一个源 IP 反复成组会把列表刷屏（实测一个源能出十几组）。
+  // 展示层按「同主源」折叠成一行（不动归组指纹、零迁移）；点开看最新那组，其余组在抽屉里列出。
+  const [foldSameSrc, setFoldSameSrc] = React.useState(true);
+  const [foldSiblings, setFoldSiblings] = React.useState<EventGroupItem[]>([]);
 
   async function load() {
     const suffix = showExcluded ? "&include_excluded=true" : "";
@@ -40,8 +44,9 @@ export default function AdminEventsPage() {
   // 打开右侧抽屉并拉详情。
   // 详情请求失败时必须**看得见**：以前只在表格下面渲染卡片，
   // 请求失败或列表很长时都表现为"点了详情没反应"。
-  async function openDetail(g: EventGroupItem) {
+  async function openDetail(g: EventGroupItem, siblings: EventGroupItem[] = []) {
     setSelected(g);
+    setFoldSiblings(siblings);
     setDetail(null);
     setDetailError("");
     setEvidence(null);
@@ -78,20 +83,48 @@ export default function AdminEventsPage() {
     load();
   }
 
+  // 折叠行：同主源 → 一行；代表行取该源最新的一组
+  const rows = React.useMemo(() => {
+    if (!foldSameSrc) return groups.map((g) => ({ key: g.id, row: g, siblings: [g] }));
+    const bySrc = new Map<string, EventGroupItem[]>();
+    for (const g of groups) {
+      const src = (g.src_ips || [])[0] || "(无源 IP)";
+      const bucket = bySrc.get(src);
+      if (bucket) bucket.push(g);
+      else bySrc.set(src, [g]);
+    }
+    return [...bySrc.entries()].map(([src, list]) => {
+      const sorted = [...list].sort((a, b) =>
+        String(b.window_start || "").localeCompare(String(a.window_start || ""))
+      );
+      return { key: `src:${src}`, row: sorted[0], siblings: sorted };
+    });
+  }, [groups, foldSameSrc]);
+
   return (
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold">事件列表</h1>
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={showExcluded}
-              onChange={(e) => setShowExcluded(e.target.checked)}
-            />
-            显示已排除的事件（被排除过滤命中，不跑模型）
-          </label>
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={foldSameSrc}
+                onChange={(e) => setFoldSameSrc(e.target.checked)}
+              />
+              按同源折叠重复组
+            </label>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showExcluded}
+                onChange={(e) => setShowExcluded(e.target.checked)}
+              />
+              显示已排除的事件（被排除过滤命中，不跑模型）
+            </label>
+          </div>
         </div>
         <Card>
           <CardContent className="p-0">
@@ -109,20 +142,29 @@ export default function AdminEventsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {groups.map((g) => (
+                {rows.map(({ key, row: g, siblings }) => (
                   <TableRow
-                    key={g.id}
+                    key={key}
                     className="cursor-pointer"
-                    onClick={() => openDetail(g)}
+                    onClick={() => openDetail(g, siblings)}
                     title="点击查看详情"
                   >
                     <TableCell>
                       <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
                     </TableCell>
-                    <TableCell className="max-w-[140px] truncate">{g.src_ips?.join(", ")}</TableCell>
+                    <TableCell className="max-w-[140px] truncate">
+                      {g.src_ips?.join(", ")}
+                      {siblings.length > 1 && (
+                        <Badge variant="outline" className="ml-2">
+                          同源 {siblings.length} 组
+                        </Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="max-w-[140px] truncate">{g.dst_ips?.join(", ")}</TableCell>
                     <TableCell>
-                      {g.event_count}
+                      {siblings.length > 1
+                        ? siblings.reduce((n, x) => n + (x.event_count || 0), 0)
+                        : g.event_count}
                       {(g.aggregate?.hits ?? 0) > 0 && (
                         <span className="text-xs text-muted-foreground">
                           {" / 聚合 "}
@@ -141,7 +183,7 @@ export default function AdminEventsPage() {
                         variant="outline"
                         onClick={(e) => {
                           e.stopPropagation();
-                          openDetail(g);
+                          openDetail(g, siblings);
                         }}
                       >
                         详情
@@ -196,6 +238,9 @@ export default function AdminEventsPage() {
                   {selected.triage_score?.toFixed(2)}
                 </span>
               )}
+              {selected?.direction && (
+                <Badge variant="outline">{directionText(selected.direction)}</Badge>
+              )}
             </div>
           }
           footer={
@@ -228,6 +273,50 @@ export default function AdminEventsPage() {
                   {(detail.aggregate?.hits ?? 0) > 0 && ` / 聚合 ${detail.aggregate?.hits}`}
                 </div>
               </div>
+
+              {/* 误报治理：为什么被跳过、为什么被降级 —— 必须能解释清楚（不允许静默降噪）。
+                  方向、跳过理由、定级约束理由都在后端落库，这里只负责展示。 */}
+              {(selected.direction || selected.exclude_reason || selected.severity_cap_reason) && (
+                <div className="rounded-md border border-dashed p-3">
+                  <h3 className="mb-2 text-sm font-medium">处理依据</h3>
+                  <div className="space-y-1 text-xs">
+                    {selected.direction && (
+                      <p className="text-muted-foreground">
+                        流量方向：{directionText(selected.direction)}（外网按是否公网地址判定，与具体网段无关）
+                      </p>
+                    )}
+                    {selected.exclude_reason && (
+                      <p className="text-amber-500">跳过模型分析：{selected.exclude_reason}</p>
+                    )}
+                    {selected.severity_cap_reason && (
+                      <p className="text-amber-500">定级被约束：{selected.severity_cap_reason}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 同源重复组：展示层折叠了它们，这里给出全貌（归组指纹未动） */}
+              {foldSiblings.length > 1 && (
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-medium">
+                    同一来源的其它事件组（{foldSiblings.length - 1}）
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      列表按同源折叠，归组指纹未变；这里只展示最新那组
+                    </span>
+                  </h3>
+                  <div className="space-y-1 text-xs">
+                    {foldSiblings.slice(1, 9).map((s) => (
+                      <div key={s.id} className="flex flex-wrap items-center gap-2">
+                        <Badge variant={severityVariant(s.severity)}>{severityText(s.severity)}</Badge>
+                        <span className="font-mono">{(s.dst_ips || []).slice(0, 3).join(", ")}</span>
+                        <span className="text-muted-foreground">{s.event_count} 条</span>
+                        <span className="text-muted-foreground">{statusText(s.status)}</span>
+                        <span className="text-muted-foreground">{formatDateTime(s.window_start)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* 关键 IP：事件组是按 IP 集合归并的，一个组可能涉及十几个 IP ——
                   详情只突出**真正有问题的**（外网来源置顶、按命中排序），其余折叠。 */}

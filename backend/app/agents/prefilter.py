@@ -14,6 +14,7 @@ import ipaddress
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agents import triage_policy
 from app.config import settings
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
@@ -69,35 +70,60 @@ def _in_networks(ip_value: Any, nets: list[Any]) -> bool:
     return any(addr.version == n.version and addr in n for n in nets)
 
 
+def _looks_established(entry: UnifiedLog) -> bool:
+    """是否像“正常建立过会话”：成功连接状态（或已建立类事件）且**双向都有字节**。
+
+    为什么要单独判它：未建立/半开连接（S0/REJ）是扫描/探活的典型特征，而双向有字节
+    的已建立会话基本是正常业务（内网尤其如此）—— 后者正是兜底预筛噪声的主来源。
+    """
+    success = (
+        str(entry.conn_state or "").upper() in triage_policy.SUCCESS_CONN_STATES
+        or entry.event_type in ("conn_established", "connection_shutdown")
+    )
+    return success and bool(entry.bytes_out) and bool(entry.bytes_in)
+
+
 def score_log(
     entry: UnifiedLog,
     *,
     scope_nets: list[Any],
     known_asset_ips: set[str],
 ) -> Candidate | None:
-    """启发式打分；低于阈值返回 None。"""
+    """启发式打分：**只对可疑特征加分、对正常特征扣分**，并守住召回底线。
+
+    改动原因（实测）：原来「非常用端口 +0.3 / 外联 +0.2」对**内网到内网**的常规连接
+    也生效，于是兜底预筛命中里 91% 是正常已建立连接，把模型预算全吃掉了。
+    现在：非标端口只在**跨出受管网段**时算信号；已建立会话/常用端口/已录资产目标要扣分。
+    召回底线：明确可疑信号（后门端口 / 超大数据外发 / 未覆盖的 Wazuh 高危）不受扣分影响。
+    """
     score = 0.0
     reasons: list[str] = []
+    strong = False  # 明确可疑：命中即入选，不被扣分抵消
 
-    # 1) 高风险端口
+    dst_external = bool(entry.dst_ip) and not _in_networks(entry.dst_ip, scope_nets)
+    src_managed = bool(entry.src_ip) and _in_networks(entry.src_ip, scope_nets)
+    crosses = dst_external or not src_managed  # 至少一端跨出受管网段
+
+    # 1) 高风险端口（后门/代理/矿池）：基本没有正常用途
     if entry.dst_port in SUSPICIOUS_PORTS:
         score += 0.5
+        strong = True
         reasons.append(f"高风险端口 {entry.dst_port}")
 
-    # 2) 非常用端口的成功外联（疑似 C2/后门）
-    external = bool(entry.dst_ip) and not _in_networks(entry.dst_ip, scope_nets)
-    if entry.dst_port and entry.dst_port not in COMMON_PORTS:
+    # 2) 非常用端口：只在跨出受管网段时才算信号（内网内部的非标端口多为自建服务）
+    if entry.dst_port and entry.dst_port not in COMMON_PORTS and crosses:
         if entry.event_type in ("conn_established", "generic") or entry.log_type == "conn":
             score += 0.3
-            reasons.append(f"非常用端口 {entry.dst_port} 连接")
-        if external:
+            reasons.append(f"跨网段非常用端口 {entry.dst_port}")
+        if dst_external:
             score += 0.2
             reasons.append("外联非受管网段")
 
-    # 3) 数据外传量
+    # 3) 数据外传量（超大外发在任何方向都值得看）
     if entry.bytes_out:
         if entry.bytes_out > settings.prefilter_bytes_out_alert:
             score += 0.6
+            strong = True
             reasons.append(f"超大外发流量 {entry.bytes_out} 字节")
         elif entry.bytes_out > settings.prefilter_bytes_out_warn:
             score += 0.3
@@ -108,24 +134,41 @@ def score_log(
         score += 0.3
         reasons.append(f"异常长请求/查询（{len(entry.query)} 字符）")
 
-    # 5) HTTP 服务端错误
-    if entry.status_code and entry.status_code >= 500:
+    # 5) HTTP 服务端错误：只在跨网段时算信号（内网应用报 5xx 属故障不属安全事件）
+    if entry.status_code and entry.status_code >= 500 and crosses:
         score += 0.2
         reasons.append(f"HTTP {entry.status_code}")
 
-    # 6) 目的 IP 不在已录资产中（首次出现的对象）
-    if entry.dst_ip and known_asset_ips and entry.dst_ip not in known_asset_ips and not external:
+    # 6) 目标不在已录资产中（首次出现的对象）
+    if entry.dst_ip and known_asset_ips and entry.dst_ip not in known_asset_ips and not dst_external:
         score += 0.2
         reasons.append("目标不在已录资产中")
 
-    # 7) Wazuh 中等级别但规则没命中（规则未覆盖的主机事件）
+    # 7) Wazuh 中高级别但规则没命中（规则未覆盖的主机事件）
     if entry.source_system == "wazuh" and entry.severity in ("medium", "high", "critical"):
         score += 0.3
+        if entry.severity in ("high", "critical"):
+            strong = True
         reasons.append(f"未覆盖的 Wazuh {entry.severity} 事件")
 
-    if score < settings.prefilter_min_score:
+    # ---- 正常特征扣分（本轮降噪的主要来源）----
+    # 注意：“已建立会话”的扣分**只用于内网内部**：对外建立连接正是 C2/后门的典型形状，
+    # 不能因为“建立了会话”就把它扣掉（否则真正的 C2 会被过滤掉）。
+    if _looks_established(entry) and not dst_external:
+        score -= settings.prefilter_penalty_established
+        reasons.append("内网已建立会话（双向有字节）")
+    if entry.dst_port in COMMON_PORTS:
+        score -= settings.prefilter_penalty_common_port
+        reasons.append(f"常用端口 {entry.dst_port}")
+    if entry.dst_ip and known_asset_ips and entry.dst_ip in known_asset_ips and not dst_external:
+        score -= settings.prefilter_penalty_known_asset
+        reasons.append("目标为已录资产")
+
+    score = max(0.0, round(score, 3))
+    # 召回护栏：明确可疑不受扣分影响；其余必须过门槛
+    if not strong and score < settings.prefilter_min_score:
         return None
-    return Candidate(log=entry, score=round(score, 3), reasons=reasons)
+    return Candidate(log=entry, score=score, reasons=reasons)
 
 
 def prefilter(

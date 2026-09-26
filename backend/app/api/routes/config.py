@@ -58,6 +58,19 @@ CONFIG_KEYS: dict[str, Any] = {
     "prefilter_min_score": settings.prefilter_min_score,
     "prefilter_enabled": settings.prefilter_enabled,
     "prefilter_max_candidates": settings.prefilter_max_candidates,
+    # 误报治理策略（经 runtime_config 即时生效）：判据见 app/agents/triage_policy.py
+    "policy_internal_routine_skip": settings.policy_internal_routine_skip,
+    "policy_internal_routine_min_severity": settings.policy_internal_routine_min_severity,
+    "policy_internal_routine_max_dst": settings.policy_internal_routine_max_dst,
+    "policy_internal_routine_require_failed": settings.policy_internal_routine_require_failed,
+    "severity_cap_internal": settings.severity_cap_internal,
+    "severity_require_evidence_above": settings.severity_require_evidence_above,
+    "severity_critical_requires_external": settings.severity_critical_requires_external,
+    "escalate_require_rule_severity": settings.escalate_require_rule_severity,
+    "escalate_allow_external": settings.escalate_allow_external,
+    "prefilter_penalty_established": settings.prefilter_penalty_established,
+    "prefilter_penalty_known_asset": settings.prefilter_penalty_known_asset,
+    "prefilter_penalty_common_port": settings.prefilter_penalty_common_port,
     # 自主调查的模型调用上限（即时生效）：实测 6 会全撞限、产出为空，故抬到 10 并可后台调
     "investigation_max_llm_calls": settings.investigation_max_llm_calls,
 }

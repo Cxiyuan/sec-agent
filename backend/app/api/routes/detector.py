@@ -10,6 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 
+from app.agents import triage_policy
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
@@ -48,6 +49,8 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         },
         # 投递了但分析失败（原来只有一行日志，看不出来是否在漏分析）
         "task_failed": {"failed_total": 0, "last_failed_at": None},
+        # 误报治理：策略跳过的数量与最后时间（内网常规流量等）——降噪必须可见
+        "policy": {"internal_routine": 0, "last_at": None},
     }
     try:
         import redis
@@ -86,6 +89,12 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
                 "last_failed_at": failed_stats.get("last_failed_at"),
             }
         )
+        policy_raw = client.hgetall(triage_policy.POLICY_STATS_KEY)
+        policy_stats = policy_raw if isinstance(policy_raw, dict) else {}
+        out["policy"] = {
+            "internal_routine": int(policy_stats.get("internal_routine") or 0),
+            "last_at": policy_stats.get("last_at"),
+        }
         if settings.dedup_enabled:
             out["dedup"].update(AnalyzedRegistry().counts())
     except Exception as exc:  # noqa: BLE001

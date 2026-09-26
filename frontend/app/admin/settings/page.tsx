@@ -59,6 +59,52 @@ const GROUPS: { name: string; fields: Field[] }[] = [
     ],
   },
   {
+    name: "误报治理",
+    fields: [
+      {
+        key: "policy_internal_routine_skip",
+        label: "内网常规流量跳过分析",
+        type: "bool",
+        hint: "内→内 + 低危逐条规则 + 单目标 + 无成功连接 → 只落库不出报告（横向移动/扇出照旧分析）。跳过会计数，界面可查",
+      },
+      {
+        key: "policy_internal_routine_min_severity",
+        label: "跳过所需规则级别上限",
+        type: "select",
+        options: ["low", "medium", "high"],
+        hint: "规则严重度 ≥ 该值就不跳过（默认 medium：只跳 low/info 的）",
+      },
+      { key: "policy_internal_routine_max_dst", label: "跳过允许的最大目标数", type: "number", hint: "超过该目标数（疑似扫描/扇出）照旧全量分析" },
+      { key: "policy_internal_routine_require_failed", label: "必须无成功连接才跳过", type: "bool" },
+      {
+        key: "severity_cap_internal",
+        label: "内网方向定级封顶",
+        type: "select",
+        options: ["critical", "high", "medium", "low"],
+        hint: "内→内 事件的级别上限（默认 medium）",
+      },
+      {
+        key: "severity_require_evidence_above",
+        label: "无证据链不得达到",
+        type: "select",
+        options: ["critical", "high", "medium"],
+        hint: "攻击链为空（没有可验证证据）时，级别封顶到该值以下；每处降级都会写明原因",
+      },
+      { key: "severity_critical_requires_external", label: "critical 仅限外→内", type: "bool" },
+      {
+        key: "escalate_require_rule_severity",
+        label: "升级所需规则级别",
+        type: "select",
+        options: ["low", "medium", "high", "critical"],
+        hint: "进深度分析除分数达标外，还要求规则严重度 ≥ 该值（防小模型高分全量升级）",
+      },
+      { key: "escalate_allow_external", label: "外→内事件不受升级闸门限制", type: "bool" },
+      { key: "prefilter_penalty_established", label: "预筛：内网已建立会话扣分", type: "number", hint: "内网内部双向有字节的已建立连接（正常业务）。对外已建立连接不扣分——那正是 C2 形状" },
+      { key: "prefilter_penalty_common_port", label: "预筛：常用端口扣分", type: "number" },
+      { key: "prefilter_penalty_known_asset", label: "预筛：已录资产目标扣分", type: "number" },
+    ],
+  },
+  {
     name: "资产 RAG",
     fields: [
       { key: "rag_enabled", label: "启用资产 RAG", type: "bool" },

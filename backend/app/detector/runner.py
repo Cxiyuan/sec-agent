@@ -17,6 +17,7 @@ from typing import Any
 
 import redis
 
+from app.agents import triage_policy
 from app.agents.persistence import get_enabled_rules
 from app.config import settings
 from app.db.base import SessionLocal
@@ -172,6 +173,7 @@ def run() -> None:
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
+            _apply_routine_policy(digest, client, stats)
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
 
@@ -191,6 +193,7 @@ def run() -> None:
             log.info(
                 "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
                 "/ 投递 %d / 去重跳过 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
+                "/ 策略跳过(内网常规 %d) "
                 "| 队列 raw=%d processing=%d | 聚合中 %d",
                 leader.me,
                 stats["scanned"],
@@ -205,11 +208,36 @@ def run() -> None:
                 stats["requeued"],
                 stats["dropped_expired"],
                 stats["dropped_trimmed"],
+                stats["policy_internal_routine"],
                 q_raw,
                 q_proc,
                 agg.pending(),
             )
             last_stats = time.time()
+
+
+def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[str]) -> None:
+    """分级放行：把「内网常规流量」打标（事件仍落库可查，只是不跑模型、不出报告）。
+
+    为什么判定放在**聚合结果定稿之后**（而不是每条命中时）：目标数与连接状态要积累完
+    才知道；而且排除位参与聚合键，逐条判定会把同一 (源,规则) 拆成两个桶，反而更乱。
+    """
+    if digest.get("excluded"):
+        return  # 已被排除过滤器命中，不重复判定
+    direction = triage_policy.direction_of(digest.get("src_ip"), digest.get("dst_ips"))
+    reason = triage_policy.internal_routine_reason(
+        direction=direction,
+        rule_severity=digest.get("rule_severity"),
+        dst_count=len(digest.get("dst_ips") or []),
+        success=triage_policy.has_success(digest.get("event_types"), digest.get("conn_states")),
+    )
+    if not reason:
+        return
+    digest["excluded"] = True
+    digest["exclude_reason"] = reason
+    digest["direction"] = direction
+    stats["policy_internal_routine"] += 1
+    triage_policy.count_skip(client, "internal_routine")
 
 
 def _rate_remaining(client: Any) -> int:

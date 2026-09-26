@@ -212,6 +212,12 @@ export interface EventGroupItem {
   aggregate?: GroupAggregate | null;
   /** 被排除过滤命中：可见可回溯，但不参与模型分析与报告 */
   excluded?: boolean;
+  /** 误报治理：内外网方向（in→in / in→out / out→in / out→out / unknown） */
+  direction?: string;
+  /** 为什么跳过（排除过滤器命中，或策略判定为「内网常规流量」） */
+  exclude_reason?: string;
+  /** 定级被约束的原因（如「内网方向封顶」「无可验证证据链」） */
+  severity_cap_reason?: string;
   created_at: string | null;
 }
 
@@ -526,6 +532,8 @@ export interface DetectorStats {
   };
   /** 投递了但分析失败（漏分析可见性） */
   task_failed?: { failed_total: number; last_failed_at: string | null };
+  /** 误报治理：策略跳过的数量（内网常规流量等）——降噪必须可见 */
+  policy?: { internal_routine: number; last_at: string | null };
   /** 选主状态：谁在消费 */
   leader?: { holder: string | null; ttl_seconds: number } | null;
   error?: string;

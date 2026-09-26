@@ -168,7 +168,7 @@ export function LogstashPanel() {
                 )}
               </p>
             )}
-            {det && (det.dedup || det.task_failed || det.leader) && (
+            {det && (det.dedup || det.task_failed || det.leader || det.policy) && (
               <p className="mt-1 text-muted-foreground">
                 去重闸门：{det.dedup?.enabled ? "开" : "关"}
                 {" · 已省重复分析 "}
@@ -183,6 +183,14 @@ export function LogstashPanel() {
                     {" · "}
                     <span className="text-amber-500">
                       分析失败 {det.task_failed?.failed_total} 条（在途超时后会重投）
+                    </span>
+                  </>
+                )}
+                {(det.policy?.internal_routine ?? 0) > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-muted-foreground">
+                      策略跳过 {det.policy?.internal_routine} 条（内网常规流量：已落库、不跑模型）
                     </span>
                   </>
                 )}

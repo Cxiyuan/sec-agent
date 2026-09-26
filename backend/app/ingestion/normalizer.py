@@ -304,6 +304,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         src_port=_to_int(_get(doc, "id.orig_p")),
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
+        conn_state=str(conn_state or ""),  # 留给策略层判“是否真建立会话”（归一化时已读取）
         hostname=_str_or_none(doc.get("host")) or _str_or_none(doc.get("server_name")),
         user=doc.get("user") or doc.get("uid_owner"),
         query=query,

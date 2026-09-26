@@ -89,6 +89,9 @@ class Aggregator:
         _push_unique(state, "dst_ips", entry.dst_ip)
         _push_unique(state, "dst_ports", entry.dst_port)
         _push_unique(state, "event_types", entry.event_type)
+        # 连接状态累计：策略层要判“这批命中里有没有真的建立过会话”
+        if entry.conn_state:
+            _push_unique(state, "conn_states", entry.conn_state)
         samples = state.setdefault("samples", [])
         if len(samples) < _MAX_SAMPLES:  # 保留最多 3 条原文作为分析样本
             samples.append({"source": log_source, "doc": raw_doc})

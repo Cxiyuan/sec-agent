@@ -32,6 +32,10 @@ _MIGRATIONS = (
     "ALTER TABLE baseline_stats ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
     "ALTER TABLE events ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE",
     "CREATE INDEX IF NOT EXISTS ix_events_excluded ON events (excluded)",
+    # 误报治理：方向与「为什么跳过/被降级」都要可查
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS direction VARCHAR(16) NOT NULL DEFAULT ''",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS exclude_reason TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS severity_cap_reason TEXT NOT NULL DEFAULT ''",
 )
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）

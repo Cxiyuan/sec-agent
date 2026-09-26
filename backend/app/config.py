@@ -198,6 +198,25 @@ class Settings(BaseSettings):
     hitl_enabled: bool = False
     hitl_min_severity: str = "high"  # 达到该级别才触发人工确认
 
+    # 误报治理（策略级）：判据集中在 app/agents/triage_policy.py，全部环境无关、可后台调
+    # ① 分级放行：内网常规流量（内→内 + 低危逐条规则 + 单目标 + 无成功连接）只落库不跑模型。
+    #    不做"内→内一律不分析"：横向移动就藏在内→内，一刀切会致盲。
+    policy_internal_routine_skip: bool = True
+    policy_internal_routine_min_severity: str = "medium"  # 规则严重度 ≥ 此值的内→内照旧全量分析
+    policy_internal_routine_max_dst: int = 1  # 目标数 ≤ 此值才算"单目标"（扇出即扫描特征）
+    policy_internal_routine_require_failed: bool = True  # 有成功连接则不跳
+    # ② 定级约束（每条降级都写原因，不静默）
+    severity_cap_internal: str = "medium"  # 内→内 封顶
+    severity_require_evidence_above: str = "high"  # 无证据链不得 ≥ 此级别
+    severity_critical_requires_external: bool = True  # critical 仅限 外→内
+    # ③ 升级闸门（进深度分析）：除分数外还要满足规则严重度或方向
+    escalate_require_rule_severity: str = "medium"
+    escalate_allow_external: bool = True  # 外→内 不受规则严重度限制
+    # ④ 兜底预筛的正常特征扣分（与加分叠加后与门槛比较，下限钳到 0）
+    prefilter_penalty_established: float = 0.3  # 双向有字节的已建立连接
+    prefilter_penalty_known_asset: float = 0.2  # 目标在已录资产内
+    prefilter_penalty_common_port: float = 0.2  # 常用端口
+
     # 自主取证调查（深度分析路径上的「有界自主」：按需查询 → 还原完整攻击路径）
     # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
     investigation_enabled: bool = True

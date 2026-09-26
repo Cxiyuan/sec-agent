@@ -115,6 +115,10 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "aggregate": g.aggregate or {},
         # 被排除过滤命中：事件可见、可回溯，但不参与模型分析与报告
         "excluded": g.status == "excluded",
+        # 误报治理：内外网方向、跳过原因、定级被约束的原因（都要能解释清楚）
+        "direction": g.direction or "",
+        "exclude_reason": g.exclude_reason or "",
+        "severity_cap_reason": g.severity_cap_reason or "",
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
     if with_events:

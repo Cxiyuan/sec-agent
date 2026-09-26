@@ -96,6 +96,8 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                     status="excluded" if g.excluded else "analyzing",
                     thread_id=thread_id or None,
                     aggregate=g.aggregate or {},
+                    direction=g.direction or "",
+                    exclude_reason=g.exclude_reason or "",
                 )
                 db.add(row)
                 db.flush()
@@ -112,6 +114,11 @@ def save_groups(groups: list[EventGroupSchema], thread_id: str) -> None:
                 if thread_id:
                     row.thread_id = thread_id
                 row.aggregate = merge_aggregates([row.aggregate, g.aggregate])
+                # 误报治理：方向与跳过原因同步更新（否则界面上看不到"为什么跳过"）
+                if g.direction:
+                    row.direction = g.direction
+                if g.exclude_reason:
+                    row.exclude_reason = g.exclude_reason
                 # 排除组固定为 excluded 状态：后续节点对它们全部跳过，不会再改写
                 row.status = "excluded" if g.excluded else "analyzing"
 
@@ -231,6 +238,7 @@ def update_group_analysis(
     profile: dict[str, Any] | None = None,
     anomaly: dict[str, Any] | None = None,
     response_suggestions: list[dict[str, Any]] | None = None,
+    severity_cap_reason: str | None = None,
 ) -> None:
     with SessionLocal() as db:
         row = db.execute(
@@ -250,6 +258,8 @@ def update_group_analysis(
             row.anomaly = anomaly
         if response_suggestions is not None:
             row.response_suggestions = response_suggestions
+        if severity_cap_reason is not None:
+            row.severity_cap_reason = severity_cap_reason
         db.commit()
 
 

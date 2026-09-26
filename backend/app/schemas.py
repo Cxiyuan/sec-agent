@@ -28,6 +28,8 @@ class UnifiedLog(BaseModel):
     src_port: int | None = None
     dst_port: int | None = None
     protocol: str | None = None
+    # Zeek 连接状态（S0/REJ/SF…）：用于判定“是否真的建立了会话”（探活/扫描 vs 实际连接）
+    conn_state: str = ""
     hostname: str | None = None
     user: str | None = None
     process: str | None = None
@@ -108,6 +110,12 @@ class EventGroup(BaseModel):
     aggregate: dict[str, Any] = Field(default_factory=dict)
     # 整组都是被排除的事件（独立成组，不跑模型与报告）
     excluded: bool = False
+    # 排除/跳过的原因（排除过滤器命中，或误报治理判定为“内网常规流量”）
+    exclude_reason: str = ""
+    # 内外网方向（in→in / in→out / out→in / out→out / unknown）：定级约束与界面展示用
+    direction: str = ""
+    # 定级被约束的原因（如“内网方向封顶”），便于界面解释“为什么只有 medium”
+    severity_cap_reason: str = ""
 
 
 class AgentState(BaseModel):

@@ -79,6 +79,12 @@ class EventGroup(Base):
         JSONB, nullable=True
     )  # 聚合规模（实时链路：次数/目标集/端口集/首末时间）
     attack_chain: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 误报治理：内外网方向（in→in / in→out / out→in / out→out / unknown）
+    direction: Mapped[str] = mapped_column(String(16), default="")
+    # 跳过原因（排除过滤器命中，或策略判定为「内网常规流量」）——必须可查，不静默
+    exclude_reason: Mapped[str] = mapped_column(Text, default="")
+    # 定级被约束的原因（如「内网方向封顶」）
+    severity_cap_reason: Mapped[str] = mapped_column(Text, default="")
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     anomaly: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_suggestions: Mapped[list | None] = mapped_column(JSON, nullable=True)

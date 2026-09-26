@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from app.agents import triage_policy
 from app.agents.concurrency import (
     cloud_concurrency as _cloud_concurrency,
     parallel_map as _parallel_map,
@@ -577,6 +578,61 @@ def _build_groups(
     return groups
 
 
+def _group_direction(g: EventGroup) -> str:
+    """组的方向（按内外网判定）：取组内首个源 IP 与全部目标。"""
+    return triage_policy.direction_of(g.src_ips[0] if g.src_ips else None, g.dst_ips)
+
+
+def _group_has_success(g: EventGroup) -> bool:
+    """组内是否出现过“成功连接”（决定内网常规流量是否仍需照旧分析）。"""
+    return any(
+        triage_policy.has_success([ev.log.event_type], [ev.log.conn_state]) for ev in g.events
+    )
+
+
+def _count_policy_skip(kind: str, count: int) -> None:
+    """策略跳过计数（与检测器共用同一个 Redis 哈希，界面可查；**降噪不静默**）。"""
+    if count <= 0:
+        return
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        triage_policy.count_skip(client, kind, count)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入策略计数失败: %s", exc)
+
+
+def _mark_routine_groups(groups: list[EventGroup]) -> int:
+    """标注方向，并把「内网常规流量」整组标记为跳过模型（事件仍落库可查）。
+
+    为什么在组级再判一次：兜底链路（无检测器参与）不会经过摘要打标，
+    只在图内判一次才能避免“实时跳过了、兜底又捡回来”这种不一致；
+    判据与检测器完全同一份（app/agents/triage_policy.py）。
+    """
+    marked = 0
+    for g in groups:
+        direction = _group_direction(g)
+        g.direction = direction
+        if g.excluded:
+            continue
+        reason = triage_policy.internal_routine_reason(
+            direction=direction,
+            rule_severity=_rule_severity(g),
+            dst_count=len(g.dst_ips or []),
+            success=_group_has_success(g),
+        )
+        if not reason:
+            continue
+        g.excluded = True
+        g.exclude_reason = reason
+        marked += 1
+    if marked:
+        _count_policy_skip("internal_routine", marked)
+        log.info("误报治理：%d 个组属内网常规流量，跳过模型（事件仍可查）", marked)
+    return marked
+
+
 def correlate_node(state: AgentState) -> dict[str, Any]:
     events = state.get("suspicious_events", [])
     window_start = state.get("window_start") or _now()
@@ -594,21 +650,30 @@ def correlate_node(state: AgentState) -> dict[str, Any]:
     groups = _semantic_merge(groups)
     groups.extend(excluded_groups)
 
-    # 升级判定（阈值打分）；排除组不升级（不跑深度分析）
+    # 误报治理：标注方向，并把「内网常规流量」整组跳过（事件仍落库可查）
+    routine = _mark_routine_groups(groups)
+
+    # 升级判定（阈值打分 + 方向/严重度门槛）；排除组不升级（不跑深度分析）
     with SessionLocal() as db:
         threshold = _safe_float(
             _config(db, "escalate_score_threshold", settings.escalate_score_threshold),
             settings.escalate_score_threshold,
         )
     for g in groups:
-        g.escalate = (not g.excluded) and g.triage_score >= threshold
+        g.escalate = (not g.excluded) and triage_policy.should_escalate(
+            triage_score=g.triage_score,
+            rule_severity=_rule_severity(g),
+            direction=g.direction,
+            threshold=threshold,
+        )
 
     # 持久化事件组，供后台/驾驶舱即时可见
     save_groups(groups, state.get("thread_id", ""))
     log.info(
-        "关联归组：%d 个事件组（其中已排除 %d 个），升级 %d 个",
+        "关联归组：%d 个事件组（其中已排除 %d 个 / 内网常规跳过 %d 个），升级 %d 个",
         len(groups),
         len(excluded_groups),
+        routine,
         sum(1 for g in groups if g.escalate),
     )
     return {"groups": groups}
@@ -1088,8 +1153,24 @@ def severity_node(state: AgentState) -> dict[str, Any]:
         _parallel_map(ask, pending, "cloud-severity", workers=_cloud_concurrency()),
         strict=False,
     ):
-        update_group_analysis(g.fingerprint, severity=severity)
-        g.severity = severity  # type: ignore[assignment]
+        # 误报治理：定级加硬约束（内→内封顶 / 无证据链不得 ≥high / critical 仅限外→内）
+        chain = (analyses.get(g.fingerprint) or {}).get("attack_chain") or {}
+        has_evidence = bool(
+            (chain.get("path") if isinstance(chain, dict) else None)
+            or (chain.get("stages") if isinstance(chain, dict) else None)
+        )
+        final_severity, cap_reason = triage_policy.cap_severity(
+            severity=severity,
+            direction=g.direction or _group_direction(g),
+            has_evidence=has_evidence,
+        )
+        if cap_reason:
+            log.info("定级约束 %s：%s", g.fingerprint[:8], cap_reason)
+        g.severity_cap_reason = cap_reason
+        update_group_analysis(
+            g.fingerprint, severity=final_severity, severity_cap_reason=cap_reason
+        )
+        g.severity = final_severity  # type: ignore[assignment]
     return {"groups": groups}
 
 
