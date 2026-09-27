@@ -116,9 +116,7 @@ def _count_dropped(reason: str, count: int) -> None:
 
         client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
         client.hincrby(settings.detector_drop_key, reason, int(count))
-        client.hset(
-            settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat()
-        )
+        client.hset(settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat())
         client.expire(settings.detector_drop_key, 30 * 24 * 3600)
     except Exception as exc:  # noqa: BLE001
         log.debug("写入丢弃计数失败: %s", exc)

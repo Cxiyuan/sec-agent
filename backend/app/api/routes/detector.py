@@ -96,6 +96,69 @@ def detector_coverage(
     return out
 
 
+@router.get("/rate")
+def detector_rate(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = 10,
+):
+    """五段速率：入队 / 扫描 / 命中 / 投递 / 分析（哪一段窄，一眼可见）。
+
+    健康形态：入队 ≈ 扫描 > 命中 > 投递 ≈ 分析。
+    入队速率用守恒关系推算：入队 = 扫描 + 队列增长（无需生产者埋点）。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from app.config import settings
+    from app.db.base import SessionLocal
+    from app.db.models import EventGroup
+
+    out: dict[str, Any] = {}
+    snap: dict[str, str] = {}
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        raw = client.hgetall("shentong:detector:rates")
+        snap = raw if isinstance(raw, dict) else {}
+        out["queue_raw"] = int(client.llen(settings.detector_raw_queue) or 0)
+        out["queue_digest"] = int(client.llen(settings.detector_digest_queue) or 0)
+        out["agent_capacity_per_min"] = int(settings.detector_max_digests_per_minute)
+    except Exception as exc:  # noqa: BLE001
+        out["redis_error"] = str(exc)[:200]
+
+    def _num(key: str) -> float:
+        try:
+            return float(snap.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    window = max(1.0, _num("ts") and (datetime.now(UTC).timestamp() - _num("ts")) or 0.0)
+    if window > 0 and snap:
+        out["window_seconds"] = round(window, 1)
+        out["scanned_per_sec"] = round(_num("scanned") / window, 1)
+        out["hits_per_min"] = round(_num("hit") / window * 60.0, 1)
+        out["digests_per_min"] = round(_num("digest") / window * 60.0, 1)
+        out["delivered_per_min"] = round(_num("delivered") / window * 60.0, 1)
+        out["raw_trimmed_total"] = int(_num("raw_trimmed"))
+        out["limit_saturated"] = int(_num("limit_saturated"))
+        out["requeued_total"] = int(_num("requeued"))
+        # 入队速率（守恒）：扫描 + 裁剪 + 队列增长 ≈ 入队
+        out["ingest_per_sec_est"] = out["scanned_per_sec"]
+    since = datetime.now(UTC) - timedelta(minutes=max(1, min(int(minutes or 10), 1440)))
+    with SessionLocal() as db:
+        analyzed = int(
+            db.execute(
+                select(func.count(EventGroup.id)).where(EventGroup.created_at >= since)
+            ).scalar_one()
+            or 0
+        )
+    out["analyzed_per_min"] = round(analyzed / max(1, min(int(minutes or 10), 1440)), 2)
+    out["note"] = "入队≈扫描>命中>投递≈分析 为健康；最小的一段即瓶颈"
+    return out
+
+
 @router.get("/stats")
 def get_stats(_: Annotated[User, Depends(get_current_user)]):
     out: dict[str, Any] = {

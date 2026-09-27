@@ -48,6 +48,25 @@ class ReliableQueue:
         item = self.r.rpoplpush(self.raw, self.processing)
         return item if isinstance(item, str) else None
 
+    def consume_many(self, limit: int = 200, timeout: int = 5) -> list[str]:
+        """批量取出：先阻塞取一条，再连续非阻塞补足到 limit；可靠语义不变。
+
+        为什么需要：原来每轮只取 1 条，固定开销（规则重载判断/统计/flush 条件）
+        被平摊到每条消息上，实测只能扫 ~190 条/秒，远低于采集速率（数千条/秒）。
+        """
+        out: list[str] = []
+        first = self.consume(timeout)
+        if first is None:
+            return out
+        out.append(first)
+        cap = max(1, int(limit))
+        while len(out) < cap:
+            item = self.try_consume()
+            if item is None:
+                break
+            out.append(item)
+        return out
+
     def ack(self, payload: str) -> None:
         self.r.lrem(self.processing, 1, payload)
 

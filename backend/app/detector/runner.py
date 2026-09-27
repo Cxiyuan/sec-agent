@@ -163,14 +163,19 @@ def run() -> None:
             scopes = _load_scopes()
             last_scope_load = now
 
-        payload = raw_q.consume(settings.detector_poll_timeout)
-        if payload:
+        # 批量消费：一次循环处理一批（固定开销只在每批一次），提升扫描吞吐
+        consumed_any = False
+        for payload in raw_q.consume_many(
+            settings.detector_consume_batch, settings.detector_poll_timeout
+        ):
+            consumed_any = True
             try:
                 _handle(payload, rules, scopes, freq, agg, handled, stats)
             except Exception:
                 log.exception("处理队列消息失败（已确认，避免卡死队列）")
             finally:
                 raw_q.ack(payload)
+        _ = consumed_any
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
@@ -237,6 +242,24 @@ def run() -> None:
                 agg.pending(),
                 health.describe(mem),
             )
+            # 速率快照落库（G4）：五段速率靠两个采样点的差值计算，面板/接口都能读
+            try:
+                client.hset(
+                    "shentong:detector:rates",
+                    mapping={
+                        "ts": time.time(),
+                        "scanned": stats["scanned"],
+                        "hit": stats["hit"],
+                        "freq_hit": stats["freq_hit"],
+                        "digest": stats["digest"],
+                        "delivered": stats["delivered"],
+                        "raw_trimmed": stats["dropped_raw_trimmed"],
+                        "limit_saturated": stats["limit_saturated"],
+                        "requeued": stats["requeued"],
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("写入速率快照失败: %s", exc)
             last_stats = time.time()
 
 
