@@ -227,6 +227,18 @@ def run_analysis_window() -> dict:
         end - timedelta(minutes=max(1, settings.analysis_interval_minutes))
     )
     max_backfill = timedelta(hours=settings.fallback_max_backfill_hours)
+    # 单轮窗口上限（分段推进水位）：水位停滞时窗口会无限变大（实测单次 >1500s 跑不完，
+    # 叠加 beat 每 900s 一发 → 多实例把两个 worker 全部占死，这就是分析停摆的根因）。
+    # 改成每轮只补最多 N 分钟、本轮处理到哪水位就推到哪，积压被稳定消化。
+    max_window = timedelta(minutes=max(1, int(settings.fallback_max_window_minutes)))
+    if end - start > max_window:
+        log.warning(
+            "兜底窗口 %s 超过单轮上限 %d 分钟（%s），本轮只补最近一段",
+            end - start,
+            settings.fallback_max_window_minutes,
+            end.isoformat(),
+        )
+        start = end - max_window
     if end - start > max_backfill:
         log.warning(
             "兜底窗口 %s 超过最大回补 %d 小时，已截断",
