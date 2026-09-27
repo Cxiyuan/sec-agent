@@ -25,8 +25,12 @@ from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
-# 主键优先级（越小越优先）：决定案件标题与 attacker_key 显示
-KEY_PRIORITY: dict[str, int] = {"ip": 0, "acct": 1, "domain": 2, "hash": 3, "host": 4}
+# 主键优先级（越小越优先）：决定案件标题与 attacker_key 显示。
+# 为什么 host 优先于 domain：实测“一堆内网主机查同一个公共域名”（如
+# download.windowsupdate.com / vnd.ms）会把案件命名成一个根本不是攻击者的域名，
+# 让人以为那是 C2。内网源的活动用“源主机”当标题才符合直觉；
+# 域名仍然保留在 keys.domain 里当 IOC，只是不当“攻击者身份”。
+KEY_PRIORITY: dict[str, int] = {"ip": 0, "acct": 1, "host": 2, "hash": 3, "domain": 4}
 KEY_TYPES: tuple[str, ...] = ("ip", "acct", "domain", "hash", "host")
 
 # 强键 / 弱键：只有强键能单独促成自动归并。
