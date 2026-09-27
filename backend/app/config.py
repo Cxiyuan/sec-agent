@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     detector_handled_max_members: int = 50000  # 单桶成员硬上限（超限丢弃登记并告警，不静默）
     redis_memory_warn_perc: int = 85  # Redis 内存占用告警线（占 maxmemory 的百分比）
     analysis_stuck_minutes: int = 30  # 事件组停在 analyzing 超过该分钟数视为“分析未收敛”
-    detector_agg_seconds: int = 60  # 短窗聚合时长（源IP+规则）
+    detector_agg_seconds: int = 300  # 聚合同源+同规则的窗口（60→300：合成更完整摘要，命中不丢）
     detector_agg_max_keys: int = 5000  # 并发聚合态上限（护栏）
     detector_batch_seconds: int = 20  # 攒批：最长等待
     detector_batch_max: int = 5  # 攒批：凑够多少条就触发
