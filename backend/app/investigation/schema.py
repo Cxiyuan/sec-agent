@@ -364,7 +364,9 @@ def validate_result(
         unsupported: list[str] = []
         if not result.lateral and any(w.lower() in text_low for w in ("横向", "横移", "内网渗透")):
             unsupported.append("横向移动")
-        if not result.exfil and any(w.lower() in text_low for w in ("外泄", "外传", "窃取", "回传")):
+        if not result.exfil and any(
+            w.lower() in text_low for w in ("外泄", "外传", "窃取", "回传")
+        ):
             unsupported.append("数据外泄")
         if not result.iocs and any(
             w.lower() in text_low for w in ("c2", "命令控制", "后门", "webshell", "远控", "勒索")

@@ -291,6 +291,39 @@ class IndexFailedError(Exception):
     """向量化失败，用于触发 Celery 重试。"""
 
 
+@celery_app.task(name="analysis.rebuild_cases")
+def rebuild_cases(
+    run_id: str,
+    *,
+    limit: int | None = None,
+    hours: int | None = None,
+    dispatch_after: bool = False,
+) -> dict:
+    """存量全量重建（手动触发，不进 beat）：按新规则重算键与归并，旧案件置 superseded。
+
+    重建只动案件与组上的指针列（不改事件、不改图），并落 rebuild_runs 支持回滚。
+    默认**不自动派发**新调查：旧结论随旧案件退场，避免批量烧模型预算。
+    """
+    from app.investigation import rebuild as rebuild_service
+
+    try:
+        return rebuild_service.apply(
+            run_id=run_id, limit=limit, hours=hours, dispatch_after=dispatch_after
+        )
+    except Exception as exc:
+        log.exception("重建失败（run %s）", run_id)
+        from app.db.base import SessionLocal
+        from app.db.models import RebuildRun
+
+        with SessionLocal() as db:
+            row = db.get(RebuildRun, run_id)
+            if row is not None:
+                row.status = "failed"
+                row.counts = {"error": str(exc)[:500]}
+                db.commit()
+        raise
+
+
 @celery_app.task(name="analysis.reap_stuck_groups")
 def reap_stuck_groups() -> dict:
     """把长时间停在 analyzing 的事件组标成「分析未收敛（analyze_failed）」。

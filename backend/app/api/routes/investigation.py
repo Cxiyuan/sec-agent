@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.db.base import get_db
+from app.db.base import SessionLocal, get_db
 from app.db.models import User
 from app.investigation import (
     cases as case_service,
@@ -61,6 +61,64 @@ def list_cases(
 @router.get("/stats")
 def case_stats(_: Annotated[User, Depends(get_current_user)]):
     return case_service.stats()
+
+
+# 注意：这两条必须声明在 /{case_id} 之前，否则 "rebuild" 会被当成案件 id
+@router.post("/rebuild")
+def rebuild_cases(
+    _: Annotated[User, Depends(get_current_user)],
+    dry_run: bool = True,
+    limit: int = Query(0, ge=0, le=20000),
+    hours: int = Query(0, ge=0, le=2160),
+    dispatch_after: bool = False,
+    rollback_run_id: str = "",
+):
+    """存量全量重建：dry_run=true 只算不写（先核对再执行），传 rollback_run_id 则回滚该批次。"""
+    from app.investigation import rebuild as rebuild_service
+
+    if rollback_run_id:
+        return rebuild_service.rollback(rollback_run_id)
+    bounded = limit or None
+    window = hours or None
+    if dry_run:
+        return rebuild_service.dry_run(limit=bounded, hours=window)
+    run_id = rebuild_service.new_run(dry=False, limit=bounded, hours=window)
+    from app.workers.celery_app import celery_app
+
+    celery_app.send_task(
+        "analysis.rebuild_cases",
+        args=[run_id],
+        kwargs={"limit": bounded, "hours": window, "dispatch_after": dispatch_after},
+    )
+    return {"ok": True, "run_id": run_id, "queued": True}
+
+
+@router.get("/rebuild/runs")
+def rebuild_runs(
+    _: Annotated[User, Depends(get_current_user)],
+    limit: int = Query(20, ge=1, le=100),
+):
+    from sqlalchemy import select
+
+    from app.db.models import RebuildRun
+
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(RebuildRun).order_by(RebuildRun.started_at.desc()).limit(limit)
+        ).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "dry_run": row.dry_run,
+                "status": row.status,
+                "counts": row.counts or {},
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.get("/{case_id}")

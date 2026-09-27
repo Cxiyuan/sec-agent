@@ -466,6 +466,20 @@ class AttackerCase(Base):
     )
 
 
+class RebuildRun(Base):
+    """存量重建批次：审计 + 回滚依据（一批次一次重建，可 dry-run）。"""
+
+    __tablename__ = "rebuild_runs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(24), default="running")
+    counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    mapping: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 旧案件 → 新建案件 id
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class CaseInvestigation(Base):
     """案件调查轮次（每轮一行）：取证留档，含查询轨迹与预算消耗。"""
 

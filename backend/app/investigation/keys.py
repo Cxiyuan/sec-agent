@@ -209,9 +209,7 @@ def _is_plausible_domain(value: str) -> bool:
     return bool(_DOMAIN_SHAPE.match(domain))
 
 
-def _filter_domains(
-    candidates: list[str], trusted: set[str]
-) -> tuple[list[str], list[str]]:
+def _filter_domains(candidates: list[str], trusted: set[str]) -> tuple[list[str], list[str]]:
     """只留真域名：形状合法 **且** 出现在域名语义字段里（trusted）。
 
     为什么必须有 trusted 这一关：IOC 正则会把 `application/vnd.ms-cab-compressed`
@@ -296,7 +294,9 @@ def extract_keys(
         sample_text = ", ".join(sorted({r for r in rejected if r})[:5])
         KEY_JUNK_REJECTED.refused += len(rejected)
         KEY_JUNK_REJECTED.last = sample_text
-        KEY_JUNK_REJECTED.samples = sorted({*KEY_JUNK_REJECTED.samples, *(r for r in rejected if r)})[:10]
+        KEY_JUNK_REJECTED.samples = sorted(
+            {*KEY_JUNK_REJECTED.samples, *(r for r in rejected if r)}
+        )[:10]
         log.info("键提取：丢弃 %d 个非域名候选（如 %s）", len(rejected), sample_text)
     return {
         "ip": _dedup(ips),
@@ -327,21 +327,13 @@ def overlap(a: dict[str, Any] | None, b: dict[str, Any] | None) -> set[str]:
 
 def strong_overlap(a: dict[str, Any] | None, b: dict[str, Any] | None) -> set[str]:
     """只算强键（ip/acct/hash）的交集 —— 自动归并的硬门槛。"""
-    wanted = {
-        f"{kind}:{value}"
-        for kind in STRONG_KEYS
-        for value in (a or {}).get(kind) or []
-    }
+    wanted = {f"{kind}:{value}" for kind in STRONG_KEYS for value in (a or {}).get(kind) or []}
     return wanted & key_set(b)
 
 
 def weak_overlap(a: dict[str, Any] | None, b: dict[str, Any] | None) -> set[str]:
     """只算弱键（host/domain）的交集。"""
-    wanted = {
-        f"{kind}:{value}"
-        for kind in WEAK_KEYS
-        for value in (a or {}).get(kind) or []
-    }
+    wanted = {f"{kind}:{value}" for kind in WEAK_KEYS for value in (a or {}).get(kind) or []}
     return wanted & key_set(b)
 
 
