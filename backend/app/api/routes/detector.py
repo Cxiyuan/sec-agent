@@ -24,6 +24,78 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/detector", tags=["detector"])
 
 
+@router.get("/coverage")
+def detector_coverage(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = 60,
+):
+    """漏报兑底率：窗口内 ES 命中文档数 vs 已落库事件数（含丢弃计数）。
+
+    语义：比率 <1 是正常的（策略跳过、聚合归并都会减少落库事件），看的是**趋势突变**
+    （比率骤降 = 大批事件没进分析），所以同时返回容量性丢弃计数供对照。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from app.config import settings
+    from app.db.base import SessionLocal
+    from app.db.models import Event, EventGroup
+
+    since = datetime.now(UTC) - timedelta(minutes=max(5, min(int(minutes or 60), 1440)))
+    out: dict[str, Any] = {"minutes": minutes, "since": since.isoformat()}
+    with SessionLocal() as db:
+        out["pg_events"] = int(
+            db.execute(select(func.count(Event.id)).where(Event.ts >= since)).scalar_one() or 0
+        )
+        out["groups"] = int(
+            db.execute(
+                select(func.count(EventGroup.id)).where(EventGroup.created_at >= since)
+            ).scalar_one()
+            or 0
+        )
+        out["excluded_groups"] = int(
+            db.execute(
+                select(func.count(EventGroup.id)).where(
+                    EventGroup.created_at >= since, EventGroup.status == "excluded"
+                )
+            ).scalar_one()
+            or 0
+        )
+    es_docs: int | None = None
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        cfg = es_config.current()
+        pattern = ",".join(
+            [
+                str(cfg.get("es.zeek_index") or settings.es_zeek_index),
+                str(cfg.get("es.wazuh_index") or settings.es_wazuh_index),
+            ]
+        )
+        resp = get_es().count(
+            index=pattern,
+            query={"range": {"@timestamp": {"gte": since.isoformat()}}},
+        )
+        es_docs = int(resp.get("count") or 0)
+    except Exception as exc:  # noqa: BLE001
+        out["es_error"] = str(exc)[:200]
+    out["es_docs"] = es_docs
+    if es_docs:
+        ratio = float(out["pg_events"]) / float(es_docs)
+        out["coverage_ratio"] = round(ratio, 3)
+        out["warn"] = ratio < float(settings.detector_coverage_warn_ratio)
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        out["dropped"] = client.hgetall(settings.detector_drop_key)
+    except Exception as exc:  # noqa: BLE001
+        out["dropped_error"] = str(exc)[:200]
+    return out
+
+
 @router.get("/stats")
 def get_stats(_: Annotated[User, Depends(get_current_user)]):
     out: dict[str, Any] = {

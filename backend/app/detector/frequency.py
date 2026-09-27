@@ -46,10 +46,12 @@ class FreqWindow:
         min_distinct = _to_int(cond.get("min_distinct"), 0)
 
         ts = time.time() if now is None else now
-        cutoff = ts - self.window
+        # 每规则窗口（长窗规则如 6h 慢速横向用）：缺省沿用全局窗口
+        window = max(1, _to_int(cond.get("window"), self.window))
+        cutoff = ts - window
         base = f"{_PREFIX}:{name}:{group}"
         cnt_key = f"{base}:cnt"
-        ttl = self.window * 2 + 60
+        ttl = window * 2 + 60
 
         pipe = self.r.pipeline()
         pipe.zremrangebyscore(cnt_key, "-inf", cutoff)
