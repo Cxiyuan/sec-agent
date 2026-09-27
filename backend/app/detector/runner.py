@@ -247,15 +247,15 @@ def run() -> None:
                 client.hset(
                     "shentong:detector:rates",
                     mapping={
-                        "ts": time.time(),
-                        "scanned": stats["scanned"],
-                        "hit": stats["hit"],
-                        "freq_hit": stats["freq_hit"],
-                        "digest": stats["digest"],
-                        "delivered": stats["delivered"],
-                        "raw_trimmed": stats["dropped_raw_trimmed"],
-                        "limit_saturated": stats["limit_saturated"],
-                        "requeued": stats["requeued"],
+                        "ts": str(time.time()),
+                        "scanned": str(stats["scanned"]),
+                        "hit": str(stats["hit"]),
+                        "freq_hit": str(stats["freq_hit"]),
+                        "digest": str(stats["digest"]),
+                        "delivered": str(stats["delivered"]),
+                        "raw_trimmed": str(stats["dropped_raw_trimmed"]),
+                        "limit_saturated": str(stats["limit_saturated"]),
+                        "requeued": str(stats["requeued"]),
                     },
                 )
             except Exception as exc:  # noqa: BLE001
