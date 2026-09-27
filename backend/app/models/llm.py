@@ -187,8 +187,12 @@ def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
 def _cloud_max_tokens(role: str) -> int:
     """云端输出上限（后台可改，即时生效）。deep 要大得多：结论 JSON 体积大。"""
     if role == "deep":
-        return max(256, _as_int(runtime_get("cloud_max_tokens_deep", settings.cloud_max_tokens_deep), 8192))
-    return max(256, _as_int(runtime_get("cloud_max_tokens_flash", settings.cloud_max_tokens_flash), 4096))
+        return max(
+            256, _as_int(runtime_get("cloud_max_tokens_deep", settings.cloud_max_tokens_deep), 8192)
+        )
+    return max(
+        256, _as_int(runtime_get("cloud_max_tokens_flash", settings.cloud_max_tokens_flash), 4096)
+    )
 
 
 def _strip_fence(text: str) -> str:
