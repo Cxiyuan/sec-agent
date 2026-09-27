@@ -115,7 +115,7 @@ def detector_rate(
     from app.db.models import EventGroup
 
     out: dict[str, Any] = {}
-    snap: dict[str, Any] = {}
+    snap: dict[Any, Any] = {}
     try:
         import redis
 
