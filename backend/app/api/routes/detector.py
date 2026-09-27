@@ -115,13 +115,13 @@ def detector_rate(
     from app.db.models import EventGroup
 
     out: dict[str, Any] = {}
-    snap: dict[str, str] = {}
+    snap: dict[str, Any] = {}
     try:
         import redis
 
         client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
         raw = client.hgetall("shentong:detector:rates")
-        snap = raw if isinstance(raw, dict) else {}
+        snap = dict(raw) if isinstance(raw, dict) else {}
         out["queue_raw"] = int(client.llen(settings.detector_raw_queue) or 0)
         out["queue_digest"] = int(client.llen(settings.detector_digest_queue) or 0)
         out["agent_capacity_per_min"] = int(settings.detector_max_digests_per_minute)
