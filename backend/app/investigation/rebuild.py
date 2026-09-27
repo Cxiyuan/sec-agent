@@ -137,6 +137,43 @@ def _split_bucket(
     return result
 
 
+def _similar_refs(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """弱键归并的**附加条件**（与 cases._similar 同判据）：目标重叠 + 手法相同 + 时间接近。
+
+    为什么需要它：内网源只有 host 弱键，光靠弱键不能归并；但“同一台内网主机、
+    打同一批目标、同样手法、时间连着”就是同一次活动 —— 不加这条会把案件层拆成
+    一组一案（实测 1362 组→ 1345 案，案件层就废物了）。
+    """
+    window = max(1, int(settings.investigation_link_window_hours)) * 3600
+
+    def _ts(value: Any) -> float | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.timestamp()
+
+    a_first, a_last = _ts(a.get("first_seen")), _ts(a.get("last_seen"))
+    b_first, b_last = _ts(b.get("first_seen")), _ts(b.get("last_seen"))
+    if a_first is not None and a_last is not None and b_first is not None and b_last is not None:
+        gap = min(abs(a_first - b_last), abs(b_first - a_last))
+        if gap > window:
+            return False
+    if not (
+        {str(x) for x in (a.get("dst_ips") or [])} & {str(x) for x in (b.get("dst_ips") or [])}
+    ):
+        return False
+    return bool(
+        {str(x) for x in (a.get("event_types") or [])}
+        & {str(x) for x in (b.get("event_types") or [])}
+    )
+
+
 def partition_groups(refs: list[dict[str, Any]], *, max_groups: int | None = None) -> list[CasePlan]:
     """按**强键连通分量**分区；分量超过上限时按攻击源二次拆分（纯函数，幂等）。
 
@@ -160,14 +197,20 @@ def partition_groups(refs: list[dict[str, Any]], *, max_groups: int | None = Non
             parent[rb] = ra
 
     anchor: dict[str, int] = {}
+    weak_anchor: dict[str, list[int]] = {}
     for idx, ref in enumerate(refs):
         for key in sorted(key_utils.key_set(ref.get("keys") or {})):
-            if key.split(":", 1)[0] not in key_utils.STRONG_KEYS:
+            if key.split(":", 1)[0] in key_utils.STRONG_KEYS:
+                if key in anchor:
+                    union(anchor[key], idx)
+                else:
+                    anchor[key] = idx
                 continue
-            if key in anchor:
-                union(anchor[key], idx)
-            else:
-                anchor[key] = idx
+            # 弱键（host/domain）：仅当“同一批目标 + 同样手法 + 时间接近”时才连接
+            for other in weak_anchor.get(key, []):
+                if _similar_refs(refs[other], ref):
+                    union(other, idx)
+            weak_anchor.setdefault(key, []).append(idx)
 
     components: dict[int, list[int]] = {}
     for idx in range(len(refs)):
