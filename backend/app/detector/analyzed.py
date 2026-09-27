@@ -89,7 +89,15 @@ def digest_fingerprint(digest: dict[str, Any]) -> str | None:
     if not rule or bucket is None:
         return None
     src_ip = str(digest.get("src_ip") or "-").strip()
-    raw = f"{rule}|{src_ip}|{int(bucket.timestamp())}"
+    # 指纹必须描述"同一个事件"，而不是"同一个源+规则"：
+    # 原来只有 rule|src|时间桶 → 同一台源机在 30 分钟桶内换了目标/端口也算重复，
+    # 后续真正的新行为（打新目标、摸新端口）会被整段去重 = 漏报。
+    # 现在纳入 目标集合 + 端口集合 + 事件类型：完全相同才视为重复（按窗口去重、只留计数）；
+    # 出现新目标/新端口/新类型 → 指纹不同 → 照旧进智能体分析。
+    dsts = ",".join(sorted(str(x) for x in (digest.get("dst_ips") or []))[:20])
+    ports = ",".join(sorted({str(p) for p in (digest.get("dst_ports") or []) if p is not None})[:20])
+    etypes = ",".join(sorted(str(x) for x in (digest.get("event_types") or []))[:10])
+    raw = f"{rule}|{src_ip}|{int(bucket.timestamp())}|{dsts}|{ports}|{etypes}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
