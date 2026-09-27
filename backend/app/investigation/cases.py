@@ -66,6 +66,10 @@ def case_dict(row: AttackerCase, *, with_investigation: bool = True) -> dict[str
         "id": row.id,
         # 展示用唯一编号（人工沟通/报告引用都靠它）：AC-<8位>
         "display_id": f"AC-{str(row.id)[:8].upper()}",
+        # 归并依据与自动拆分原因（界面解释“凭什么并在一起”）
+        "merge_basis": row.merge_basis or [],
+        "split_reason": row.split_reason or "",
+        "superseded_by": row.superseded_by or "",
         "attacker_key": row.attacker_key,
         "title": row.title,
         "keys": row.keys or {},
@@ -140,13 +144,25 @@ def group_ref(
 
 
 def _link_case(rows: list[AttackerCase], wanted: set[str]) -> tuple[AttackerCase | None, list[str]]:
-    """选出交集最大的案件；返回 (案件, 其它也有交集的案件 id)。"""
+    """选出交集最大的案件；返回 (案件, 其它也有交集的案件 id)。
+
+    **硬门槛：必须命中强键（ip/acct/hash）**。只命中弱键（host/domain）的不自动归并：
+    线上实测一个脏域名键（vnd.ms，来自文件 MIME 类型）或一个内网主机键，就能把几十个
+    无关事件组粘成巨案（最大 149 组）。弱键与相似度只用于“候选 + 模型确认”。
+    """
+    strong_wanted = {k for k in wanted if k.split(":", 1)[0] in key_utils.STRONG_KEYS}
+    if not strong_wanted:
+        return None, []
     scored: list[tuple[int, datetime, AttackerCase]] = []
     for row in rows:
-        overlap = wanted & key_utils.key_set(row.keys)
-        if overlap:
-            last = row.last_seen or row.created_at or _now()
-            scored.append((len(overlap), last, row))
+        row_keys = key_utils.key_set(row.keys)
+        strong_hit = strong_wanted & row_keys
+        if not strong_hit:
+            continue
+        overlap = wanted & row_keys
+        last = row.last_seen or row.created_at or _now()
+        # 强键命中优先，其次看总交集大小
+        scored.append((len(strong_hit) * 10 + len(overlap), last, row))
     if not scored:
         return None, []
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -282,7 +298,7 @@ def upsert_from_groups(refs: list[dict[str, Any]]) -> dict[str, Any]:
     """归集主入口：把事件组引用挂到案件上，返回需要调查的案件 id 与原因。"""
     if not refs:
         return {"created": 0, "linked": 0, "skipped": 0, "dispatch": []}
-    created = linked = skipped = adjudications = 0
+    created = linked = skipped = adjudications = splits = 0
     dispatch: list[dict[str, Any]] = []
     for ref in refs:
         wanted = key_utils.key_set(ref.get("keys") or {})
@@ -306,14 +322,33 @@ def upsert_from_groups(refs: list[dict[str, Any]]) -> dict[str, Any]:
             case_id, is_new = _create_case(ref), True
             created += 1
         else:
-            case_id, is_new = target.id, False
-            linked += 1
+            # 案件规模上限：超限则自动拆分（新建平行案件）——不静默丢组，也不养巨型案件
+            cap = max(1, _safe_int(settings.case_max_groups, 40))
+            if _safe_int(target.group_count) >= cap:
+                log.warning(
+                    "案件 %s 已达规模上限 %d 组，为事件组 %s 自动新建平行案件（自动拆分）",
+                    target.id,
+                    cap,
+                    ref.get("fingerprint"),
+                )
+                splits += 1
+                case_id = _create_case(
+                    ref, split_reason=f"原案件已达规模上限 {cap} 组，自动新建平行案件"
+                )
+                is_new = True
+                created += 1
+            else:
+                case_id, is_new = target.id, False
+                linked += 1
         with SessionLocal() as db:
             row = db.get(AttackerCase, case_id)
             if row is None:
                 skipped += 1
                 continue
             _attach(db, row, ref, link_reason=link_reason, is_new=is_new, others=others)
+            # 归并依据：真正把两者放到一起的键（界面可解释“凭什么并在一起”）
+            if target is not None:
+                row.merge_basis = sorted(key_utils.key_set(row.keys) & wanted)[:20]
             db.commit()
             ok, reason = should_investigate(row, is_new=is_new)
             if ok:
@@ -325,6 +360,7 @@ def upsert_from_groups(refs: list[dict[str, Any]]) -> dict[str, Any]:
         "linked": linked,
         "skipped": skipped,
         "adjudications": adjudications,
+        "split": splits,
         "dispatch": dispatch,
     }
 
@@ -346,7 +382,7 @@ def qualifies_severity(severity: Any) -> bool:
     return _qualifies(severity)
 
 
-def _create_case(ref: dict[str, Any]) -> str:
+def _create_case(ref: dict[str, Any], *, split_reason: str = "") -> str:
     extracted = key_utils.compact(ref.get("keys") or {})
     primary = key_utils.primary_key(extracted)
     sev = str(ref.get("severity") or "info")
@@ -356,6 +392,7 @@ def _create_case(ref: dict[str, Any]) -> str:
         keys=extracted,
         status=_initial_status(sev),
         severity=sev,
+        split_reason=split_reason,
         src_ips=sorted({str(x) for x in (ref.get("src_ips") or [])}),
         dst_ips=sorted({str(x) for x in (ref.get("dst_ips") or [])}),
         group_fingerprints=[str(ref.get("fingerprint") or "")],
@@ -531,15 +568,24 @@ def apply_result(case_id: str, result: dict[str, Any], *, status: str) -> None:
             if fps
             else []
         )
+        # 只写“指针 + 案件视角副本”：
+        #   1) 绝不用案件叙事覆盖组自身的攻击链（那是模型/调查写的，不是该组的事实）；
+        #   2) 绝不碰组的级别（否则会变成“调查说自己有事就给自己提级”）。
+        case_context = {
+            "case_id": case_id,
+            "title": row.title,
+            "severity": row.severity,
+            "status": status,
+            "summary": str(result.get("summary") or "")[:2000],
+            "path": result.get("path") or [],
+            "confidence": result.get("confidence"),
+            "rounds": _safe_int(row.rounds_total),
+            "updated_at": _now().isoformat(),
+            "superseded": False,
+        }
         for group in groups:
-            group.attack_chain = result
-            profile = result.get("attacker") or {}
-            if isinstance(profile, dict) and (profile.get("basic") or profile.get("behavior")):
-                group.profile = {
-                    "basic": profile.get("basic") or {},
-                    "behavior": profile.get("behavior") or {},
-                    "case_id": case_id,
-                }
+            group.case_id = case_id
+            group.case_context = case_context
         db.commit()
     log.info(
         "案件 %s 调查结果落库：阶段 %d / IOC %d / 缺口 %d（状态 %s）",

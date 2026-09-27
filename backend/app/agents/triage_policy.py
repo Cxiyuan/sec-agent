@@ -151,6 +151,43 @@ def internal_routine_reason(
     )
 
 
+# ---------- 证据阶梯（定级的唯一依据：只看结构化事件事实） ----------
+
+TIER_STRONG = "T2"  # 成功连接 / 大量外传 / 高危规则多次命中
+TIER_WEAK = "T1"  # 仅扫描/探测/半开/文件传输/HTTP 请求
+TIER_NONE = "T0"  # 无事件
+
+
+def evidence_tier(
+    *,
+    event_types: Any = None,
+    conn_states: Any = None,
+    bytes_out: Any = 0,
+    rule_severity: Any = None,
+    hits: Any = 0,
+) -> str:
+    """事件级证据阶梯。
+
+    为什么不能用“有没有攻击链”当证据：攻击链是模型写的，甚至会被案件叙事回写 ——
+    等于让模型自己给自己作证。线上实测因此出现“2 条 info 级文件传输判 critical”。
+    这里只看结构化事实：连接状态、事件类型、外传字节、规则严重度与命中次数。
+    """
+    types = {str(x).lower() for x in (event_types or []) if x}
+    states = {str(x).upper() for x in (conn_states or []) if x}
+    if types & SUCCESS_EVENT_TYPES or states & SUCCESS_CONN_STATES:
+        return TIER_STRONG
+    if _int_of(bytes_out, 0) >= _int_setting("evidence_bytes_out_strong"):
+        return TIER_STRONG
+    if _rank(rule_severity) >= SEVERITY_RANK["high"] and _int_of(hits, 0) >= 2:
+        return TIER_STRONG
+    if types or states:
+        return TIER_WEAK
+    return TIER_NONE
+
+
+_TIER_CAP: dict[str, str] = {TIER_NONE: "low", TIER_WEAK: "medium"}
+
+
 # ---------- 策略 2：定级约束 ----------
 
 
@@ -159,21 +196,31 @@ def cap_severity(
     severity: Any,
     direction: str,
     has_evidence: bool,
+    tier: str = "",
 ) -> tuple[str, str]:
     """把模型定级约束到合理范围，返回 (最终级别, 降级原因)；未降级时原因为空串。
 
-    约束顺序：证据 → 方向 → critical 专属（取最严）。每条降级都写明原因，供界面展示。
+    ``tier``（事件级证据阶梯）给出时，以它为主要依据：
+    - T0/T1 封顶，critical 必须 T2；
+    未给 ``tier`` 时回退到旧的 ``has_evidence``（兼容历史调用与桩测）：
+    只要求“有可验证证据链”，不再单独决定 high。
     """
     rank = _rank(severity)
     original = _severity_of(rank)
     reasons: list[str] = []
 
-    above = _text("severity_require_evidence_above")
-    if not has_evidence and above in SEVERITY_RANK:
-        cap = SEVERITY_RANK[above] - 1
-        if rank > cap:
-            rank = cap
-            reasons.append("无可验证证据链")
+    if tier:
+        cap_text = _TIER_CAP.get(tier, "")
+        if cap_text and rank > SEVERITY_RANK[cap_text]:
+            rank = SEVERITY_RANK[cap_text]
+            reasons.append(f"证据只有 {tier} 级（{cap_text} 上限）")
+    else:
+        above = _text("severity_require_evidence_above")
+        if not has_evidence and above in SEVERITY_RANK:
+            cap = SEVERITY_RANK[above] - 1
+            if rank > cap:
+                rank = cap
+                reasons.append("无可验证证据链")
 
     cap_text = _text("severity_cap_internal")
     if direction == DIR_IN_TO_IN and cap_text in SEVERITY_RANK:
@@ -189,6 +236,11 @@ def cap_severity(
     ):
         rank = SEVERITY_RANK["high"]
         reasons.append("critical 仅限外→内")
+
+    # critical 额外要求强证据（T2）：扫描/文件传输/HTTP 请求不能撑起“严重”
+    if tier and tier != TIER_STRONG and rank >= SEVERITY_RANK["critical"]:
+        rank = SEVERITY_RANK["high"]
+        reasons.append(f"critical 需要强证据（当前 {tier}）")
 
     final = _severity_of(rank)
     if not reasons:

@@ -584,6 +584,22 @@ def _group_direction(g: EventGroup) -> str:
     return triage_policy.direction_of(g.src_ips[0] if g.src_ips else None, g.dst_ips)
 
 
+def _group_evidence_tier(g: EventGroup) -> str:
+    """组的事件级证据阶梯（T2/T1/T0）—— 定级的唯一事实依据。
+
+    不看模型写的攻击链：那是模型（甚至案件叙事）自己写的，等于自己给自己作证。
+    """
+    events = list(g.events or [])
+    return triage_policy.evidence_tier(
+        event_types=[str(getattr(ev.log, "event_type", "") or "") for ev in events],
+        conn_states=[str(getattr(ev.log, "conn_state", "") or "") for ev in events],
+        bytes_out=max((getattr(ev.log, "bytes_out", 0) or 0) for ev in events) if events else 0,
+        rule_severity=_rule_severity(g),
+        # 不做 int() 强转：evidence_tier 自己会安全转换
+        hits=(g.aggregate or {}).get("hits") or len(events),
+    )
+
+
 def _group_has_success(g: EventGroup) -> bool:
     """组内是否出现过“成功连接”（决定内网常规流量是否仍需照旧分析）。"""
     return any(
@@ -1154,19 +1170,16 @@ def severity_node(state: AgentState) -> dict[str, Any]:
         _parallel_map(ask, pending, "cloud-severity", workers=_cloud_concurrency()),
         strict=False,
     ):
-        # 误报治理：定级加硬约束（内→内封顶 / 无证据链不得 ≥high / critical 仅限外→内）
-        chain = (analyses.get(g.fingerprint) or {}).get("attack_chain") or {}
-        has_evidence = bool(
-            (chain.get("path") if isinstance(chain, dict) else None)
-            or (chain.get("stages") if isinstance(chain, dict) else None)
-        )
+        # 误报治理：定级只看**事件级证据阶梯**（不再用“攻击链非空”当证据）
+        tier = _group_evidence_tier(g)
         final_severity, cap_reason = triage_policy.cap_severity(
             severity=severity,
             direction=g.direction or _group_direction(g),
-            has_evidence=has_evidence,
+            has_evidence=bool(analyses.get(g.fingerprint)),
+            tier=tier,
         )
         if cap_reason:
-            log.info("定级约束 %s：%s", g.fingerprint[:8], cap_reason)
+            log.info("定级约束 %s（证据 %s）：%s", g.fingerprint[:8], tier, cap_reason)
         g.severity_cap_reason = cap_reason
         update_group_analysis(
             g.fingerprint, severity=final_severity, severity_cap_reason=cap_reason

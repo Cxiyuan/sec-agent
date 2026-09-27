@@ -100,6 +100,9 @@ class InvestigationResult(BaseModel):
     query_trail: list[dict[str, Any]] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     dropped: list[str] = Field(default_factory=list)  # 因证据不足被丢弃的条目（可审计）
+    # 结论一致性（防幻觉）：声称高级行为但缺结构化证据 → True；取证不完整 → degraded
+    contradiction: bool = False
+    degraded: bool = False
 
     @field_validator("confidence")
     @classmethod
@@ -350,6 +353,41 @@ def validate_result(
     result.attacker = attacker_raw if isinstance(attacker_raw, dict) else {}
     result.summary = str(payload.get("summary") or "")[:2000]
     result.confidence = payload.get("confidence") or 0.0
+
+    # 一致性校验（防幻觉）：结论声称高级攻击行为，却没有任何对应结构化证据 → 标记存疑 + 降级置信度。
+    # 为什么必须做：线上出现过“只有 20 台内网主机 SYN 扫描”却写成“横向移动 + 数据外泄 + critical”，
+    # 而且这些叙事还会被当定级依据。这里只标注与降级，不删原文（可审计）。
+    from app.config import settings as _settings
+
+    if _settings.consistency_guard:
+        text_low = result.summary.lower()
+        unsupported: list[str] = []
+        if not result.lateral and any(w.lower() in text_low for w in ("横向", "横移", "内网渗透")):
+            unsupported.append("横向移动")
+        if not result.exfil and any(w.lower() in text_low for w in ("外泄", "外传", "窃取", "回传")):
+            unsupported.append("数据外泄")
+        if not result.iocs and any(
+            w.lower() in text_low for w in ("c2", "命令控制", "后门", "webshell", "远控", "勒索")
+        ):
+            unsupported.append("控制/后门类行为")
+        if not result.path and any(w.lower() in text_low for w in ("提权", "持久化", "植入")):
+            unsupported.append("提权/持久化")
+        if unsupported:
+            result.contradiction = True
+            try:
+                cap = max(0.0, float(_settings.contradiction_confidence_cap))
+            except (TypeError, ValueError):
+                cap = 0.3
+            try:
+                current = float(result.confidence or 0.0)
+            except (TypeError, ValueError):
+                current = 0.0
+            result.confidence = min(current, cap)
+            dropped.append(
+                "结论一致性：提到 "
+                + "、".join(unsupported)
+                + " 但缺少对应结构化证据 → 标记存疑（置信度已降级，不作为定级依据）"
+            )
 
     # 置信度封顶：证据链不完整时不允许出现"高置信度"
     #   - 有阶段因无证据被丢弃 → 上限 0.6

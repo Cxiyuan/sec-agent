@@ -233,6 +233,7 @@ class Settings(BaseSettings):
     prefilter_penalty_established: float = 0.3  # 双向有字节的已建立连接
     prefilter_penalty_known_asset: float = 0.2  # 目标在已录资产内
     prefilter_penalty_common_port: float = 0.2  # 常用端口
+    evidence_bytes_out_strong: int = 10485760  # 外传字节达到该值算“强证据”（T2）
 
     # 自主取证调查（深度分析路径上的「有界自主」：按需查询 → 还原完整攻击路径）
     # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
@@ -268,6 +269,13 @@ class Settings(BaseSettings):
     investigation_max_lookback_days: int = 30  # 调查自身取证跨度上限（默认=ES 保留期）
     investigation_keep_fixed_deep: bool = True  # 保留固定深度分析作为即时结果与兜底
     case_stale_close_days: int = 7  # 零轮次案件超过该天数自动关闭（先摘置→关闭）
+    # ---- 归并与定级治理（防误并 / 防幻觉 / 防定级虚高）----
+    case_max_groups: int = 40  # 单案成员组上限，超出即自动拆分（新建平行案件）
+    case_split_by_actor: bool = True  # 超限/重建时按攻击源（公网IP→内网主机）拆分
+    consistency_guard: bool = True  # 结论与证据一致性校验（声称横向/外泄但无结构化证据则标记降级）
+    contradiction_confidence_cap: float = 0.3  # 结论存疑时的置信度上限
+    degraded_tool_error_limit: int = 3  # 单轮工具报错达到该数视为“取证不完整”
+    key_require_domain_field: bool = True  # 域名必须出现在域名语义字段里（禁止从 MIME/任意文本抠）
 
     # 威胁情报（免费在线服务，无需 API key：ip-api/ipwho.is、rdap.org、abuse.ch 家族）
     intel_enabled: bool = True

@@ -36,6 +36,13 @@ _MIGRATIONS = (
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS direction VARCHAR(16) NOT NULL DEFAULT ''",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS exclude_reason TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS severity_cap_reason TEXT NOT NULL DEFAULT ''",
+    # 回写改造：组上只留案件指针 + 案件视角副本（不再被案件叙事覆盖）
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NOT NULL DEFAULT ''",
+    "ALTER TABLE event_groups ADD COLUMN IF NOT EXISTS case_context JSONB",
+    # 归并治理：归并依据 / 自动拆分原因 / 被哪个批次取代
+    "ALTER TABLE attacker_cases ADD COLUMN IF NOT EXISTS merge_basis JSONB",
+    "ALTER TABLE attacker_cases ADD COLUMN IF NOT EXISTS split_reason TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE attacker_cases ADD COLUMN IF NOT EXISTS superseded_by VARCHAR(64) NOT NULL DEFAULT ''",
 )
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）

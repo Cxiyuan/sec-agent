@@ -85,6 +85,10 @@ class EventGroup(Base):
     exclude_reason: Mapped[str] = mapped_column(Text, default="")
     # 定级被约束的原因（如「内网方向封顶」）
     severity_cap_reason: Mapped[str] = mapped_column(Text, default="")
+    # 所属攻击者案件（指针）：案件叙事不再覆盖本组的攻击链，只留指针 + 副本
+    case_id: Mapped[str] = mapped_column(String(64), default="")
+    # 案件视角副本（summary/path/rounds/superseded）——组详情可折叠查看，可追溯
+    case_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     anomaly: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_suggestions: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -442,6 +446,10 @@ class AttackerCase(Base):
     investigation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # 冷却期内累积的新证据信号（新阶段/新 IOC/严重度上升）
     pending_signal: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # 归并依据（真正促成归并的键）+ 自动拆分原因 + 被哪个重建批次取代
+    merge_basis: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    split_reason: Mapped[str] = mapped_column(Text, default="")
+    superseded_by: Mapped[str] = mapped_column(String(64), default="")
     rounds_total: Mapped[int] = mapped_column(Integer, default=0)
     rounds_today: Mapped[int] = mapped_column(Integer, default=0)
     rounds_day: Mapped[str] = mapped_column(String(10), default="")  # 跨天重置用（YYYY-MM-DD）
