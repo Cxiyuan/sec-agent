@@ -529,6 +529,24 @@ export interface LogstashStatus {
   queue_depth: number | null;
 }
 
+/** 五段速率（入队/扫描/命中/投递/分析）——哪一段窄，一眼可见 */
+export interface DetectorRate {
+  window_seconds?: number | null;
+  ingest_per_sec_est?: number | null;
+  scanned_per_sec?: number | null;
+  hits_per_min?: number | null;
+  digests_per_min?: number | null;
+  delivered_per_min?: number | null;
+  analyzed_per_min?: number | null;
+  agent_capacity_per_min?: number | null;
+  queue_raw?: number | null;
+  queue_digest?: number | null;
+  raw_trimmed_total?: number | null;
+  limit_saturated?: number | null;
+  requeued_total?: number | null;
+  note?: string;
+}
+
 export interface DetectorStats {
   enabled: boolean;
   queue_raw: number | null;

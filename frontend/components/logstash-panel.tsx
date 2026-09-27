@@ -20,6 +20,8 @@ export function LogstashPanel() {
   const [preview, setPreview] = React.useState("");
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  // 五段速率（入队/扫描/命中/投递/分析）：哪个环节最窄一眼可见
+  const [rate, setRate] = React.useState<Record<string, number | null | undefined> | null>(null);
 
   async function load() {
     const d = await apiFetch<LogstashStatus>("/api/logstash");
@@ -30,6 +32,10 @@ export function LogstashPanel() {
     // 旁路检测器状态（让「事件被丢弃」可见）
     apiFetch<DetectorStats>("/api/detector/stats")
       .then(setDet)
+      .catch(() => {});
+    // 五段速率（后端已有 /api/detector/rate）
+    apiFetch<Record<string, number | null | undefined>>("/api/detector/rate?minutes=10")
+      .then(setRate)
       .catch(() => {});
   }
 
@@ -147,6 +153,24 @@ export function LogstashPanel() {
             </p>
             {ls && !ls.alive && ls.error && (
               <p className="mt-1 text-destructive">状态读取失败：{ls.error}</p>
+            )}
+            {rate && (
+              <p className="mt-1 text-muted-foreground">
+                五段速率（10 分钟）：扫描 {rate.scanned_per_sec ?? "-"}/秒 · 命中{" "}
+                {rate.hits_per_min ?? "-"}/分 · 摘要 {rate.digests_per_min ?? "-"}/分 · 投递{" "}
+                {rate.delivered_per_min ?? "-"}/分 · 分析 {rate.analyzed_per_min ?? "-"}/分 · 模型容量{" "}
+                {rate.agent_capacity_per_min ?? "-"}/分
+                {(rate.limit_saturated ?? 0) > 0 && (
+                  <span className="text-amber-500">
+                    {" · "}额度饱和 {rate.limit_saturated} 次
+                  </span>
+                )}
+                {(rate.raw_trimmed_total ?? 0) > 0 && (
+                  <span className="text-amber-500">
+                    {" · "}已裁剪 {rate.raw_trimmed_total} 条（扫描跟不上入队）
+                  </span>
+                )}
+              </p>
             )}
             {det && (
               <p className="mt-1 text-muted-foreground">
