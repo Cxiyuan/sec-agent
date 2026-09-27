@@ -329,15 +329,28 @@ def upsert_from_groups(refs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _qualifies(severity: Any) -> bool:
+    """严重度是否达到调查门槛（纯函数，便于桩测）。"""
+    return _severity_rank(str(severity or "info")) >= _severity_rank(
+        settings.investigation_min_severity
+    )
+
+
+def _initial_status(severity: Any) -> str:
+    """新建案件的初始状态：低于门槛 → shelved（归档、列表默认隐藏、不派发调查）。"""
+    return "open" if _qualifies(severity) else "shelved"
+
+
 def _create_case(ref: dict[str, Any]) -> str:
     extracted = key_utils.compact(ref.get("keys") or {})
     primary = key_utils.primary_key(extracted)
+    sev = str(ref.get("severity") or "info")
     row = AttackerCase(
         attacker_key=primary,
         title=f"攻击者 {primary}",
         keys=extracted,
-        status="open",
-        severity=str(ref.get("severity") or "info"),
+        status=_initial_status(sev),
+        severity=sev,
         src_ips=sorted({str(x) for x in (ref.get("src_ips") or [])}),
         dst_ips=sorted({str(x) for x in (ref.get("dst_ips") or [])}),
         group_fingerprints=[str(ref.get("fingerprint") or "")],
@@ -380,6 +393,9 @@ def _attach(
     row.attacker_key = key_utils.primary_key(row.keys)
     if _severity_rank(ref.get("severity")) > _severity_rank(row.severity):
         row.severity = str(ref.get("severity"))
+    # 达标信号复活：搁置案件收到达门槛的严重度 → 回到 open（是否派发由 should_investigate 判）
+    if row.status == "shelved" and _qualifies(row.severity):
+        row.status = "open"
     for attr, value in (
         ("first_seen", _dt(ref.get("first_seen"))),
         ("last_seen", _dt(ref.get("last_seen"))),
@@ -690,14 +706,29 @@ def stats() -> dict[str, Any]:
         inv_rows = db.scalars(select(CaseInvestigation)).all()
         by_result: dict[str, int] = {}
         tokens = 0
+        # 护栏计数（来自每轮落库的 budget）：一眼看出空转是“模型不听话”还是“数据查不到”
+        guards = {"invalid_json": 0, "truncated": 0, "salvaged": 0, "no_progress": 0, "repeat": 0}
         for inv in inv_rows:
             by_result[inv.status] = by_result.get(inv.status, 0) + 1
             tokens += _safe_int(inv.tokens)
+            budget = inv.budget or {}
+            guards["invalid_json"] += _safe_int(budget.get("invalid_json"))
+            guards["truncated"] += _safe_int(budget.get("truncated"))
+            guards["salvaged"] += _safe_int(budget.get("salvaged"))
+            guards["no_progress"] += _safe_int(budget.get("no_progress_hits"))
+            guards["repeat"] += _safe_int(budget.get("repeat_hits"))
+    empty_cases = sum(1 for row in rows if _safe_int(row.rounds_total) == 0)
     return {
         "enabled": settings.investigation_enabled,
         "min_severity": settings.investigation_min_severity,
         "cases_total": total,
         "cases_by_status": by_status,
+        # 空壳可见性：零轮次案件数与占比（归档后应明显下降）
+        "cases_empty": empty_cases,
+        "cases_empty_perc": round(empty_cases * 100.0 / total, 1) if total else 0.0,
+        "cases_shelved": by_status.get("shelved", 0),
+        "cases_closed": by_status.get("closed", 0),
+        "guards": guards,
         "rounds_today": rounds_today,
         "max_rounds_per_day": settings.investigation_max_rounds_per_day,
         "cooldown_minutes": settings.investigation_cooldown_minutes,
@@ -707,7 +738,11 @@ def stats() -> dict[str, Any]:
             "max_steps": settings.investigation_max_steps,
             "max_queries": settings.investigation_max_queries,
             "max_llm_calls": settings.investigation_max_llm_calls,
+            "max_steps_hard": settings.investigation_max_steps_hard,
+            "max_llm_calls_hard": settings.investigation_max_llm_calls_hard,
             "timeout_seconds": settings.investigation_timeout_seconds,
+            "invalid_json_limit": settings.investigation_invalid_json_limit,
+            "no_progress_steps": settings.investigation_no_progress_steps,
             "docs_per_query": settings.investigation_max_docs_per_query,
         },
     }
@@ -742,12 +777,19 @@ def list_cases(
     keyword: str = "",
     limit: int = 50,
     offset: int = 0,
+    include_shelved: bool = False,
 ) -> dict[str, Any]:
-    """案件列表（分页 + 过滤）。"""
+    """案件列表（分页 + 过滤）。
+
+    默认不返回 shelved/closed：实测 25 个新案件里 20 个是零轮次空壳（info 级不够门槛），
+    把列表刷满了。归档而不是删除——需要排查时用 ``include_shelved`` 显式打开。
+    """
     with SessionLocal() as db:
         query = select(AttackerCase).order_by(AttackerCase.last_seen.desc().nullslast())
         if status:
             query = query.where(AttackerCase.status == status)
+        elif not include_shelved:
+            query = query.where(AttackerCase.status.notin_(["shelved", "closed"]))
         if severity:
             query = query.where(AttackerCase.severity == severity)
         if keyword:

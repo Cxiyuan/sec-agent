@@ -232,6 +232,34 @@ INVESTIGATION_USER = """案件：{case_key}（严重度 {severity}，成员事�
 
 请输出下一步动作 JSON（只输出 JSON）。"""
 
+# ---------- 收束调用（预算用尽/被护栏拦住时，只出结论） ----------
+
+# 为什么单开一个模板：模型在“预算用尽/输出被判无效”后往往还想继续查，把任务压到
+# “只整理结论、不再查询”后，能把已取证内容落成 path/gaps，避免整轮白跑。
+INVESTIGATION_SALVAGE_SYSTEM = """你是安全运营中心（SOC）的取证调查员。本轮调查已被中止（预算用尽或输出异常）。
+现在**只做一件事**：把已经取证到的内容整理成结论 JSON。不得再报告任何“下一步查询”。
+纪律：只写有证据的阶段（证据引用只能用给定清单里的），查不到的写进 gaps；宁缺勿编。
+只输出 JSON。"""
+
+INVESTIGATION_SALVAGE_USER = """案件：{case_key}（严重度 {severity}，成员事件组 {group_count} 个，事件 {event_count} 条）
+中止原因：{reason}
+
+【本轮已记录的阶段事实】（由 record_finding 写入，必须保留）
+{findings}
+
+【本轮已记录的缺口】
+{gaps}
+
+【本轮取证轨迹（工具 / 参数 / 结果条数 / 错误）】
+{trail}
+
+【本轮可用作证据引用的清单】
+{refs}
+
+请输出结论 JSON（结构与正式 finish 相同）：{{"path": [{{"stage": "侦察|入侵|立足|横向|外泄", "description": "…", "evidence_refs": ["…"]}}], "timeline": [], "lateral": [], "exfil": [], "iocs": [], "assets_impacted": [], "gaps": [{{"missing": "…", "why": "…", "next_action": "…"}}], "confidence": 0.0, "summary": "…"}}
+只输出 JSON。"""
+
+
 CASE_LINK_SYSTEM = """你是攻击活动关联专家。判断一个新事件组是否属于已存在的某个案件（同一次攻击活动）。
 严格输出 JSON：{"case_id": "候选案件ID 或 none", "reason": "一句话中文理由"}
 判定依据：目标资产重叠、攻击手法（事件类型）连续、时间接近、攻击者行为特征一致；证据不足时输出 none。

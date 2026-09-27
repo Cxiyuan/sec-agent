@@ -55,5 +55,10 @@ celery_app.conf.update(
             "task": "analysis.reap_stuck_groups",
             "schedule": 300.0,
         },
+        # 空壳案件治理：零轮次且长期无新增 → 自动关闭（列表默认已隐藏）
+        "shelve-stale-cases": {
+            "task": "analysis.shelve_stale_cases",
+            "schedule": 3600.0,
+        },
     },
 )

@@ -69,7 +69,9 @@ class HandledRegistry:
         self.bucket = max(
             60,
             _as_int(
-                bucket_seconds if bucket_seconds is not None else settings.detector_handled_bucket_seconds,
+                bucket_seconds
+                if bucket_seconds is not None
+                else settings.detector_handled_bucket_seconds,
                 600,
             ),
         )

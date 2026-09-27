@@ -46,9 +46,15 @@ def list_cases(
     keyword: str = "",
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    include_shelved: bool = False,
 ):
     return case_service.list_cases(
-        status=status, severity=severity, keyword=keyword, limit=limit, offset=offset
+        status=status,
+        severity=severity,
+        keyword=keyword,
+        limit=limit,
+        offset=offset,
+        include_shelved=include_shelved,
     )
 
 

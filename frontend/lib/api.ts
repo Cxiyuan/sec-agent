@@ -905,6 +905,13 @@ export interface InvestigationStats {
   min_severity: string;
   cases_total: number;
   cases_by_status: Record<string, number>;
+  /** 空壳案件治理：零轮次案件数与占比（归档后应明显下降） */
+  cases_empty?: number;
+  cases_empty_perc?: number;
+  cases_shelved?: number;
+  cases_closed?: number;
+  /** 调查护栏计数：invalid_json / truncated / salvaged / no_progress / repeat */
+  guards?: Record<string, number>;
   rounds_today: number;
   max_rounds_per_day: number;
   cooldown_minutes: number;

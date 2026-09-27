@@ -168,6 +168,8 @@ def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
     """云端模型（flash 日常 / deep 深度），共用同一 MiniMax 端点。
 
     ``max_retries=0``：重试统一由 ``_cloud_retry`` 负责（能计数、能统一退避、能受并发闸门约束）。
+    ``max_tokens``：**显式设置**。不设时服务端默认值偏小，调查的 ``finish`` 结论 JSON（含 path/
+    timeline/iocs）会被截断 → 解析失败 → 整轮白跑（实测就是这个原因）。
     """
     return ChatOpenAI(
         model=resolve_model(role),
@@ -176,7 +178,17 @@ def _cloud_llm(role: str, temperature: float = 0.0) -> ChatOpenAI:
         temperature=temperature,
         timeout=settings.cloud_model_timeout,
         max_retries=0,
+        # langchain 该字段对外别名为 max_completion_tokens（运行期 max_tokens 也生效，
+        # 但显式关键字会被类型检查器拒绝）
+        max_completion_tokens=_cloud_max_tokens(role),
     )
+
+
+def _cloud_max_tokens(role: str) -> int:
+    """云端输出上限（后台可改，即时生效）。deep 要大得多：结论 JSON 体积大。"""
+    if role == "deep":
+        return max(256, _as_int(runtime_get("cloud_max_tokens_deep", settings.cloud_max_tokens_deep), 8192))
+    return max(256, _as_int(runtime_get("cloud_max_tokens_flash", settings.cloud_max_tokens_flash), 4096))
 
 
 def _strip_fence(text: str) -> str:
@@ -214,31 +226,84 @@ def _extract_json(text: str) -> dict[str, Any]:
     return _extract_braced(text)
 
 
-def _invoke(llm: ChatOpenAI, system: str, user: str) -> str:
+_TRUNCATED_TOTAL = 0
+
+
+def truncated_total() -> int:
+    """本进程内被 max_tokens 截断的云端调用次数（可查，不静默）。"""
+    return _TRUNCATED_TOTAL
+
+
+def json_or_diag(text: str) -> tuple[dict[str, Any], str]:
+    """解析 JSON，失败时给出**可回灌给模型**的诊断（用于自纠正，而不是只说“无效”）。
+
+    为什么需要：原来失败只往对话里塞一句“请严格输出 JSON”，模型不知道自己错在哪；
+    把“花括号不配对/原文片段”回灌后，模型往往下一次就能纠正。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return {}, "输出为空（没有任何内容）"
+    parsed = _try_loads(_strip_fence(raw))
+    if parsed is not None:
+        return parsed, ""
+    braced = _extract_braced(raw)
+    if braced:
+        return braced, ""
+    opens, closes = raw.count("{"), raw.count("}")
+    if opens > closes:
+        reason = f"花括号不配对（{{ 比 }} 多 {opens - closes} 个），很可能输出被截断"
+    elif "{" not in raw:
+        reason = "输出里没有 JSON 对象（只有解释性文字或代码块）"
+    else:
+        reason = "不是合法的 JSON 对象"
+    return {}, f"{reason}。你上一条的原文片段：{raw[:400]}"
+
+
+def _invoke(llm: ChatOpenAI, system: str, user: str) -> tuple[str, str]:
+    """调模型，返回 (内容, finish_reason)。"""
     resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    return str(resp.content)
+    meta = getattr(resp, "response_metadata", None) or {}
+    finish = str(meta.get("finish_reason") or "")
+    if finish in ("length", "max_tokens"):
+        global _TRUNCATED_TOTAL
+        _TRUNCATED_TOTAL += 1
+        log.warning(
+            "云端输出被 max_tokens 截断（累计 %d 次）——结论 JSON 会被解析失败，"
+            "请在系统配置里调大 cloud_max_tokens_deep/flash",
+            _TRUNCATED_TOTAL,
+        )
+    return str(resp.content), finish
 
 
 def edge_invoke_json(
     system: str, user: str, temperature: float = 0.0, thinking: bool = False
 ) -> dict[str, Any]:
     """边缘模型（本地）返回 JSON；thinking=True 开启思考模式（仅复杂场景使用）。"""
-    return _extract_json(_invoke(_edge_llm(temperature, thinking), system, user))
+    return _extract_json(_invoke(_edge_llm(temperature, thinking), system, user)[0])
 
 
 def flash_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
     """云端 flash（日常分析）返回 JSON。"""
     llm = _cloud_llm("flash", temperature)
-    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user)))
+    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user))[0])
 
 
 def deep_invoke_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any]:
     """云端 deep（深度分析）返回 JSON。"""
     llm = _cloud_llm("deep", temperature)
-    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user)))
+    return _extract_json(_cloud_retry(lambda: _invoke(llm, system, user))[0])
+
+
+def invoke_json_diag(
+    system: str, user: str, *, role: str = "deep", temperature: float = 0.0
+) -> tuple[dict[str, Any], str]:
+    """返回 (JSON, 失败诊断)。失败诊断可直接回灌给模型做自纠正（调查循环用）。"""
+    llm = _cloud_llm(role, temperature)
+    content, _finish = _cloud_retry(lambda: _invoke(llm, system, user))
+    return json_or_diag(content)
 
 
 def flash_invoke_text(system: str, user: str, temperature: float = 0.0) -> str:
     """云端 flash 返回纯文本。"""
     llm = _cloud_llm("flash", temperature)
-    return _cloud_retry(lambda: _invoke(llm, system, user))
+    return _cloud_retry(lambda: _invoke(llm, system, user))[0]

@@ -99,9 +99,13 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         # Redis 体检：内存吃满会让整条分析链静默卡死（真实事故），必须一眼可见
         mem = health.redis_memory(client)
         out["redis"] = mem
-        out["redis_warn"] = bool(mem.get("max")) and mem.get("perc", 0) >= settings.redis_memory_warn_perc
+        out["redis_warn"] = (
+            bool(mem.get("max")) and mem.get("perc", 0) >= settings.redis_memory_warn_perc
+        )
         try:
-            out["handled_skipped"] = int(client.get(f"{settings.detector_handled_key}:skipped") or 0)
+            out["handled_skipped"] = int(
+                client.get(f"{settings.detector_handled_key}:skipped") or 0
+            )
         except (TypeError, ValueError):
             out["handled_skipped"] = 0
         if settings.dedup_enabled:

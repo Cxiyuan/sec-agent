@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,8 +21,71 @@ log = get_logger(__name__)
 
 DEFAULT_WINDOW_HOURS = 24
 MAX_TERM_VALUES = 50
-QUERY_TIMEOUT = "20s"
 AGG_SIZE_MAX = 200
+TIMEOUT_HINTS = (
+    "timeout",
+    "timed out",
+    "circuit_breaking_exception",
+    "search_phase_execution_exception",
+)
+
+
+def query_timeout() -> str:
+    """ES 单次查询超时（后台可改，即时生效）。
+
+    原来写死 20s，线上实测聚合/时间线经常超时，而失败只把裸异常丢给模型（它只会原地重试）。
+    """
+    return f"{max(5, _safe_int(settings.investigation_query_timeout_seconds, 45))}s"
+
+
+# 模块内多处沿用短名（对 export/tools 等外部调用点暴露公开名 query_timeout）
+_query_timeout = query_timeout
+
+
+def _is_timeout(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(hint in text for hint in TIMEOUT_HINTS)
+
+
+def _narrow(start: Any, end: Any) -> tuple[Any, Any]:
+    """把时间窗对半（超时降级重试用）；无法对半时原样返回。"""
+    start_dt, end_dt = _to_dt(start), _to_dt(end)
+    if start_dt is None or end_dt is None or end_dt <= start_dt:
+        return start, end
+    middle = start_dt + (end_dt - start_dt) / 2
+    return middle.isoformat(), end_dt.isoformat()
+
+
+def _with_degrade(
+    run: Callable[[Any, Any], dict[str, Any]], start: Any, end: Any
+) -> tuple[dict[str, Any], bool]:
+    """执行查询；超时则把时间窗对半重试一次，返回 (响应, 是否降级)。
+
+    为什么降级而不是直接报错：模型看不到 ES 内部细节，裸异常会让它原地重试同一查询；
+    对半后大多数查询能成功，仍失败则抛出带“缩小窗口/加实体过滤”的可执行提示。
+    """
+    try:
+        return run(start, end), False
+    except Exception as exc:
+        if not _is_timeout(exc):
+            raise
+        narrowed = _narrow(start, end)
+        if narrowed == (start, end):
+            raise
+        log.warning("ES 查询超时，降级重试（时间窗对半）：%s ~ %s", start, end)
+        return run(*narrowed), True
+
+
+def clamp_window(start: Any, end: Any, max_hours: int) -> tuple[str, str, bool]:
+    """把时间窗限制在 max_hours 内（超出则保留最近一段），返回 (start, end, 是否截断)。"""
+    start_iso, end_iso = window(start, end)
+    start_dt, end_dt = _to_dt(start_iso), _to_dt(end_iso)
+    if start_dt is None or end_dt is None:
+        return start_iso, end_iso, False
+    limit = timedelta(hours=max(1, _safe_int(max_hours, 72)))
+    if end_dt - start_dt > limit:
+        return (end_dt - limit).isoformat(), end_iso, True
+    return start_iso, end_iso, False
 
 
 class QueryError(Exception):
@@ -276,18 +340,30 @@ def search(
         must.append(keyword_clause(kind, str(keyword)))
     cap = catalog.max_docs()
     size = max(1, min(_safe_int(limit, 200), cap))
-    query = {"bool": {"filter": must}}
-    try:
-        resp = _es().search(
+
+    def _run(s: Any, e: Any) -> dict[str, Any]:
+        clause, _s_iso, _e_iso = _time_clause(s, e)
+        conds: list[dict[str, Any]] = [clause, *build_filters(kind, filters)]
+        if keyword:
+            conds.append(keyword_clause(kind, str(keyword)))
+        resp: dict[str, Any] = _es().search(
             index=index,
-            query=query,
+            query={"bool": {"filter": conds}},
             size=size,
             sort=[{"@timestamp": "desc" if sort != "asc" else "asc"}],
             track_total_hits=False,
-            request_timeout=QUERY_TIMEOUT,
+            request_timeout=_query_timeout(),
         )
+        return resp
+
+    try:
+        resp, degraded = _with_degrade(_run, start, end)
     except Exception as exc:
-        raise QueryError(f"ES 查询失败：{exc}") from exc
+        raise QueryError(
+            "ES 查询超时：已自动把时间窗对半重试仍失败。建议缩小时间范围（用 start/end 指定具体时段）、"
+            "加实体过滤（ip / asset / event_type），或先 aggregate_events 看分布。"
+            f"原始错误：{str(exc)[:200]}"
+        ) from exc
 
     hits: list[dict[str, Any]] = []
     for hit in resp.get("hits", {}).get("hits", []):
@@ -304,6 +380,8 @@ def search(
         "window": {"start": start_iso, "end": end_iso},
         "returned": len(hits),
         "truncated": len(hits) >= size,
+        "degraded": degraded,
+        "note": "因超时已把时间窗对半重试" if degraded else "",
         "hits": hits,
     }
 
@@ -326,34 +404,47 @@ def aggregate(
     path = catalog.resolve(kind, field)
     if not path or field not in catalog.available_fields(kind, index):
         raise QueryError(f"字段 {field} 在该来源不可用")
-    time_clause, start_iso, end_iso = _time_clause(start, end)
-    query = {"bool": {"filter": [time_clause, *build_filters(kind, filters)]}}
+    _, start_iso, end_iso = _time_clause(start, end)
     agg_name = f"top_{field}"
-    body = {
-        "size": 0,
-        "query": query,
-        "aggs": {
-            agg_name: {
-                "terms": {
-                    "field": catalog.agg_path(index, path),
-                    "size": max(1, min(_safe_int(size, 20), AGG_SIZE_MAX)),
-                }
+    agg_spec: dict[str, Any] = {
+        agg_name: {
+            "terms": {
+                "field": catalog.agg_path(index, path),
+                "size": max(1, min(_safe_int(size, 20), AGG_SIZE_MAX)),
             }
-        },
+        }
     }
-    try:
-        resp = _es().search(
-            index=index, track_total_hits=True, request_timeout=QUERY_TIMEOUT, **body
+
+    def _run_agg(s: Any, e: Any) -> dict[str, Any]:
+        clause, s_iso, _e_iso = _time_clause(s, e)
+        # 降级重试时不算总数（算总数也是超时主因之一，而桶里的 doc_count 已够用）
+        resp: dict[str, Any] = _es().search(
+            index=index,
+            track_total_hits=s_iso == start_iso,
+            request_timeout=_query_timeout(),
+            size=0,
+            query={"bool": {"filter": [clause, *build_filters(kind, filters)]}},
+            aggs=agg_spec,
         )
+        return resp
+
+    try:
+        resp, degraded = _with_degrade(_run_agg, start, end)
     except Exception as exc:
-        raise QueryError(f"ES 聚合失败：{exc}") from exc
+        raise QueryError(
+            "ES 聚合超时：已把时间窗对半重试仍失败。建议缩小时间范围、加实体过滤，或换更低基数的字段。"
+            f"原始错误：{str(exc)[:200]}"
+        ) from exc
     buckets = (resp.get("aggregations") or {}).get(agg_name, {}).get("buckets", [])
     total = ((resp.get("hits") or {}).get("total") or {}).get("value")
+    if isinstance(total, dict):
+        total = total.get("value")
     return {
         "source": kind,
         "field": field,
         "window": {"start": start_iso, "end": end_iso},
         "doc_count": total,
+        "degraded": degraded,
         "buckets": [{"value": b.get("key"), "count": b.get("doc_count")} for b in buckets],
     }
 
@@ -373,7 +464,7 @@ def count(
         must.append(keyword_clause(kind, str(keyword)))
     try:
         resp = _es().count(
-            index=index, query={"bool": {"filter": must}}, request_timeout=QUERY_TIMEOUT
+            index=index, query={"bool": {"filter": must}}, request_timeout=_query_timeout()
         )
     except Exception as exc:
         raise QueryError(f"ES 计数失败：{exc}") from exc
@@ -391,7 +482,7 @@ def time_bounds(kind: str) -> dict[str, Any]:
         },
     }
     try:
-        resp = _es().search(index=index, request_timeout=QUERY_TIMEOUT, **body)
+        resp = _es().search(index=index, request_timeout=_query_timeout(), **body)
     except Exception as exc:  # noqa: BLE001
         return {"source": kind, "index": index, "error": str(exc)[:200]}
     aggs = resp.get("aggregations") or {}

@@ -296,15 +296,24 @@ def _timeline(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     entity = _str_param(args, "entity", required=True)
     limit = _int_param(args, "limit", default=100, lo=1, hi=catalog.max_docs())
     sources = _resolve_sources(args)
+    # timeline 是“按实体拉全量时间线”，跨太久必然 ES 超时 → 窗口强约束（并在 notes 里说明）
+    win_start, win_end, clipped = es_query.clamp_window(
+        args.get("start"), args.get("end"), settings.investigation_timeline_max_hours
+    )
     # 实体既可能是源也可能是目的：两边都查再合并去重
     merged: dict[str, Any] = {"entity": entity, "returned": 0, "hits": [], "notes": []}
+    if clipped:
+        merged["notes"].append(
+            f"时间窗已限制为最近 {settings.investigation_timeline_max_hours} 小时"
+            "（timeline 是全量查询，必须控制窗口否则会 ES 超时）"
+        )
     seen: set[str] = set()
     for side in ("src_ip", "dst_ip"):
         part = _search_multi(
             sources,
             filters={side: entity},
-            start=args.get("start"),
-            end=args.get("end"),
+            start=win_start,
+            end=win_end,
             limit=limit,
             sort="asc",
         )
@@ -483,7 +492,7 @@ def _raw_evidence(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
             raise ValueError("es: 引用格式应为 es:<索引>/<文档id>")
         try:
             resp = es_query._es().get(
-                index=index, id=doc_id, request_timeout=es_query.QUERY_TIMEOUT
+                index=index, id=doc_id, request_timeout=es_query.query_timeout()
             )
         except Exception as exc:
             raise ValueError(f"读取 ES 文档失败：{exc}") from exc

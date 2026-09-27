@@ -299,7 +299,10 @@ def reap_stuck_groups() -> dict:
     事件组永远停在 analyzing，而**表面上没有任何提示** —— 线上真实发生过，持续 4 小时 39 分
     没出报告，直到人工翻库才发现。分析不收敛必须自己叫出来、并在界面上看得见。
     """
-    limit = max(1, int(settings.analysis_stuck_minutes))
+    try:
+        limit = max(1, int(settings.analysis_stuck_minutes))
+    except (TypeError, ValueError):
+        limit = 30
     cutoff = datetime.now(UTC) - timedelta(minutes=limit)
     from app.db.base import SessionLocal
     from app.db.models import EventGroup
@@ -337,6 +340,48 @@ def reap_stuck_groups() -> dict:
     if finished:
         log.info("补落终态：%d 个组已分析完成但无报告，标记为 analyzed", finished)
     return {"reaped": reaped, "finished": finished, "stuck_minutes": limit}
+
+
+@celery_app.task(name="analysis.shelve_stale_cases")
+def shelve_stale_cases() -> dict:
+    """自动关闭「零轮次且长期无新增」的案件（空壳治理的兜底）。
+
+    背景：建案不看调查门槛，info 级也会建案，实测 25 个新案件里 20 个是零轮次空壳。
+    现在低于门槛的建案即置 shelved（列表默认隐藏），超过天数无新增则自动 closed——
+    归档而非删除：跨时间聚合仍保留，达标信号到来时 _attach 会自动复活。
+    """
+    try:
+        days = max(1, int(settings.case_stale_close_days))
+    except (TypeError, ValueError):
+        days = 7
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    from sqlalchemy import func
+
+    from app.db.base import SessionLocal
+    from app.db.models import AttackerCase
+
+    closed = 0
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(AttackerCase).where(
+                    AttackerCase.status.in_(["open", "shelved"]),
+                    AttackerCase.rounds_total == 0,
+                    func.coalesce(AttackerCase.last_seen, AttackerCase.created_at) < cutoff,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.status = "closed"
+            row.last_error = f"长期无新增且未达调查门槛，超过 {days} 天自动关闭"
+            closed += 1
+        if closed:
+            db.commit()
+    if closed:
+        log.info("自动关闭零轮次空壳案件 %d 个（超过 %d 天无新增）", closed, days)
+    return {"closed": closed, "stale_days": days}
 
 
 @celery_app.task(

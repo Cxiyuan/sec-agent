@@ -31,6 +31,8 @@ export default function CasesPage() {
   const [stats, setStats] = React.useState<InvestigationStats | null>(null);
   const [status, setStatus] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
+  // 空壳案件默认隐藏：列表被零轮次的 info 级案件刷满过（实测 25 个里 20 个）
+  const [showShelved, setShowShelved] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState("");
 
@@ -38,13 +40,14 @@ export default function CasesPage() {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
     if (keyword) params.set("keyword", keyword);
+    if (showShelved) params.set("include_shelved", "true");
     const [list, st] = await Promise.all([
       apiFetch<{ items: AttackerCaseItem[] }>(`/api/cases?${params.toString()}`),
       apiFetch<InvestigationStats>("/api/investigation/stats").catch(() => null),
     ]);
     setItems(list.items);
     if (st) setStats(st);
-  }, [status, keyword]);
+  }, [status, keyword, showShelved]);
 
   React.useEffect(() => {
     load().catch(() => {});
@@ -95,6 +98,14 @@ export default function CasesPage() {
             <Button variant="outline" size="sm" onClick={() => load().catch(() => {})}>
               刷新
             </Button>
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showShelved}
+                onChange={(e) => setShowShelved(e.target.checked)}
+              />
+              显示已搁置/已关闭
+            </label>
           </div>
         </div>
 
@@ -110,6 +121,18 @@ export default function CasesPage() {
             <span>冷却 {stats.cooldown_minutes} 分钟</span>
             <span>队列积压 {stats.queue_depth ?? "-"}</span>
             <span>估算 token 累计 {stats.tokens_est_total}</span>
+            <span title="零轮次案件：低于调查门槛、已归档">
+              零轮次案件 {stats.cases_empty ?? 0}
+              {stats.cases_empty_perc ? `（${stats.cases_empty_perc}%）` : ""}
+              {` ｜ 搁置 ${stats.cases_shelved ?? 0} / 已关闭 ${stats.cases_closed ?? 0}`}
+            </span>
+            {stats.guards && (
+              <span title="调查护栏计数：无效输出 / 截断 / 收束 / 无进展 / 重复动作">
+                护栏：无效输出 {stats.guards.invalid_json ?? 0} ｜ 截断 {stats.guards.truncated ?? 0} ｜
+                收束 {stats.guards.salvaged ?? 0} ｜ 无进展 {stats.guards.no_progress ?? 0} ｜ 重复 {" "}
+                {stats.guards.repeat ?? 0}
+              </span>
+            )}
           </div>
         )}
 
@@ -204,7 +227,7 @@ export default function CasesPage() {
                 ))}
                 {!items.length && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-sm text-muted-foreground">
+                    <TableCell colSpan={9} className="text-sm text-muted-foreground">
                       还没有案件。案件由升级事件组自动归集产生（需 severity ≥{" "}
                       {stats?.min_severity ?? "high"}）。
                     </TableCell>

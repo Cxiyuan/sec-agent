@@ -31,6 +31,7 @@ export const STATUS_LABEL: Record<string, string> = {
   investigated: "已调查",
   failed: "失败",
   closed: "已关闭",
+  shelved: "已搁置（未达调查门槛）",
   // 调查轮次
   running: "进行中",
   succeeded: "已完成",

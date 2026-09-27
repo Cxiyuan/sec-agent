@@ -71,9 +71,9 @@ def _fetch_evidence(ref: str) -> dict[str, Any]:
     index, _, doc_id = index_and_id.partition("/")
     try:
         from app.ingestion.normalizer import _sanitize_raw
-        from app.investigation.es_query import QUERY_TIMEOUT, _es
+        from app.investigation.es_query import _es, query_timeout
 
-        resp = _es().get(index=index, id=doc_id, request_timeout=QUERY_TIMEOUT)
+        resp = _es().get(index=index, id=doc_id, request_timeout=query_timeout())
         return {
             "ref": ref,
             "kind": "es_doc",

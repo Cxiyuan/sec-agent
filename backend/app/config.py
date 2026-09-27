@@ -141,6 +141,10 @@ class Settings(BaseSettings):
     # api_key 由后台界面录入、存数据库（不落环境变量），见 app/cloud_config.py
     cloud_model_base_url: str = "https://api.minimaxi.com/v1"
     cloud_model_timeout: int = 600
+    # 云端输出上限（是上限不是目标，按实际输出计费）。**必须显式设置**：不设时由服务端默认值决定，
+    # 实测会导致探针结论 JSON 被截断成“非法 JSON”（调查整轮白跑，还看不出原因）。
+    cloud_max_tokens_flash: int = 4096
+    cloud_max_tokens_deep: int = 8192
     # 云端并发与重试（节点里"逐个事件组"的循环改成并发后，必须自己控峰值，
     # 否则很容易吃 429；max_retries 设 3 次、指数退避）
     cloud_max_concurrency: int = 4  # 同时最多几个云端请求（后台可改，即时生效）
@@ -234,12 +238,23 @@ class Settings(BaseSettings):
     # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
     investigation_enabled: bool = True
     investigation_min_severity: str = "high"  # 只对 ≥ 该级别的案件开调查
-    investigation_max_steps: int = 10  # 循环步数上限
-    investigation_max_queries: int = 12  # 查询类工具调用上限
+    investigation_max_steps: int = 24  # 循环步数护栏（主停条件是模型自己 finish，不是撞上限）
+    investigation_max_queries: int = 40  # 查询类工具调用护栏
     # 为什么抬到 10：实测上限 6 时调查**全部**撞限就停（模型把预算花在查询上，
     # 没机会输出结论）→ path/gaps/IOC 全空、事件组上的取证结果也是空的。
-    investigation_max_llm_calls: int = 10  # 模型调用次数上限
-    investigation_timeout_seconds: int = 240  # 单轮墙钟上限（秒）
+    investigation_max_llm_calls: int = 16  # 模型调用次数护栏
+    investigation_timeout_seconds: int = 600  # 单轮墙钟护栏（秒）
+    # ---- 自主推进的自纠正与防死循环 ----
+    investigation_invalid_json_limit: int = 4  # 连续 N 次输出无法解析才放弃（有效动作即归零）
+    investigation_no_progress_steps: int = 4  # 连续 N 步无新证据/同样结果 → 判定无进展，强制收束
+    investigation_repeat_action_limit: int = 3  # 同一动作+参数重复 N 次 → 强制收束
+    investigation_max_steps_hard: int = 60  # 绝对步数保险丝（防跑飞）
+    investigation_max_llm_calls_hard: int = 24  # 绝对调用次数保险丝
+    investigation_salvage_enabled: bool = True  # 非正常结束时尝试一次“只出结论”调用
+    investigation_salvage_model: str = "flash"  # 收束用哪个模型（flash 更省；deep 质量更好）
+    investigation_max_extensions: int = 6  # 有进展时允许延长软预算的次数（0=严格按软预算停）
+    investigation_query_timeout_seconds: float = 45.0  # ES 单次查询超时（秒）
+    investigation_timeline_max_hours: int = 72  # timeline 工具时间窗上限（必须带实体过滤）
     investigation_max_docs_per_query: int = 2000  # 单次查询文档上限（硬顶 5000）
     investigation_raw_evidence_max: int = 20  # 单轮原始证据条数上限
     investigation_observation_chars: int = 1500  # 单步观察压缩上限（防 token 爆炸）
@@ -252,6 +267,7 @@ class Settings(BaseSettings):
     investigation_link_max_calls: int = 3  # 每批模型裁定次数上限
     investigation_max_lookback_days: int = 30  # 调查自身取证跨度上限（默认=ES 保留期）
     investigation_keep_fixed_deep: bool = True  # 保留固定深度分析作为即时结果与兜底
+    case_stale_close_days: int = 7  # 零轮次案件超过该天数自动关闭（先摘置→关闭）
 
     # 威胁情报（免费在线服务，无需 API key：ip-api/ipwho.is、rdap.org、abuse.ch 家族）
     intel_enabled: bool = True
