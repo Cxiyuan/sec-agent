@@ -178,6 +178,13 @@ def run() -> None:
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
 
+        # raw 队列持续封顶：采集速率（实测几万条/分钟）远高于检测器处理能力，
+        # 不封顶就会把 Redis 撑满 → noeviction 拒写 → 检测器与 Celery 全线卡死（真实事故）。
+        # 保留最新的（LPUSH 头部最新）；丢掉的计入 dropped.raw_trimmed（可查、不静默）。
+        _trim_queue(
+            raw_q, client, stats, limit=settings.detector_raw_queue_max, reason="raw_trimmed"
+        )
+
         # 攒批：凑够 N 条或等待超时即处理一次
         # 注意：即使被限流也要走 _flush —— 否则连「清理超龄」都做不了，队列只增不减
         pending_raw, _ = digest_q.depth()
@@ -206,7 +213,7 @@ def run() -> None:
                     log.debug("登记丢弃计数写入失败: %s", exc)
             log.info(
                 "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
-                "/ 投递 %d / 去重跳过 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
+                "/ 投递 %d / 去重跳过 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
                 "/ 策略跳过(内网常规 %d) / 登记丢弃 %d "
                 "| 队列 raw=%d processing=%d | 聚合中 %d | %s",
                 leader.me,
@@ -222,6 +229,7 @@ def run() -> None:
                 stats["requeued"],
                 stats["dropped_expired"],
                 stats["dropped_trimmed"],
+                stats["dropped_raw_trimmed"],
                 stats["policy_internal_routine"],
                 handled.skipped,
                 q_raw,
@@ -429,20 +437,27 @@ def _apply_dedup(
     return deliver, skipped
 
 
-def _trim_queue(q: ReliableQueue, client: Any, stats: Counter[str]) -> None:
+def _trim_queue(
+    q: ReliableQueue,
+    client: Any,
+    stats: Counter[str],
+    *,
+    limit: int | None = None,
+    reason: str = "trimmed",
+) -> None:
     """队列超上限时裁掉最老的（LPUSH 新→旧，故裁尾部），保证积压有界。"""
-    limit = settings.detector_queue_max
-    if limit <= 0:
+    cap = settings.detector_queue_max if limit is None else limit
+    if cap <= 0:
         return
     depth, _ = q.depth()
-    if depth <= limit:
+    if depth <= cap:
         return
     try:
-        client.ltrim(q.raw, 0, limit - 1)
+        client.ltrim(q.raw, 0, cap - 1)
     except Exception as exc:  # noqa: BLE001
-        log.debug("裁剪摘要队列失败: %s", exc)
+        log.debug("裁剪队列 %s 失败: %s", q.raw, exc)
         return
-    _drop(client, "trimmed", depth - limit, stats)
+    _drop(client, reason, depth - cap, stats)
 
 
 def _handle(

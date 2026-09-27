@@ -70,6 +70,11 @@ class Settings(BaseSettings):
         20  # 投递速率上限（护栏）= 边缘模型实测容量（8~16 并发 23~26 条/分钟）留余量
     )
     detector_queue_max: int = 20000  # 摘要队列上限（超过则裁掉最老的，保证有界）
+    # raw 队列上限。采集速率实测可达 ~3800 条/秒，检测器永远追不上；不封顶就会把 Redis
+    # 撑满 → noeviction 拒写 → 检测器/ Celery 全线卡死（真实事故）。
+    # raw 队列只是“快车道”，ES 才是事实源（水位兜底会补齐），所以丢掉最老的可以接受；
+    # 但丢弃必须计数可查（dropped.raw_trimmed）。
+    detector_raw_queue_max: int = 20000
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
     detector_dedup_key: str = "shentong:detector:dedup"  # 去重拦下计数（跨重启可查）
     detector_task_failed_key: str = "shentong:detector:task_failed"  # 分析任务失败计数

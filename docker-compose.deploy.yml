@@ -46,7 +46,7 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 1gb
+      - 1536mb
       - --maxmemory-policy
       - noeviction
     ports:
