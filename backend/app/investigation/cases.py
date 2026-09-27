@@ -341,6 +341,11 @@ def _initial_status(severity: Any) -> str:
     return "open" if _qualifies(severity) else "shelved"
 
 
+def qualifies_severity(severity: Any) -> bool:
+    """严重度是否达到调查门槛（对外公开入口：任务/接口与建案共用同一判据）。"""
+    return _qualifies(severity)
+
+
 def _create_case(ref: dict[str, Any]) -> str:
     extracted = key_utils.compact(ref.get("keys") or {})
     primary = key_utils.primary_key(extracted)

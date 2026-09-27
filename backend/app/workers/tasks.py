@@ -359,9 +359,32 @@ def shelve_stale_cases() -> dict:
 
     from app.db.base import SessionLocal
     from app.db.models import AttackerCase
+    from app.investigation import cases as case_service
 
     closed = 0
+    shelved = 0
     with SessionLocal() as db:
+        # 第一步：存量归档——低于门槛且零轮次的 open 案件先置 shelved（列表默认隐藏）。
+        # 为什么要管存量：新逻辑只管新建；不补这一步，历史空壳会一直挂在列表上
+        # （实测 103 个 / 占 63%）。
+        rows_zero = (
+            db.execute(
+                select(AttackerCase).where(
+                    AttackerCase.status == "open", AttackerCase.rounds_total == 0
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows_zero:
+            if not case_service.qualifies_severity(row.severity):
+                row.status = "shelved"
+                shelved += 1
+        if shelved:
+            db.commit()
+            log.info("存量空壳归档：%d 个零轮次且低于门槛的案件置为 shelved", shelved)
+
+        # 第二步：长期无新增的零轮次案件自动关闭（归档而非删除）
         rows = (
             db.execute(
                 select(AttackerCase).where(
@@ -381,7 +404,7 @@ def shelve_stale_cases() -> dict:
             db.commit()
     if closed:
         log.info("自动关闭零轮次空壳案件 %d 个（超过 %d 天无新增）", closed, days)
-    return {"closed": closed, "stale_days": days}
+    return {"closed": closed, "shelved": shelved, "stale_days": days}
 
 
 @celery_app.task(
