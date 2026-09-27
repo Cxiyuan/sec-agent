@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     detector_coverage_warn_ratio: float = 0.6
     # 清理后自动派发的并发上限（超过留在待派发，不丢不静默）
     investigation_dispatch_batch_max: int = 8
+    # ---- 链路韧性（防止“跑不完→被杀→重投”空转）----
+    analysis_task_budget_seconds: int = 900  # 单任务时间预算（接近就正常收尾，而非等 1800s 硬杀）
+    analysis_max_redeliveries: int = 2  # 同一批摘要最多重投次数，超过则放弃并计数
+    detector_consume_batch: int = 200  # 检测器每轮批量消费条数（提升扫描吞吐）
+    # ---- 摘要压缩（先修好再调：默认关闭/保持现值）----
+    digest_suppress_hours: int = 0  # >0 时启用“同源+同规则+同目标段”抑制（只累加计数不重投）
+    digest_merge_family: bool = False  # 同规则+同目标网段多源合并为一个摘要
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
     detector_dedup_key: str = "shentong:detector:dedup"  # 去重拦下计数（跨重启可查）
     detector_task_failed_key: str = "shentong:detector:task_failed"  # 分析任务失败计数

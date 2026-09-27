@@ -266,6 +266,15 @@ def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[st
     triage_policy.count_skip(client, "internal_routine")
 
 
+def _sleep_to_next_minute(now: float | None = None) -> float:
+    """睡到下一个分钟桶边界（投递额度按分钟重置）；最多睡 5 秒保持响应。"""
+    current = time.time() if now is None else now
+    wait = 60.0 - (current % 60.0)
+    wait = max(0.2, min(5.0, wait))
+    time.sleep(wait)
+    return wait
+
+
 def _rate_remaining(client: Any) -> int:
     """本分钟还剩多少投递额度（cap<=0 表示不限）。"""
     cap = settings.detector_max_digests_per_minute
@@ -325,6 +334,11 @@ def _flush(
     """
     global _last_throttle_log
     budget = _rate_remaining(client)
+    if budget <= 0:
+        # 额度耗尽：**不再空转**（原来会把整批取出再放回队尾 —— 实测回队 15 万次白烧）
+        stats["limit_saturated"] += 1
+        _sleep_to_next_minute()
+        return
     max_age = settings.detector_digest_max_age_seconds
     items: list[tuple[str, dict[str, Any]]] = []
     expired = 0

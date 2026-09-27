@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 
 from app.agents.runner import get_graph
@@ -31,6 +33,20 @@ def analyze_digests(digests: list[dict]) -> dict:
         _count_digests_expired(expired)
     if not digests:
         return {"summary": {"total_groups": 0, "reports": 0}, "digests": 0, "expired": expired}
+
+    # 「被杀-重投」防护：acks_late 下 worker 被杀会把同一批摘要原样重投，
+    # 如果这批每次都跑不完（长任务/模型卡住），就会无限循环、且什么都不产出。
+    redeliveries = _redelivery_count(digests)
+    limit = max(1, _redis_int(settings.analysis_max_redeliveries, 2))
+    if redeliveries > limit:
+        _count_dropped("task_abandoned", len(digests))
+        log.warning(
+            "同一批摘要已重投 %d 次（超上限 %d），放弃本批并计入 dropped.task_abandoned",
+            redeliveries,
+            limit,
+        )
+        return {"abandoned": len(digests), "redeliveries": redeliveries}
+
     now = datetime.now(UTC)
     thread_id = str(uuid.uuid4())
     initial = {
@@ -49,10 +65,63 @@ def analyze_digests(digests: list[dict]) -> dict:
             "digests": len(digests),
             "summary": result.get("run_summary", {}),
         }
+    except SoftTimeLimitExceeded:
+        # 软超时：明确记录，而不是等硬超时把 worker 杀掉（杀掉后 acks_late 会重投同一批）
+        log.warning("软超时中断：本批分析未跑完（digests=%d）", len(digests))
+        _count_task_failed(len(digests))
+        return {"thread_id": thread_id, "digests": len(digests), "error": "软超时中断"}
     except Exception:
         log.exception("实时分析任务失败")
         _count_task_failed(len(digests))
         return {"thread_id": thread_id, "digests": len(digests), "error": "实时分析任务失败"}
+
+
+def _redis_int(value: Any, default: int) -> int:
+    """安全转 int（配置可能来自后台，可能是字符串/脏值）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _digest_batch_key(digests: list[dict[str, Any]]) -> str:
+    """这批摘要的稳定指纹（识别“同一批被反复重投”）。"""
+    parts = sorted(
+        str(d.get("fingerprint") or f"{d.get('src_ip')}|{d.get('rule')}") for d in digests
+    )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _redelivery_count(digests: list[dict[str, Any]]) -> int:
+    """这批摘要被投递的次数（Redis 计数，TTL 6h）；Redis 不可用时返回 1（放行）。"""
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        key = f"shentong:analysis:redeliveries:{_digest_batch_key(digests)}"
+        count = int(client.incr(key))
+        client.expire(key, 6 * 3600)
+        return count
+    except Exception as exc:  # noqa: BLE001
+        log.debug("重投计数失败（按首次处理）: %s", exc)
+        return 1
+
+
+def _count_dropped(reason: str, count: int) -> None:
+    """把异常丢弃计入统一丢弃哈希（可查、不静默）。"""
+    if count <= 0:
+        return
+    try:
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        client.hincrby(settings.detector_drop_key, reason, int(count))
+        client.hset(
+            settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat()
+        )
+        client.expire(settings.detector_drop_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入丢弃计数失败: %s", exc)
 
 
 def _count_task_failed(count: int) -> None:
