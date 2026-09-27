@@ -121,6 +121,9 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         "direction": g.direction or "",
         "exclude_reason": g.exclude_reason or "",
         "severity_cap_reason": g.severity_cap_reason or "",
+        # 案件指针 + 案件视角副本（案件叙事不再覆盖本组攻击链，只在界面上折叠展示）
+        "case_id": getattr(g, "case_id", "") or "",
+        "case_context": getattr(g, "case_context", None) or None,
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
     if with_events:

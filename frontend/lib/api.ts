@@ -214,6 +214,23 @@ export interface EventGroupItem {
   excluded?: boolean;
   /** 展示用唯一编号：EG-<10 位>（人工沟通/报告引用） */
   display_id?: string;
+  /** 所属攻击者案件指针（案件叙事不再覆盖本组攻击链） */
+  case_id?: string;
+  /** 案件视角副本（summary/path/rounds/superseded）——详情页可折叠查看 */
+  case_context?: {
+    case_id?: string;
+    title?: string;
+    severity?: string | null;
+    status?: string;
+    summary?: string;
+    path?: { stage?: string; description?: string; evidence_refs?: string[] }[];
+    confidence?: number | null;
+    rounds?: number;
+    updated_at?: string;
+    superseded?: boolean;
+    rebuilt_by?: string;
+    superseded_from?: Record<string, unknown>;
+  } | null;
   /** 误报治理：内外网方向（in→in / in→out / out→in / out→out / unknown） */
   direction?: string;
   /** 为什么跳过（排除过滤器命中，或策略判定为「内网常规流量」） */
@@ -834,6 +851,15 @@ export interface AttackerCaseItem {
   id: string;
   /** 展示用唯一编号：AC-<8 位> */
   display_id?: string;
+  /** 归并依据：真正促成归并的键（凭什么都在一起） */
+  merge_basis?: string[];
+  /** 自动拆分原因（达规模上限/重建拆分） */
+  split_reason?: string;
+  /** 被哪个重建批次取代（非空即已退场） */
+  superseded_by?: string;
+  /** 结论存疑（声称高级行为但缺结构化证据） */
+  contradiction?: boolean;
+  degraded?: boolean;
   attacker_key: string;
   title: string;
   keys: Record<string, string[]>;
@@ -921,6 +947,30 @@ export interface InvestigationStats {
   reports?: number;
   limits: Record<string, number>;
   queue_error?: string;
+}
+
+/** 重建 dry-run 结果（只算不写，先核对再执行） */
+export interface RebuildDryRun {
+  groups: number;
+  old_cases: number;
+  new_cases: number;
+  old_max_groups: number;
+  new_max_groups: number;
+  oversized_before: number;
+  oversized_after: number;
+  junk_keys_before: number;
+  sample_new: { attacker_key: string; groups: number; severity: string; merge_basis: string[]; split_reason: string }[];
+  sample_old: { id: string; attacker_key: string; groups: number; severity: string | null }[];
+}
+
+/** 重建批次 */
+export interface RebuildRun {
+  id: string;
+  dry_run: boolean;
+  status: string;
+  counts: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 /** 证据清单条目（含原始证据，已脱敏） */

@@ -58,6 +58,17 @@ class CasePlan:
         }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """安全转 int（值可能来自配置、事件原文或接口，可能是字符串/脏值）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return default
+
+
 def _rank(sev: Any) -> int:
     return _RANK.get(str(sev or "info").lower(), 0)
 
@@ -79,7 +90,7 @@ def _build_plan(refs: list[dict[str, Any]], idxs: list[int], *, split_reason: st
         src.update(str(x) for x in (ref.get("src_ips") or []))
         dst.update(str(x) for x in (ref.get("dst_ips") or []))
         types.update(str(x) for x in (ref.get("event_types") or []))
-        events += int(ref.get("event_count") or 0)
+        events += _safe_int(ref.get("event_count"), 0)
         f, l = ref.get("first_seen"), ref.get("last_seen")
         if f:
             first = f if first is None else min(first, f)
@@ -174,13 +185,15 @@ def _similar_refs(a: dict[str, Any], b: dict[str, Any]) -> bool:
     )
 
 
-def partition_groups(refs: list[dict[str, Any]], *, max_groups: int | None = None) -> list[CasePlan]:
+def partition_groups(
+    refs: list[dict[str, Any]], *, max_groups: int | None = None
+) -> list[CasePlan]:
     """按**强键连通分量**分区；分量超过上限时按攻击源二次拆分（纯函数，幂等）。
 
     为什么只用强键做连接边：实测一个脏域名键（vnd.ms）或一个内网主机键就能把几十个
     无关事件组粘成巨案。弱键（host/domain）只用于案件内 IOC 丰富，不参与连接。
     """
-    cap = max(1, int(max_groups or settings.case_max_groups))
+    cap = max(1, _safe_int(max_groups or settings.case_max_groups, 40))
     parent: dict[int, int] = {i: i for i in range(len(refs))}
 
     def find(x: int) -> int:
@@ -236,9 +249,9 @@ def collect_refs(*, limit: int | None = None, hours: int | None = None) -> list[
         query = select(EventGroup).where(EventGroup.status != "excluded")
         if hours:
             query = query.where(
-                EventGroup.created_at > datetime.now(UTC) - timedelta(hours=max(1, int(hours)))
+                EventGroup.created_at > datetime.now(UTC) - timedelta(hours=max(1, _safe_int(hours, 24)))
             )
-        query = query.order_by(EventGroup.created_at.desc()).limit(max(1, int(limit or 5000)))
+        query = query.order_by(EventGroup.created_at.desc()).limit(max(1, _safe_int(limit or 5000, 5000)))
         for group in db.scalars(query).all():
             events = db.scalars(select(Event).where(Event.group_id == group.id).limit(20)).all()
             raws = [e.raw for e in events if isinstance(e.raw, dict)]
@@ -275,8 +288,8 @@ def dry_run(*, limit: int | None = None, hours: int | None = None) -> dict[str, 
         "new_cases": len(plans),
         "old_max_groups": old_sizes[0] if old_sizes else 0,
         "new_max_groups": sizes[0] if sizes else 0,
-        "oversized_before": sum(1 for n in old_sizes if n > int(settings.case_max_groups)),
-        "oversized_after": sum(1 for n in sizes if n > int(settings.case_max_groups)),
+        "oversized_before": sum(1 for n in old_sizes if n > _safe_int(settings.case_max_groups, 40)),
+        "oversized_after": sum(1 for n in sizes if n > _safe_int(settings.case_max_groups, 40)),
         "junk_keys_before": sum(
             1
             for row in old_cases
@@ -293,9 +306,7 @@ def dry_run(*, limit: int | None = None, hours: int | None = None) -> dict[str, 
                 "groups": len(row.group_fingerprints or []),
                 "severity": row.severity,
             }
-            for row in sorted(
-                old_cases, key=lambda r: -len(r.group_fingerprints or [])
-            )[:10]
+            for row in sorted(old_cases, key=lambda r: -len(r.group_fingerprints or []))[:10]
         ],
     }
 
@@ -409,9 +420,11 @@ def apply(
                 tier = triage_policy.evidence_tier(
                     event_types=[str(e.event_type or "") for e in events],
                     conn_states=[str((e.raw or {}).get("conn_state") or "") for e in events],
-                    bytes_out=max((int((e.raw or {}).get("resp_bytes") or 0) for e in events), default=0),
+                    bytes_out=max(
+                        (int((e.raw or {}).get("resp_bytes") or 0) for e in events), default=0
+                    ),
                     rule_severity=ref.get("severity"),
-                    hits=int(ref.get("event_count") or 0),
+                    hits=_safe_int(ref.get("event_count"), 0),
                 )
                 capped, reason = triage_policy.cap_severity(
                     severity=group.severity,
@@ -489,7 +502,13 @@ def rollback(run_id: str) -> dict[str, Any]:
         run.status = "rolled_back"
         run.finished_at = datetime.now(UTC)
         db.commit()
-    log.warning("重建回滚（run %s）：删新案件 %d，恢复旧案件 %d，清组指针 %d", run_id, removed, restored, cleared)
+    log.warning(
+        "重建回滚（run %s）：删新案件 %d，恢复旧案件 %d，清组指针 %d",
+        run_id,
+        removed,
+        restored,
+        cleared,
+    )
     return {"ok": True, "removed": removed, "restored": restored, "groups_cleared": cleared}
 
 

@@ -6,6 +6,7 @@ import { Nav } from "@/components/nav";
 import { Badge, severityVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RebuildPanel } from "@/components/rebuild-panel";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiFetch, getToken, type AttackerCaseItem, type InvestigationStats } from "@/lib/api";
@@ -109,6 +110,8 @@ export default function CasesPage() {
           </div>
         </div>
 
+        <RebuildPanel />
+
         {stats && (
           <div className="mb-4 flex flex-wrap gap-3 text-sm text-muted-foreground">
             <span>
@@ -171,6 +174,22 @@ export default function CasesPage() {
                       </Link>
                       {c.merge_suggestion?.case_ids?.length ? (
                         <span className="ml-2 text-[11px] text-amber-500">建议合并</span>
+                      ) : null}
+                      {c.contradiction ? (
+                        <span
+                          className="ml-2 text-[11px] text-amber-500"
+                          title="结论声称高级攻击行为，但缺少对应结构化证据（一致性校验）"
+                        >
+                          结论存疑
+                        </span>
+                      ) : null}
+                      {(c.group_count || 0) > 40 ? (
+                        <span
+                          className="ml-2 text-[11px] text-amber-500"
+                          title="成员组超过规模上限，建议用下方「存量重建」拆分"
+                        >
+                          超大案件
+                        </span>
                       ) : null}
                     </TableCell>
                     <TableCell>

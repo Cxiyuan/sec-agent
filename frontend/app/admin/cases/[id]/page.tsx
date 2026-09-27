@@ -120,6 +120,22 @@ export default function CaseDetailPage() {
           {data.display_id && (
             <span className="font-mono text-xs text-muted-foreground">{data.display_id}</span>
           )}
+          {/* 归并依据：凭什么并在一起（否则案件看起来像凭空出现） */}
+          {data.merge_basis?.length ? (
+            <span className="text-xs text-muted-foreground" title="真正促成归并的键">
+              归并依据 {data.merge_basis.slice(0, 3).join("、")}
+            </span>
+          ) : null}
+          {data.split_reason ? (
+            <span className="text-xs text-amber-500" title={data.split_reason}>
+              自动拆分
+            </span>
+          ) : null}
+          {data.contradiction ? (
+            <span className="text-xs text-amber-500" title="结论声称高级行为但缺少结构化证据，仅作参考">
+              结论存疑（不作为定级依据）
+            </span>
+          ) : null}
           {data.severity && <Badge variant={severityVariant(data.severity)}>{severityText(data.severity)}</Badge>}
           <Badge variant="outline">{statusText(data.status)}</Badge>
           {current && current.confidence !== undefined && (

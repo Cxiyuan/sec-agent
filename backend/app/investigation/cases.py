@@ -97,6 +97,10 @@ def case_dict(row: AttackerCase, *, with_investigation: bool = True) -> dict[str
     }
     if with_investigation:
         data["investigation"] = row.investigation
+        inv = row.investigation or {}
+        # 结论存疑标记（一致性校验）：界面用彽标提醒“别当真”
+        data["contradiction"] = bool(inv.get("contradiction"))
+        data["degraded"] = bool(inv.get("degraded"))
     return data
 
 

@@ -303,6 +303,46 @@ export default function AdminEventsPage() {
                 </div>
               )}
 
+              {/* 案件视角：本组所属案件 + 案件叙事副本。
+                  案件结论不再覆盖本组攻击链（以前会，等于让调查结果给自己作证）。 */}
+              {(selected.case_id || selected.case_context) && (
+                <div className="rounded-md border p-3">
+                  <h3 className="mb-2 text-sm font-medium">
+                    案件视角
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {selected.case_id
+                        ? `属于案件 AC-${selected.case_id.slice(0, 8).toUpperCase()}`
+                        : "无案件指针"}
+                      {selected.case_context?.superseded ? " · 该副本已因重建退场" : ""}
+                    </span>
+                  </h3>
+                  {selected.case_context ? (
+                    <div className="space-y-1 text-xs">
+                      {selected.case_context.severity && (
+                        <p>案件级别：{severityText(selected.case_context.severity)}</p>
+                      )}
+                      {selected.case_context.summary && (
+                        <p className="text-muted-foreground">{selected.case_context.summary}</p>
+                      )}
+                      {(selected.case_context.path || []).length > 0 && (
+                        <p className="text-muted-foreground">
+                          案件阶段：
+                          {(selected.case_context.path || [])
+                            .map((p) => p.stage)
+                            .filter(Boolean)
+                            .join(" → ")}
+                        </p>
+                      )}
+                      {selected.case_context.rounds ? (
+                        <p>调查轮次：{selected.case_context.rounds}</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">暂无案件视角副本</p>
+                  )}
+                </div>
+              )}
+
               {/* 同源重复组：展示层折叠了它们，这里给出全貌（归组指纹未动） */}
               {foldSiblings.length > 1 && (
                 <div className="rounded-md border p-3">
