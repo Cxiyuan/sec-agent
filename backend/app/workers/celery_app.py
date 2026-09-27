@@ -39,6 +39,9 @@ celery_app.conf.update(
         "analysis.build_cases": {"queue": "investigation"},
         "analysis.investigate_case": {"queue": "investigation"},
         "analysis.retry_failed_cases": {"queue": "investigation"},
+        # 重建是长事务（逐组重算），绝不能跟实时分析挤同一个 worker：
+        # 实测被实时分析“预取槽”卡住几十分钟没跑（prefetch=1）。走空闲的 investigation 队列。
+        "analysis.rebuild_cases": {"queue": "investigation"},
     },
     beat_schedule={
         "run-analysis-every-interval": {

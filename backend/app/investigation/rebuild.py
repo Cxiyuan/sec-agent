@@ -249,9 +249,12 @@ def collect_refs(*, limit: int | None = None, hours: int | None = None) -> list[
         query = select(EventGroup).where(EventGroup.status != "excluded")
         if hours:
             query = query.where(
-                EventGroup.created_at > datetime.now(UTC) - timedelta(hours=max(1, _safe_int(hours, 24)))
+                EventGroup.created_at
+                > datetime.now(UTC) - timedelta(hours=max(1, _safe_int(hours, 24)))
             )
-        query = query.order_by(EventGroup.created_at.desc()).limit(max(1, _safe_int(limit or 5000, 5000)))
+        query = query.order_by(EventGroup.created_at.desc()).limit(
+            max(1, _safe_int(limit or 5000, 5000))
+        )
         for group in db.scalars(query).all():
             events = db.scalars(select(Event).where(Event.group_id == group.id).limit(20)).all()
             raws = [e.raw for e in events if isinstance(e.raw, dict)]
@@ -288,7 +291,9 @@ def dry_run(*, limit: int | None = None, hours: int | None = None) -> dict[str, 
         "new_cases": len(plans),
         "old_max_groups": old_sizes[0] if old_sizes else 0,
         "new_max_groups": sizes[0] if sizes else 0,
-        "oversized_before": sum(1 for n in old_sizes if n > _safe_int(settings.case_max_groups, 40)),
+        "oversized_before": sum(
+            1 for n in old_sizes if n > _safe_int(settings.case_max_groups, 40)
+        ),
         "oversized_after": sum(1 for n in sizes if n > _safe_int(settings.case_max_groups, 40)),
         "junk_keys_before": sum(
             1
