@@ -254,6 +254,8 @@ def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[st
         rule_severity=digest.get("rule_severity"),
         dst_count=len(digest.get("dst_ips") or []),
         success=triage_policy.has_success(digest.get("event_types"), digest.get("conn_states")),
+        # 规则名参与白名单判定：名单外/取不到名字 → 不跳（fail-open，防漏报）
+        rule_name=str(digest.get("rule") or ""),
     )
     if not reason:
         return

@@ -122,19 +122,37 @@ def _severity_of(rank: int) -> str:
 # ---------- 策略 1：分级放行 ----------
 
 
+def _skip_rules() -> set[str]:
+    """允许被跳过的规则名单（后台可改、即时生效；支持列表或逗号串）。"""
+    raw = runtime_get("policy_skip_rules", settings.policy_skip_rules)
+    if isinstance(raw, (list, tuple, set)):
+        values = [str(x).strip() for x in raw]
+    else:
+        values = [x.strip() for x in str(raw or "").replace("，", ",").split(",")]
+    return {v for v in values if v}
+
+
 def internal_routine_reason(
     *,
     direction: str,
     rule_severity: Any,
     dst_count: int,
     success: bool,
+    rule_name: str = "",
 ) -> str | None:
     """内网常规流量 → 返回可读理由（调用方据此打标跳过）；该分析则返回 None。
 
     四个条件**全部满足**才跳过（任一不满足都照旧全量分析）：
     内→内、规则严重度 < 门槛、单目标、没有任何成功连接。
+
+    另外还要求**规则在跳过白名单里**（``policy_skip_rules``）：名单外或拿不到规则名
+    一律不跳（fail-open）——否则新规则会被静默跳过，就是漏报源。
     """
     if not _flag("policy_internal_routine_skip"):
+        return None
+    allowed = _skip_rules()
+    name = str(rule_name or "").strip()
+    if not name or name not in allowed:
         return None
     if direction != DIR_IN_TO_IN:
         return None
@@ -146,7 +164,7 @@ def internal_routine_reason(
     if success and _flag("policy_internal_routine_require_failed"):
         return None
     return (
-        f"内网常规流量（{direction}，规则严重度 {rule_severity or 'info'}，"
+        f"内网常规流量（{direction}，规则「{name}」严重度 {rule_severity or 'info'}，"
         f"{dst_total} 个目标，无成功连接）"
     )
 

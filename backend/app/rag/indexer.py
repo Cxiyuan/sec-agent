@@ -69,7 +69,12 @@ def _replace_chunks(
         db.flush()
         return
     vectors = embed_for_index(chunks)
-    for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
+    if len(vectors) != len(chunks):
+        raise ValueError(
+            f"向量数（{len(vectors)}）与文本段数（{len(chunks)}）不一致：拒绝入库，"
+            "否则会把文本与向量错位配对（知识库检索会返回错内容）"
+        )
+    for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True)):
         db.add(
             KnowledgeChunk(
                 source_type=source_type,

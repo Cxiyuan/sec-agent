@@ -91,12 +91,21 @@ def _asset_contains(a: Asset, addrs: list[Any]) -> bool:
 
 
 def _cosine_sim(a: Any, b: Any) -> float:
-    """Python 侧余弦相似度（top-K 数量小，开销可忽略）。"""
+    """Python 侧余弦相似度（top-K 数量小，开销可忽略）。
+
+    维度必须一致：不一致说明索引由**旧 embedding** 生成。按口径**直接报错**（不静默跳过），
+    由上层把错误透出并提示重建索引——静默截断会算出个假相似度，看起来“检索正常”实则全错。
+    """
     if a is None or b is None:
         return 0.0
     av = list(a)
     bv = list(b)
-    dot = sum(x * y for x, y in zip(av, bv))
+    if len(av) != len(bv):
+        raise ValueError(
+            f"向量维度不一致（查询 {len(av)} 维 vs 索引 {len(bv)} 维）："
+            "索引很可能由旧 embedding 生成，请重建知识库索引（rag.reindex_all）"
+        )
+    dot = sum(x * y for x, y in zip(av, bv, strict=True))
     na = sum(x * x for x in av) ** 0.5
     nb = sum(y * y for y in bv) ** 0.5
     if na == 0 or nb == 0:

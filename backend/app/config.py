@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # raw 队列只是“快车道”，ES 才是事实源（水位兜底会补齐），所以丢掉最老的可以接受；
     # 但丢弃必须计数可查（dropped.raw_trimmed）。
     detector_raw_queue_max: int = 20000
+    # 漏报兑底率告警阈（已分析事件数 / ES 命中文档数），低于它标黄提醒看趋势
+    detector_coverage_warn_ratio: float = 0.6
+    # 清理后自动派发的并发上限（超过留在待派发，不丢不静默）
+    investigation_dispatch_batch_max: int = 8
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
     detector_dedup_key: str = "shentong:detector:dedup"  # 去重拦下计数（跨重启可查）
     detector_task_failed_key: str = "shentong:detector:task_failed"  # 分析任务失败计数
@@ -219,6 +223,10 @@ class Settings(BaseSettings):
     # ① 分级放行：内网常规流量（内→内 + 低危逐条规则 + 单目标 + 无成功连接）只落库不跑模型。
     #    不做"内→内一律不分析"：横向移动就藏在内→内，一刀切会致盲。
     policy_internal_routine_skip: bool = True
+    # 允许被“内网常规流量”策略跳过的**规则名单**（白名单）。
+    # 为什么必须白名单：原来是“所有低危逐条规则”都能跳，于是**新加的规则会被静默跳过**；
+    # 名单外（含空规则名）一律不跳 = 新规则默认 fail-open（宁多分析，不漏）。
+    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-文件传输可观测"]
     policy_internal_routine_min_severity: str = "medium"  # 规则严重度 ≥ 此值的内→内照旧全量分析
     policy_internal_routine_max_dst: int = 1  # 目标数 ≤ 此值才算"单目标"（扇出即扫描特征）
     policy_internal_routine_require_failed: bool = True  # 有成功连接则不跳

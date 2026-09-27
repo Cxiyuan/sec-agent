@@ -584,6 +584,20 @@ def _group_direction(g: EventGroup) -> str:
     return triage_policy.direction_of(g.src_ips[0] if g.src_ips else None, g.dst_ips)
 
 
+def _group_rule_name(g: EventGroup) -> str:
+    """组命中的规则名（取第一条拿得到的事件）；拿不到返回空串。
+
+    为什么需要：跳过白名单按规则名判定；拿不到名字就**不跳**（fail-open），
+    避免“规则名缺失”变成静默漏报。
+    """
+    for ev in g.events or []:
+        log_obj = getattr(ev, "log", None)
+        name = getattr(log_obj, "rule_name", "") or getattr(log_obj, "hit_rule", "")
+        if name:
+            return str(name)
+    return ""
+
+
 def _group_evidence_tier(g: EventGroup) -> str:
     """组的事件级证据阶梯（T2/T1/T0）—— 定级的唯一事实依据。
 
@@ -638,6 +652,8 @@ def _mark_routine_groups(groups: list[EventGroup]) -> int:
             rule_severity=_rule_severity(g),
             dst_count=len(g.dst_ips or []),
             success=_group_has_success(g),
+            # 规则名参与白名单判定：名单外/取不到 → 不跳（fail-open，防漏报）
+            rule_name=_group_rule_name(g),
         )
         if not reason:
             continue
