@@ -274,6 +274,33 @@ def set_groups_pending(fingerprints: list[str]) -> None:
         db.commit()
 
 
+def mark_analyzed(fingerprints: list[str]) -> int:
+    """把「分析跑完但没出报告」的组落到终态 analyzed（返回更新条数）。
+
+    为什么必须落终态：状态只在写报告时才会变成 report_generated，没达到报告门槛
+    （report_min_severity）的组会永远停在 analyzing —— 既看不出已完成，也会被
+    「分析未收敛」清理任务误判成卡死。只更新非终态，绝不覆盖已有报告状态。
+    """
+    wanted = [fp for fp in fingerprints if fp]
+    if not wanted:
+        return 0
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(EventGroup).where(
+                    EventGroup.fingerprint.in_(wanted),
+                    EventGroup.status.in_(["analyzing", "pending_confirmation"]),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.status = "analyzed"
+        db.commit()
+        return len(rows)
+
+
 def save_report(
     group_fingerprint: str, title: str, severity: str, html: str, pdf_path: str | None
 ) -> None:

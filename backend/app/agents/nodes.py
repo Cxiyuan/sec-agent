@@ -25,6 +25,7 @@ from app.agents.metrics import merge_aggregates
 from app.agents.persistence import (
     get_enabled_rules,
     get_enabled_skills,
+    mark_analyzed,
     save_business_context,
     save_groups,
     save_report,
@@ -1326,6 +1327,16 @@ def report_node(state: AgentState) -> dict[str, Any]:
         eligible.append(
             (g, analyses.get(g.fingerprint) or {}, sev, responses.get(g.fingerprint) or [])
         )
+
+    # 没达到报告门槛的组也要落终态：状态只在写报告时才变 report_generated，
+    # 否则这些组会永远停在 analyzing（看起来像卡死，还会被清理任务误判）。
+    _done = [
+        g.fingerprint
+        for g in groups
+        if not g.excluded and g.fingerprint not in {e[0].fingerprint for e in eligible}
+    ]
+    if _done:
+        mark_analyzed(_done)
 
     # 只并发"写正文"（网络 IO）；渲染 PDF 与落库仍串行——
     # WeasyPrint 是本机重活，多线程不稳且更吃内存，串行反而更快更稳

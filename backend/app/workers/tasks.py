@@ -305,6 +305,7 @@ def reap_stuck_groups() -> dict:
     from app.db.models import EventGroup
 
     reaped = 0
+    finished = 0
     with SessionLocal() as db:
         rows = (
             db.execute(
@@ -316,18 +317,26 @@ def reap_stuck_groups() -> dict:
             .all()
         )
         for row in rows:
-            row.status = "analyze_failed"
-            reaped += 1
-        if reaped:
+            # 有分析结果（级别/攻击链）说明图已经跑完，只是没出报告 → 记「已分析」；
+            # 真没结果的才算「未收敛」，否则会把正常完成误报成事故
+            if row.severity or row.attack_chain:
+                row.status = "analyzed"
+                finished += 1
+            else:
+                row.status = "analyze_failed"
+                reaped += 1
+        if reaped or finished:
             db.commit()
     if reaped:
         log.warning(
-            "分析未收敛：%d 个事件组停在 analyzing 超过 %d 分钟，已标记 analyze_failed"
+            "分析未收敛：%d 个事件组停在 analyzing 超过 %d 分钟且无任何分析结果，已标记 analyze_failed"
             "（常见原因：Redis 写失败 / worker 崩溃 / 模型不可达）",
             reaped,
             limit,
         )
-    return {"reaped": reaped, "stuck_minutes": limit}
+    if finished:
+        log.info("补落终态：%d 个组已分析完成但无报告，标记为 analyzed", finished)
+    return {"reaped": reaped, "finished": finished, "stuck_minutes": limit}
 
 
 @celery_app.task(
