@@ -119,6 +119,11 @@ def run() -> None:
     stats: Counter[str] = Counter()
     last_flush = time.time()
     last_stats = time.time()
+    # 速率快照的上一采样点（用于算"本区间增量"，避免用 ts 反推导致失真）
+    rate_prev: dict[str, float] = {
+        "ts": last_stats, "scanned": 0.0, "hit": 0.0, "digest": 0.0,
+        "delivered": 0.0, "raw_trimmed": 0.0,
+    }
     log.info(
         "检测器启动：逐条规则 %d 条 / 频率规则 %d 条 / 分析网段 %d 个 / 聚合窗口 %ds",
         len(rules["per_event"]),
@@ -242,12 +247,22 @@ def run() -> None:
                 agg.pending(),
                 health.describe(mem),
             )
-            # 速率快照落库（G4）：五段速率靠两个采样点的差值计算，面板/接口都能读
+            # 速率快照落库（G4）：写入"本区间增量 + 区间秒数"，端点据此精确算速率
+            now_ts = time.time()
+            interval = max(0.1, now_ts - rate_prev["ts"])
             try:
                 client.hset(
                     "shentong:detector:rates",
                     mapping={
-                        "ts": str(time.time()),
+                        "ts": str(now_ts),
+                        "interval_seconds": str(interval),
+                        "d_scanned": str(stats["scanned"] - rate_prev["scanned"]),
+                        "d_hit": str(stats["hit"] - rate_prev["hit"]),
+                        "d_digest": str(stats["digest"] - rate_prev["digest"]),
+                        "d_delivered": str(stats["delivered"] - rate_prev["delivered"]),
+                        "d_raw_trimmed": str(
+                            stats["dropped_raw_trimmed"] - rate_prev["raw_trimmed"]
+                        ),
                         "scanned": str(stats["scanned"]),
                         "hit": str(stats["hit"]),
                         "freq_hit": str(stats["freq_hit"]),
@@ -260,7 +275,17 @@ def run() -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 log.debug("写入速率快照失败: %s", exc)
-            last_stats = time.time()
+            rate_prev.update(
+                {
+                    "ts": now_ts,
+                    "scanned": stats["scanned"],
+                    "hit": stats["hit"],
+                    "digest": stats["digest"],
+                    "delivered": stats["delivered"],
+                    "raw_trimmed": stats["dropped_raw_trimmed"],
+                }
+            )
+            last_stats = now_ts
 
 
 def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[str]) -> None:

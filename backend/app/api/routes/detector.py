@@ -155,6 +155,33 @@ def detector_rate(
             or 0
         )
     out["analyzed_per_min"] = round(analyzed / max(1, min(int(minutes or 10), 1440)), 2)
+    # 覆盖修正：用「区间增量 ÷ 区间秒数」算速率。
+    # 原来用 ts-vs-now 反推窗口，检测器重启/刷新周期内窗口失真，曾算出
+    # delivered_per_min=471（上限只有 20）这种不可能值。
+    interval = _num("interval_seconds") or 0.0
+    if interval > 0 and "d_scanned" in snap:
+        def _delta2(key: str) -> float:
+            try:
+                return float(snap.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        out["interval_seconds"] = round(interval, 1)
+        out["scanned_per_sec"] = round(_delta2("d_scanned") / interval, 1)
+        out["hits_per_min"] = round(_delta2("d_hit") / interval * 60.0, 1)
+        out["digests_per_min"] = round(_delta2("d_digest") / interval * 60.0, 1)
+        out["delivered_per_min"] = round(_delta2("d_delivered") / interval * 60.0, 1)
+        out["raw_trimmed_in_interval"] = int(_delta2("d_raw_trimmed"))
+    if snap.get("ts"):
+        try:
+            out["snapshot_age_seconds"] = round(
+                datetime.now(UTC).timestamp() - float(snap["ts"]), 1
+            )
+        except (TypeError, ValueError):
+            pass
+    if out.get("delivered_per_min") is not None and out.get("agent_capacity_per_min"):
+        out["over_capacity"] = out["delivered_per_min"] > float(out["agent_capacity_per_min"])
+
     out["note"] = "入队≈扫描>命中>投递≈分析 为健康；最小的一段即瓶颈"
     return out
 
