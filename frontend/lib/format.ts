@@ -24,6 +24,7 @@ export const STATUS_LABEL: Record<string, string> = {
   pending_confirmation: "待人工确认",
   dismissed: "已忽略",
   excluded: "已排除（不跑模型）",
+  analyze_failed: "分析未收敛",
   // 攻击者案件
   open: "待调查",
   investigating: "调查中",

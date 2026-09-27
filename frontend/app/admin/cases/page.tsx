@@ -123,6 +123,7 @@ export default function CasesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>编号</TableHead>
                   <TableHead>攻击者标识</TableHead>
                   <TableHead>级别</TableHead>
                   <TableHead>状态</TableHead>
@@ -136,6 +137,11 @@ export default function CasesPage() {
               <TableBody>
                 {items.map((c) => (
                   <TableRow key={c.id}>
+                    <TableCell className="font-mono text-xs">
+                      <Link className="text-muted-foreground hover:underline" href={`/admin/cases/${c.id}`}>
+                        {c.display_id}
+                      </Link>
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
                       <Link className="text-primary hover:underline" href={`/admin/cases/${c.id}`}>
                         {c.attacker_key}

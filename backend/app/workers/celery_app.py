@@ -20,6 +20,8 @@ celery_app.conf.update(
     timezone=settings.timezone,
     enable_utc=True,
     task_track_started=True,
+    # 结果只用于排障：默认保留 24h 会让 celery-task-meta-* 无限堆积（实测 5000+ 键）
+    result_expires=3600,
     # 任务被 worker 崩溃/超时中断时不丢：消息保持未确认，会重新投递
     task_acks_late=True,
     # 一次只预取 1 个：长任务（分析耗时几分钟）不应把后续任务锁在 worker 本地，
@@ -47,6 +49,11 @@ celery_app.conf.update(
         "retry-failed-investigations": {
             "task": "analysis.retry_failed_cases",
             "schedule": 600.0,
+        },
+        # 分析不收敛的兜底：把停在 analyzing 太久的组标成 analyze_failed（事故可见性）
+        "reap-stuck-groups": {
+            "task": "analysis.reap_stuck_groups",
+            "schedule": 300.0,
         },
     },
 )

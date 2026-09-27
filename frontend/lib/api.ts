@@ -212,6 +212,8 @@ export interface EventGroupItem {
   aggregate?: GroupAggregate | null;
   /** 被排除过滤命中：可见可回溯，但不参与模型分析与报告 */
   excluded?: boolean;
+  /** 展示用唯一编号：EG-<10 位>（人工沟通/报告引用） */
+  display_id?: string;
   /** 误报治理：内外网方向（in→in / in→out / out→in / out→out / unknown） */
   direction?: string;
   /** 为什么跳过（排除过滤器命中，或策略判定为「内网常规流量」） */
@@ -534,6 +536,11 @@ export interface DetectorStats {
   task_failed?: { failed_total: number; last_failed_at: string | null };
   /** 误报治理：策略跳过的数量（内网常规流量等）——降噪必须可见 */
   policy?: { internal_routine: number; last_at: string | null };
+  /** Redis 体检：内存吃满会让整条分析链静默卡死（真实事故） */
+  redis?: { used: number; max: number; perc: number; used_human?: string; policy?: string };
+  redis_warn?: boolean;
+  /** 已处理登记因单桶超限被丢弃的条数（会被兜底重复分析） */
+  handled_skipped?: number;
   /** 选主状态：谁在消费 */
   leader?: { holder: string | null; ttl_seconds: number } | null;
   error?: string;
@@ -825,6 +832,8 @@ export interface InvestigationResult {
 /** 攻击者案件（列表项） */
 export interface AttackerCaseItem {
   id: string;
+  /** 展示用唯一编号：AC-<8 位> */
+  display_id?: string;
   attacker_key: string;
   title: string;
   keys: Record<string, string[]>;

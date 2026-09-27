@@ -21,6 +21,7 @@ from app.agents import triage_policy
 from app.agents.persistence import get_enabled_rules
 from app.config import settings
 from app.db.base import SessionLocal
+from app.detector import health
 from app.detector.aggregate import Aggregator
 from app.detector.analyzed import AnalyzedRegistry, digest_age, digest_fingerprint
 from app.detector.frequency import FreqWindow
@@ -190,11 +191,24 @@ def run() -> None:
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
+            # Redis 体检：内存吃满 → noeviction 拒写 → 全链路静默卡死（真实事故，必须提前叫）
+            mem = health.redis_memory(client)
+            if mem.get("max") and mem.get("perc", 0) >= settings.redis_memory_warn_perc:
+                log.warning(
+                    "%s —— 超过 maxmemory 后 Redis 会拒绝所有写命令，分析链路会整体卡死；"
+                    "请用 redis-cli --bigkeys 找大键（历史事故键：shentong:handled:docs）",
+                    health.describe(mem),
+                )
+            if handled.skipped:
+                try:
+                    client.set(f"{settings.detector_handled_key}:skipped", handled.skipped)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("登记丢弃计数写入失败: %s", exc)
             log.info(
                 "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
                 "/ 投递 %d / 去重跳过 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d) "
-                "/ 策略跳过(内网常规 %d) "
-                "| 队列 raw=%d processing=%d | 聚合中 %d",
+                "/ 策略跳过(内网常规 %d) / 登记丢弃 %d "
+                "| 队列 raw=%d processing=%d | 聚合中 %d | %s",
                 leader.me,
                 stats["scanned"],
                 stats["hit"],
@@ -209,9 +223,11 @@ def run() -> None:
                 stats["dropped_expired"],
                 stats["dropped_trimmed"],
                 stats["policy_internal_routine"],
+                handled.skipped,
                 q_raw,
                 q_proc,
                 agg.pending(),
+                health.describe(mem),
             )
             last_stats = time.time()
 

@@ -131,6 +131,7 @@ export default function AdminEventsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>编号</TableHead>
                   <TableHead>级别</TableHead>
                   <TableHead>源 IP</TableHead>
                   <TableHead>目标 IP</TableHead>
@@ -149,6 +150,7 @@ export default function AdminEventsPage() {
                     onClick={() => openDetail(g, siblings)}
                     title="点击查看详情"
                   >
+                    <TableCell className="font-mono text-xs">{g.display_id}</TableCell>
                     <TableCell>
                       <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
                     </TableCell>
@@ -227,6 +229,9 @@ export default function AdminEventsPage() {
           title={
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">事件组详情</span>
+              {selected?.display_id && (
+                <span className="font-mono text-xs text-muted-foreground">{selected.display_id}</span>
+              )}
               {selected && (
                 <Badge variant={severityVariant(selected.severity)}>
                   {severityText(selected.severity)}
@@ -271,6 +276,9 @@ export default function AdminEventsPage() {
                 <div>
                   事件数：{detail.event_count}
                   {(detail.aggregate?.hits ?? 0) > 0 && ` / 聚合 ${detail.aggregate?.hits}`}
+                </div>
+                <div className="col-span-2 font-mono text-xs text-muted-foreground">
+                  {selected.display_id} · 指纹 {selected.fingerprint}
                 </div>
               </div>
 

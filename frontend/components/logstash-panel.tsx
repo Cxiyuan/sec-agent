@@ -194,6 +194,22 @@ export function LogstashPanel() {
                     </span>
                   </>
                 )}
+                {det.redis_warn && (
+                  <>
+                    {" · "}
+                    <span className="text-destructive">
+                      ⚠ Redis 内存已达 {det.redis?.perc ?? 0}%（吃满后会拒绝写命令，整条分析链会卡死）
+                    </span>
+                  </>
+                )}
+                {(det.handled_skipped ?? 0) > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-amber-500">
+                      登记丢弃 {det.handled_skipped} 条（会重复分析）
+                    </span>
+                  </>
+                )}
                 {det.leader?.holder ? ` · 主实例 ${det.leader.holder}` : ""}
               </p>
             )}

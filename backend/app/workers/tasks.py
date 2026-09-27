@@ -291,6 +291,45 @@ class IndexFailedError(Exception):
     """向量化失败，用于触发 Celery 重试。"""
 
 
+@celery_app.task(name="analysis.reap_stuck_groups")
+def reap_stuck_groups() -> dict:
+    """把长时间停在 analyzing 的事件组标成「分析未收敛（analyze_failed）」。
+
+    为什么必须有这个任务：Redis 内存打满时（noeviction）Celery 写结果全部失败、任务崩溃，
+    事件组永远停在 analyzing，而**表面上没有任何提示** —— 线上真实发生过，持续 4 小时 39 分
+    没出报告，直到人工翻库才发现。分析不收敛必须自己叫出来、并在界面上看得见。
+    """
+    limit = max(1, int(settings.analysis_stuck_minutes))
+    cutoff = datetime.now(UTC) - timedelta(minutes=limit)
+    from app.db.base import SessionLocal
+    from app.db.models import EventGroup
+
+    reaped = 0
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(EventGroup).where(
+                    EventGroup.status == "analyzing", EventGroup.created_at < cutoff
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.status = "analyze_failed"
+            reaped += 1
+        if reaped:
+            db.commit()
+    if reaped:
+        log.warning(
+            "分析未收敛：%d 个事件组停在 analyzing 超过 %d 分钟，已标记 analyze_failed"
+            "（常见原因：Redis 写失败 / worker 崩溃 / 模型不可达）",
+            reaped,
+            limit,
+        )
+    return {"reaped": reaped, "stuck_minutes": limit}
+
+
 @celery_app.task(
     name="rag.index_asset",
     autoretry_for=(IndexFailedError,),

@@ -116,6 +116,8 @@ def _group_dict(g: EventGroup, with_events: bool = False) -> dict[str, Any]:
         # 被排除过滤命中：事件可见、可回溯，但不参与模型分析与报告
         "excluded": g.status == "excluded",
         # 误报治理：内外网方向、跳过原因、定级被约束的原因（都要能解释清楚）
+        # 展示用唯一编号：人工沟通/报告引用都靠它（EG-<10位十六进制>）
+        "display_id": f"EG-{str(g.fingerprint or '')[:10].upper()}",
         "direction": g.direction or "",
         "exclude_reason": g.exclude_reason or "",
         "severity_cap_reason": g.severity_cap_reason or "",

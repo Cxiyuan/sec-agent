@@ -52,7 +52,15 @@ class Settings(BaseSettings):
     detector_digest_queue: str = "shentong:events:digest"
     detector_processing_queue: str = "shentong:events:processing"
     detector_handled_key: str = "shentong:handled:docs"
-    detector_handled_ttl: int = 90000  # 已处理登记保留秒数（需 > 兜底最大回补时长）
+    # 已处理登记保留秒数。**不要为了“覆盖 24h 回补”把它调成一天以上**：登记量随流量线性增长，
+    # 线上实测 25h 窗口涨到 1677 万成员 / 1.4GB，直接把 Redis 撑爆（noeviction → 全线写失败）。
+    # 现在按 2h 窗口登记：常规运行完全够用；长时间停机后的回补会重复分析，
+    # 由“投递前去重 + 摘要超龄”两道闸门兜住。
+    detector_handled_ttl: int = 7200
+    detector_handled_bucket_seconds: int = 600  # 分桶粒度：桶自带 TTL，到期整桶消失（内存有界）
+    detector_handled_max_members: int = 50000  # 单桶成员硬上限（超限丢弃登记并告警，不静默）
+    redis_memory_warn_perc: int = 85  # Redis 内存占用告警线（占 maxmemory 的百分比）
+    analysis_stuck_minutes: int = 30  # 事件组停在 analyzing 超过该分钟数视为“分析未收敛”
     detector_agg_seconds: int = 60  # 短窗聚合时长（源IP+规则）
     detector_agg_max_keys: int = 5000  # 并发聚合态上限（护栏）
     detector_batch_seconds: int = 20  # 攒批：最长等待

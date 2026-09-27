@@ -23,16 +23,95 @@ log = get_logger(__name__)
 
 # 已知高风险端口（后门/代理/矿池常用）
 SUSPICIOUS_PORTS: set[int] = {
-    4444, 4445, 5555, 6666, 6667, 7777, 9001, 9050, 1337, 31337, 12345, 54321, 1080,
+    4444,
+    4445,
+    5555,
+    6666,
+    6667,
+    7777,
+    9001,
+    9050,
+    1337,
+    31337,
+    12345,
+    54321,
+    1080,
 }
 
 # 常用端口（不在其中的外联端口更值得关注）
 COMMON_PORTS: set[int] = {
-    20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 119, 123, 135, 137, 138, 139, 143, 161, 162,
-    179, 389, 443, 445, 465, 514, 515, 587, 631, 636, 873, 993, 995, 1433, 1521, 1723, 2049,
-    2082, 2083, 2181, 2375, 2379, 3000, 3128, 3306, 3389, 4443, 5000, 5432, 5601, 5672, 5900,
-    5984, 6000, 6379, 6443, 7001, 8000, 8008, 8080, 8081, 8088, 8443, 8888, 9000, 9090, 9200,
-    9300, 9443, 10000, 11211, 27017,
+    20,
+    21,
+    22,
+    23,
+    25,
+    53,
+    67,
+    68,
+    69,
+    80,
+    110,
+    119,
+    123,
+    135,
+    137,
+    138,
+    139,
+    143,
+    161,
+    162,
+    179,
+    389,
+    443,
+    445,
+    465,
+    514,
+    515,
+    587,
+    631,
+    636,
+    873,
+    993,
+    995,
+    1433,
+    1521,
+    1723,
+    2049,
+    2082,
+    2083,
+    2181,
+    2375,
+    2379,
+    3000,
+    3128,
+    3306,
+    3389,
+    4443,
+    5000,
+    5432,
+    5601,
+    5672,
+    5900,
+    5984,
+    6000,
+    6379,
+    6443,
+    7001,
+    8000,
+    8008,
+    8080,
+    8081,
+    8088,
+    8443,
+    8888,
+    9000,
+    9090,
+    9200,
+    9300,
+    9443,
+    10000,
+    11211,
+    27017,
 }
 
 
@@ -76,9 +155,11 @@ def _looks_established(entry: UnifiedLog) -> bool:
     为什么要单独判它：未建立/半开连接（S0/REJ）是扫描/探活的典型特征，而双向有字节
     的已建立会话基本是正常业务（内网尤其如此）—— 后者正是兜底预筛噪声的主来源。
     """
-    success = (
-        str(entry.conn_state or "").upper() in triage_policy.SUCCESS_CONN_STATES
-        or entry.event_type in ("conn_established", "connection_shutdown")
+    success = str(
+        entry.conn_state or ""
+    ).upper() in triage_policy.SUCCESS_CONN_STATES or entry.event_type in (
+        "conn_established",
+        "connection_shutdown",
     )
     return success and bool(entry.bytes_out) and bool(entry.bytes_in)
 
@@ -140,7 +221,12 @@ def score_log(
         reasons.append(f"HTTP {entry.status_code}")
 
     # 6) 目标不在已录资产中（首次出现的对象）
-    if entry.dst_ip and known_asset_ips and entry.dst_ip not in known_asset_ips and not dst_external:
+    if (
+        entry.dst_ip
+        and known_asset_ips
+        and entry.dst_ip not in known_asset_ips
+        and not dst_external
+    ):
         score += 0.2
         reasons.append("目标不在已录资产中")
 

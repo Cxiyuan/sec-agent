@@ -14,6 +14,7 @@ from app.agents import triage_policy
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+from app.detector import health
 from app.detector.analyzed import AnalyzedRegistry
 from app.detector.runner import rate_bucket
 from app.workers.log import get_logger
@@ -95,6 +96,14 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
             "internal_routine": int(policy_stats.get("internal_routine") or 0),
             "last_at": policy_stats.get("last_at"),
         }
+        # Redis 体检：内存吃满会让整条分析链静默卡死（真实事故），必须一眼可见
+        mem = health.redis_memory(client)
+        out["redis"] = mem
+        out["redis_warn"] = bool(mem.get("max")) and mem.get("perc", 0) >= settings.redis_memory_warn_perc
+        try:
+            out["handled_skipped"] = int(client.get(f"{settings.detector_handled_key}:skipped") or 0)
+        except (TypeError, ValueError):
+            out["handled_skipped"] = 0
         if settings.dedup_enabled:
             out["dedup"].update(AnalyzedRegistry().counts())
     except Exception as exc:  # noqa: BLE001

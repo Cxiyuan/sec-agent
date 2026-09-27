@@ -64,6 +64,8 @@ def case_dict(row: AttackerCase, *, with_investigation: bool = True) -> dict[str
     """案件 → 接口字典。"""
     data: dict[str, Any] = {
         "id": row.id,
+        # 展示用唯一编号（人工沟通/报告引用都靠它）：AC-<8位>
+        "display_id": f"AC-{str(row.id)[:8].upper()}",
         "attacker_key": row.attacker_key,
         "title": row.title,
         "keys": row.keys or {},

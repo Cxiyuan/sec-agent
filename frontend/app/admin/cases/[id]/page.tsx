@@ -117,6 +117,9 @@ export default function CaseDetailPage() {
             ← 攻击者案件
           </Link>
           <h1 className="font-mono text-xl font-bold">{data.attacker_key}</h1>
+          {data.display_id && (
+            <span className="font-mono text-xs text-muted-foreground">{data.display_id}</span>
+          )}
           {data.severity && <Badge variant={severityVariant(data.severity)}>{severityText(data.severity)}</Badge>}
           <Badge variant="outline">{statusText(data.status)}</Badge>
           {current && current.confidence !== undefined && (
