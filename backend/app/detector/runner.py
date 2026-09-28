@@ -522,6 +522,28 @@ def _trim_queue(
         log.debug("裁剪队列 %s 失败: %s", q.raw, exc)
         return
     _drop(client, reason, depth - cap, stats)
+    if reason == "raw_trimmed":
+        # 记录裁剪时段（H1）：兜底按水位扫 ES 会补回这些日志，这里留下面证供对账
+        try:
+            import json as _json
+            from datetime import UTC as _UTC, datetime as _dt
+
+            client.lpush(
+                "shentong:trimmed:windows",
+                _json.dumps(
+                    {
+                        "at": _dt.now(_UTC).isoformat(),
+                        "dropped": int(depth - cap),
+                        "queue_depth": int(depth),
+                        "cap": int(cap),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            client.ltrim("shentong:trimmed:windows", 0, 49)
+            client.expire("shentong:trimmed:windows", 7 * 24 * 3600)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("记录裁剪时段失败: %s", exc)
 
 
 def _handle(

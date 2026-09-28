@@ -96,6 +96,93 @@ def detector_coverage(
     return out
 
 
+@router.get("/backfill-check")
+def backfill_check(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = 90,
+    samples: int = 20,
+):
+    """抽样对账：窗口内的 ES 文档有多少最终进入了分析（验证"裁剪只是延迟、不是丢失"）。
+
+    近似判定：抽 N 条 ES 文档，按 (src_ip, ts±120s) 在 events 表里找对应记录。
+    命中=已进分析；未命中=可能仍在兜底待补（对照 /api/detector/rate 的兜底滞后判读）。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from app.config import settings
+    from app.db.base import SessionLocal
+    from app.db.models import Event
+
+    window = max(5, min(int(minutes or 90), 1440))
+    n = max(5, min(int(samples or 20), 100))
+    since = datetime.now(UTC) - timedelta(minutes=window)
+    out: dict[str, Any] = {"minutes": window, "since": since.isoformat(), "samples": n}
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        cfg = es_config.current()
+        pattern = ",".join(
+            [
+                str(cfg.get("es.zeek_index") or settings.es_zeek_index),
+                str(cfg.get("es.wazuh_index") or settings.es_wazuh_index),
+            ]
+        )
+        resp = get_es().search(
+            index=pattern,
+            query={"range": {"@timestamp": {"gte": since.isoformat()}}},
+            size=n,
+            sort=[{"@timestamp": "desc"}],
+            track_total_hits=False,
+        )
+        hits = (resp.get("hits") or {}).get("hits") or []
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)[:200]
+        return out
+    checked = hit = 0
+    misses: list[dict[str, Any]] = []
+    with SessionLocal() as db:
+        for item in hits:
+            src = item.get("_source") or {}
+            zeek = src.get("zeek") or {}
+            data = src.get("data") or {}
+            s_ip = zeek.get("id.orig_h") or data.get("srcip")
+            d_ip = zeek.get("id.resp_h") or data.get("dstip")
+            ts_raw = src.get("@timestamp")
+            if not (s_ip and ts_raw):
+                continue
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            # 统一成 UTC（未带时区的按 UTC 解释；ruff FURB162 不接受 replace(tzinfo=UTC) 写法）
+            ts = ts.astimezone(UTC) if ts.tzinfo is not None else ts.replace(tzinfo=UTC)  # noqa: FURB162
+            checked += 1
+            found = db.execute(
+                select(func.count(Event.id)).where(
+                    Event.src_ip == str(s_ip),
+                    Event.ts >= ts - timedelta(seconds=120),
+                    Event.ts <= ts + timedelta(seconds=120),
+                )
+            ).scalar_one()
+            if found:
+                hit += 1
+            else:
+                misses.append({"ts": ts.isoformat(), "src": str(s_ip), "dst": str(d_ip or "")})
+    out.update(
+        {
+            "es_sampled": checked,
+            "analyzed_hit": hit,
+            "analyzed_miss": checked - hit,
+            "coverage_sample_ratio": round(hit / checked, 3) if checked else None,
+            "miss_samples": misses[:5],
+        }
+    )
+    return out
+
+
 @router.get("/rate")
 def detector_rate(
     _: Annotated[User, Depends(get_current_user)],
@@ -181,6 +268,51 @@ def detector_rate(
             pass
     if out.get("delivered_per_min") is not None and out.get("agent_capacity_per_min"):
         out["over_capacity"] = out["delivered_per_min"] > float(out["agent_capacity_per_min"])
+
+    # 突发与 SLA 可见性（H3）：队列占用比 / 最后裁剪 / 兜底滞后（SLA 实测值）
+    try:
+        import json as _json
+
+        import redis as _redis
+
+        _c = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        cap = max(1, int(settings.detector_raw_queue_max))
+        out["queue_raw_pct"] = round(
+            min(100.0, float(out.get("queue_raw") or 0) * 100.0 / cap), 1
+        )
+        raw_wins = _c.lrange("shentong:trimmed:windows", 0, 4)
+        parsed_wins: list[dict[str, Any]] = []
+        for item in raw_wins if isinstance(raw_wins, list) else []:
+            try:
+                parsed_wins.append(_json.loads(item))
+            except (TypeError, ValueError):
+                continue
+        out["trimmed_windows"] = parsed_wins
+        out["last_trimmed_at"] = parsed_wins[0].get("at") if parsed_wins else None
+    except Exception as exc:  # noqa: BLE001
+        out["trim_error"] = str(exc)[:200]
+    try:
+        from sqlalchemy import select as _select
+
+        from app.db.base import SessionLocal as _SessionLocal
+        from app.db.models import SystemConfig as _SystemConfig
+
+        with _SessionLocal() as _db:
+            _row = _db.scalars(
+                _select(_SystemConfig).where(
+                    _SystemConfig.key == settings.fallback_watermark_key
+                )
+            ).one_or_none()
+            _value = (_row.value or {}).get("value") if _row is not None else None
+        if _value:
+            _ts = datetime.fromisoformat(str(_value))
+            if _ts.tzinfo is None:
+                _ts = _ts.replace(tzinfo=UTC)  # noqa: FURB162
+            _lag = (datetime.now(UTC) - _ts).total_seconds()
+            out["backfill_lag_seconds"] = round(_lag, 1)
+            out["backfill_sla_ok"] = _lag <= float(settings.backfill_sla_seconds)
+    except Exception as exc:  # noqa: BLE001
+        out["watermark_error"] = str(exc)[:200]
 
     out["note"] = "入队≈扫描>命中>投递≈分析 为健康；最小的一段即瓶颈"
     return out

@@ -149,3 +149,15 @@ output.logstash:
 - **只用 GitHub Actions 构建镜像**，禁止本地构建（`docker build` / `npm run build`）
 - 本地质量门：`cd backend && .venv/bin/ruff check app/ && .venv/bin/pyright app/`；前端 `npx tsc --noEmit`
 - 推送 `main` 触发 CI 构建三个镜像（backend / frontend / zeek）到 GHCR
+
+
+## 三层数据路径与补齐 SLA
+
+1. **实时车道**：Logstash 双写 → Redis → 旁路检测器（规则命中才进智能体）。
+   实测能力约 130 条/秒（平稳），突发峰值（~1850 条/秒）会进入排队，极端时按上限裁剪最老的日志。
+2. **水位兜底**：Celery 每 15 分钟扫一次 ES（单轮窗口 ≤60 分钟，分段推进水位），
+   跳过检测器已处理的日志 —— **被裁剪日志的补齐 SLA ≤1 小时**（用 /api/detector/rate 的 backfill_lag_seconds 实测盯守）。
+3. **ES 全量事实源**：所有原始日志长期保留，可随时回溯/按需查询（自主调查工具直接查 ES）。
+
+对账工具：`GET /api/detector/backfill-check?minutes=90` 抽样核对「ES 文档是否进入了分析」。
+资源账：raw 队列上限 20 万条（约 650MB Redis，maxmemory 1.5GB，超 85% 触发内存告警）。

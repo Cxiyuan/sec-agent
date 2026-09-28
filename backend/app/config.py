@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # 撑满 → noeviction 拒写 → 检测器/ Celery 全线卡死（真实事故）。
     # raw 队列只是“快车道”，ES 才是事实源（水位兜底会补齐），所以丢掉最老的可以接受；
     # 但丢弃必须计数可查（dropped.raw_trimmed）。
-    detector_raw_queue_max: int = 20000
+    detector_raw_queue_max: int = 200000  # 突发吸收（200k≈650MB Redis；>85% 有内存告警）
     # 漏报兑底率告警阈（已分析事件数 / ES 命中文档数），低于它标黄提醒看趋势
     detector_coverage_warn_ratio: float = 0.6
     # 清理后自动派发的并发上限（超过留在待派发，不丢不静默）
@@ -82,8 +82,9 @@ class Settings(BaseSettings):
     # ---- 链路韧性（防止“跑不完→被杀→重投”空转）----
     analysis_task_budget_seconds: int = 900  # 单任务时间预算（接近就正常收尾，而非等 1800s 硬杀）
     analysis_max_redeliveries: int = 2  # 同一批摘要最多重投次数，超过则放弃并计数
-    detector_consume_batch: int = 200  # 检测器每轮批量消费条数（提升扫描吞吐）
+    detector_consume_batch: int = 1000  # 检测器每轮批量消费条数（提升扫描吞吐）
     # ---- 摘要压缩（先修好再调：默认关闭/保持现值）----
+    backfill_sla_seconds: int = 3600  # 被裁剪日志的补齐 SLA（仅用于界面判定，不改兜底调度）
     digest_suppress_hours: int = 0  # >0 时启用“同源+同规则+同目标段”抑制（只累加计数不重投）
     digest_merge_family: bool = False  # 同规则+同目标网段多源合并为一个摘要
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
