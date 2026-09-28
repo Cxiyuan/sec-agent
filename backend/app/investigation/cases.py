@@ -23,6 +23,7 @@ from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import AttackerCase, CaseInvestigation, EventGroup
 from app.investigation import keys as key_utils
+from app.runtime_config import get as runtime_get
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -284,8 +285,11 @@ def should_investigate(row: AttackerCase, *, is_new: bool) -> tuple[bool, str]:
         return False, "自主调查未开启"
     if row.status == "closed":
         return False, "案件已关闭"
-    if _severity_rank(row.severity) < _severity_rank(settings.investigation_min_severity):
-        return False, f"严重度 {row.severity} 低于准入级别 {settings.investigation_min_severity}"
+    gate = str(
+        runtime_get("investigation_min_severity", settings.investigation_min_severity)
+    )
+    if _severity_rank(row.severity) < _severity_rank(gate):
+        return False, f"严重度 {row.severity} 低于准入级别 {gate}"
     if is_new:
         return True, "新建案件首次调查"
     if row.rounds_today >= settings.investigation_max_rounds_per_day:

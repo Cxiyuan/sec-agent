@@ -214,8 +214,8 @@ class Settings(BaseSettings):
     topology_max_nodes_per_graph: int = 500  # 单张拓扑节点上限（保存校验）
 
     # 升级与报告阈值（可被系统配置覆盖）
-    escalate_score_threshold: float = 0.6
-    report_min_severity: str = "medium"  # critical/high/medium/low/info
+    escalate_score_threshold: float = 0.4  # 0.6→0.4：实测小模型分数普遍 0.85+，0.6 等于全量升级；0.4 让真信号够得着
+    report_min_severity: str = "low"  # medium→low：让 low/medium 也能出结论文本  # critical/high/medium/low/info
     # 事件组时间桶（分钟）：同一对象在桶内复用同一个组，避免持续攻击每分钟新建组/报告
     group_bucket_minutes: int = 30
     # 同一组在多少分钟内只留一份报告（0 = 不抑制，每轮都新建）
@@ -239,7 +239,7 @@ class Settings(BaseSettings):
     severity_require_evidence_above: str = "high"  # 无证据链不得 ≥ 此级别
     severity_critical_requires_external: bool = True  # critical 仅限 外→内
     # ③ 升级闸门（进深度分析）：除分数外还要满足规则严重度或方向
-    escalate_require_rule_severity: str = "medium"
+    escalate_require_rule_severity: str = "low"  # medium→low：命中主力是低危观测规则，medium 门槛让升级恒为 0
     escalate_allow_external: bool = True  # 外→内 不受规则严重度限制
     # ④ 兜底预筛的正常特征扣分（与加分叠加后与门槛比较，下限钳到 0）
     prefilter_penalty_established: float = 0.3  # 双向有字节的已建立连接
@@ -250,7 +250,7 @@ class Settings(BaseSettings):
     # 自主取证调查（深度分析路径上的「有界自主」：按需查询 → 还原完整攻击路径）
     # 设计取舍：预算全部写死，超限即停并产出部分结论；失败回落固定深度分析
     investigation_enabled: bool = True
-    investigation_min_severity: str = "high"  # 只对 ≥ 该级别的案件开调查
+    investigation_min_severity: str = "medium"  # high→medium：与案件归集门槛对齐，否则案件层永远 0 结论  # 只对 ≥ 该级别的案件开调查
     investigation_max_steps: int = 24  # 循环步数护栏（主停条件是模型自己 finish，不是撞上限）
     investigation_max_queries: int = 40  # 查询类工具调用护栏
     # 为什么抬到 10：实测上限 6 时调查**全部**撞限就停（模型把预算花在查询上，
