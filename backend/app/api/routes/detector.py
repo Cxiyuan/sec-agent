@@ -306,7 +306,7 @@ def detector_rate(
                 _select(_SystemConfig).where(_SystemConfig.key == settings.fallback_watermark_key)
             ).one_or_none()
             _value = (_row.value or {}).get("value") if _row is not None else None
-        if _value:
+        if _value and settings.fallback_enabled:
             _ts = datetime.fromisoformat(str(_value))
             if _ts.tzinfo is None:
                 _ts = _ts.replace(tzinfo=UTC)
