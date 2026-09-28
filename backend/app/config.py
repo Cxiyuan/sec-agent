@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     # RAG 参数
     rag_enabled: bool = True
     rag_top_k: int = 5
-    rag_min_score: float = 0.0
+    rag_min_score: float = 0.4  # 0.0→0.4：0 等于不过滤，会把 top5 无关资产硬塞进提示词
     rag_chunk_size: int = 500
     rag_chunk_overlap: int = 100
 
