@@ -37,11 +37,9 @@ from app.rules.engine import (
     build_rule_index,
     evaluate_conditions,
     is_count_rule,
-    match_count_rule,
     match_rule,
     rules_for_log_type,
     whitelisted,
-)
 )
 from app.workers.log import get_logger
 
