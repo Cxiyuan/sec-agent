@@ -41,24 +41,11 @@ celery_app.conf.update(
         "analysis.retry_failed_cases": {"queue": "investigation"},
         # 水位兑底扫描很慢（实测单次 >1200s）——绝不能和实时分析抢同一个 worker：
         # prefetch=1 时它会把 worker 占死，实时摘要全部排不进来（真实停摆根因）。
-        "analysis.run_window": {"queue": "investigation"},
         # 重建是长事务（逐组重算），绝不能跟实时分析挤同一个 worker：
         # 实测被实时分析“预取槽”卡住几十分钟没跑（prefetch=1）。走空闲的 investigation 队列。
         "analysis.rebuild_cases": {"queue": "investigation"},
     },
     beat_schedule={
-        # 兜底（水位全量重放）默认不调度：实测跑不完、水位不推进、占死 worker。
-        # 需要用 fallback_enabled=true 恢复（比如换成"只重跑规则"的廉价版本后）。
-        **(
-            {
-                "run-analysis-every-interval": {
-                    "task": "analysis.run_window",
-                    "schedule": settings.analysis_interval_minutes * 60.0,
-                }
-            }
-            if settings.fallback_enabled
-            else {}
-        ),
         # 失败案件的自动重试（受单案每日轮次上限约束，不会无限烧钱）
         "retry-failed-investigations": {
             "task": "analysis.retry_failed_cases",

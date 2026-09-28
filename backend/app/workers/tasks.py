@@ -171,97 +171,10 @@ def _count_digests_expired(count: int) -> None:
         log.debug("写入超龄丢弃计数失败: %s", exc)
 
 
-def _read_watermark() -> datetime | None:
-    """读取兜底水位（存 PostgreSQL，跨重启可靠）。"""
-    from app.db.base import SessionLocal
-    from app.db.models import SystemConfig
-
-    try:
-        with SessionLocal() as db:
-            row = db.get(SystemConfig, settings.fallback_watermark_key)
-        raw = (row.value or {}).get("value") if row is not None else None
-    except Exception as exc:  # noqa: BLE001
-        log.warning("读取兜底水位失败: %s", exc)
-        return None
-    if not raw:
-        return None
-    try:
-        ts = datetime.fromisoformat(str(raw))
-    except ValueError:
-        return None
-    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
-def _write_watermark(ts: datetime) -> None:
-    from app.db.base import SessionLocal
-    from app.db.models import SystemConfig
-
-    try:
-        with SessionLocal() as db:
-            row = db.get(SystemConfig, settings.fallback_watermark_key)
-            if row is None:
-                row = SystemConfig(key=settings.fallback_watermark_key, value={})
-                db.add(row)
-            row.value = {"value": ts.isoformat()}
-            db.commit()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("写入兜底水位失败: %s", exc)
 
 
-@celery_app.task(name="analysis.run_window")
-def run_analysis_window() -> dict:
-    """定时兜底：窗口 = [水位, now]，只补检测器没处理过的日志。
-
-    为什么用水位而不是固定窗口：服务整体停机数小时后，固定窗口会让停机期间
-    的漏报永远补不回来；水位驱动则恢复后一次性补齐（带最大回补上限）。
-    """
-    now = datetime.now(UTC)
-    # 顺手清理过期的去重指纹（inflight 超时 / done 超保留期）——每轮兜底跑一次，无需额外调度
-    removed = AnalyzedRegistry().cleanup()
-    if removed:
-        log.info("清理过期去重指纹 %d 条", removed)
-    # 右边界后退 lag：给检测器留出先处理这批日志的时间，避开与实时链路的重叠竞态
-    end = now - timedelta(seconds=max(0, settings.fallback_lag_seconds))
-    # 无水位时的首次窗口：取一个 beat 间隔（而不是分析窗口），语义上兜底一次覆盖一个调度周期
-    start = _read_watermark() or (
-        end - timedelta(minutes=max(1, settings.analysis_interval_minutes))
-    )
-    max_backfill = timedelta(hours=settings.fallback_max_backfill_hours)
-    # 单轮窗口上限（分段推进水位）：水位停滞时窗口会无限变大（实测单次 >1500s 跑不完，
-    # 叠加 beat 每 900s 一发 → 多实例把两个 worker 全部占死，这就是分析停摆的根因）。
-    # 改成每轮只补最多 N 分钟、本轮处理到哪水位就推到哪，积压被稳定消化。
-    max_window = timedelta(minutes=max(1, int(settings.fallback_max_window_minutes)))
-    if end - start > max_window:
-        log.warning(
-            "兜底窗口 %s 超过单轮上限 %d 分钟（%s），本轮只补最近一段",
-            end - start,
-            settings.fallback_max_window_minutes,
-            end.isoformat(),
-        )
-        start = end - max_window
-    if end - start > max_backfill:
-        log.warning(
-            "兜底窗口 %s 超过最大回补 %d 小时，已截断",
-            start.isoformat(),
-            settings.fallback_max_backfill_hours,
-        )
-        start = end - max_backfill
-    if end <= start:
-        # 空窗口（例：刚跑过手动任务、或 beat 间隔小于 lag）：不动水位，直接跳过
-        log.info("兜底窗口为空（%s ~ %s），本轮跳过", start.isoformat(), end.isoformat())
-        return {"skipped": "empty_window"}
-
-    thread_id = str(uuid.uuid4())
-    initial = {"window_start": start, "window_end": end, "thread_id": thread_id}
-    try:
-        result = get_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
-    except Exception:
-        log.exception("兜底分析任务失败（水位不前移，下轮重试同一窗口）")
-        return {"thread_id": thread_id, "error": "兜底分析任务失败"}
-    # 水位只推进到实际覆盖到的右边界（不是 now），保证下轮不重叠、不断层
-    _write_watermark(end)
-    _dispatch_cases(result.get("groups") or [])
-    return {"thread_id": thread_id, "summary": result.get("run_summary", {})}
 
 
 # ---------- 自主取证调查（攻击者跨组案件）----------
