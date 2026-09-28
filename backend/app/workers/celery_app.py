@@ -47,10 +47,18 @@ celery_app.conf.update(
         "analysis.rebuild_cases": {"queue": "investigation"},
     },
     beat_schedule={
-        "run-analysis-every-interval": {
-            "task": "analysis.run_window",
-            "schedule": settings.analysis_interval_minutes * 60.0,
-        },
+        # 兜底（水位全量重放）默认不调度：实测跑不完、水位不推进、占死 worker。
+        # 需要用 fallback_enabled=true 恢复（比如换成"只重跑规则"的廉价版本后）。
+        **(
+            {
+                "run-analysis-every-interval": {
+                    "task": "analysis.run_window",
+                    "schedule": settings.analysis_interval_minutes * 60.0,
+                }
+            }
+            if settings.fallback_enabled
+            else {}
+        ),
         # 失败案件的自动重试（受单案每日轮次上限约束，不会无限烧钱）
         "retry-failed-investigations": {
             "task": "analysis.retry_failed_cases",

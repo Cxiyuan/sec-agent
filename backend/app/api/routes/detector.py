@@ -260,6 +260,11 @@ def detector_rate(
         out["digests_per_min"] = round(_delta2("d_digest") / interval * 60.0, 1)
         out["delivered_per_min"] = round(_delta2("d_delivered") / interval * 60.0, 1)
         out["raw_trimmed_in_interval"] = int(_delta2("d_raw_trimmed"))
+    out["fallback_enabled"] = bool(settings.fallback_enabled)
+    if not settings.fallback_enabled:
+        # 兜底已停用：水位不再推进属于预期，不做 SLA 判定（避免误报不达标）
+        out["backfill_sla_ok"] = None
+        out["backfill_note"] = "兜底已停用（实时尽力 + ES 按需回溯）"
     if snap.get("ts"):
         try:
             out["snapshot_age_seconds"] = round(
