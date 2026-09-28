@@ -84,7 +84,6 @@ class Settings(BaseSettings):
     analysis_max_redeliveries: int = 2  # 同一批摘要最多重投次数，超过则放弃并计数
     detector_consume_batch: int = 1000  # 检测器每轮批量消费条数（提升扫描吞吐）
     # ---- 摘要压缩（先修好再调：默认关闭/保持现值）----
-    backfill_sla_seconds: int = 3600  # 被裁剪日志的补齐 SLA（仅用于界面判定，不改兜底调度）
     digest_suppress_hours: int = 0  # >0 时启用“同源+同规则+同目标段”抑制（只累加计数不重投）
     digest_merge_family: bool = False  # 同规则+同目标网段多源合并为一个摘要
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
@@ -109,19 +108,9 @@ class Settings(BaseSettings):
     # 频率规则滑动窗口（实时链路用 Redis 滑窗替代“窗口内计数”）
     freq_window_seconds: int = 300
     freq_cooldown_seconds: int = 300  # 同一分组触发后的冷却，防重复告警
-    # 兜底任务水位（存 PostgreSQL，跨重启可靠）
-    fallback_watermark_key: str = "fallback.last_run"
-    fallback_max_backfill_hours: int = 24  # 单次最大回补时长（超限截断并告警）
-    # 单轮兑底窗口上限（分钟）：兑底是分段推进水位的，不是一次吞完——
-    # 实测“水位停滞时窗口无限变大”会导致单次跑 >1500s，多个实例叠起来把 worker 占死。
-    fallback_max_window_minutes: int = 5  # 单轮兑底窗口：必须小到能跑完（60→5）——实测 60 分钟窗口过完整图必被 1800s 硬杀，水位永不推进
     # 兜底（水位全量重放）已停用：实测单轮过完整图必被硬超时，水位永不推进，
     # 反而占死 worker。工作流里去掉它；需要恢复把这里置 True。
-    fallback_enabled: bool = False
     run_window_lock_ttl_seconds: int = 1800  # 兑底任务分布式锁 TTL（防多实例叠加）
-    fallback_lag_seconds: int = (
-        60  # 兜底窗口右边界后退量：留时间给检测器先处理，避开重叠竞态（0=关）
-    )
 
     # 拉取护栏 / 检索上限
     max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）
