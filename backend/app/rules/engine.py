@@ -279,3 +279,82 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
         }
     )
     return errors
+
+
+# ---------- log_type 规则路由（提速：只跑命中概率非零的规则） ----------
+
+# 字段 → 日志类型 的归属表：规则引用了某类型的专有字段，就只挂到该类型。
+# 任何"归属不明 / 只引用通用字段"的规则一律进通配集合（每次都会跑）——fail-open，宁可多跑不漏。
+_FIELD_TYPES: dict[str, tuple[str, ...]] = {
+    # http
+    "uri": ("http",), "uri_path": ("http",), "method": ("http",), "status_code": ("http",),
+    "user_agent": ("http",), "host": ("http",), "referrer": ("http",), "body": ("http",),
+    "request_body_len": ("http",), "response_body_len": ("http",),
+    # dns
+    "query": ("dns",), "rcode": ("dns",), "qtype": ("dns",), "answers": ("dns",),
+    # conn
+    "conn_state": ("conn",), "duration": ("conn",), "orig_bytes": ("conn",),
+    "resp_bytes": ("conn",), "bytes_out": ("conn",), "bytes_in": ("conn",),
+    "proto": ("conn",), "service": ("conn",),
+    # files
+    "mime_type": ("files",), "filename": ("files",), "fuid": ("files",), "seen_bytes": ("files",),
+    # ssl
+    "server_name": ("ssl",), "ja3": ("ssl",), "ja3s": ("ssl",), "issuer": ("ssl",),
+}
+_COMMON_FIELDS = {
+    "src_ip", "dst_ip", "dst_port", "src_port", "event_type", "severity", "source_system",
+    "log_type", "ts", "summary", "rule", "hit_rule", "src_internal", "dst_internal",
+    "src_external", "dst_external", "event_count",
+}
+
+
+def _rule_fields(cond: Any, out: set[str]) -> None:
+    """递归收集规则引用的字段名。"""
+    if isinstance(cond, dict):
+        field = cond.get("field")
+        if isinstance(field, str):
+            out.add(field)
+        for value in cond.values():
+            _rule_fields(value, out)
+    elif isinstance(cond, list):
+        for item in cond:
+            _rule_fields(item, out)
+
+
+def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """把逐条规则按 log_type 建索引：{types: {log_type: [规则]}, wild: [规则]}。
+
+    判定依据（按优先级）：
+    1) 规则显式写了 ``log_type == X`` → 只挂 X；
+    2) 规则引用了某类型的专有字段（如 uri→http、query→dns、conn_state→conn）→ 只挂那些类型；
+    3) 其它（只引用通用字段或字段归属不明）→ 进通配集合（每次都会跑）。
+    """
+    types: dict[str, list[dict[str, Any]]] = {}
+    wild: list[dict[str, Any]] = []
+    for rule in rules:
+        cond = rule.get("conditions") or {}
+        fields: set[str] = set()
+        _rule_fields(cond.get("rules") if isinstance(cond, dict) else cond, fields)
+        explicit = {
+            str(c.get("value"))
+            for c in (cond.get("rules") or [])
+            if isinstance(c, dict) and c.get("field") == "log_type" and c.get("op") == "eq"
+        }
+        owner: set[str] = set(explicit)
+        if not owner:
+            for field in fields:
+                owner.update(_FIELD_TYPES.get(field, ()))
+        if not owner or not (fields - _COMMON_FIELDS - {"log_type"}):
+            wild.append(rule)
+            continue
+        for kind in owner:
+            types.setdefault(kind, []).append(rule)
+    return {"types": types, "wild": wild}
+
+
+def rules_for_log_type(index: Any, log_type: Any) -> list[dict[str, Any]]:
+    """取"本期日志该跑"的规则（专有规则 + 通配规则）。索引缺失时返回空表（调用方回退全量）。"""
+    if not isinstance(index, dict):
+        return []
+    kind = str(log_type or "").strip().lower()
+    return list(index.get("types", {}).get(kind, [])) + list(index.get("wild", []))

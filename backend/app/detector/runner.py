@@ -33,7 +33,16 @@ from app.ingestion.es_client import build_networks, doc_in_scope
 from app.ingestion.es_schema import configured_fields
 from app.ingestion.normalizer import normalize
 from app.ingestion.scope import enabled_cidrs
-from app.rules.engine import evaluate_conditions, is_count_rule, match_rule, whitelisted
+from app.rules.engine import (
+    build_rule_index,
+    evaluate_conditions,
+    is_count_rule,
+    match_count_rule,
+    match_rule,
+    rules_for_log_type,
+    whitelisted,
+)
+)
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -69,6 +78,13 @@ def _load_rules() -> dict[str, list[dict[str, Any]]]:
 
 def _load_scopes() -> list[Any]:
     return build_networks(enabled_cidrs())
+
+
+def _with_index(rules: dict[str, Any]) -> dict[str, Any]:
+    """给规则表挂上 log_type 索引（幂等，只在规则加载时调用一次）。"""
+    if "index" not in rules:
+        rules["index"] = build_rule_index(list(rules.get("per_event") or []))
+    return rules
 
 
 def _source_of(doc: dict[str, Any]) -> str:
@@ -111,7 +127,7 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _on_term)
     atexit.register(leader.release)
 
-    rules = _load_rules()
+    rules = _with_index(_load_rules())
     scopes = _load_scopes()
     last_rule_load = time.time()
     last_scope_load = last_rule_load
@@ -166,7 +182,7 @@ def run() -> None:
 
         now = time.time()
         if now - last_rule_load >= 60:  # 规则可能被后台改动
-            rules = _load_rules()
+            rules = _with_index(_load_rules())
             last_rule_load = now
         if now - last_scope_load >= settings.detector_scope_refresh_seconds:
             scopes = _load_scopes()
@@ -577,8 +593,10 @@ def _handle(
         return
     handled.mark_many([digest_key])  # 无论是否命中都登记：兜底只补“检测器没看到的”
 
+    # ② 网段过滤前置：不在分析网段 → 直接丢弃（只计数，不写 PG；ES 仍保留全量）
     if scopes and not doc_in_scope(doc, configured_fields(source), scopes):
         stats["out_of_scope"] += 1
+        stats["prefiltered_scope"] += 1
         return
 
     entry = normalize(source, doc)
@@ -587,7 +605,20 @@ def _handle(
         return
     stats["scanned"] += 1
 
-    hit = next((r for r in rules["per_event"] if match_rule(r, entry)), None)
+    # ③ 用户自定义排除过滤器前置：命中即丢弃（只计数；ES 仍保留全量）
+    #    为什么要前置：这些日志"注定不会被分析"，放在规则之后跑纯属浪费扫描吞吐。
+    pre_name = exclusion.check_filter(entry)
+    if pre_name:
+        stats["prefiltered_exclusion"] += 1
+        exclusion.record_hit(pre_name, entry)
+        return
+
+    # ④ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
+    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(
+        rules["per_event"]
+    )
+    stats["rules_evaluated"] += len(candidates)
+    hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:
         stats["hit"] += 1
         _aggregate(agg, entry, hit, doc, source, **_exclusion_of(entry, hit, stats))
