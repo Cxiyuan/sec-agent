@@ -121,8 +121,12 @@ def run() -> None:
     last_stats = time.time()
     # 速率快照的上一采样点（用于算"本区间增量"，避免用 ts 反推导致失真）
     rate_prev: dict[str, float] = {
-        "ts": last_stats, "scanned": 0.0, "hit": 0.0, "digest": 0.0,
-        "delivered": 0.0, "raw_trimmed": 0.0,
+        "ts": last_stats,
+        "scanned": 0.0,
+        "hit": 0.0,
+        "digest": 0.0,
+        "delivered": 0.0,
+        "raw_trimmed": 0.0,
     }
     log.info(
         "检测器启动：逐条规则 %d 条 / 频率规则 %d 条 / 分析网段 %d 个 / 聚合窗口 %ds",

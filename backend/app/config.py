@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     fallback_max_backfill_hours: int = 24  # 单次最大回补时长（超限截断并告警）
     # 单轮兑底窗口上限（分钟）：兑底是分段推进水位的，不是一次吞完——
     # 实测“水位停滞时窗口无限变大”会导致单次跑 >1500s，多个实例叠起来把 worker 占死。
-    fallback_max_window_minutes: int = 60
+    fallback_max_window_minutes: int = 5  # 单轮兑底窗口：必须小到能跑完（60→5）——实测 60 分钟窗口过完整图必被 1800s 硬杀，水位永不推进
     run_window_lock_ttl_seconds: int = 1800  # 兑底任务分布式锁 TTL（防多实例叠加）
     fallback_lag_seconds: int = (
         60  # 兜底窗口右边界后退量：留时间给检测器先处理，避开重叠竞态（0=关）

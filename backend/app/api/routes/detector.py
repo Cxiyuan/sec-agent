@@ -247,6 +247,7 @@ def detector_rate(
     # delivered_per_min=471（上限只有 20）这种不可能值。
     interval = _num("interval_seconds") or 0.0
     if interval > 0 and "d_scanned" in snap:
+
         def _delta2(key: str) -> float:
             try:
                 return float(snap.get(key) or 0)
@@ -277,9 +278,7 @@ def detector_rate(
 
         _c = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
         cap = max(1, int(settings.detector_raw_queue_max))
-        out["queue_raw_pct"] = round(
-            min(100.0, float(out.get("queue_raw") or 0) * 100.0 / cap), 1
-        )
+        out["queue_raw_pct"] = round(min(100.0, float(out.get("queue_raw") or 0) * 100.0 / cap), 1)
         raw_wins = _c.lrange("shentong:trimmed:windows", 0, 4)
         parsed_wins: list[dict[str, Any]] = []
         for item in raw_wins if isinstance(raw_wins, list) else []:
@@ -299,9 +298,7 @@ def detector_rate(
 
         with _SessionLocal() as _db:
             _row = _db.scalars(
-                _select(_SystemConfig).where(
-                    _SystemConfig.key == settings.fallback_watermark_key
-                )
+                _select(_SystemConfig).where(_SystemConfig.key == settings.fallback_watermark_key)
             ).one_or_none()
             _value = (_row.value or {}).get("value") if _row is not None else None
         if _value:
