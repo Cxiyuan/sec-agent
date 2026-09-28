@@ -154,11 +154,11 @@ def backfill_check(
             if not (s_ip and ts_raw):
                 continue
             try:
-                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                ts = datetime.fromisoformat(str(ts_raw))  # 3.11+ 原生支持结尾 Z
             except ValueError:
                 continue
             # 统一成 UTC（未带时区的按 UTC 解释；ruff FURB162 不接受 replace(tzinfo=UTC) 写法）
-            ts = ts.astimezone(UTC) if ts.tzinfo is not None else ts.replace(tzinfo=UTC)  # noqa: FURB162
+            ts = ts.astimezone(UTC) if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
             checked += 1
             found = db.execute(
                 select(func.count(Event.id)).where(
@@ -307,7 +307,7 @@ def detector_rate(
         if _value:
             _ts = datetime.fromisoformat(str(_value))
             if _ts.tzinfo is None:
-                _ts = _ts.replace(tzinfo=UTC)  # noqa: FURB162
+                _ts = _ts.replace(tzinfo=UTC)
             _lag = (datetime.now(UTC) - _ts).total_seconds()
             out["backfill_lag_seconds"] = round(_lag, 1)
             out["backfill_sla_ok"] = _lag <= float(settings.backfill_sla_seconds)
