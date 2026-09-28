@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import atexit
-import hashlib
 import json
 import signal
 import time
@@ -26,7 +25,7 @@ from app.detector import health
 from app.detector.aggregate import Aggregator
 from app.detector.analyzed import AnalyzedRegistry, digest_age, digest_fingerprint
 from app.detector.frequency import FreqWindow
-from app.detector.handled import HandledRegistry
+from app.detector.handled import HandledRegistry, doc_hash
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue
 from app.ingestion import exclusion
@@ -35,6 +34,7 @@ from app.ingestion.es_schema import configured_fields
 from app.ingestion.normalizer import normalize
 from app.ingestion.scope import enabled_cidrs
 from app.rules.engine import (
+    build_rule_index,
     evaluate_conditions,
     is_count_rule,
     match_rule,
@@ -81,9 +81,7 @@ def _load_scopes() -> list[Any]:
 def _with_index(rules: dict[str, Any]) -> dict[str, Any]:
     """给规则表挂上 log_type 索引（幂等，只在规则加载时调用一次）。"""
     if "index" not in rules:
-        from app.rules.engine import prepare_rules
-
-        rules["index"] = prepare_rules(list(rules.get("per_event") or []))
+        rules["index"] = build_rule_index(list(rules.get("per_event") or []))
     return rules
 
 
@@ -586,9 +584,7 @@ def _handle(
         return
 
     source = _source_of(doc)
-    # 用原始载荷串算哈希：原来 doc_hash 会对每条（含大字段）重新 json.dumps(sort_keys)，
-    # 比解析本身还贵；载荷由 Logstash 生成、顺序稳定，直接哈希等价且快得多。
-    digest_key = hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:32]
+    digest_key = doc_hash(doc)
     # 输入去重：采集侧重试/重放会造成同一文档重复投递，会让聚合次数虚高、产生重复摘要
     if handled.is_handled(digest_key):
         stats["duplicate"] += 1
@@ -616,7 +612,9 @@ def _handle(
         return
 
     # ④ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
-    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
+    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(
+        rules["per_event"]
+    )
     stats["rules_evaluated"] += len(candidates)
     hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:

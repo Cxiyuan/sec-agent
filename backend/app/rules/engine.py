@@ -168,37 +168,20 @@ def whitelisted(
 
 
 def match_rule(rule: dict[str, Any], log: UnifiedLog) -> bool:
-    """规则是否命中；优先用加载时预编译的闭包（失败则回退解释执行）。"""
-    compiled = rule.get("_compiled")
-    if compiled is not None:
-        extra = {
-            "hit_rule": str(rule.get("name") or ""),
-            "rule_source": str(rule.get("source") or ""),
-            "rule_severity": str(rule.get("severity") or ""),
-        }
-        try:
-            return bool(compiled(log, extra))
-        except Exception as exc:  # noqa: BLE001
-            log.debug("预编译判定失败，回退解释执行: %s", exc)
-    return _match_rule_interpreted(rule, log)
+    """逐条规则匹配。
 
-
-def _match_rule_interpreted(rule: dict[str, Any], log: UnifiedLog) -> bool:
-    """原解释执行实现（预编译不可用时的回退，语义与之前完全一致）。"""
-        """逐条规则匹配。
-
-        - 频率规则（mode=count）不参与，返回 False
-        - **空条件规则不匹配任何日志**（安全默认：避免空规则全量命中淹没管线）
-        - 命中白名单则放过
-        """
-        conditions = rule.get("conditions") or {}
-        if conditions.get("mode") == "count":
-            return False
-        if not conditions.get("rules"):
-            return False
-        if whitelisted(conditions, log):
-            return False
-        return evaluate_conditions(conditions, log)
+    - 频率规则（mode=count）不参与，返回 False
+    - **空条件规则不匹配任何日志**（安全默认：避免空规则全量命中淹没管线）
+    - 命中白名单则放过
+    """
+    conditions = rule.get("conditions") or {}
+    if conditions.get("mode") == "count":
+        return False
+    if not conditions.get("rules"):
+        return False
+    if whitelisted(conditions, log):
+        return False
+    return evaluate_conditions(conditions, log)
 
 
 def is_count_rule(rule: dict[str, Any]) -> bool:
@@ -304,59 +287,24 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
 # 任何"归属不明 / 只引用通用字段"的规则一律进通配集合（每次都会跑）——fail-open，宁可多跑不漏。
 _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     # http
-    "uri": ("http",),
-    "uri_path": ("http",),
-    "method": ("http",),
-    "status_code": ("http",),
-    "user_agent": ("http",),
-    "host": ("http",),
-    "referrer": ("http",),
-    "body": ("http",),
-    "request_body_len": ("http",),
-    "response_body_len": ("http",),
+    "uri": ("http",), "uri_path": ("http",), "method": ("http",), "status_code": ("http",),
+    "user_agent": ("http",), "host": ("http",), "referrer": ("http",), "body": ("http",),
+    "request_body_len": ("http",), "response_body_len": ("http",),
     # dns
-    "query": ("dns",),
-    "rcode": ("dns",),
-    "qtype": ("dns",),
-    "answers": ("dns",),
+    "query": ("dns",), "rcode": ("dns",), "qtype": ("dns",), "answers": ("dns",),
     # conn
-    "conn_state": ("conn",),
-    "duration": ("conn",),
-    "orig_bytes": ("conn",),
-    "resp_bytes": ("conn",),
-    "bytes_out": ("conn",),
-    "bytes_in": ("conn",),
-    "proto": ("conn",),
-    "service": ("conn",),
+    "conn_state": ("conn",), "duration": ("conn",), "orig_bytes": ("conn",),
+    "resp_bytes": ("conn",), "bytes_out": ("conn",), "bytes_in": ("conn",),
+    "proto": ("conn",), "service": ("conn",),
     # files
-    "mime_type": ("files",),
-    "filename": ("files",),
-    "fuid": ("files",),
-    "seen_bytes": ("files",),
+    "mime_type": ("files",), "filename": ("files",), "fuid": ("files",), "seen_bytes": ("files",),
     # ssl
-    "server_name": ("ssl",),
-    "ja3": ("ssl",),
-    "ja3s": ("ssl",),
-    "issuer": ("ssl",),
+    "server_name": ("ssl",), "ja3": ("ssl",), "ja3s": ("ssl",), "issuer": ("ssl",),
 }
 _COMMON_FIELDS = {
-    "src_ip",
-    "dst_ip",
-    "dst_port",
-    "src_port",
-    "event_type",
-    "severity",
-    "source_system",
-    "log_type",
-    "ts",
-    "summary",
-    "rule",
-    "hit_rule",
-    "src_internal",
-    "dst_internal",
-    "src_external",
-    "dst_external",
-    "event_count",
+    "src_ip", "dst_ip", "dst_port", "src_port", "event_type", "severity", "source_system",
+    "log_type", "ts", "summary", "rule", "hit_rule", "src_internal", "dst_internal",
+    "src_external", "dst_external", "event_count",
 }
 
 
@@ -410,97 +358,3 @@ def rules_for_log_type(index: Any, log_type: Any) -> list[dict[str, Any]]:
         return []
     kind = str(log_type or "").strip().lower()
     return list(index.get("types", {}).get(kind, [])) + list(index.get("wild", []))
-
-
-# ---------- 条件预编译（提速：把 op 字符串分派从"每条日志"移到"加载时"） ----------
-
-log = __import__("app.workers.log", fromlist=["get_logger"]).get_logger(__name__)
-
-
-def _pick(entry: Any, extra: Any, field: str) -> Any:
-    """取字段值：先看命中规则的附加元数据（hit_rule 等），再取日志字段。"""
-    if isinstance(extra, dict) and field in extra:
-        return extra.get(field)
-    return getattr(entry, field, None)
-
-
-def _num(value: Any) -> float:
-    """安全转数字（编译闭包里的数值比较用）。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-_COMPILE_OK = True
-
-
-def compile_conditions(conditions: dict[str, Any] | None) -> Any:
-    """把 conditions 编译成闭包 (entry, extra) -> bool；失败返回 None（回退解释执行）。
-
-    为什么值得做：原来每条日志都要对每个条件做"取字段 → 判类型 → 字符串 op 分派 → 比较"，
-    63 条规则 × 多条条件，每条日志上千次分派。编译后只保留取值器与比较函数。
-    """
-    try:
-        return _compile_node(conditions)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("条件预编译失败（回退解释执行）: %s", exc)
-        return None
-
-
-def _compile_node(cond: Any) -> Any:
-    """递归编译条件节点，返回 (entry, extra) -> bool 的闭包。"""
-    if isinstance(cond, dict) and "rules" in cond:
-        logic = str(cond.get("logic") or "and").lower()
-        parts = [_compile_node(x) for x in (cond.get("rules") or [])]
-        parts = [x for x in parts if x is not None]
-        if not parts:
-            return None
-        if logic == "or":
-            return lambda entry, extra=None, parts=parts: any(f(entry, extra) for f in parts)
-        return lambda entry, extra=None, parts=parts: all(f(entry, extra) for f in parts)
-    if not isinstance(cond, dict):
-        return None
-    field = str(cond.get("field") or "")
-    op = str(cond.get("op") or "eq").lower()
-    value = cond.get("value")
-    if not field:
-        return None
-    if op == "in" and isinstance(value, (list, tuple, set)):
-        wanted = {str(v).lower() for v in value}
-        return lambda entry, extra=None, f=field, w=wanted: str(_pick(entry, extra, f) or "").lower() in w
-    if op == "exists":
-        return lambda entry, extra=None, f=field: _pick(entry, extra, f) not in (None, "", [], {})
-    if op == "eq":
-        target = str(value).lower()
-        return lambda entry, extra=None, f=field, t=target: str(_pick(entry, extra, f) or "").lower() == t
-    if op == "ne":
-        target = str(value).lower()
-        return lambda entry, extra=None, f=field, t=target: str(_pick(entry, extra, f) or "").lower() != t
-    if op == "contains":
-        target = str(value).lower()
-        return lambda entry, extra=None, f=field, t=target: t in str(_pick(entry, extra, f) or "").lower()
-    if op == "gt":
-        return lambda entry, extra=None, f=field, v=value: _num(_pick(entry, extra, f)) > _num(v)
-    if op == "gte":
-        return lambda entry, extra=None, f=field, v=value: _num(_pick(entry, extra, f)) >= _num(v)
-    if op == "lt":
-        return lambda entry, extra=None, f=field, v=value: _num(_pick(entry, extra, f)) < _num(v)
-    if op == "lte":
-        return lambda entry, extra=None, f=field, v=value: _num(_pick(entry, extra, f)) <= _num(v)
-    if op == "regex":
-        import re as _re
-        try:
-            rx = _re.compile(str(value), _re.IGNORECASE)
-        except _re.error:
-            return None
-        return lambda entry, extra=None, f=field, r=rx: bool(r.search(str(_pick(entry, extra, f) or "")))
-    return None
-
-
-def prepare_rules(rules: list[dict[str, Any]]) -> dict[str, Any]:
-    """加载时预处理：编译条件 + 建 log_type 索引（幂等）。"""
-    for rule in rules:
-        if "_compiled" not in rule:
-            rule["_compiled"] = compile_conditions(rule.get("conditions"))
-    return build_rule_index(rules)
