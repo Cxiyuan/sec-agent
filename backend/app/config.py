@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # 撑满 → noeviction 拒写 → 检测器/ Celery 全线卡死（真实事故）。
     # raw 队列只是“快车道”，ES 才是事实源（水位兜底会补齐），所以丢掉最老的可以接受；
     # 但丢弃必须计数可查（dropped.raw_trimmed）。
-    detector_raw_queue_max: int = 200000  # 突发吸收（200k≈650MB Redis；>85% 有内存告警）
+    detector_raw_queue_max: int = 30000  # 20 万→3 万：实测 20 万会把 1.5G Redis 打满（队列曾涨到 106 万）导致 worker 崩溃循环
     # 漏报兑底率告警阈（已分析事件数 / ES 命中文档数），低于它标黄提醒看趋势
     detector_coverage_warn_ratio: float = 0.6
     # 清理后自动派发的并发上限（超过留在待派发，不丢不静默）
