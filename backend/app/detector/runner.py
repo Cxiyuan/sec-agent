@@ -612,9 +612,7 @@ def _handle(
         return
 
     # ④ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
-    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(
-        rules["per_event"]
-    )
+    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
     stats["rules_evaluated"] += len(candidates)
     hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:

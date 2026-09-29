@@ -4,6 +4,9 @@
 
 /* 暗黑主题（shadcn 风格 CSS 变量） */
 :root {
+  /* 让原生控件（下拉弹层、滚动条、日期框）按暗色渲染——
+     否则原生 <select> 弹层是白底浅字，暗色主题下几乎看不见 */
+  color-scheme: dark;
   --background: 222 47% 5%;
   --foreground: 210 40% 98%;
   --card: 222 47% 7%;
@@ -32,6 +35,20 @@ body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
 }
+
+/* 下拉菜单：原生 select 的选项弹层不受继承影响，必须显式指定配色 */
+select,
+select option {
+  background-color: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+}
+
+select option:checked,
+select option:hover {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
 
 /* 简单滚动条 */
 ::-webkit-scrollbar {

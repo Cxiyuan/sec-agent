@@ -15,6 +15,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # 语法/缩进冒烟：这类错误以前能过 CI 并上线（教训）
+      - name: Smoke check (syntax)
+        run: python -m compileall -q backend/app
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
