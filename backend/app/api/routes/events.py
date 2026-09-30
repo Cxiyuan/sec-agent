@@ -15,10 +15,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.agents.runner import resume_graph
 from app.api.deps import get_current_user
 from app.config import settings
-from app.db.base import get_db
+from app.db.base import SessionLocal, get_db
 from app.db.models import Event, EventGroup, User
 from app.investigation import export as investigation_export
 from app.tools.context import is_public_ip
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
+
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
@@ -176,6 +180,40 @@ def list_groups(
     total = db.scalar(count_q) or 0
     rows = db.scalars(q.limit(limit).offset(offset)).all()
     return {"total": total, "items": [_group_dict(g) for g in rows]}
+
+
+@router.post("/groups/delete")
+def delete_groups(
+    payload: dict[str, Any],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """批量删除事件组（级联删除其事件与报告）。
+
+    只删 PG 里的**分析产物**，ES 原始日志不受影响（可随时回溯）。
+    同时把案件里对已删组的指纹引用清掉，避免留下悬空引用。
+    """
+
+    from app.db.models import AttackerCase, EventGroup
+
+    ids = [str(x) for x in (payload.get("ids") or []) if x]
+    if not ids:
+        return {"deleted": 0}
+    with SessionLocal() as db:
+        rows = db.scalars(select(EventGroup).where(EventGroup.id.in_(ids))).all()
+        fps = [str(r.fingerprint or "") for r in rows if r.fingerprint]
+        n = len(rows)
+        for row in rows:
+            db.delete(row)
+        if fps:
+            cases = db.scalars(select(AttackerCase)).all()
+            for case in cases:
+                keep = [f for f in (case.group_fingerprints or []) if f not in set(fps)]
+                if len(keep) != len(case.group_fingerprints or []):
+                    case.group_fingerprints = keep
+                    case.group_count = len(keep)
+        db.commit()
+    log.warning("批量删除事件组 %d 个（含事件与报告；ES 原始日志保留）", n)
+    return {"deleted": n}
 
 
 @router.get("/groups/{group_id}")

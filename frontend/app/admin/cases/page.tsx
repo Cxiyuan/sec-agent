@@ -36,6 +36,8 @@ export default function CasesPage() {
   const [showShelved, setShowShelved] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState("");
+  // 勾选删除：批量清理误报/测试案件
+  const [picked, setPicked] = React.useState<string[]>([]);
 
   const load = React.useCallback(async () => {
     const params = new URLSearchParams();
@@ -53,6 +55,26 @@ export default function CasesPage() {
   React.useEffect(() => {
     load().catch(() => {});
   }, [load]);
+
+  async function removePicked() {
+    if (!picked.length) return;
+    if (!window.confirm(`确认删除选中的 ${picked.length} 个案件？（连带其调查轮次与报告；事件组会保留，只清掉案件指针）`)) return;
+    setBusy("del");
+    setMsg("");
+    try {
+      const r = await apiFetch<{ deleted: number }>("/api/cases/delete", {
+        method: "POST",
+        body: JSON.stringify({ ids: picked }),
+      });
+      setMsg(`已删除 ${r.deleted} 个案件`);
+      setPicked([]);
+      await load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function investigate(c: AttackerCaseItem) {
     setBusy(c.id);
@@ -96,6 +118,14 @@ export default function CasesPage() {
                 </option>
               ))}
             </select>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={busy !== "" || picked.length === 0}
+              onClick={() => removePicked().catch(() => {})}
+            >
+              {busy === "del" ? "删除中…" : `删除选中（${picked.length}）`}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => load().catch(() => {})}>
               刷新
             </Button>
@@ -149,6 +179,13 @@ export default function CasesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    <input
+                      type="checkbox"
+                      checked={items.length > 0 && picked.length === items.length}
+                      onChange={(e) => setPicked(e.target.checked ? items.map((x) => x.id) : [])}
+                    />
+                  </TableHead>
                   <TableHead>编号</TableHead>
                   <TableHead>攻击者标识</TableHead>
                   <TableHead>级别</TableHead>
@@ -163,6 +200,17 @@ export default function CasesPage() {
               <TableBody>
                 {items.map((c) => (
                   <TableRow key={c.id}>
+                    <TableCell className="w-8">
+                      <input
+                        type="checkbox"
+                        checked={picked.includes(c.id)}
+                        onChange={(e) =>
+                          setPicked((prev) =>
+                            e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id)
+                          )
+                        }
+                      />
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
                       <Link className="text-muted-foreground hover:underline" href={`/admin/cases/${c.id}`}>
                         {c.display_id}

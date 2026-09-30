@@ -27,6 +27,8 @@ export default function AdminEventsPage() {
   // 展示层按「同主源」折叠成一行（不动归组指纹、零迁移）；点开看最新那组，其余组在抽屉里列出。
   const [foldSameSrc, setFoldSameSrc] = React.useState(true);
   const [foldSiblings, setFoldSiblings] = React.useState<EventGroupItem[]>([]);
+  // 勾选删除：批量清理误报/测试事件组（只删 PG 分析产物，ES 原始日志保留）
+  const [picked, setPicked] = React.useState<string[]>([]);
 
   async function load() {
     const suffix = showExcluded ? "&include_excluded=true" : "";
@@ -74,6 +76,24 @@ export default function AdminEventsPage() {
     setEvidenceError("");
   }
 
+  async function removePicked() {
+    if (!picked.length) return;
+    if (!window.confirm(`确认删除选中的 ${picked.length} 个事件组？（连带其事件与报告；ES 原始日志保留）`)) return;
+    setLoadingDetail(false);
+    try {
+      const r = await apiFetch<{ deleted: number }>("/api/events/groups/delete", {
+        method: "POST",
+        body: JSON.stringify({ ids: picked }),
+      });
+      setPicked([]);
+      await load();
+      // 简单反馈：用浏览器提示条即可（列表本身会立刻刷新）
+      window.alert(`已删除 ${r.deleted} 个事件组`);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "删除失败");
+    }
+  }
+
   async function confirm(g: EventGroupItem, action: "confirm" | "dismiss") {
     await apiFetch(`/api/events/groups/${g.id}/confirm`, {
       method: "POST",
@@ -108,6 +128,14 @@ export default function AdminEventsPage() {
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold">事件列表</h1>
           <div className="flex items-center gap-4">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={picked.length === 0}
+              onClick={() => removePicked().catch(() => {})}
+            >
+              删除选中（{picked.length}）
+            </Button>
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input
                 type="checkbox"
@@ -131,6 +159,13 @@ export default function AdminEventsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    <input
+                      type="checkbox"
+                      checked={groups.length > 0 && picked.length === groups.length}
+                      onChange={(e) => setPicked(e.target.checked ? groups.map((x) => x.id) : [])}
+                    />
+                  </TableHead>
                   <TableHead>编号</TableHead>
                   <TableHead>级别</TableHead>
                   <TableHead>源 IP</TableHead>
@@ -150,6 +185,20 @@ export default function AdminEventsPage() {
                     onClick={() => openDetail(g, siblings)}
                     title="点击查看详情"
                   >
+                    <TableCell className="w-8">
+                      <input
+                        type="checkbox"
+                        checked={siblings.every((s) => picked.includes(s.id))}
+                        onChange={(e) =>
+                          setPicked((prev) => {
+                            const ids = siblings.map((s) => s.id);
+                            return e.target.checked
+                              ? [...new Set([...prev, ...ids])]
+                              : prev.filter((x) => !ids.includes(x));
+                          })
+                        }
+                      />
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{g.display_id}</TableCell>
                     <TableCell>
                       <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>

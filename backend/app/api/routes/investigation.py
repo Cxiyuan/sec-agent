@@ -58,6 +58,35 @@ def list_cases(
     )
 
 
+@router.post("/delete")
+def delete_cases(
+    payload: dict[str, Any],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """批量删除案件（级联删除调查轮次与案件报告），并清掉事件组上的案件指针。"""
+    from sqlalchemy import select
+
+    from app.db.models import AttackerCase, EventGroup
+
+    ids = [str(x) for x in (payload.get("ids") or []) if x]
+    if not ids:
+        return {"deleted": 0}
+    with SessionLocal() as db:
+        rows = db.scalars(select(AttackerCase).where(AttackerCase.id.in_(ids))).all()
+        fps = {str(fp) for row in rows for fp in (row.group_fingerprints or [])}
+        n = len(rows)
+        for row in rows:
+            db.delete(row)
+        if fps:
+            for group in db.scalars(
+                select(EventGroup).where(EventGroup.fingerprint.in_(list(fps)))
+            ).all():
+                group.case_id = ""
+                group.case_context = None
+        db.commit()
+    return {"deleted": n}
+
+
 @router.get("/stats")
 def case_stats(_: Annotated[User, Depends(get_current_user)]):
     return case_service.stats()
