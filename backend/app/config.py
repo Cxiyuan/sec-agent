@@ -66,9 +66,7 @@ class Settings(BaseSettings):
     detector_batch_seconds: int = 20  # 攒批：最长等待
     detector_batch_max: int = 5  # 攒批：凑够多少条就触发
     detector_max_per_batch: int = 50  # 单次投递摘要数上限（护栏）
-    detector_max_digests_per_minute: int = (
-        20  # 投递速率上限（护栏）= 边缘模型实测容量（8~16 并发 23~26 条/分钟）留余量
-    )
+    detector_max_digests_per_minute: int = 24  # 20→24：对齐边缘模型实测容量（实测 23.6~26/分）
     detector_queue_max: int = 20000  # 摘要队列上限（超过则裁掉最老的，保证有界）
     # raw 队列上限。采集速率实测可达 ~3800 条/秒，检测器永远追不上；不封顶就会把 Redis
     # 撑满 → noeviction 拒写 → 检测器/ Celery 全线卡死（真实事故）。
