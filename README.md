@@ -185,6 +185,11 @@ manager 的 API 地址与凭据。
     （Zeek 默认不把请求头写进 http.log，`X-Forwarded-For` / `X-Real-IP` / `Forwarded` 需要自己接
     `http_header` 事件 —— 本项目未实现）。逐条清单见
     [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」
+13. （NDR 线路）**确认 ES 集群健康是 green**：事件索引模板在后端启动时自动下发，副本按
+    `auto_expand_replicas: "0-1"`（单节点 = 0 副本，所以不会出现「副本分配不出去」的常驻 yellow）。
+    后端若比 ES 先起来，模板可能没下发成功（启动日志里有一条 warning）——到「数据存储 → 保留期」
+    点一次「下发保留期」即可；**模板只管之后新建的索引**，已经建好的那些要单独改一次：
+    `PUT shentong-events-*/_settings {"index":{"auto_expand_replicas":"0-1"}}`
 
 ---
 
