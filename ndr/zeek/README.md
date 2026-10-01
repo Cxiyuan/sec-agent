@@ -85,3 +85,24 @@ docker compose restart zeek
 - 不做 Zeek 集群（manager/proxy/worker）
 - 不做脚本在线热更新（改脚本需重启容器）
 - HTTP 体只采请求方向、单条上限 4096 字节、跳过二进制
+- **不解析请求头**：Zeek 默认不把 HTTP 请求头写进 `http.log`（`HTTP::Info` 里没有头字段），
+  因此**经过反向代理时 `src_ip` 是代理的 IP**，拿不到 `X-Forwarded-For` / `X-Real-IP` /
+  `Forwarded` 里的原始客户端 IP；要用得自己接 `http_header` 事件加 `&log` 字段
+  （与 `shentong-httpbody.zeek` 同一套路），并配可信代理白名单（转发头可被伪造）
+
+## 上线后专项检查（日志与协议解析）
+
+> 状态：**待实机做**。本仓库这些脚本只在纸面 + 单进程归一化侧验证过，真实网卡上线后
+> 按下表逐条核一遍（对应用户提出的「部署上线后专门检查 Zeek 的日志生成情况和相关协议解析」）。
+
+| # | 检查项 | 怎么核 | 期望 |
+|---|---|---|---|
+| 1 | 实际产出了哪些日志 | `docker exec <zeek> ls -la /logs` | 至少 `conn.log` / `http.log` / `dns.log` / `ssl.log`；有对应流量时出现 `files.log` / `smtp.log` / `ssh.log` / `dhcp.log` / `notice.log` |
+| 2 | 轮转与保留 | `ls /logs` 顶层活动日志 + `/logs/<YYYY-MM-DD>/` 子目录 | 每 24h 轮转进日期目录；超过 3 天的归档被入口清理循环删掉（活动日志不动） |
+| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`ja3`/`ja3s`/`cipher`；`site/shentong-extra.zeek` 加载的分析器都生效 |
+| 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body` 字段 | 有 `body`（请求方向、≤4096B、二进制跳过）；GET/HEAD 无 body |
+| 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps aux \| grep zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成） |
+| 6 | 是否重复告警 | 看 `notice.log` 有无内容 | 目前只加载 `policy/tuning/json-logs`，**没有**加载 `policy/protocols/*`，故 Zeek 自己不产检测类 notice；检测全由内置规则做 |
+| 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
+| 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent/ja3 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
+| 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `src_ip` | **当前拿不到**（= 代理 IP）。要支持需新增 `scripts.d/` 脚本接 `http_header` 取 `X-Forwarded-For`/`X-Real-IP`/`Forwarded` + `UnifiedLog` 加字段 + 归一化映射 + 可信代理白名单（四层代理不写这些头，只能靠 PROXY protocol 或回查 NAT/防火墙日志，本项目均未支持） |

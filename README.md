@@ -177,6 +177,12 @@ manager 的 API 地址与凭据。
     推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量 / **基线观测**（已学维度、过了观测期的维度数、
     在册画像、过阈值异常 TOP5）。历史上 Redis 写满（noeviction）会让
     整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆
+12. **专门核对 Zeek 的日志生成与协议解析**（真实网卡上线后必做一遍）：实际产出了哪些
+    `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
+    `log_type`/`event_type` 与内置规则的命中情况；**反向代理场景的原始客户端 IP 目前拿不到**
+    （Zeek 默认不把请求头写进 http.log，`X-Forwarded-For` / `X-Real-IP` / `Forwarded` 需要自己接
+    `http_header` 事件 —— 本项目未实现）。逐条清单见
+    [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」
 
 ---
 
