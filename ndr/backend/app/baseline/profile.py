@@ -1,9 +1,12 @@
 """账号 / 会话跨窗口长期画像（UEBA 式统计基线）。
 
+第 8 期从智能体侧迁来（原 `agent/backend/app/agents/profile.py`）：基线是纯统计、
+不需要模型，而检测器本来就逐条看到归一化事件，所以在数据产生侧算、算完随摘要打标。
+
 - **提取**：账号（`user` 字段优先；归一化阶段已从登录路径参数兜底提取）；
   会话（从 Cookie 提取会话 id → **SHA-256 哈希**）
 - **基线**：频次分布（源 IP / UA / 时段 / 路径）+ 成功失败计数，跨窗口增量累积
-- **异常**：新源 IP / 新 UA / 非常用时段 / 认证失败突增 / 会话跨 IP / 认证失败突增
+- **异常**：新源 IP / 新 UA / 非常用时段 / 认证失败突增 / 会话跨 IP
 - **安全**：会话只存哈希；**不落库明文 cookie / 口令 / Token**
 """
 
@@ -29,6 +32,17 @@ SESSION = "session"
 
 # 基线分布各字段保留的条目上限（避免 JSON 无限膨胀）
 _LIMITS: dict[str, int] = {"src_ips": 50, "user_agents": 20, "paths": 30, "hour_hist": 24}
+# `_LIMITS` 的键是**落库列名**（`hour_hist` 列对的是观测桶里的 `hours`），
+# 这里给出列名 -> 观测桶字段的映射，剪枝与落库共用同一份上限。
+_BUCKET_FIELDS: dict[str, str] = {
+    "src_ips": "src_ips",
+    "user_agents": "user_agents",
+    "paths": "paths",
+    "hour_hist": "hours",
+}
+# 窗口内的 Counter 也设个上限：一个窗口里同一实体可能撞出成千上万个路径，
+# 落库时才裁剪就晚了（内存先炸）。超出这个倍数就先裁一次，保留 top N。
+_TRIM_FACTOR = 4
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -70,7 +84,7 @@ def session_entity(cookie: str) -> tuple[str, str]:
 
 
 def account_entity(entry: UnifiedLog) -> str:
-    """账号：归一化阶段已做提取（user 字段优先，其次登录路径参数）。"""
+    """账号：归一化阶段已做提取（`user` 字段优先，其次登录路径参数）。"""
     return (entry.account or entry.user or "").strip()[:128]
 
 
@@ -108,21 +122,49 @@ def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
             bucket["success"] += 1
 
 
+def _trim(bucket: dict[str, Any]) -> None:
+    """窗口内的分布先裁一刀，别等落库（内存优先）。"""
+    for column, limit in _LIMITS.items():
+        field = _BUCKET_FIELDS.get(column, column)
+        counter = bucket.get(field)
+        if not isinstance(counter, Counter) or len(counter) <= limit * _TRIM_FACTOR:
+            continue
+        bucket[field] = Counter(dict(counter.most_common(limit)))
+
+
+def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
+    """把一条事件并进观测桶，返回并入的实体数（账号 / 会话各算一个）。
+
+    引擎逐条调用它（`app/baseline/engine.py`），所以这里不做任何 I/O。
+    """
+    added = 0
+    account = account_entity(entry)
+    if account:
+        bucket_key = f"{ACCOUNT}|{account}"
+        bucket = buckets.get(bucket_key)
+        if bucket is None:
+            bucket = buckets[bucket_key] = _new_bucket(ACCOUNT, account, account)
+        _accumulate(bucket, entry)
+        _trim(bucket)
+        added += 1
+
+    skey, sdisplay = session_entity(entry.cookie)
+    if skey:
+        bucket_key = f"{SESSION}|{skey}"
+        bucket = buckets.get(bucket_key)
+        if bucket is None:
+            bucket = buckets[bucket_key] = _new_bucket(SESSION, skey, sdisplay)
+        _accumulate(bucket, entry)
+        _trim(bucket)
+        added += 1
+    return added
+
+
 def window_observations(logs: list[UnifiedLog]) -> dict[str, dict[str, Any]]:
-    """按实体聚合本窗口观测，key = f"{kind}|{entity_key}"。"""
+    """按实体聚合一批日志，key = f"{kind}|{entity_key}"（测试与回溯用）。"""
     out: dict[str, dict[str, Any]] = {}
     for entry in logs:
-        account = account_entity(entry)
-        if account:
-            bucket_key = f"{ACCOUNT}|{account}"
-            out.setdefault(bucket_key, _new_bucket(ACCOUNT, account, account))
-            _accumulate(out[bucket_key], entry)
-
-        skey, sdisplay = session_entity(entry.cookie)
-        if skey:
-            bucket_key = f"{SESSION}|{skey}"
-            out.setdefault(bucket_key, _new_bucket(SESSION, skey, sdisplay))
-            _accumulate(out[bucket_key], entry)
+        observe_entry(out, entry)
     return out
 
 
@@ -188,12 +230,13 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     return {"reasons": reasons, "risk": min(risk, 1.0), "cold_start": False}
 
 
-def recall_entities(logs: list[UnifiedLog]) -> dict[str, Any]:
-    """对本窗口日志做画像比对，返回 {entities: [...], anomalies: [...]}。"""
-    if not settings.profile_enabled:
-        return {"entities": [], "anomalies": []}
-    observations = window_observations(logs)
-    if not observations:
+def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """对一批窗口观测做画像比对，返回 {entities: [...], anomalies: [...]}。
+
+    `entities` 是「有异常理由」的全部实体（按风险降序），`anomalies` 是其中过阈值的
+    （`profile_risk_threshold`）—— 后者才会被写进摘要标签。
+    """
+    if not settings.profile_enabled or not observations:
         return {"entities": [], "anomalies": []}
 
     profiles = load_profiles([(o["kind"], o["key"]) for o in observations.values()])
@@ -239,8 +282,8 @@ def update_profiles(
 ) -> dict[str, int]:
     """把本窗口观测并入画像基线（增量累积），并回写本轮异常风险分。
 
-    risks：key = f"{kind}|{key}"，值含 {risk, reasons}（来自 recall_entities）；
-    回写后驾驶舱「画像异常 TOP」与列表排序才能生效。
+    risks：key = f"{kind}|{key}"，值含 {risk, reasons}（来自 `recall_from_observations`）；
+    回写后按风险排序的列表与 TOP 才生效。
     """
     if not observations or not settings.profile_enabled:
         return {"created": 0, "updated": 0}
@@ -279,7 +322,7 @@ def update_profiles(
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])
                 row.fail_count = (row.fail_count or 0) + _safe_int(obs["fail"])
 
-                # 回写本轮异常风险（供驾驶舱 TOP 与列表排序）
+                # 回写本轮异常风险（供列表排序与 TOP）
                 risk = (risks or {}).get(f"{obs['kind']}|{obs['key']}") or {}
                 if risk:
                     row.risk_score = float(risk.get("risk") or 0.0)
@@ -306,27 +349,7 @@ def cleanup() -> dict[str, int]:
         return {"deleted": 0}
 
 
-# ---------- 列表与渲染 ----------
-
-
-def list_profiles(
-    *, kind: str | None = None, min_risk: float = 0.0, limit: int = 50, offset: int = 0
-) -> dict[str, Any]:
-    with SessionLocal() as db:
-        conds = []
-        if kind:
-            conds.append(EntityProfile.kind == kind)
-        if min_risk > 0:
-            conds.append(EntityProfile.risk_score >= min_risk)
-
-        count_q = select(func.count()).select_from(EntityProfile)
-        stmt = select(EntityProfile).order_by(EntityProfile.risk_score.desc())
-        for cond in conds:
-            count_q = count_q.where(cond)
-            stmt = stmt.where(cond)
-        total = db.scalar(count_q) or 0
-        rows = db.scalars(stmt.limit(limit).offset(offset)).all()
-    return {"total": total, "items": [_profile_dict(r) for r in rows]}
+# ---------- 列表 ----------
 
 
 def _profile_dict(p: EntityProfile) -> dict[str, Any]:
@@ -349,28 +372,50 @@ def _profile_dict(p: EntityProfile) -> dict[str, Any]:
     }
 
 
+def list_profiles(
+    *,
+    kind: str | None = None,
+    keys: list[str] | None = None,
+    min_risk: float = 0.0,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    try:
+        with SessionLocal() as db:
+            conds = []
+            if kind:
+                conds.append(EntityProfile.kind == kind)
+            if keys:
+                # 指名道姓查几个实体（智能体问「这组 IP 关联的账号/会话画像」走这里）
+                conds.append(EntityProfile.entity_key.in_(list(keys)[:500]))
+            if min_risk > 0:
+                conds.append(EntityProfile.risk_score >= min_risk)
+
+            count_q = select(func.count()).select_from(EntityProfile)
+            stmt = select(EntityProfile).order_by(EntityProfile.risk_score.desc())
+            for cond in conds:
+                count_q = count_q.where(cond)
+                stmt = stmt.where(cond)
+            total = db.scalar(count_q) or 0
+            rows = db.scalars(stmt.limit(limit).offset(offset)).all()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读实体画像失败：{exc}", "total": 0, "items": []}
+    return {"total": total, "items": [_profile_dict(r) for r in rows]}
+
+
 def top_anomalies(limit: int = 10) -> dict[str, Any]:
-    """驾驶舱用：按风险分取 TOP。"""
-    with SessionLocal() as db:
-        rows = db.scalars(
-            select(EntityProfile)
-            .where(EntityProfile.risk_score >= settings.profile_risk_threshold)
-            .order_by(EntityProfile.risk_score.desc())
-            .limit(limit)
-        ).all()
-    return {"threshold": settings.profile_risk_threshold, "items": [_profile_dict(r) for r in rows]}
-
-
-def profile_text(profile_info: dict[str, Any] | None) -> str:
-    """把画像异常渲染成提示词文本块。"""
-    entities = (profile_info or {}).get("entities") or []
-    if not entities:
-        return "（无账号/会话画像异常）"
-    lines = ["账号/会话画像异常（跨窗口长期基线）："]
-    for entity in entities[:6]:
-        kind = "账号" if entity.get("kind") == ACCOUNT else "会话"
-        lines.append(
-            f"- [{kind}] {entity.get('display')} 风险 {entity.get('risk')}："
-            + "；".join(entity.get("reasons") or [])
-        )
-    return "\n".join(lines)
+    """按风险分取 TOP（运行状态页用）。"""
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(EntityProfile)
+                .where(EntityProfile.risk_score >= settings.profile_risk_threshold)
+                .order_by(EntityProfile.risk_score.desc())
+                .limit(max(1, min(int(limit or 10), 100)))
+            ).all()
+    except Exception as exc:  # noqa: BLE001
+        return {"threshold": settings.profile_risk_threshold, "items": [], "error": str(exc)}
+    return {
+        "threshold": settings.profile_risk_threshold,
+        "items": [_profile_dict(r) for r in rows],
+    }

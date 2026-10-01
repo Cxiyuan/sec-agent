@@ -9,6 +9,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from app.agents import triage_policy
+from app.agents.baseline_labels import labels_of, text_of
 from app.agents.concurrency import (
     cloud_concurrency as _cloud_concurrency,
     parallel_map as _parallel_map,
@@ -34,13 +35,6 @@ from app.agents.persistence import (
     update_group_memory_hits,
     update_group_profile_hits,
     update_group_skill_hits,
-)
-from app.agents.profile import (
-    cleanup as profile_cleanup,
-    profile_text,
-    recall_entities,
-    update_profiles,
-    window_observations,
 )
 from app.agents.state import AgentState
 from app.config import settings
@@ -143,7 +137,10 @@ def _digest_aggregate(
     dst_ips: list[Any],
     dst_ports: list[Any],
 ) -> dict[str, Any]:
-    """将聚合规模写进数据模型（不再只活在文本里）：次数/目标/端口/首末时间。"""
+    """将聚合规模写进数据模型（不再只活在文本里）：次数/目标/端口/首末时间。
+
+    第 8 期起把 NDR 在摘要上打的基线标签一并带进组级聚合（`baseline_labels`）。
+    """
     return {
         "hits": count,
         "rules": {rule: count},
@@ -151,6 +148,7 @@ def _digest_aggregate(
         "dst_ports": [str(x) for x in dst_ports][:50],
         "first_seen": digest.get("first_seen"),
         "last_seen": digest.get("last_seen"),
+        "baseline": labels_of(digest),
     }
 
 
@@ -621,40 +619,39 @@ def memory_recall_node(state: AgentState) -> dict[str, Any]:
     return {"memory": recalled}
 
 
-# ---------- 节点 3.65：账号/会话画像比对（跨窗口长期基线） ----------
+# ---------- 节点 3.65：账号/会话画像标签（第 8 期起基线在 NDR 侧算） ----------
 
 
 def _profile_text_for_group(state: AgentState, fingerprint: str) -> str:
-    info = ((state.get("profile") or {}).get("by_group") or {}).get(fingerprint)
-    return profile_text(info)
+    """取该组从 NDR 摘要标签合并来的画像/偏离文本（供提示词使用）。"""
+    for g in state.get("groups", []):
+        if g.fingerprint == fingerprint:
+            return text_of((g.aggregate or {}).get("baseline"))
+    return text_of(None)
 
 
 def profile_recall_node(state: AgentState) -> dict[str, Any]:
-    """对全窗口日志做账号/会话画像比对；异常按涉及 IP 归属到事件组。"""
-    if not settings.profile_enabled:
-        return {"profile": {"entities": [], "anomalies": [], "by_group": {}}}
-
-    info = recall_entities(state.get("raw_logs", []))
-    entities = info.get("entities") or []
-    threshold = settings.profile_risk_threshold
-
+    """把 NDR 打在摘要上的基线标签按组归档（画像本体已在 NDR 侧算完）。"""
     by_group: dict[str, dict[str, Any]] = {}
+    total = 0
     for g in state.get("groups", []):
         if g.excluded:
             continue  # 画像异常只挂到正常组（排除组不展示、不落库）
-        group_ips = set(g.src_ips + g.dst_ips)
-        related = [e for e in entities if group_ips & set(e.get("src_ips") or [])]
+        info = (g.aggregate or {}).get("baseline") or {}
+        entities = [e for e in info.get("profiles") or [] if isinstance(e, dict)]
+        # NDR 已经按 profile_risk_threshold 过滤过，这里 anomalies 与 entities 同源
         payload = {
-            "entities": related,
-            "anomalies": [e for e in related if e.get("risk", 0) >= threshold],
+            "entities": entities,
+            "anomalies": entities,
+            "numeric": list(info.get("numeric") or []),
+            "warmed": int(info.get("warmed") or 0),
         }
         by_group[g.fingerprint] = payload
         update_group_profile_hits(g.fingerprint, payload)
+        total += len(entities)
 
-    log.info(
-        "账号/会话画像：异常 %d 条（高风险 %d）", len(entities), len(info.get("anomalies") or [])
-    )
-    return {"profile": {**info, "by_group": by_group}}
+    log.info("账号/会话画像标签（NDR 侧判定）：%d 组、%d 条异常", len(by_group), total)
+    return {"profile": {"entities": [], "anomalies": [], "by_group": by_group}}
 
 
 # ---------- 节点 3.66：技能路由 + 工具执行 ----------
@@ -1285,29 +1282,6 @@ def memory_write_node(state: AgentState) -> dict[str, Any]:
         len(groups),
         deleted["run"],
         deleted["group"],
-    )
-    return {}
-
-
-# ---------- 节点 9：账号/会话画像基线更新 ----------
-
-
-def profile_update_node(state: AgentState) -> dict[str, Any]:
-    """用本窗口观测增量更新画像基线，回写异常风险分，并清理长期无观测画像。"""
-    if not settings.profile_enabled:
-        return {}
-    observations = window_observations(state.get("raw_logs", []))
-    # 把 profile_recall 算出的异常风险一并回写，驾驶舱 TOP / 排序才会生效
-    info = state.get("profile") or {}
-    risks = {f"{e.get('kind')}|{e.get('key')}": e for e in (info.get("entities") or [])}
-    result = update_profiles(observations, risks)
-    deleted = profile_cleanup()
-    log.info(
-        "画像基线更新：实体 %d（新增 %d / 更新 %d）；清理过期 %d",
-        len(observations),
-        result["created"],
-        result["updated"],
-        deleted["deleted"],
     )
     return {}
 

@@ -1,7 +1,7 @@
 """LangGraph 图定义：单入口（实时链路）。
 
 - 实时入口：状态里带 digests（检测器经 Redis 投递队列推送的聚合摘要）
-  → realtime_triage → correlate → … → profile_update → END
+  → realtime_triage → correlate → … → memory_write → END
 
 注：原「兜底入口」（无 digests → ingest 主动拉 ES 水位窗口 → triage）随
 「水位兜底全量重放」一起移除（commit d94276c）：单轮过完整图必被 1800s
@@ -25,7 +25,6 @@ from app.agents.nodes import (
     memory_recall_node,
     memory_write_node,
     profile_recall_node,
-    profile_update_node,
     realtime_triage_node,
     report_node,
     response_node,
@@ -49,7 +48,6 @@ def _wire_tail(g: Any) -> None:
     g.add_node("response", response_node)
     g.add_node("report", report_node)
     g.add_node("memory_write", memory_write_node)
-    g.add_node("profile_update", profile_update_node)
 
     g.add_edge("correlate", "asset_enrich")
     g.add_edge("asset_enrich", "memory_recall")
@@ -65,10 +63,9 @@ def _wire_tail(g: Any) -> None:
     g.add_conditional_edges("severity", hitl_route, {"confirm": "hitl", "pass": "response"})
     g.add_edge("hitl", "response")
     g.add_edge("response", "report")
-    # 报告后写入分析记忆（对象级 + 轮次级）与画像基线，并清理过期数据
+    # 报告后写入分析记忆（对象级 + 轮次级），并清理过期数据
     g.add_edge("report", "memory_write")
-    g.add_edge("memory_write", "profile_update")
-    g.add_edge("profile_update", END)
+    g.add_edge("memory_write", END)
 
 
 def build_graph(checkpointer: Any = None) -> Any:

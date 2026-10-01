@@ -464,3 +464,89 @@ export interface WazuhRuleUploadResult {
   applied_rules: number;
   detail: string;
 }
+
+// ---------- 基线（第 8 期从智能体侧迁来） ----------
+
+/** 数值基线的学习进度：`learning_keys` 还在观测期，不参与判定 */
+export interface BaselineStats {
+  observe_days: number;
+  total_keys: number;
+  warmed_keys: number;
+  learning_keys: number;
+  error?: string;
+}
+
+/** 账号/会话画像（跨窗口长期基线），风险分封顶 1.0 */
+export interface BaselineProfile {
+  id?: string;
+  kind: "account" | "session" | string;
+  entity_key?: string;
+  entity_display?: string;
+  obs_count?: number;
+  risk_score?: number;
+  anomalies?: string[];
+  src_ips?: Record<string, number>;
+  user_agents?: Record<string, number>;
+  paths?: Record<string, number>;
+  hour_hist?: Record<string, number>;
+  success_count?: number;
+  fail_count?: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
+}
+
+export interface BaselineAnomalies {
+  total: number;
+  items: BaselineProfile[];
+  threshold?: number;
+  note?: string;
+  error?: string;
+}
+
+/** 检测器进程写的基线心跳（进程不在时 `alive=false`，属正常） */
+export interface BaselineDetector {
+  alive: boolean;
+  observed?: number;
+  numeric_keys?: number;
+  numeric_samples?: number;
+  flushes?: number;
+  profiles_created?: number;
+  profiles_updated?: number;
+  anomalies?: number;
+  flush_at?: number;
+}
+
+export interface BaselinePayload {
+  enabled: boolean;
+  profile_enabled: boolean;
+  observe_days: number;
+  zscore: number;
+  risk_threshold: number;
+  flush_seconds: number;
+  stats: BaselineStats;
+  anomalies: BaselineAnomalies;
+  detector: BaselineDetector;
+  note: string;
+}
+
+export interface BaselineStatItem {
+  key: string;
+  feature: string;
+  count: number;
+  mean: number;
+  m2: number;
+  std: number;
+  first_seen: string | null;
+  warmed: boolean;
+}
+
+export interface BaselineStatsLookup {
+  ip: string;
+  key: string;
+  total: number;
+  returned: number;
+  observe_days: number;
+  items: BaselineStatItem[];
+  note?: string;
+  error?: string;
+}

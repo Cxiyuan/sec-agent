@@ -26,21 +26,24 @@ Wazuh(Filebeat) ┘                    ↓
                                     └─ ② POST Logstash:8080 ──→ ES  shentong-events-*（历史归档）
 
 检测器 detector（常驻）
-网段过滤 → 幂等去重 → 逐条规则 + Redis 滑窗频率规则
-→ 短窗聚合（源IP+规则）→ 投递「聚合摘要」（攒批 20s / 5 条）
+网段过滤 → 排除过滤 → 基线观测（数值 2σ + 账号/会话画像）
+→ 幂等去重 → 逐条规则 + Redis 滑窗频率规则
+→ 短窗聚合（源IP+规则）→ 给摘要打上基线标签 → 投递「聚合摘要」（攒批 20s / 5 条）
                                     ↓
 智能体 HTTP 入口：POST /api/push/digests（Bearer 令牌）→ LangGraph
-边缘降噪 → 归组 → 资产富化 → 记忆/画像 → 技能路由 → 回溯 → 深度分析 → 定级 → HITL
-→ 处置建议 → 报告 → 记忆/画像更新；**收到就回 200**（同一事件组只累加计数、不重复出报告）
+边缘降噪 → 归组 → 资产富化 → 画像标签（NDR 打好的）→ 技能路由 → 回溯 → 深度分析 → 定级 → HITL
+→ 处置建议 → 报告 → 记忆写入；**收到就回 200**（同一事件组只累加计数、不重复出报告）
 推送失败 → 落 shentong:events:pushretry，检测循环后台重发（2xx 才算送达）
                                     ↑
-智能体取数（查询 / 回溯 / 写回结论）走 NDR 的 MCP 服务 :8090/mcp（Bearer 令牌）
+智能体取数（查询 / 回溯 / 基线画像 / 写回结论）走 NDR 的 MCP 服务 :8090/mcp（Bearer 令牌）
 ```
 
 要点：
 - **智能体不主动捞数据**，也不直连 ES：检测器实时投递聚合摘要，取数一律经 NDR 的 MCP 工具
   （索引名、字段白名单、条数上限、令牌吊销都由 NDR 侧掌握）
 - **归一化前置**：入库的只有统一字段的文档，界面与智能体看到的是同一套字段名
+- **基线在 NDR 侧算**（第 8 期）：长期均值/方差与账号/会话画像由检测器逐条沉淀，
+  **模型只做定性**——摘要里带的是已算好的偏离与异常标签（详见 §四之二末）
 - **短窗聚合**是关键：同源同规则上千次命中 → 1 条摘要，避免逐条送模型导致容量爆炸
 
 ---
@@ -171,7 +174,8 @@ manager 的 API 地址与凭据。
    再到「采集接入 → Wazuh」填那台 manager 的 API 地址与凭据、点测试连接；
    要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`
 11. **日常盯「运行状态」页**（左侧导航最后一项，每 15 秒自刷新）：队列积压 / 本分钟投递 /
-    推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量。历史上 Redis 写满（noeviction）会让
+    推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量 / **基线观测**（已学维度、过了观测期的维度数、
+    在册画像、过阈值异常 TOP5）。历史上 Redis 写满（noeviction）会让
     整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆
 
 ---
@@ -216,6 +220,25 @@ manager 的 API 地址与凭据。
 两者都导致「没有告警」：**降噪**是连检测器都没进，**排除**是进了检测器但不分析。智能体可用 MCP
 `list_filters` 同时看到两道闸门，避免把“被过滤”误读成“没有异常”。
 
+**基线与画像（第 8 期起，全部在 NDR 侧算）**：长期行为基线和账号/会话画像都是纯统计，不需要模型，
+因此放在数据产生的 NDR 侧（检测器进程内），智能体只消费标签。
+
+- **检查点**：网段过滤 + 排除过滤**之后**、规则**之前** —— 画像是长期行为基线，不该只学命中规则的那部分日志
+- **数值 2σ 基线**：按源 IP 记三个维度（连接数 / 目的端口数 / 目的 IP 数），Welford 在线均值方差；
+  当前值 > 均值 + `ST_BASELINE_ZSCORE` 个标准差就算偏离。**观测期内（默认 7 天）不打标**，
+  标签里的 `warmed` 为 0 就代表「没报偏离 ≠ 正常」
+- **账号/会话画像**：按账号（`account` 再退 `user`）与会话 cookie 累计源 IP / UA / 路径 / 时段分布，
+  加权打分（新源 IP、新 UA、非常用时段、会话跨多 IP、失败多于成功），过 `ST_PROFILE_RISK_THRESHOLD` 才进异常
+- **会话 cookie 先哈希再落库**（sha256，展示只用前 8 位），事件正文里只留截断值
+- **交付**：① 摘要字段 `baseline`（`{checked, warmed, numeric[], profiles[]}`）——
+  数值偏离会被智能体当作「异常确认」的候选，**定性仍由云端模型做**（NDR 只打标）；
+  账号/会话异常渲染成提示词里的一段长期基线文本；② MCP 两个新工具
+  `baseline_lookup`（查某 IP / 某维度的均值与标准差）与 `entity_profile`（查账号/会话画像与过阈值异常，
+  智能体的 `entity_profile` 调查工具就是转发它）
+- **界面**：并入「运行状态」页的「基线观测」块，不新增导航项；不跑检测器时该块会显示「未在跑」
+- **调参**：见下表 `ST_BASELINE_*` / `ST_PROFILE_*`；`ST_BASELINE_ENABLED` 关掉后摘要不带标签，
+  智能体侧自动退化为「无基线信息」（不会报错）
+
 ---
 
 ## 五、关键配置项（环境变量，`ST_` 前缀）
@@ -246,6 +269,19 @@ NDR 线路（采集与检测）：
 | `ST_AGENT_PUSH_TIMEOUT_SECONDS` / `ST_AGENT_PUSH_MAX_PER_PUSH` | 10 / 200 | 单次请求超时与每批条数（超出分片） |
 | `ST_DETECTOR_PUSH_RETRY_QUEUE` / `..._PROCESSING_QUEUE` | shentong:events:pushretry / ...:processing | 推送失败的重发队列（ReliableQueue） |
 | `ST_DETECTOR_PUSH_RETRY_MAX_PER_ROUND` | 50 | 每轮最多重发多少批 |
+| `ST_BASELINE_ENABLED` | true | 基线观测总开关（关掉则摘要不带 `baseline` 标签） |
+| `ST_BASELINE_OBSERVE_DAYS` | 7 | 观测期：不足这么多天只学习、不打标 |
+| `ST_BASELINE_ZSCORE` | 2.0 | 数值偏离阈值（当前值 > 均值 + N 个标准差） |
+| `ST_BASELINE_FLUSH_SECONDS` | 60 | 画像观测落库 + 判异常的节奏（秒） |
+| `ST_BASELINE_CLEANUP_SECONDS` | 3600 | 过期画像清理的检查节奏（秒） |
+| `ST_BASELINE_MAX_OBSERVATIONS` | 50000 | 单窗口最多攒多少条画像观测，超了提前落库 |
+| `ST_BASELINE_CACHE_MAX` | 20000 | 进程内数值基线缓存条目上限（超出丢最旧的） |
+| `ST_BASELINE_STATS_KEY` | shentong:baseline:stats | 检测器侧基线计数键（「运行状态」页看活性） |
+| `ST_PROFILE_ENABLED` | true | 账号/会话画像开关（关掉则只算数值 2σ） |
+| `ST_PROFILE_MIN_OBS` | 5 | 观测次数不足时只学习、不打分（冷启动） |
+| `ST_PROFILE_RISK_THRESHOLD` | 0.6 | 画像异常风险分阈值（达到才报） |
+| `ST_PROFILE_RETENTION_DAYS` | 180 | 画像保留期（到期清理） |
+| `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,… | 会话 cookie 名单（命中才按会话建画像；**先哈希再落库**） |
 | `ST_EXCLUSION_CACHE_SECONDS` | 30 | 排除过滤配置缓存（跨进程生效延迟上限） |
 | `ST_INGEST_FILTER_CACHE_SECONDS` | 30 | 降噪过滤配置缓存（同上） |
 | `ST_INGEST_FILTER_DRY_RUN_HOURS` | 24 | 试运行默认回看时长（界面可改） |

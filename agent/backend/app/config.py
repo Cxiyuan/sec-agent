@@ -95,7 +95,6 @@ class Settings(BaseSettings):
     # 分析窗口 / 兜底
     analysis_interval_minutes: int = 15
     analysis_window_minutes: int = 5
-    baseline_observe_days: int = 7  # 基线观测期：不足 N 天只学习不判异常
     analysis_stuck_minutes: int = 30  # 事件组停在 analyzing 超过该分钟数视为"分析未收敛"
     analysis_task_budget_seconds: int = 900  # 单任务时间预算（接近就正常收尾）
     analysis_max_redeliveries: int = 2  # 同一批摘要最多重投次数
@@ -165,15 +164,6 @@ class Settings(BaseSettings):
     prefilter_bytes_out_warn: int = 10 * 1024 * 1024
     prefilter_bytes_out_alert: int = 100 * 1024 * 1024
     prefilter_query_len_warn: int = 100
-
-    # 账号 / 会话跨窗口长期画像（UEBA）
-    profile_enabled: bool = True
-    profile_min_obs: int = 5
-    profile_risk_threshold: float = 0.6
-    profile_retention_days: int = 180
-    session_cookie_names: str = (
-        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
-    )
 
     # 网络拓扑
     topology_hops: int = 2

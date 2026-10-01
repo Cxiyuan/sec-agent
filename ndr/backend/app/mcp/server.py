@@ -4,7 +4,7 @@
 
 两层工具：
 - `app.investigation.tools` 的 10 个「查 ES」工具（取数层，NDR 是数据的看门人）；
-- `app.mcp.ndr_tools` 的 6 个 NDR 自身状态/配置/写回工具。
+- `app.mcp.ndr_tools` 的 9 个 NDR 自身状态/配置/基线/写回工具。
 
 **每个 MCP 工具都写成显式形参的函数**，这不是风格问题：MCP 的 inputSchema 由函数签名
 推导，用 `**kwargs` 接参数会被当成「一个必填参数 kwargs」，调用必然报 validation error。
@@ -266,6 +266,26 @@ def record_conclusion(
     )
 
 
+def baseline_lookup(ip: str = "", key: str = "", limit: int = 0) -> str:
+    """查数值基线：某个源 IP 的连接数/目的端口数/目的 IP 数的长期均值与标准差。"""
+    return _run("baseline_lookup", _clean(ip=ip, key=key, limit=limit), native=True)
+
+
+def entity_profile(
+    kind: str = "",
+    keys: list[str] | None = None,
+    min_risk: float = 0.0,
+    anomalies_only: bool = False,
+    limit: int = 0,
+) -> str:
+    """查账号/会话画像（跨窗口长期基线）；`anomalies_only` 只看过阈值的异常。"""
+    return _run(
+        "entity_profile",
+        _clean(kind=kind, keys=keys, min_risk=min_risk, anomalies_only=anomalies_only, limit=limit),
+        native=True,
+    )
+
+
 _ES_TOOL_FUNCS = (
     describe_data,
     search_events,
@@ -286,6 +306,8 @@ _NDR_TOOL_FUNCS = (
     list_filters,
     fetch_window,
     record_conclusion,
+    baseline_lookup,
+    entity_profile,
 )
 
 

@@ -9,12 +9,14 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
+    Index,
     Integer,
     String,
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -150,6 +152,59 @@ class ConclusionRecord(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BaselineStat(Base):
+    """滚动基线统计（Welford 在线算法）：key 标识统计维度，如 `{src_ip}:conn_count`。
+
+    第 8 期从智能体侧迁来：基线是纯统计、不需要模型，而检测器本来就逐条看到归一化事件，
+    放在数据产生侧算、算完随摘要打标给智能体，就不用智能体再自己学一遍。
+    """
+
+    __tablename__ = "baseline_stats"
+
+    key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    mean: Mapped[float] = mapped_column(Float, default=0.0)
+    m2: Mapped[float] = mapped_column(Float, default=0.0)  # 平方差累计，用于算标准差
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EntityProfile(Base):
+    """账号 / 会话跨窗口长期画像（UEBA 式统计基线）。
+
+    entity_key：账号名原样；会话 id 为 SHA-256 哈希（**不落库明文 cookie**）。
+    """
+
+    __tablename__ = "entity_profiles"
+    __table_args__ = (
+        Index("ix_entity_profiles_kind_key", "kind", "entity_key", unique=True),
+        Index("ix_entity_profiles_risk", "risk_score"),
+        Index("ix_entity_profiles_last_seen", "last_seen"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # account | session
+    entity_key: Mapped[str] = mapped_column(String(128))
+    entity_display: Mapped[str] = mapped_column(String(160), default="")
+    obs_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 行为基线（频次分布）
+    src_ips: Mapped[dict] = mapped_column(JSONB, default=dict)
+    user_agents: Mapped[dict] = mapped_column(JSONB, default=dict)
+    paths: Mapped[dict] = mapped_column(JSONB, default=dict)
+    hour_hist: Mapped[dict] = mapped_column(JSONB, default=dict)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    anomalies: Mapped[list] = mapped_column(JSONB, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

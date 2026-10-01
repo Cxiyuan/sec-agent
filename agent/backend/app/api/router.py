@@ -12,7 +12,6 @@ from app.api.routes import (
     events,
     investigation,
     memories,
-    profiles,
     push,
     reports,
     skills,
@@ -28,7 +27,6 @@ api_router.include_router(cloud.router)
 api_router.include_router(edge.router)
 api_router.include_router(topologies.router)
 api_router.include_router(memories.router)
-api_router.include_router(profiles.router)
 api_router.include_router(events.router)
 api_router.include_router(investigation.router)
 api_router.include_router(investigation.tools_router)

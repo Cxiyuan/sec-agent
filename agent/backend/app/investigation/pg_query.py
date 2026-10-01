@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db.base import SessionLocal
-from app.db.models import Asset, EntityProfile, Event, EventGroup, Topology
+from app.db.models import Asset, Event, EventGroup, Topology
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -133,38 +133,6 @@ def topology_neighbors(ips: list[str], hops: int = 1) -> dict[str, Any]:
                     }
                 )
     return {"nodes": nodes_out[:_MAX_ROWS], "edges": edges_out[:_MAX_ROWS]}
-
-
-def entity_profiles(kind: str, keys: list[str]) -> list[dict[str, Any]]:
-    """取账号/会话长期画像（UEBA 基线）：观测数、风险分、异常点、常用源 IP。"""
-    wanted = [str(k) for k in keys if k]
-    if not wanted:
-        return []
-    with SessionLocal() as db:
-        rows = db.scalars(
-            select(EntityProfile).where(
-                EntityProfile.kind == kind, EntityProfile.entity_key.in_(wanted)
-            )
-        ).all()
-    return [
-        {
-            "kind": r.kind,
-            "key": r.entity_key,
-            "display": r.entity_display,
-            "obs_count": r.obs_count,
-            "risk_score": r.risk_score,
-            "first_seen": r.first_seen.isoformat() if r.first_seen else None,
-            "last_seen": r.last_seen.isoformat() if r.last_seen else None,
-            "src_ips": dict(list((r.src_ips or {}).items())[:10]),
-            "paths": dict(list((r.paths or {}).items())[:10]),
-            "user_agents": dict(list((r.user_agents or {}).items())[:10]),
-            "hour_hist": r.hour_hist or {},
-            "success_count": r.success_count,
-            "fail_count": r.fail_count,
-            "anomalies": (r.anomalies or [])[:10],
-        }
-        for r in rows
-    ]
 
 
 def memory_recall(ips: list[str], *, limit: int = 8) -> list[dict[str, Any]]:

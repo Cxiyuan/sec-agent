@@ -20,6 +20,7 @@ from typing import Any
 import redis
 
 from app import triage_policy
+from app.baseline.engine import BaselineEngine
 from app.config import settings
 from app.db.base import SessionLocal
 from app.detector import health, push
@@ -128,6 +129,8 @@ def run() -> None:
     handled = HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
     freq = FreqWindow(client, settings.freq_window_seconds, settings.freq_cooldown_seconds)
     agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
+    # 基线（第 8 期）：数值 2σ 按摘要算、账号/会话画像逐条观测，算完随摘要打标给智能体
+    engine = BaselineEngine(client)
     # 判重（第 5 期起）在智能体侧：只有它知道某个事件组分析过没有。本侧只负责投递。
     # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
     leader = Leader(client)
@@ -199,7 +202,7 @@ def run() -> None:
         ):
             consumed_any = True
             try:
-                _handle(payload, rules, scopes, freq, agg, handled, stats)
+                _handle(payload, rules, scopes, freq, agg, handled, stats, engine)
             except Exception:
                 log.exception("处理队列消息失败（已确认，避免卡死队列）")
             finally:
@@ -208,9 +211,15 @@ def run() -> None:
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
+            # 基线打标（第 8 期）：2σ 偏离 + 账号/会话画像异常随摘要一起推给智能体；
+            # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
+            if not digest.get("excluded"):
+                digest["baseline"] = engine.annotate(digest)
             _apply_routine_policy(digest, client, stats)
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
+        # 基线落库：画像观测 + 数值统计攒到这里一次性写（节奏由 baseline_flush_seconds 控制）
+        engine.maybe_flush()
 
         # raw 队列持续封顶：采集速率（实测几万条/分钟）远高于检测器处理能力，
         # 不封顶就会把 Redis 撑满 → noeviction 拒写 → 检测器与 Celery 全线卡死（真实事故）。
@@ -545,6 +554,7 @@ def _handle(
     agg: Aggregator,
     handled: HandledRegistry,
     stats: Counter[str],
+    engine: BaselineEngine,
 ) -> None:
     """处理单条队列消息。"""
     try:
@@ -583,7 +593,11 @@ def _handle(
         exclusion.record_hit(pre_name, entry)
         return
 
-    # ④ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
+    # ④ 基线观测（第 8 期）：账号/会话画像按「在监控网段内、未被排除」的事件持续学习。
+    #    放在规则之前：画像是长期行为基线，不该只学命中规则的那部分日志。
+    engine.observe(entry)
+
+    # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
     candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
     stats["rules_evaluated"] += len(candidates)
     hit = next((r for r in candidates if match_rule(r, entry)), None)

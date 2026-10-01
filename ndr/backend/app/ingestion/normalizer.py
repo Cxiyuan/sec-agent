@@ -4,7 +4,8 @@
 - 尽量保留可被规则利用的字段（Web 深检：method/uri_path/query_string/body/
   referer/cookie/auth_scheme/ja3/tls/qtype/filename 等）
 - event_type 按日志类型细分，便于规则精准命中
-- **安全**：不落库明文口令/Token（仅保留 auth_scheme）；会话 cookie 由画像层哈希
+- **安全**：不落库明文口令/Token（仅保留 auth_scheme）；会话 cookie 由画像层
+  （`app.baseline.profile`）哈希后才落 `entity_profiles`，事件里只留截断值
 - 请求体字段名不固定 → 按配置候选择优，并截断
 """
 

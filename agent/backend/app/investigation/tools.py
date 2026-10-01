@@ -396,13 +396,25 @@ def _topology_neighbors(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
 
 
 def _entity_profile(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
-    _check_unknown(args, ("kind", "keys"), "entity_profile")
+    """账号/会话长期画像：第 8 期起基线在 NDR 侧算，这里转发到 NDR 的 MCP 工具。"""
+    _check_unknown(args, ("kind", "keys", "min_risk"), "entity_profile")
     kind = _str_param(args, "kind", default="account")
     if kind not in ("account", "session"):
         raise ValueError("kind 只能是 account / session")
     keys = _list_param(args, "keys") or (ctx.case.get("keys") or {}).get("acct") or []
-    rows = pg_query.entity_profiles(kind, [str(x) for x in keys])
-    return {"kind": kind, "requested": len(keys), "found": len(rows), "profiles": rows}
+    payload: dict[str, Any] = {"kind": kind}
+    if keys:
+        payload["keys"] = [str(x) for x in keys]
+    min_risk = args.get("min_risk")
+    if min_risk is not None:
+        try:
+            payload["min_risk"] = min(max(float(min_risk), 0.0), 1.0)
+        except (TypeError, ValueError):
+            raise ValueError("min_risk 需要 0~1 的小数") from None
+    result = mcp_client.call("entity_profile", payload)
+    if not isinstance(result, dict):
+        return {"kind": kind, "result": result}
+    return {"kind": kind, "requested": len(keys), **result}
 
 
 def _memory_recall(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
@@ -608,8 +620,12 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "entity_profile": {
         "run": _entity_profile,
-        "desc": "账号/会话长期画像与异常点",
-        "params": {"kind": "account|session", "keys": "账号或会话键数组"},
+        "desc": "账号/会话长期画像与异常点（基线在 NDR 侧算）",
+        "params": {
+            "kind": "account|session",
+            "keys": "账号或会话键数组",
+            "min_risk": "只返回风险不低于该值（0~1，可选）",
+        },
     },
     "memory_recall": {
         "run": _memory_recall,

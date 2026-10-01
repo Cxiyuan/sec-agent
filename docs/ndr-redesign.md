@@ -1,6 +1,6 @@
 # NDR 改造方案：采集 → 归一化 → 过滤 → 检测 → 推送智能体
 
-状态：**第 1~7 期已实施完成**（监控网段 / 归一化前置 / MCP 服务 + 智能体切到 MCP / 过滤规则 / HTTP 推送智能体 / Wazuh 4.14 集成与容量 / 界面整理，代码与门禁均已过、单进程与纸面实测通过，**待实机验收**——第 2、5、6 期的容器侧与真实流量未跑过，见各期末尾与第 8 节开放问题 6）。全新服务器环境部署，无历史数据迁移。
+状态：**第 1~8 期已实施完成**（监控网段 / 归一化前置 / MCP 服务 + 智能体切到 MCP / 过滤规则 / HTTP 推送智能体 / Wazuh 4.14 集成与容量 / 界面整理 / **基线分析迁到 NDR**，代码与门禁均已过、单进程与纸面实测通过，**待实机验收**——第 2、5、6 期的容器侧与真实流量未跑过，见各期末尾与第 8 节开放问题 6）。全新服务器环境部署，无历史数据迁移。
 范围：`ndr/`（主改）+ `agent/`（接收端与 ES 文档形态同步改）
 
 ---
@@ -58,6 +58,18 @@
 | 22 | 托管方式 | **独立 MCP 服务**（独立进程/容器），不挂在 NDR 后端进程上 |
 | 23 | 认证 | **令牌校验**；令牌由 **NDR Web 界面**生成与吊销（只完整显示一次，库里存哈希） |
 | 24 | 智能体数据访问 | **完全走 MCP，不再直连 ES**：`agent/backend/app/investigation/es_query.py` 的 ES 查询整体退役，改由 MCP 工具承担 |
+
+### 基线与画像（第 8 期）
+
+用户的判断（原话）：「**应该把基线分析迁移到NDR，agent智能体本身是消费数据进行LLM推理分析的。基线应该放在数据产生的NDR侧。**」数据在哪产生、就在哪沉淀长期行为；智能体只拿标签做定性。
+
+| # | 问题 | 结论 |
+|---|---|---|
+| 25 | 搬什么 | **数值 2σ 基线 + UEBA 账号/会话画像都搬到 NDR**（两者都是纯统计，不需要模型） |
+| 26 | 交付形态 | **既写进推送摘要（`digest.baseline` 标签），也开 MCP 查询工具**（`baseline_lookup` / `entity_profile`）——智能体分析时能顺着标签追问细节 |
+| 27 | 2σ 还要不要模型确认 | **要**：NDR 只按 `当前值 > mean + zσ` 打标，**定性仍由智能体用云端模型做**（沿用原「异常确认」提示词） |
+| 28 | 界面 | **并入现有「运行状态」页**（`ndr/frontend/components/status-panel.tsx` 的「基线观测」块），不新增导航项 |
+| 29 | 会话 cookie 落库 | **必须在 NDR 侧哈希后才落 `entity_profiles`**（sha256，展示只用前 8 位）；事件里只留截断值 |
 
 ### 部署前提：全新服务器环境
 
@@ -265,7 +277,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    server.streamable_http_app(streamable_http_path=settings.mcp_path, host=settings.mcp_host)
    ```
 
-   **共 17 个工具**（10 个 ES 查询/调查 + 7 个 NDR 自身），全部写成**显式形参的普通函数**注册 —— MCP 的 `inputSchema` 由函数签名推导，用 `**kwargs` 会被当成一个必填参数（实测报 `1 validation error for search_eventsArguments kwargs Field required`），这个坑踩过一次。工具名与参数名**逐字沿用**智能体原来的 10 个工具，提示词与调用样例不用改。
+   **共 17 个工具**（10 个 ES 查询/调查 + 7 个 NDR 自身；**第 8 期新增 `baseline_lookup` / `entity_profile` 后为 19 个 = 10 + 9，见第 8 期小节**），全部写成**显式形参的普通函数**注册 —— MCP 的 `inputSchema` 由函数签名推导，用 `**kwargs` 会被当成一个必填参数（实测报 `1 validation error for search_eventsArguments kwargs Field required`），这个坑踩过一次。工具名与参数名**逐字沿用**智能体原来的 10 个工具，提示词与调用样例不用改。
 
 2. **ES 查询层搬进 NDR 并重写**：新增 `ndr/backend/app/investigation/{__init__,catalog,es_query,tools}.py`（1595 行）；字段目录从 50 条收敛到 **42 条**（删掉只在 `raw` 里的 `duration`/`rcode`/`answers`/`fuid`/`md5`/`sha1`、合并掉 `service`/`host`/`server_name`/`uri`/`note`/`msg`/`rule_level`/`agent_name`/`wazuh_url` 等，新增 12 条顶层统一字段）。索引选择塌成单族：
 
@@ -276,7 +288,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
    `source_clause()` 改 `build_clause("source_system", source)`；`ts` 路径是 ES 元字段 `@timestamp`；`sha256` 路径落 `raw.sha256`。上限值原为 agent 侧配置项、NDR 没有对应物，写成模块常量（`QUERY_TIMEOUT_SECONDS=45` / `TIMELINE_MAX_HOURS=72` / `DEFAULT_LOOKBACK_DAYS=30` / `max_docs()=2000` / `RAW_EVIDENCE_MAX=20`）。
 
-3. **NDR 自身 7 个工具**（`ndr/backend/app/mcp/ndr_tools.py`，形状与 ES 侧一致、无 `ctx`、纯函数）：`get_event`（按事件ID/指纹查结论历史；NDR 侧已不记录投递指纹，只回一句指向智能体的说明）、`get_rule`、`detector_status`（队列积压 / 五段速率 / 丢弃 / 去重 / 任务失败 / 选主 / Redis 内存，口径与 `ndr/backend/app/api/routes/detector.py` 对齐）、`list_networks`、`list_filters`、`record_conclusion`（按 `dedup_key = event_id or fingerprint` upsert）、`fetch_window`（按时间窗 + 网段/IP 拉原始条目，给回溯用；返回每条 log 带 `ref = es:<索引>/<文档id>` 与**完整 `raw` 原文**）。
+3. **NDR 自身 7 个工具**（`ndr/backend/app/mcp/ndr_tools.py`，形状与 ES 侧一致、无 `ctx`、纯函数；**第 8 期起为 9 个**，新增 `baseline_lookup` / `entity_profile`）：`get_event`（按事件ID/指纹查结论历史；NDR 侧已不记录投递指纹，只回一句指向智能体的说明）、`get_rule`、`detector_status`（队列积压 / 五段速率 / 丢弃 / 去重 / 任务失败 / 选主 / Redis 内存，口径与 `ndr/backend/app/api/routes/detector.py` 对齐）、`list_networks`、`list_filters`、`record_conclusion`（按 `dedup_key = event_id or fingerprint` upsert）、`fetch_window`（按时间窗 + 网段/IP 拉原始条目，给回溯用；返回每条 log 带 `ref = es:<索引>/<文档id>` 与**完整 `raw` 原文**）。
 
    八个查询工具（`search_events` / `aggregate_events` / `timeline` / `net_flows` / `dns_queries` / `tls_fingerprints` / `web_requests` / `file_hashes`）都收 `source`（`zeek|wazuh|both`，空 = 两个来源）—— 下层 `ndr/backend/app/investigation/tools.py:114 _resolve_sources()` 本来就有这个参数，补的是 MCP 包装层缺的形参（缺了会被**静默丢弃**）。包装层类型必须与下层取值函数对齐：`web_requests.status_code` 下层用 `_str_param()`（支持 `4xx` 这类关键字匹配），包装层原写 `int = 0` 会让非数字状态码在 MCP 校验层就被拒，已改 `str = ""`。
 
@@ -399,6 +411,32 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **验收**：六个子页可直达、旧 `/admin/settings` 仍是有效入口、导航七项高亮正确、首次向导与登录不再跳 404。实施取证：`ndr/frontend` `npx tsc --noEmit` 通过（`agent/frontend` 未改动，另行复跑）；后端本轮无改动，收尾仍复跑 ruff/pyright。**未取证**：浏览器里的实际渲染与交互（未起前端 dev server，按 AGENTS.md 也不本地 build）。
 
+### 第 8 期 · 基线分析迁到 NDR ✅ 已完成（2026-02，实施记录）
+
+用户判断「基线应该放在数据产生的 NDR 侧」——数值 2σ 与 UEBA 账号/会话画像都是纯统计，智能体本来只是拿它喂提示词。本期把两者整体搬到检测器里（同进程、无新服务），智能体侧只保留「提取标签 → 合并到事件组 → 渲染进提示词 → 交给模型定性」。
+
+1. **两张新表**（`ndr/backend/app/db/models.py`）：`baseline_stats`（`key` 主键 / `count` / `mean` / `m2` / `first_seen` / `updated_at`）与 `entity_profiles`（`id` / `kind` / `entity_key` / `entity_display` / `obs_count` / `first_seen` / `last_seen` / `src_ips` / `user_agents` / `paths` / `hour_hist` / `success_count` / `fail_count` / `risk_score` / `anomalies` / `updated_at`，带 `(kind, entity_key)` 唯一索引与 `risk_score` / `last_seen` 索引）。字段与智能体侧两表逐字段同构；NDR 靠 `create_all` 建表（`_MIGRATIONS` 为空），**不需要迁移**。
+2. **新包 `ndr/backend/app/baseline/`**（4 文件）：
+   - `stats.py`：Welford 在线均值/方差。`_std`（`m2/(count-1)` 开方，与智能体侧一致）、`_warmed`（`first_seen` 满 `baseline_observe_days` 才算过了观测期）、`load_stats`（批量读，`_BATCH=500` 分批）、`apply_stats`（批量增量落库，单写者不需锁）、`lookup(ip, key, limit)`（按 IP 查该 IP 全部维度或按完整 key）、`snapshot()`（运行状态页用的规模/观测期进度）。
+   - `profile.py`：从 `agent/backend/app/agents/profile.py` 逐函数移植。`session_entity` 把会话 cookie 取值后 **sha256 哈希**（落库键是哈希，展示用前 8 位），`account_entity` 取 `account` 再退 `user`；`observe_entry(buckets, entry)` 是新增的**无 I/O 逐条并入**（账号 + 会话各一个桶），`_trim` 在窗口内就把超限分布裁到 top N（落库列名 `hour_hist` 对应桶字段 `hours`，用 `_BUCKET_FIELDS` 映射）；`detect` 的加权与原实现一致（新源 IP +0.35 / 新 UA +0.2 / 非常用时段 +0.15 / 会话跨 ≥2 IP +0.45 / 失败≥5 且多于成功 +0.25，封顶 1.0，冷启动不判）；`recall_from_observations` 返回 `{entities, anomalies}`（后者才是过 `profile_risk_threshold` 的）；另有 `update_profiles` / `cleanup` / `list_profiles` / `top_anomalies`。**没有移植 `profile_text`** —— 渲染在智能体侧（`baseline_labels.text_of`）。
+   - `engine.py`：`BaselineEngine(client)`，检测器进程内单实例（只有持锁实例消费队列，累加天然一致）。逐条 `observe(entry)` 并桶观测；摘要产出时 `annotate(digest)` 算三个数值特征（`conn_count` = 摘要 `count`、`distinct_dst_ports` = `len(dst_ports)`、`distinct_dst_ips` = `len(dst_ips)`，key = `f"{src_ip}:{feature}"`，与智能体侧 `_stat_features` 语义一致）→ 超过 `mean + baseline_zscore*std` 才算偏离，同时把值排进待落库队列；画像异常按 **IP 交集**归属到摘要（`src_ip ∪ dst_ips`，与智能体侧原来的归属方式一致），最多挂 6 条。周期 `maybe_flush()` → `flush()` = 数值落库 + 画像观测落库并判异常 + 按 `baseline_cleanup_seconds` 清理过期画像 + `_publish()` 把计数写进 `shentong:baseline:stats`（24h 过期，运行状态页据此判断基线在不在跑）。标签形状：`{"checked": 3, "warmed": N, "numeric": [...], "profiles": [...]}`，**`warmed` 为 0 表示基线还在观测期，「没报偏离 ≠ 正常」**。
+3. **接线 `ndr/backend/app/detector/runner.py`**：`engine = BaselineEngine(client)`；`_handle(...)` 在「网段过滤 + 排除过滤」之后、规则之前调 `engine.observe(entry)`（④，放在规则之前是因为画像是长期行为基线，不该只学命中规则的那部分日志）；主循环 `agg.pop_due()` 后 **被排除的摘要不打标**，其余的 `digest["baseline"] = engine.annotate(digest)` 再进投递队列；循环末尾 `engine.maybe_flush()`。
+4. **配置 13 项**（`ndr/backend/app/config.py`）：`baseline_enabled` / `baseline_observe_days=7` / `baseline_zscore=2.0` / `baseline_flush_seconds=60` / `baseline_cleanup_seconds=3600` / `baseline_max_observations=50000` / `baseline_cache_max=20000` / `baseline_stats_key` / `profile_enabled` / `profile_min_obs=5` / `profile_risk_threshold=0.6` / `profile_retention_days=180` / `session_cookie_names`。
+5. **MCP 两个新工具**（`ndr/backend/app/mcp/ndr_tools.py` + `server.py`，`TOOLS` 由 7 条增至 **9** 条）：`baseline_lookup(ip, key, limit)` 查某 IP / 某维度的长期均值与标准差（附「观测期内不参与判定、没报偏离不等于正常」的说明）、`entity_profile(kind, keys, min_risk, anomalies_only, limit)` 查账号/会话画像与过阈值异常（附阈值与加权说明）。`server.py` 用显式形参包装（MCP 的 inputSchema 由签名推导，`**kwargs` 会被当成一个必填参数）。
+6. **API**（新增 `ndr/backend/app/api/routes/baseline.py`，已注册进 `ndr/backend/app/api/router.py`）：`GET /api/baseline`（总览：开关 / 观测期 / zσ / 阈值 / 规模 / 过阈值 TOP / Redis 心跳，`_detector_counters()` 读不到心跳则 `{"alive": False}`）、`GET /api/baseline/profiles`、`GET /api/baseline/stats`。
+7. **界面**（并入第 7 期的「运行状态」页，不新增导航项）：`ndr/frontend/components/status-panel.tsx` 新增「基线观测」块 —— 基线开关、还在观测期的维度数、检测器心跳时间、四格（已学维度 / 过了观测期 / 在册画像 / 过阈值异常）与过阈值 TOP5；`ndr/frontend/lib/api.ts` 补 7 个 `Baseline*` 类型。
+8. **智能体侧下线与改接**（净删 912 行 / 增 432 行）：
+   - 新增 `agent/backend/app/agents/baseline_labels.py`：`labels_of`（取摘要标签）、`merge_labels`（按维度/实体去重、`checked`/`warmed` 取最大、按 `|z|` 与 `risk` 降序，整批为空则返回 `{}` 以便不塞空字段）、`candidates_of`（数值偏离 → 「异常确认」候选，键名与旧 `_stat_features` 一致、提示词无需改）、`entities_of`、`text_of`（渲染成提示词文本块，原来 `profile_text` 的位置）。
+   - `agent/backend/app/agents/metrics.py`：`merge_aggregates` 原来把结果**固定成 6 个键**，未知键会被丢掉 —— 现在显式合并 `baseline`（否则标签到不了组级）。
+   - `nodes.py`：`_digest_aggregate` 带上 `labels_of(digest)`；`_profile_text_for_group` 改读所在组的标签；`profile_recall_node` 重写为「收集 NDR 标签 → 按组归档 + `update_group_profile_hits`」；**删掉 `profile_update_node`（节点 9）**，`graph.py` 的边改成 `memory_write → END`。
+   - `deep_analysis.py`：删 `_stat_features` / `_detect_candidates` / Welford 读写，`anomaly_node` 改读标签里的候选（**模型确认仍保留**，NDR 只打标）；`persistence.py` 删 `update_baseline` / `get_baseline`；`db/models.py` 删两张表；`main.py` 删 `baseline_stats` 的 ALTER；`config.py` 删 6 项。
+   - 删文件：`agent/backend/app/agents/profile.py`、`agent/backend/app/api/routes/profiles.py`、`agent/frontend/app/admin/profiles/page.tsx`；导航项 / 设置项 / `dashboard` 的画像卡片（改为一句「基线已在 NDR 侧计算，排行见 NDR 运行状态页」）一并下线。
+   - `investigation/tools.py` 的 `entity_profile` 工具**改为转发 NDR 的 MCP 工具**（智能体仍能按需追问画像），`pg_query.entity_profiles` 删除。
+   - **一条重要事实**：智能体侧原来的 UEBA 观测在实时链路里**本来就是死路径** —— `profile_recall_node` / `profile_update_node` 读的 `raw_logs` 全仓没有任何地方赋值（旧 ingest 节点已随兜底入口下线），所以 `profile_text` 恒返回「无画像异常」。这次下架不改变现网行为，是把已经停摆的代码搬走。
+9. **验收**：NDR 摘要带上基线标签、检测器不再依赖模型就能沉淀长期基线、智能体提示词里仍有画像与数值偏离文本、运行状态页能看到基线与异常 TOP、智能体「追问画像」走 MCP。
+   **实施取证**：`/tmp/test_baseline.py` **112/112**（Welford 增量与观测期、分布裁剪、画像冷启动与各项加权、标签合并去重与渲染、engine 打标 / IP 归属 / 异常去重过期 / flush 发布 Redis）；回归脚本全过（`/tmp/test_wazuh.py` 65/65、`/tmp/test_wazuh_normalize.py` 22/22、`/tmp/test_agent_push.py` 51/51、`/tmp/test_runner_push.py` 15/15、`/tmp/test_push_api.py` 30/30、`/tmp/test_ingest_filter.py` 24/24）；`.venv/bin/ruff check ndr/backend/app agent/backend/app` 全过、`.venv/bin/pyright ndr/backend/app agent/backend/app` 0 error、`python -m compileall -q` 通过、`ndr/frontend` 与 `agent/frontend` 各 `npx tsc --noEmit` 通过。测试还抓出一个移植 bug：`_trim` 按 `_LIMITS` 的落库列名去取观测桶字段（`hour_hist` vs `hours`）会 KeyError，已用 `_BUCKET_FIELDS` 映射修掉。
+   **未取证**：真实流量下基线的收敛速度与画像误报率（默认 7 天观测期，需现场跑够时间）；检测器主备切换时进程内缓存会重建（数值基线从库里重捞、画像异常有一段标签稀疏 —— 不丢数据，但切换瞬间的摘要可能少标签）。
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app`、`.venv/bin/pyright ndr/backend/app agent/backend/app`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。
@@ -411,3 +449,4 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 4. ~~推送载荷除了摘要还带什么~~（**已定**，第 5 期）：载荷 = `{items: [{event_id, fingerprint, digest}]}`，只加 NDR 生成的事件ID与摘要级指纹（供排查与回执对账），触发规则/原始事件数/时间窗仍在摘要里（`rule` / `count` / `first_seen` / `last_seen`），不额外冗余。
 5. **MCP 服务与 NDR 后端的代码共享边界**：MCP 服务是独立进程但同镜像，ES 客户端、配置、字段目录会共用 `app.` 包 —— 要不要为它单独切一层接口，还是直接 import 后端模块？
 6. **待实机验证（第 2 期遗留 + 第 5 期 + 第 6 期）**：~~Wazuh 4.14 自带的 Filebeat 是否支持 `output.redis`~~（**已绕开**，第 6 期）：不再指望 manager 自带的 Filebeat，`ndr/docker-compose.wazuh.yml` 另起一个官方 Filebeat 容器用 `ndr/wazuh/filebeat.yml` 投 Redis；manager 自带那个只留着报「找不到 indexer」的错。仍待实机：两个 Filebeat（Zeek 与 Wazuh）同时 `LPUSH` 同一 list 的实际吞吐，以及 `ndr/wazuh/README.md` 第五节列出的容器侧清单。
+7. **基线与画像的真实效果（第 8 期遗留）**：默认 7 天观测期内不判异常，收敛速度与误报率只能在现场跑够时间后才知道；另外检测器主备切换时进程内缓存会重建 —— 数值基线从库里重捞、画像异常有一小段标签稀疏（不丢数据，但切换瞬间的摘要可能少标签）。

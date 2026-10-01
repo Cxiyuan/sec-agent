@@ -26,7 +26,6 @@ CONFIG_KEYS: dict[str, Any] = {
     "report_min_severity": settings.report_min_severity,
     "hitl_enabled": settings.hitl_enabled,
     "hitl_min_severity": settings.hitl_min_severity,
-    "baseline_observe_days": settings.baseline_observe_days,
     # RAG（经 runtime_config 即时生效）
     "rag_enabled": settings.rag_enabled,
     "rag_top_k": settings.rag_top_k,

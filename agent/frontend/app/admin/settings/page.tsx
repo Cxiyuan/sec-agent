@@ -48,7 +48,6 @@ const GROUPS: { name: string; fields: Field[] }[] = [
       { key: "report_min_severity", label: "报告最低级别", type: "select", options: ["critical", "high", "medium", "low", "info"] },
       { key: "hitl_enabled", label: "高危人工确认", type: "bool" },
       { key: "hitl_min_severity", label: "人工确认级别", type: "select", options: ["critical", "high", "medium", "low"] },
-      { key: "baseline_observe_days", label: "基线观察天数", type: "number" },
     ],
   },
   {

@@ -2,6 +2,10 @@
 
 统一形状：{hits, rules, dst_ips(≤50), dst_ports(≤50), first_seen, last_seen}
 
+第 8 期起还带一个可选的 `baseline`（NDR 在摘要上打的基线标签）：数值偏离按维度去重、
+画像异常按实体去重，合并结果供驾驶舱展示与深度分析的提示词使用 —— 判定在 NDR 侧算完，
+这里只做合并与搬运。
+
 放在独立模块：nodes（组内合并）与 persistence（入库时与旧行合并）都要用，
 而 persistence 被 nodes 依赖，写在其中一处会造成循环导入。
 """
@@ -9,6 +13,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from app.agents.baseline_labels import merge_labels
 
 _MAX_SET = 50
 
@@ -52,7 +58,7 @@ def merge_aggregates(items: list[Any]) -> dict[str, Any]:
         if ls and (last_seen is None or ls > last_seen):
             last_seen = ls
 
-    return {
+    merged: dict[str, Any] = {
         "hits": hits,
         "rules": rules,
         "dst_ips": sorted(dst)[:_MAX_SET],
@@ -60,3 +66,8 @@ def merge_aggregates(items: list[Any]) -> dict[str, Any]:
         "first_seen": first_seen,
         "last_seen": last_seen,
     }
+    # 基线标签（可选）：整批都没有就一个键都不加，历史数据与关掉基线时形状不变
+    baseline = merge_labels([it.get("baseline") for it in valid])
+    if baseline:
+        merged["baseline"] = baseline
+    return merged

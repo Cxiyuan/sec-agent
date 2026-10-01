@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import {
   apiFetch,
   type AgentPushPayload,
+  type BaselinePayload,
   type DetectorStats,
   type WazuhPayload,
 } from "@/lib/api";
@@ -17,6 +18,7 @@ import {
  * - `/api/detector/stats`：检测队列深度、投递速率、丢弃计数、选主、Redis 内存体检
  * - `/api/agent-push`：摘要推送的送达 / 待重发 / 最近失败原因
  * - `/api/wazuh`：Wazuh API 可达性与近 24h 入库量（没接 Wazuh 时显示未配置）
+ * - `/api/baseline`：基线学习进度与过阈值画像（第 8 期从智能体侧迁来）
  *
  * 队列长度与内存吃满是最真实的故障前兆（历史上 Redis 写满导致整链静默卡死），
  * 所以这一页默认 15 秒自刷新，且 Redis 用量超过告警线时显式标红。
@@ -25,6 +27,7 @@ export function StatusPanel() {
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
   const [wazuh, setWazuh] = React.useState<WazuhPayload | null>(null);
+  const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
   const [err, setErr] = React.useState("");
   const [auto, setAuto] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -46,6 +49,11 @@ export function StatusPanel() {
       setWazuh(await apiFetch<WazuhPayload>("/api/wazuh"));
     } catch {
       next.push("Wazuh 接入（/api/wazuh）");
+    }
+    try {
+      setBaseline(await apiFetch<BaselinePayload>("/api/baseline"));
+    } catch {
+      next.push("基线观测（/api/baseline）");
     }
     setErr(next.length ? `以下接口读取失败：${next.join("、")}` : "");
     setBusy(false);
@@ -220,6 +228,63 @@ export function StatusPanel() {
           </div>
           {wazuh?.ingest.error && (
             <p className="mt-1 text-destructive">读 ES 失败：{wazuh.ingest.error}</p>
+          )}
+        </div>
+
+        {/* 基线观测（第 8 期：基线从智能体侧迁到 NDR 侧） */}
+        <div className="rounded-md border p-3 text-xs">
+          <p className="mb-2 flex items-center gap-2 text-muted-foreground">
+            基线观测
+            <Badge variant={baseline?.enabled ? "info" : "outline"}>
+              {baseline?.enabled ? "基线已开启" : "基线已关闭"}
+            </Badge>
+            {baseline?.stats.learning_keys ? (
+              <Badge variant="secondary">{baseline.stats.learning_keys} 个维度还在观测期</Badge>
+            ) : null}
+            {baseline?.detector.alive ? (
+              <Badge variant="outline">
+                检测器心跳已写入
+                {baseline.detector.flush_at
+                  ? `（${new Date(baseline.detector.flush_at * 1000).toLocaleTimeString()}）`
+                  : ""}
+              </Badge>
+            ) : (
+              <Badge variant="outline">检测器未写心跳（进程没跑或还没到落库时间）</Badge>
+            )}
+          </p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-4">
+            <span>
+              已学维度 <b>{baseline?.stats.total_keys ?? "—"}</b>
+            </span>
+            <span>
+              过了观测期 <b>{baseline?.stats.warmed_keys ?? "—"}</b>
+              {baseline ? `（${baseline.observe_days} 天）` : ""}
+            </span>
+            <span>
+              在册画像 <b>{baseline?.anomalies.total ?? "—"}</b>
+            </span>
+            <span>
+              过阈值异常 <b>{baseline?.anomalies.items.length ?? "—"}</b>
+              {baseline ? `（风险 ≥ ${baseline.risk_threshold}）` : ""}
+            </span>
+          </div>
+          {baseline?.anomalies.items.length ? (
+            <ul className="mt-1 space-y-0.5 text-muted-foreground">
+              {baseline.anomalies.items.slice(0, 5).map((p) => (
+                <li key={`${p.kind}|${p.entity_key}`}>
+                  [{p.kind === "account" ? "账号" : "会话"}] {p.entity_display || p.entity_key} · 风险{" "}
+                  {p.risk_score ?? "—"}
+                  {p.anomalies?.length ? ` · ${p.anomalies.join("；")}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-muted-foreground">
+              暂无过阈值异常（观测期内的维度不参与判定，「没报偏离」不等于正常）。
+            </p>
+          )}
+          {baseline?.stats.error && (
+            <p className="text-destructive">读基线失败：{baseline.stats.error}</p>
           )}
         </div>
 

@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     agent_push,
     auth,
+    baseline,
     detector,
     es_admin,
     exclusions,
@@ -24,6 +25,7 @@ api_router.include_router(rules.router)
 api_router.include_router(es_admin.router)
 api_router.include_router(logstash.router)
 api_router.include_router(detector.router)
+api_router.include_router(baseline.router)
 api_router.include_router(zeek.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)

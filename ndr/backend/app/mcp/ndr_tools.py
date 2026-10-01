@@ -1,4 +1,4 @@
-"""NDR 自己的调查工具：事件、规则、检测器状态、网段、排除过滤、结论写回。
+"""NDR 自己的调查工具：事件、规则、检测器状态、网段、排除过滤、结论写回、基线。
 
 与 `app/investigation/tools.py` 那 10 个「查 ES」的工具不同，这些查的是 **NDR 自身的
 运行状态与配置** —— 智能体在别处（案件库、资产、情报、记忆）拿不到，只能问 NDR。
@@ -433,6 +433,70 @@ def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------- baseline_lookup / entity_profile（第 8 期：基线落在 NDR 侧） ----------
+
+BASELINE_MAX = 200
+PROFILE_MAX = 50
+_FEATURE_EXAMPLE = "conn_count"
+
+
+def _cap_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(n, high))
+
+
+def _baseline_lookup(args: dict[str, Any]) -> dict[str, Any]:
+    """查数值基线：某个源 IP 的长期均值/标准差/样本数，以及是否过了观测期。
+
+    三个维度（key 形如 `10.0.0.5:conn_count`）：连接数、不同目的端口数、不同目的 IP 数。
+    """
+    from app.baseline.stats import lookup
+
+    ip = str(args.get("ip") or "").strip()
+    key = str(args.get("key") or "").strip()
+    result = lookup(ip=ip, key=key, limit=_cap_int(args.get("limit"), 50, 1, BASELINE_MAX))
+    if "error" in result:
+        return result
+    result["note"] = (
+        f"观测期 {settings.baseline_observe_days} 天内的维度 warmed=false，不参与判定；"
+        "「没报偏离」不等于正常。判据是 当前值 > mean + "
+        f"{settings.baseline_zscore}σ，NDR 只在摘要里打标，定性由智能体做。"
+    )
+    return result
+
+
+def _entity_profile(args: dict[str, Any]) -> dict[str, Any]:
+    """查账号/会话画像（跨窗口长期基线），可按实体键指名或只看过阈值异常。"""
+    from app.baseline.profile import list_profiles, top_anomalies
+
+    kind_raw = str(args.get("kind") or "").strip().lower()
+    kind = kind_raw if kind_raw in ("account", "session") else None
+    keys = _str_list(args.get("keys"))
+    limit = _cap_int(args.get("limit"), 20, 1, PROFILE_MAX)
+    try:
+        min_risk = max(0.0, min(float(args.get("min_risk") or 0.0), 1.0))
+    except (TypeError, ValueError):
+        min_risk = 0.0
+    if keys:
+        result = list_profiles(kind=kind, keys=keys, min_risk=min_risk, limit=limit)
+    elif args.get("anomalies_only"):
+        result = top_anomalies(limit)
+    else:
+        result = list_profiles(kind=kind, min_risk=min_risk, limit=limit)
+    if "error" in result:
+        return result
+    result["threshold"] = settings.profile_risk_threshold
+    result["note"] = (
+        "风险分是加权累加：新源 IP +0.35、新 UA +0.2、非常用时段 +0.15、"
+        "会话跨 ≥2 个 IP +0.45、失败 ≥5 且多于成功 +0.25；"
+        f"达到 {settings.profile_risk_threshold} 才算异常，冷启动（观测不足）不算。"
+    )
+    return result
+
+
 # ---------- 注册表 ----------
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -483,6 +547,32 @@ TOOLS: dict[str, dict[str, Any]] = {
             "severity": "定级",
             "detail": "对象：证据、处置建议等",
             "thread_id": "分析线程 ID",
+        },
+    },
+    "baseline_lookup": {
+        "run": _baseline_lookup,
+        "desc": (
+            "查数值基线：某个源 IP 的连接数/目的端口数/目的 IP 数的长期均值与标准差，"
+            "以及是否过了观测期（判断「这条摘要是不是真的偏离常态」的依据）"
+        ),
+        "params": {
+            "ip": "源 IP（查它的全部维度）",
+            "key": f"完整维度键（形如 10.0.0.5:{_FEATURE_EXAMPLE}）",
+            "limit": f"最多返回条数（默认 50，上限 {BASELINE_MAX}）",
+        },
+    },
+    "entity_profile": {
+        "run": _entity_profile,
+        "desc": (
+            "查账号/会话画像（跨窗口长期基线）：常用源 IP/UA/路径/时段、成功失败计数、"
+            "风险分与异常理由；也能只看过阈值的异常"
+        ),
+        "params": {
+            "kind": "account 或 session（可省，省了两种都查）",
+            "keys": "实体键清单（数组或逗号分隔，可省；给了就指名查）",
+            "min_risk": "只看风险 ≥ 这个值（0~1）",
+            "anomalies_only": "只要过阈值的异常（true/false）",
+            "limit": f"最多返回条数（默认 20，上限 {PROFILE_MAX}）",
         },
     },
 }

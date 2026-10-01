@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.baseline_labels import candidates_of, text_of
 from app.agents.concurrency import cloud_concurrency, parallel_map
 from app.agents.memory import memory_text
 from app.agents.nodes import skill_context_text
-from app.agents.persistence import get_baseline, update_baseline, update_group_analysis
-from app.agents.profile import profile_text
+from app.agents.persistence import update_group_analysis
 from app.agents.state import AgentState
 from app.intel.threat_intel import enrich_profile
 from app.models import prompts
@@ -47,61 +46,28 @@ def _lookback_blob(state: AgentState, fingerprint: str) -> str:
 
 
 def _profile_blob(state: AgentState, fingerprint: str) -> str:
-    info = ((state.get("profile") or {}).get("by_group") or {}).get(fingerprint)
-    return profile_text(info)
+    """组级基线标签的文本（第 8 期起由 NDR 在摘要上打标，这里只渲染）。"""
+    for g in state.get("groups", []):
+        if g.fingerprint == fingerprint:
+            return text_of((g.aggregate or {}).get("baseline"))
+    return text_of(None)
 
 
 # ---------- 4.1 异常检测（统计 + LLM） ----------
 
 
-def _stat_features(g: Any) -> dict[str, float]:
-    """按源 IP 统计网络侧特征。"""
-    by_src: dict[str, Counter] = {}
-    for ev in g.events:
-        if not ev.log.src_ip:
-            continue
-        c = by_src.setdefault(ev.log.src_ip, Counter())
-        c["conn_count"] += 1
-        if ev.log.dst_port:
-            c[f"dst_port:{ev.log.dst_port}"] += 1
-        if ev.log.dst_ip:
-            c[f"dst_ip:{ev.log.dst_ip}"] += 1
-
-    features: dict[str, float] = {}
-    for src, c in by_src.items():
-        # Counter 值均为 int，无需 float() 包装（int 可直接赋给 float 字典）
-        features[f"{src}:conn_count"] = c["conn_count"]
-        features[f"{src}:distinct_dst_ports"] = sum(1 for k in c if k.startswith("dst_port:"))
-        features[f"{src}:distinct_dst_ips"] = sum(1 for k in c if k.startswith("dst_ip:"))
-    return features
-
-
-def _detect_candidates(features: dict[str, float]) -> list[dict[str, Any]]:
-    """统计基线比对：超过 2 个标准差即候选异常，并更新滚动基线。"""
-    candidates = []
-    for key, value in features.items():
-        base = get_baseline(key)
-        if base and base["std"] > 0 and value > base["mean"] + 2 * base["std"]:
-            candidates.append(
-                {"key": key, "value": value, "mean": base["mean"], "std": base["std"]}
-            )
-        update_baseline(key, value)
-    return candidates
-
-
 def anomaly_node(state: AgentState) -> dict[str, Any]:
-    """异常确认：本地统计出候选 → **并发**调云端确认 → 按组汇总。
+    """异常确认：读 NDR 打好的 2σ 候选 → **并发**调云端确认 → 按组汇总。
 
     为什么并发：一个组最多 10 个候选，原先逐个等云端回话，一组就是 10 次串行等待。
-    ``_detect_candidates`` 里有滚动基线的读/写（有副作用），必须留在串行的准备阶段。
+    候选与基线（均值/标准差）都由 NDR 侧算好写在摘要里 —— 这里不再读日志、不再更新基线。
     """
     analyses = dict(state.get("analyses", {}))
     ctx_map = state.get("business_context", {})
     groups = _escalating_groups(state)
     pending: list[tuple[str, dict[str, Any], str]] = []  # (组指纹, 候选, 提示词)
     for g in groups:
-        features = _stat_features(g)
-        candidates = _detect_candidates(features)
+        candidates = candidates_of((g.aggregate or {}).get("baseline"))
         group_summary = json.dumps([e.log.summary for e in g.events[:10]], ensure_ascii=False)
         memory_blob = _memory_blob(state, g.fingerprint)
         lookback_blob = _lookback_blob(state, g.fingerprint)

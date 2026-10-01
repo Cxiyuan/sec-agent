@@ -163,6 +163,22 @@ class Settings(BaseSettings):
     freq_window_seconds: int = 300
     freq_cooldown_seconds: int = 300
 
+    # 基线（数值 2σ + 账号/会话画像）：第 8 期从智能体侧迁来 —— 基线是纯统计、不需要模型，
+    # 而检测器本来就逐条看到归一化事件，所以算在数据产生侧，算完随摘要打标给智能体定性。
+    baseline_enabled: bool = True
+    baseline_observe_days: int = 7  # 观测期：不足这么多天只学习、不判异常
+    baseline_zscore: float = 2.0  # 数值基线判偏离的标准差倍数
+    baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）
+    baseline_cleanup_seconds: int = 3600  # 过期画像清理的检查节奏（秒）
+    baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库
+    baseline_cache_max: int = 20000  # 进程内数值基线缓存条目上限（超出丢最旧的）
+    baseline_stats_key: str = "shentong:baseline:stats"  # 检测器侧基线计数（界面看活性）
+    profile_enabled: bool = True
+    profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
+    profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）
+    profile_retention_days: int = 180  # 画像保留期（到期清理）
+    session_cookie_names: str = "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
+
     # 采集侧归一化服务（Filebeat → Redis → 归一化 → Logstash → ES）
     collector_collect_queue: str = "shentong:events:collect"  # Filebeat 写入的原始日志
     collector_processing_queue: str = "shentong:events:collect:processing"

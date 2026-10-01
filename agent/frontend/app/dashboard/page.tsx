@@ -5,14 +5,13 @@ import { Nav } from "@/components/nav";
 import { Chart } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Badge, severityVariant } from "@shentong/ui";
-import { apiFetch, type EventGroupItem, type EntityProfileItem, type PersistentItem } from "@/lib/api";
+import { apiFetch, type EventGroupItem, type PersistentItem } from "@/lib/api";
 import { formatDateTime, severityText } from "@shentong/ui";
 import type { EChartsOption } from "echarts";
 
 export default function DashboardPage() {
   const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
   const [persistent, setPersistent] = React.useState<PersistentItem[]>([]);
-  const [profiles, setProfiles] = React.useState<EntityProfileItem[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
@@ -24,10 +23,6 @@ export default function DashboardPage() {
 
     apiFetch<{ items: PersistentItem[] }>("/api/memories/persistent")
       .then((d) => alive && setPersistent(d.items))
-      .catch(() => {});
-
-    apiFetch<{ items: EntityProfileItem[] }>("/api/profiles/top")
-      .then((d) => alive && setProfiles(d.items))
       .catch(() => {});
 
     // 实时推送
@@ -138,22 +133,15 @@ export default function DashboardPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">画像异常（账号 / 会话）</CardTitle>
+                <CardTitle className="text-sm">账号 / 会话基线</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {profiles.slice(0, 8).map((p) => (
-                  <div key={p.id} className="flex items-center justify-between text-sm">
-                    <span className="font-mono">
-                      {p.kind === "account" ? "👤" : "🔑"} {p.entity_display || p.entity_key}
-                    </span>
-                    <span className="text-muted-foreground">
-                      风险 {Number(p.risk_score || 0).toFixed(2)} · 观测 {p.obs_count}
-                    </span>
-                  </div>
-                ))}
-                {profiles.length === 0 && (
-                  <p className="text-sm text-muted-foreground">暂无高风险的账号/会话</p>
-                )}
+                <p className="text-sm text-muted-foreground">
+                  基线（数值 2σ + 账号/会话画像）已在 NDR 侧计算，异常打到摘要标签上。
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  查看维度与异常排行请到 NDR 管理后台的「运行状态」页。
+                </p>
               </CardContent>
             </Card>
 
