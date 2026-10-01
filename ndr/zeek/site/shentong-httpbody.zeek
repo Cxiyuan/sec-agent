@@ -6,7 +6,8 @@
 ##      method/uri/user_agent/status_code 与 body，规则可一次性完整匹配。
 ##
 ## 安全：① 只取请求方向（响应体不要）；② 硬上限 max_body_len 截断；
-##      ③ 跳过含不可打印字符的块（避免把二进制上传内容写进日志）。
+##      ③ 跳过含 NUL / C0 控制字符的块（避免把二进制上传内容写进日志），
+##         但**必须放行 UTF-8 多字节**，否则中文请求体全丢（见下方 2026-10 实机记录）。
 
 @load base/protocols/http
 
@@ -29,8 +30,17 @@ event http_entity_data(c: connection, is_orig: bool, length: count, data: string
     local method = c$http?$method ? c$http$method : "";
     if ( method == "GET" || method == "HEAD" ) return;
 
-    # 跳过二进制/不可打印内容（上传等），避免日志膨胀
-    if ( /[^\x09\x0a\x0d\x20-\x7e]/ in data ) return;
+    # 跳过真正的二进制块（上传等），避免日志膨胀：只有出现 NUL、C0 控制字符
+    # （tab/CR/LF 除外）或 DEL 才放弃。
+    #
+    # 2026-10 实机（172.16.196.77）踩到：原判据是 /[^\x09\x0a\x0d\x20-\x7e]/
+    # （只放行可打印 ASCII），而 UTF-8 多字节（中文）的字节都 >0x7e，于是
+    # **中文请求体整块被丢**，日志里连 body 字段都不出现。同一 POST 路径只换 body
+    # 内容的上线对照：
+    #   {"probe":"ascii","n":1}   -> http.log 带 body
+    #   {"text":"中文请求体"}      -> 无 body 字段
+    # 换成本判据后（容器内 zeek 单测四种样本）：ascii/tab_lf/utf8 放行、含 NUL 仍拦。
+    if ( /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/ in data ) return;
 
     if ( ! c$http?$body ) c$http$body = "";
     if ( |c$http$body| >= max_body_len ) return;
