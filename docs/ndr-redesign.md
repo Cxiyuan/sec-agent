@@ -1,6 +1,6 @@
 # NDR 改造方案：采集 → 归一化 → 过滤 → 检测 → 推送智能体
 
-状态：**第 1~8 期已实施完成**（监控网段 / 归一化前置 / MCP 服务 + 智能体切到 MCP / 过滤规则 / HTTP 推送智能体 / Wazuh 4.14 集成与容量 / 界面整理 / **基线分析迁到 NDR**，代码与门禁均已过、单进程与纸面实测通过，**待实机验收**——第 2、5、6 期的容器侧与真实流量未跑过，见各期末尾与第 8 节开放问题 6）。全新服务器环境部署，无历史数据迁移。
+状态：**第 1~8 期已实施完成**（监控网段 / 归一化前置 / MCP 服务 + 智能体切到 MCP / 过滤规则 / HTTP 推送智能体 / Wazuh 4.14 集成与容量 / 界面整理 / **基线分析迁到 NDR**，代码与门禁均已过）；**2026-10 已在实机服务器 `172.16.196.77` 部署上线**——十个容器全 Up、`Filebeat → Redis → 归一化 → Logstash → ES` 与 `检测器 → 队列 → 智能体` 两条链路端到端跑通、Zeek 专项检查已做，见下方「实机部署记录」。仍未收口的一项 = 监控网段待用户拍板（当前 `monitored_nets` 为空、Zeek 全量抓包），XFF 原始客户端 IP 仍不支持。全新服务器环境部署，无历史数据迁移。
 范围：`ndr/`（主改）+ `agent/`（接收端与 ES 文档形态同步改）
 
 ---
@@ -74,6 +74,29 @@
 ### 部署前提：全新服务器环境
 
 现网已下线，改造后将在**全新服务器环境**部署，ES 里没有需要兼容的历史数据。因此**不存在新旧格式并存的问题**，也不需要任何数据迁移、双查兜底或过渡期代码 —— 智能体一律按新字段路径查新索引即可。
+
+### 实机部署记录（2026-10，`172.16.196.77`）
+
+一次性部署记录，供后续复现与排查用。
+
+**服务器与环境**：`nss@172.16.196.77`，Ubuntu 24.04.1 LTS（kernel 6.8），6 核 / 11 GiB 内存；Docker **29.1.3** + Compose **2.40.3**，`nss` 在 docker 组（免 sudo 用 docker）与 sudo 组；`ufw` inactive、iptables INPUT policy ACCEPT（不用额外开端口）；网卡 `ens160` = 172.16.196.77/24。
+
+**部署目录与文件**：`/opt/shentong-ndr`，三个文件 —— `docker-compose.deploy.yml`（从仓库拷）、`logstash/config/logstash.yml`（从仓库拷）、`.env`（600，含 `JWT_SECRET` / `CORS_ORIGINS=http://172.16.196.77:3000,http://localhost:3000` / `ZEEK_IFACE=ens160` / `REDIS_HOST=localhost` / `REDIS_PORT=6379` / `REDIS_KEY=shentong:events:collect`）。未部署 Wazuh 叠加文件（`docker-compose.wazuh.yml` 没拷）。
+
+**镜像**：仓库是私有库 → 三个 GHCR 包匿名拉取 403，先在服务器 `docker login ghcr.io`（需要带 `read:packages` 的 PAT）才能拉。实际用到 7 个镜像：`ghcr.io/cxiyuan/sec-agent/shentong-ndr`（backend / detector / normalizer / ndr-mcp **四服务共用**，靠 compose 的 `command` 覆盖成 `python -m app.detector` 等）、`shentong-ndr-frontend`（Next）、`shentong-zeek`（Zeek + Filebeat）、`elasticsearch:8.15.3`、`logstash:8.15.3`、`postgres:16`、`redis:7`。
+
+**十个服务**：backend / detector / elasticsearch / frontend / logstash / ndr-mcp / normalizer / postgres / redis / zeek，全部 `RestartCount=0`。
+
+**验收结果（实测）**：ES `_cluster/health` = green；`GET /api/health` = `{"status":"ok","app":"深瞳 · 安全分析智能体"}`（注意路径带 `/api`）；`ndr-mcp /health` = ok；frontend `:3000` 返回 307（重定向，正常）；Logstash `:8080` = 200；归一化服务每 10s `POST http://logstash:8080/ "HTTP/1.1 200 OK"`；ES 索引 `shentong-events-YYYY.MM.DD` 持续增长（实测某 10 分钟窗口入库 9079 条、其中退化成 `message` 的 0 条）；Redis 四个队列（`collect` / `collect:processing` / `raw` / `dispatch`）为空＝实时消化；检测器正常投递摘要（`扫描 17335 / 命中 60 / 频率触发 1 / 重复跳过 3126 / 摘要 7 / 投递 9`）；`conn.log` 持续增长。默认管理员 `admin` / `admin123`（`ndr/backend/app/config.py:105-106`）。
+
+**上线过程中修掉的四个缺陷**（都已提交、CI 通过、服务器复验）：
+
+1. **检测器/归一化崩溃重启循环**（commit `4e9508b`）——`redis-py 8.x` 默认 `socket_timeout=5s`，`ndr/backend/app/detector/queue.py` 的 `brpoplpush(timeout)` 阻塞超过 5s 就被读超时打崩。修法：新增 `make_blocking_client()`（socket 超时 = 阻塞超时 + `_BLOCK_SOCKET_MARGIN_SECONDS = 10`）并捕获 `redis.TimeoutError`，`runner.py:119` 与 `collector/normalizer_service.py:174` 改用它。
+2. **Logstash 管道没被播种**（commit `5a4d7fe`）——compose 把命名卷同时挂到 backend 的 `/logstash` 与 logstash 的 `/usr/share/logstash/pipeline`，**首次挂载时 Docker 会把镜像自带的示例管道（92 字节 `beats→stdout`）拷进卷**；`ndr/backend/app/api/routes/logstash.py` 的 `seed_if_missing()` 原来只看「文件非空」→ 认定用户配过 → 不播种，于是 8080 没有 http 输入、归一化报 `[Errno 111] Connection refused`。修法：新增 `_looks_managed()`（首行标记或含 `elasticsearch` 才算本系统管道），非托管就覆盖播种。
+3. **ECS 撞字段毁掉全部事件**（同一个 commit）——`logstash-input-http` 3.8.1 在 ECS 开启时会 `event.set("[user_agent][original]", <User-Agent>)`，而我们的归一化文档里 `user_agent` 是**字符串**（常为空串）→ 路径冲突抛 `InvalidFieldSetException`，异常发生在输送给编解码器的 block 里，被 `json_lines` 捕获 → **整条事件退化成一条 `message`**（实测 3 分钟 1258 条）。修法：管道模板的 http 输入加 `ecs_compatibility => "disabled"`，`logstash.yml` 再加 `pipeline.ecs_compatibility: disabled` 兜底。**次生坑**：坏文档已把 `user_agent` 动态映射成 object，改好后的扁平文档反而被 ES 400 拒收（`document_parsing_exception` 3243 次）→ 删掉中毒索引让它按新映射重建。
+4. **Zeek 把中文请求体整块丢掉**（commit `5499fb3`）——`ndr/zeek/site/shentong-httpbody.zeek` 的守卫 `/[^\x09\x0a\x0d\x20-\x7e]/` 只放行可打印 ASCII，UTF-8 多字节全被当二进制丢（同一 POST 路径：英文有 `body`、中文没有）。修法：改成只拦 NUL / C0 控制字符 / DEL（`/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/`），实机复验中英文 `body` 都进 `http.log`。
+
+**遗留事项**：① **监控网段未配**（`/config/interface.conf` 里 `monitored_nets` / `local_nets` 为空 → Zeek 启动命令无 BPF、全量抓包），要用户拍板；② **暴露面**：compose 把 `6379`（redis，无密码）与 `5432`（postgres）也发布到 0.0.0.0，同网段可直连，建议只留 3000/8000/8090 或用防火墙收紧；③ 24h 轮转的日期目录与 3 天清理当天未见（时间未到），XFF 原始客户端 IP 仍不支持（见第 8 节开放问题 8）。
 
 ### 两条已确认的既有事实
 
@@ -451,3 +474,4 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 6. **待实机验证（第 2 期遗留 + 第 5 期 + 第 6 期）**：~~Wazuh 4.14 自带的 Filebeat 是否支持 `output.redis`~~（**已绕开**，第 6 期）：不再指望 manager 自带的 Filebeat，`ndr/docker-compose.wazuh.yml` 另起一个官方 Filebeat 容器用 `ndr/wazuh/filebeat.yml` 投 Redis；manager 自带那个只留着报「找不到 indexer」的错。仍待实机：两个 Filebeat（Zeek 与 Wazuh）同时 `LPUSH` 同一 list 的实际吞吐，以及 `ndr/wazuh/README.md` 第五节列出的容器侧清单。
 7. **基线与画像的真实效果（第 8 期遗留）**：默认 7 天观测期内不判异常，收敛速度与误报率只能在现场跑够时间后才知道；另外检测器主备切换时进程内缓存会重建 —— 数值基线从库里重捞、画像异常有一小段标签稀疏（不丢数据，但切换瞬间的摘要可能少标签）。
 8. **Zeek 日志生成与协议解析的专项检查（上线后必做，用户 2026-02 提出）**：本次所有 Zeek 侧改动都只在纸面与本机归一化侧验证过，真实网卡上线后要专门核一遍：① 实际产出了哪些 `log_type`（`/logs` 顶层 + 日期目录，24h 轮转与 3 天清理是否如期）；② 各协议分析器字段是否齐全（`site/shentong-extra.zeek` 加载的 conn/dns/http/ssl/files/smtp/ssh/dhcp/notice，以及自研 `shentong-httpbody.zeek` 的请求体是否落进 `http.log`）；③ 归一化后的 `log_type` / `event_type` 分桶与内置规则的字段命中（82 条内置规则里 47 处用到 body/uri/query/user_agent/ja3 等）；④ **反向代理场景拿不到原始客户端 IP** —— Zeek 默认不把 HTTP 请求头写进 `http.log`（`HTTP::Info` 无头字段），`X-Forwarded-For` / `X-Real-IP` / `Forwarded` 需自己接 `http_header` 事件加 `&log` 字段，本项目未实现（全仓 grep `forwarded|x-real-ip|proxy_protocol|real_ip` 零命中；`UnifiedLog` 也无 `client_ip`/`x_forwarded_for`），`src_ip` 只是连接源 = 代理 IP。逐条清单见 `ndr/zeek/README.md` 的「上线后专项检查」与「已知限制」。
+   **实机结果（2026-10，172.16.196.77，Zeek 9.0.0，`iface=ens160`）**：已按 9 项清单核过一遍，逐项证据表见 `ndr/zeek/README.md` 的「实机结果」。三条要记住的结论：① **HTTP 请求体把中文整块丢了**（检查项 4 抓出来的真 bug）—— 自研 `shentong-httpbody.zeek` 的二进制守卫 `/[^\x09\x0a\x0d\x20-\x7e]/` 只放行可打印 ASCII，UTF-8 多字节全被当二进制丢弃；同一 POST 路径对照实测：`{"probe":"ascii","n":1}` 有 `body`、`{"text":"中文请求体"}` 无 `body`。已改为只拦 NUL/C0 控制字符（`/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/`），并在容器内用 Zeek 单测四种样本验证；② **`ja3`/`ja3s` 在 Zeek 9.0 里根本不存在** —— `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`，`ssl.log` 127 条 0 处 ja3。检查项 3 与 `shentong-extra.zeek` 注释里的原期望是错的，基于 `ja3` 字段的规则（`rules/builtin.py` 那条空值模板）永不命中；要用得另装/自写 JA3 脚本，已写进 README「已知限制」；③ **监控网段仍未配**（`/config/interface.conf` 里 `monitored_nets=` / `local_nets=` 为空 → Zeek 启动命令无 BPF、全量抓包），这是上线收尾里唯一需要用户拍板的一项。其余：日志产出 conn/dhcp/dns/ssl/http/files/weird/x509 齐全、无 notice.log（符合预期）、`log_type`/`event_type` 分桶正确、内置规则已命中（扫描 17335 / 命中 60 / 投递 9）、24h 轮转当天未见日期目录。XFF（④）仍未实现。

@@ -52,6 +52,8 @@ Wazuh(Filebeat) ┘                    ↓
 
 前置：Linux 宿主、Docker + Compose；NDR 宿主还需 `vm.max_map_count=262144`（ES 硬要求）。
 两条线路各自一个 compose 文件，可同机（端口已错开）或分机部署。
+镜像在**私有 GHCR** 里，服务器上要先 `docker login ghcr.io`（PAT 需带 `read:packages`）才拉得动。
+实机部署过程、验收结果与上线时踩到的四个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
 
 **NDR 线路**（`ndr/docker-compose.deploy.yml`）：
 
