@@ -31,3 +31,13 @@ pipeline.batch.size: 125
 pipeline.batch.delay: 50
 
 log.level: info
+
+# 管道级 ECS 兼容关闭（Logstash 8 默认 v8；改这里需重启 logstash 容器）。
+# 为什么必须关：ECS 会给事件加 user_agent.original / http.* / url.* 等嵌套字段，而我们的文档
+# 是归一化拍平后的**扁平结构**（user_agent 本身就是字符串），两者路径撞车 → json 编解码器抛
+# InvalidFieldSetException「Could not set field 'original' on object ''」，整条事件退化成
+# message 字段、丢掉全部拍平字段（2026-10 实机部署，ES 里 1.6 万条全是 message 垃圾，
+# 且 user_agent 被动态映射成 object，修复后扁平文档反而被 ES 400 拒收）。
+# 管道模板里 http 输入也单独写了 ecs_compatibility => "disabled"（改管道即时生效、不用重启），
+# 这里再兜一层：任何人重写管道全文都不会把 ECS 带回来。
+pipeline.ecs_compatibility: disabled

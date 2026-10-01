@@ -49,6 +49,13 @@ def render(params: dict[str, Any], http_port: int = DEFAULT_HTTP_PORT) -> str:
     port => {http_port}
     codec => "json_lines"
     additional_codecs => {{ "application/json" => "json_lines" }}
+    # 必须关掉 ECS 兼容（默认开启）：开了它，http 输入会往事件里塞 `user_agent.original`
+    # （值就是客户端的 User-Agent 头，正常是 httpx），而我们的文档里 `user_agent` 已经是
+    # 拍平后的**字符串**（归一化产物），两条路径冲突 → 编解码器抛 InvalidFieldSetException
+    # 「Could not set field 'original' on object ''」，整条事件退化成 message 字段、丢掉
+    # 全部拍平字段（2026-10 实机部署踩到，Logstash 日志一分钟几百条 WARN）。
+    # 同理：ECS 还会加 http.* / url.* 等嵌套字段，与拍平后的扁平文档天然不合。
+    ecs_compatibility => "disabled"
     # 请求头/对端地址默认会写成 host、headers 两个字段并入库，挪进 @metadata 丢掉
     remote_host_target_field => "[@metadata][http][remote_host]"
     request_headers_target_field => "[@metadata][http][headers]"

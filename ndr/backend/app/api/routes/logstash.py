@@ -119,14 +119,39 @@ def remove_foreign_configs() -> list[str]:
     return removed
 
 
+_HEADER_MARK = template.HEADER.splitlines()[0]
+
+
+def _looks_managed(text: str) -> bool:
+    """卷里的 logstash.conf 是不是**本系统下发的**管道（而不是官方镜像自带的示例管道）。
+
+    为什么不能只看「文件非空」：官方镜像自带
+    ``/usr/share/logstash/pipeline/logstash.conf``（示例管道：beats → stdout），
+    而 compose 把共享卷**挂在镜像的默认管道目录**上；**命名卷首次挂载时 Docker 会把镜像
+    那个目录的内容拷进卷**。于是全新部署时「卷里已有非空文件」并不代表用户配过管道。
+
+    判定依据：我们渲染的管道一定带 `template.HEADER` 首行；用户走「全文编辑」保存的版本
+    也必定含 `elasticsearch` 输出（`template.validate_pipeline` 强制）。示例管道两者皆无。
+    """
+    return _HEADER_MARK in text or "elasticsearch" in text
+
+
 def seed_if_missing() -> bool:
-    """首次部署时播种默认管道（卷内无文件才写）。"""
+    """首次部署时播种默认管道（卷内没有本系统的管道才写）。"""
     # 不管是否播种，先把多余文件清掉（否则会和我们的管道拼接生效）
     remove_foreign_configs()
     if not settings.logstash_seed_on_startup:
         return False
-    if read_pipeline().strip():
+    current = read_pipeline()
+    if current.strip() and _looks_managed(current):
         return False
+    if current.strip():
+        # 2026-10 实机部署踩到：不覆盖它就永远跑镜像示例管道（8080 没有 http 输入、
+        # 也没有 ES 输出），归一化服务入库全是 [Errno 111] Connection refused。
+        log.warning(
+            "卷内 %s 不是本系统下发的管道（多为镜像自带示例管道），已覆盖为默认管道",
+            settings.logstash_pipeline_conf,
+        )
     text = template.render(template.default_params(settings.es_url), settings.logstash_http_port)
     err = write_pipeline(text)
     if err:
