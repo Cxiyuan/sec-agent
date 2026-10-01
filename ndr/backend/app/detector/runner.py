@@ -17,8 +17,6 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
-import redis
-
 from app import triage_policy
 from app.baseline.engine import BaselineEngine
 from app.config import settings
@@ -29,7 +27,7 @@ from app.detector.fingerprint import digest_age
 from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
 from app.detector.leader import Leader
-from app.detector.queue import ReliableQueue
+from app.detector.queue import ReliableQueue, make_blocking_client
 from app.ingestion import exclusion
 from app.ingestion.es_client import build_networks, in_scope
 from app.ingestion.normalizer import normalize, source_of
@@ -118,7 +116,9 @@ def _entry_in_scope(entry: UnifiedLog, nets: list[Any]) -> bool:
 
 def run() -> None:
     """常驻循环（由 docker compose 的 detector 服务拉起）。"""
-    client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    # 阻塞取队列的客户端：socket 读超时必须大于阻塞超时，否则空队列会抛
+    # redis.exceptions.TimeoutError 打崩循环（见 app/detector/queue.py 说明）
+    client: Any = make_blocking_client(settings.redis_url, settings.detector_poll_timeout)
     raw_q = ReliableQueue(client, settings.detector_raw_queue, settings.detector_processing_queue)
     digest_q = ReliableQueue(
         client,

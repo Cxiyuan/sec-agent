@@ -32,10 +32,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-import redis
 
 from app.config import settings
-from app.detector.queue import ReliableQueue
+from app.detector.queue import ReliableQueue, make_blocking_client
 from app.ingestion import ingest_filter
 from app.ingestion.normalizer import normalize, source_of
 from app.schemas import UnifiedLog
@@ -172,7 +171,9 @@ def _maybe_log(stats: Counter[str], last: float, queue: ReliableQueue) -> float:
 
 def run() -> None:
     """常驻循环（由 compose 的 normalizer 服务拉起）。"""
-    client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    # 阻塞取队列的客户端：socket 读超时必须大于阻塞超时，否则空队列会抛
+    # redis.exceptions.TimeoutError 打崩循环（见 app/detector/queue.py 说明）
+    client: Any = make_blocking_client(settings.redis_url, settings.collector_poll_timeout)
     queue = ReliableQueue(
         client, settings.collector_collect_queue, settings.collector_processing_queue
     )
