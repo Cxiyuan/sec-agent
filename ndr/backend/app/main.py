@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,6 +16,8 @@ from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import Rule, User
 from app.rules.builtin import BUILTIN_RULES
+
+logger = logging.getLogger(__name__)
 
 # NDR 侧无历史迁移（原 _MIGRATIONS 全是 agent 表）
 _MIGRATIONS: tuple[str, ...] = ()
@@ -92,6 +95,15 @@ def _seed() -> None:
     from app.api.routes.logstash import seed_if_missing
 
     seed_if_missing()
+
+    # 存储侧：幂等下发 ILM 策略与事件索引模板（含副本数 0，否则单节点集群恒 yellow）。
+    # ES 可能比后端起得晚（compose 同时拉起），失败只记日志、不阻断启动。
+    from app.api.routes.es_admin import ensure_retention
+
+    try:
+        ensure_retention()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("下发 ES 保留期策略/索引模板失败（可稍后在界面点「下发保留期」）：%s", exc)
 
 
 @asynccontextmanager

@@ -216,6 +216,37 @@ def _ilm_policy(days: int) -> dict[str, Any]:
     }
 
 
+def ensure_retention(days: int | None = None) -> None:
+    """幂等下发 ILM 策略与事件索引模板（启动时调用；失败由调用方决定是否吞掉）。
+
+    模板里**副本数按 `auto_expand_replicas: "0-1"` 下发**：Logstash 输出用的是
+    `manage_template => false`，索引由 ES 自动创建，单节点集群会拿到默认的
+    `number_of_replicas: 1` —— 副本永远分配不出去，集群健康恒为 yellow
+    （2026-10 实机部署踩到）。`0-1` 让 ES 自己按节点数伸缩：单节点 = 0 副本（green），
+    多节点 = 1 副本（有冗余），比硬写死 0 更稳。模板只影响之后新建的索引，已存在的
+    索引要用 `PUT <index>/_settings` 单独改（界面上的「下发保留期」不做这件事）。
+    """
+    real_days = days if days is not None else es_config.retention_days()
+    real_days = max(real_days, settings.lookback_max_days)
+    es = get_es()
+    es.ilm.put_lifecycle(
+        name=settings.es_ilm_policy, policy=_ilm_policy(real_days)["policy"]
+    )
+    for pattern, name in TEMPLATES.items():
+        es.indices.put_index_template(
+            name=name,
+            index_patterns=[pattern],
+            template={
+                "settings": {
+                    "index.lifecycle.name": settings.es_ilm_policy,
+                    "number_of_replicas": 0,
+                    "auto_expand_replicas": "0-1",
+                }
+            },
+            priority=500,
+        )
+
+
 @router.post("/apply-retention")
 def apply_retention(
     _: Annotated[User, Depends(get_current_user)],
@@ -234,15 +265,7 @@ def apply_retention(
         )
 
     try:
-        es = get_es()
-        es.ilm.put_lifecycle(name=settings.es_ilm_policy, policy=_ilm_policy(days)["policy"])
-        for pattern, name in TEMPLATES.items():
-            es.indices.put_index_template(
-                name=name,
-                index_patterns=[pattern],
-                template={"settings": {"index.lifecycle.name": settings.es_ilm_policy}},
-                priority=500,
-            )
+        ensure_retention(days)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=400,
