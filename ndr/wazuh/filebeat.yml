@@ -1,0 +1,66 @@
+# Filebeat（Wazuh 线路）：把 manager 的告警 / 原始日志投到 Redis 采集队列
+#
+# 与 Zeek 那条线完全一致：
+#   Filebeat → Redis(shentong:events:collect) → 归一化服务 → 检测器 + Logstash → ES
+#
+# 两个关键差异（都与归一化服务的 normalize_wazuh 有关）：
+#   ① **不要设 ndjson target**：Wazuh 的 rule / data / agent / full_log 本来就在根，
+#      归一化服务直接从根读；套一层命名空间就读不到了。
+#   ② overwrite_keys 必须是 true：否则 Filebeat 自己的 ECS 元数据（顶层 agent / host）
+#      会盖掉 Wazuh 的 agent 字段（agent.name 是主机名），日志会认不出是谁的。
+
+filebeat.inputs:
+  # ① 告警：/var/ossec/logs/alerts/alerts.json（每条都带 rule）
+  - type: filestream
+    id: wazuh-alerts
+    enabled: true
+    paths:
+      - ${WAZUH_LOG_DIR:/var/ossec/logs}/alerts/alerts.json
+    parsers:
+      - ndjson:
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      # 与 normalizer 的 source_of() 对齐
+      source_system: wazuh
+    fields_under_root: true
+    close_removed: true
+    clean_removed: true
+
+  # ② 原始日志：/var/ossec/logs/archives/archives.json（需要 manager 上开 logall_json，
+  #    见 wazuh/README.md 的 enable-logall.sh）。
+  #    量级比告警大得多，默认关闭；打开后归一化侧默认只入库、不喂检测器
+  #    （ST_WAZUH_ARCHIVE_TO_DETECTOR=false），检测器不会被全量日志淹掉。
+  - type: filestream
+    id: wazuh-archives
+    enabled: ${WAZUH_ARCHIVES_ENABLED:false}
+    paths:
+      - ${WAZUH_LOG_DIR:/var/ossec/logs}/archives/archives.json
+    parsers:
+      - ndjson:
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      source_system: wazuh
+    fields_under_root: true
+    close_removed: true
+    clean_removed: true
+
+processors:
+  # @timestamp 是「Filebeat 读到的时间」，而归一化服务的 _to_dt 优先用 Wazuh 自己的
+  # timestamp 字段，所以这里不用改时间戳；只丢掉最容易与 Wazuh 字段混淆的 ECS 元数据。
+  - drop_fields:
+      fields: ["ecs", "input", "log.offset", "log.file.device_id", "log.file.inode"]
+      ignore_missing: true
+
+# Redis 采集队列（与 ndr/zeek/filebeat.yml 同一个 key，归一化服务统一消费）
+output.redis:
+  hosts: ["${REDIS_HOST:redis}:${REDIS_PORT:6379}"]
+  password: "${REDIS_PASSWORD:}"
+  db: ${REDIS_DB:0}
+  key: "${REDIS_KEY:shentong:events:collect}"
+  data_type: list
+  timeout: 5
+
+logging.level: warning
+logging.to_stderr: true

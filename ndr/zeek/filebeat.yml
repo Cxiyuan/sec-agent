@@ -1,0 +1,61 @@
+# Filebeat：把 Zeek 的 JSON 日志投到 Redis 采集队列，由归一化服务统一处理
+# 说明：Filebeat 只支持单一 output。改造后这里不再直连 Logstash —— 原始日志先进
+#      Redis 队列（shentong:events:collect），由深瞳的归一化服务拍平成统一结构，
+#      再分别投给检测器与 Logstash(:8080 http) 入库。这样入库的文档与检测器看到的
+#      是同一份结构，智能体查 ES 不用再猜 zeek.* / data.* 的差异。
+#      Zeek 字段仍收进 zeek.* 命名空间（见下），归一化服务负责解包。
+
+filebeat.inputs:
+  - type: filestream
+    id: zeek-logs
+    enabled: true
+    # Zeek 独立模式：活动日志在顶层，轮转后进日期子目录
+    paths:
+      - ${ZEEK_LOG_DIR:/logs}/*.log
+      - ${ZEEK_LOG_DIR:/logs}/*/*.log
+    parsers:
+      # 关键：把 Zeek 字段收进 zeek.* 命名空间。
+      # 否则 Filebeat 自己的元数据 host（对象 {name: 主机名}）会覆盖 Zeek 的
+      # http.log 里同名的 host 字段（HTTP Host 头，字符串），既丢数据又让后端类型校验失败。
+      - ndjson:
+          target: "zeek"
+          overwrite_keys: true
+          add_error_key: true
+    # 与 normalizer 的 source_system 对齐
+    fields:
+      source_system: zeek
+    fields_under_root: true
+    clean_removed: true
+    close_removed: true
+
+processors:
+  # 从路径提取日志类型：/logs/conn.log -> conn；/logs/2026-09-23/conn.14-00-00.log -> conn
+  # 注意①：filestream 输入只提供 log.file.path（没有 log.file.name）
+  # 注意②：本镜像的 Filebeat 构建不含 grok 处理器，故用 JS script 处理器取文件名
+  - script:
+      lang: javascript
+      source: >
+        function process(event) {
+          var p = event.Get("log.file.path") || "";
+          var parts = p.split("/");
+          var nm = parts[parts.length - 1] || "";
+          var t = nm.split(".")[0];
+          if (t) { event.Put("log_type", t); }
+        }
+  - drop_event:
+      when:
+        not:
+          has_fields: ["log_type"]
+
+# Redis 采集队列（LPUSH 到 list 左端；归一化服务用 BRPOPLPUSH 消费并确认）
+# 若把 Zeek 接回 Wazuh 自带的 Filebeat，这里要改成同样的 redis 输出配置。
+output.redis:
+  hosts: ["${REDIS_HOST:redis}:${REDIS_PORT:6379}"]
+  password: "${REDIS_PASSWORD:}"
+  db: ${REDIS_DB:0}
+  key: "${REDIS_KEY:shentong:events:collect}"
+  data_type: list
+  timeout: 5
+
+logging.level: warning
+logging.to_stderr: true

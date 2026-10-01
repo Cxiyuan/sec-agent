@@ -5,110 +5,207 @@
 
 含 Web 管理后台 + 驾驶舱大屏。后端 FastAPI + Celery + PostgreSQL(pgvector)；前端 Next.js。
 
+仓库分**两条可独立部署的线路**：
+
+| 线路 | 目录 | 职责 | 自带的数据面 |
+| --- | --- | --- | --- |
+| **NDR 线路** | `ndr/` | Zeek 抓包 → 归一化 → 入库(ES) → 规则检测 → 投递摘要；并对外提供 **MCP 服务**（智能体取数的唯一入口） | Elasticsearch、Redis、PostgreSQL |
+| **智能体线路** | `agent/` | 消费摘要跑 LangGraph 深度分析、自主取证调查、报告；带自己的 Web 后台 | PostgreSQL(pgvector) + Celery（复用 NDR 的 Redis） |
+
 ---
 
 ## 一、数据接入链路
 
 ```text
 Zeek(Filebeat) ─┐
-                ├→ Logstash(:5044) ─┬→ Elasticsearch   历史归档 + 界面/回溯查询
-Wazuh(外部) ────┘                    └→ Redis List      旁路队列 shentong:events:raw
-                                                              ↓
-                                    检测器 detector（常驻）
-                                    归一化 → 网段过滤 → 幂等去重
-                                    → 逐条规则 + Redis 滑窗频率规则
-                                    → 短窗聚合（源IP+规则，默认 60s）
-                                    → 投递「聚合摘要」（攒批 20s / 5 条）
-                                                              ↓
-                                    智能体分析：边缘降噪 → 归组 → 资产富化 → 记忆/画像
-                                    → 技能路由 → 回溯 → 深度分析 → 定级 → HITL
-                                    → 处置建议 → 报告 → 记忆/画像更新
+                ├→ Redis List  shentong:events:collect（采集队列）
+Wazuh(Filebeat) ┘                    ↓
+                        归一化服务 normalizer（python -m app.collector.normalizer_service）
+                        UnifiedLog 统一字段（源系统/事件类型/IP/端口/协议/原文 raw…）
+                                    ├─ ① LPUSH shentong:events:raw ──→ 检测器（实时车道）
+                                    └─ ② POST Logstash:8080 ──→ ES  shentong-events-*（历史归档）
 
-兜底（水位驱动，默认每 15 分钟）：窗口 = [上次水位, now] → 拉 ES → 跳过检测器已处理的 → 只补漏
+检测器 detector（常驻）
+网段过滤 → 幂等去重 → 逐条规则 + Redis 滑窗频率规则
+→ 短窗聚合（源IP+规则）→ 投递「聚合摘要」（攒批 20s / 5 条）
+                                    ↓
+智能体 HTTP 入口：POST /api/push/digests（Bearer 令牌）→ LangGraph
+边缘降噪 → 归组 → 资产富化 → 记忆/画像 → 技能路由 → 回溯 → 深度分析 → 定级 → HITL
+→ 处置建议 → 报告 → 记忆/画像更新；**收到就回 200**（同一事件组只累加计数、不重复出报告）
+推送失败 → 落 shentong:events:pushretry，检测循环后台重发（2xx 才算送达）
+                                    ↑
+智能体取数（查询 / 回溯 / 写回结论）走 NDR 的 MCP 服务 :8090/mcp（Bearer 令牌）
 ```
 
 要点：
-- **智能体不主动捞数据**；检测器实时检测并把聚合摘要投递给它
-- **短窗聚合**是关键：同源同规则 1234 次命中 → 1 条摘要，避免逐条送模型导致容量爆炸
-- **兜底任务补齐故障期漏报**：窗口由水位（存 PostgreSQL）决定，而非写死 15 分钟；
-  服务整体停机数小时后恢复，能一次性补上停机期间的漏报
+- **智能体不主动捞数据**，也不直连 ES：检测器实时投递聚合摘要，取数一律经 NDR 的 MCP 工具
+  （索引名、字段白名单、条数上限、令牌吊销都由 NDR 侧掌握）
+- **归一化前置**：入库的只有统一字段的文档，界面与智能体看到的是同一套字段名
+- **短窗聚合**是关键：同源同规则上千次命中 → 1 条摘要，避免逐条送模型导致容量爆炸
 
 ---
 
 ## 二、部署（服务器）
 
-前置：Linux 宿主、Docker + Compose；`vm.max_map_count=262144`（ES 硬要求）。
+前置：Linux 宿主、Docker + Compose；NDR 宿主还需 `vm.max_map_count=262144`（ES 硬要求）。
+两条线路各自一个 compose 文件，可同机（端口已错开）或分机部署。
+
+**NDR 线路**（`ndr/docker-compose.deploy.yml`）：
 
 ```bash
-mkdir -p /opt/shentong && cd /opt/shentong
-# 放置 docker-compose.yml（仓库的 docker-compose.deploy.yml）与 .env
+mkdir -p /opt/shentong-ndr && cd /opt/shentong-ndr
+# 放置 ndr/docker-compose.deploy.yml 与 .env
 cat > .env <<'EOF'
 JWT_SECRET=<随机 64 位>
-CORS_ORIGINS=http://<服务器IP>:3000
+CORS_ORIGINS=http://<NDR服务器IP>:3000
 ZEEK_IFACE=ens224          # 镜像/SPAN 抓包口
 EOF
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
+```
 
-docker compose pull
-docker compose up -d
-docker compose ps
+**智能体线路**（`agent/docker-compose.deploy.yml`）：
+
+```bash
+mkdir -p /opt/shentong-agent && cd /opt/shentong-agent
+cat > .env <<'EOF'
+JWT_SECRET=<随机 64 位>
+CORS_ORIGINS=http://<智能体服务器IP>:3000
+NDR_MCP_URL=http://<NDR服务器IP>:8090/mcp
+NDR_MCP_TOKEN=<在 NDR 后台「智能体对接 → MCP 服务」生成的令牌>
+NDR_REDIS_URL=redis://<NDR服务器IP>:6379/0
+EOF
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
 ```
 
 镜像全部从 GHCR 拉取（不在服务器本地构建）。服务清单：
 
-| 服务 | 作用 |
-| --- | --- |
-| `elasticsearch` / `postgres` / `redis` | 存储与消息 |
-| `backend` / `celery-worker` / `celery-beat` | API 与分析任务 |
-| `detector` | **实时检测器**（消费旁路队列） |
-| `logstash` | 采集侧双写（ES + 队列） |
-| `frontend` | 管理后台 + 驾驶舱 |
-| `zeek` | 抓包（host 网络 + NET_RAW/NET_ADMIN） |
+| 线路 | 服务 | 作用 |
+| --- | --- | --- |
+| NDR | `elasticsearch` / `postgres` / `redis` | 存储与消息 |
+| NDR | `backend` / `frontend` | API + 管理后台（左侧七页：规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；配置总览在左上角标题上） |
+| NDR | `normalizer` | **归一化服务**（消费采集队列 → 检测器队列 + 写 ES） |
+| NDR | `detector` | 实时检测器（消费归一化队列） |
+| NDR | `ndr-mcp` | MCP 服务（`python -m app.mcp.server`，宿主 `:8090`） |
+| NDR | `logstash` | 归一化文档入 ES（只有 ES 一个去处） |
+| NDR | `zeek` | 抓包（host 网络 + NET_RAW/NET_ADMIN） |
+| NDR | `wazuh-manager` / `wazuh-filebeat` | **可选**（叠加 `docker-compose.wazuh.yml`）：官方 Wazuh 4.14 manager（不含 indexer/dashboard）+ 独立 Filebeat 采集，见 §三 |
+| 智能体 | `postgres` | 智能体自己的库（pgvector 支持向量检索） |
+| 智能体 | `backend` / `frontend` | API + 管理后台/驾驶舱 |
+| 智能体 | `celery-worker` / `celery-investigation` / `celery-beat` | 分析任务 / 调查 worker / 定时任务（**摘要由 NDR 直接 HTTP 推给 `backend`**，不再有队列消费者进程） |
 
-首次登录：`admin` / `admin123`（**登录后请立即改密**）。
+首次登录：两条线路各自 `admin` / `admin123`（**登录后请立即改密**）。
 
 ---
 
-## 三、Wazuh 接入（外部采集）
+## 三、Wazuh 接入
 
-Wazuh 的采集输出需指向本项目的 Logstash（`<服务器IP>:5044`，beats 协议）：
+Wazuh 的日志走**和 Zeek 一样的路**：Filebeat → NDR 的 Redis 采集队列 `shentong:events:collect`
+（不直连 Logstash，也不直连 ES）。
 
-在 Wazuh 侧的 Filebeat 配置（通常在 `/etc/filebeat/filebeat.yml`）：
+### 3.1 用本仓库自带的 manager（可选叠加编排）
 
-```yaml
-output.logstash:
-  hosts: ["<深瞳服务器IP>:5044"]
-  # 若原来是 output.elasticsearch，请替换为上面两行
+`ndr/docker-compose.wazuh.yml` 是 **opt-in** 的叠加编排，不接 Wazuh 的部署完全不受影响：
+
+```bash
+cd ndr
+docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
 ```
 
-未接入前，Wazuh 事件只能靠**兜底任务**（15 分钟）覆盖；Zeek 走旁路队列为秒级实时。
+它加两个官方镜像服务：
+
+| 服务 | 镜像 | 作用 |
+| --- | --- | --- |
+| `wazuh-manager` | `wazuh/wazuh-manager:4.14.8` | Wazuh 本体（**不含** indexer / dashboard），暴露 `55000`（API）与可选 `1514`/`1515` |
+| `wazuh-filebeat` | `docker.elastic.co/beats/filebeat:8.15.3` | 只读挂载 manager 日志卷，按 `ndr/wazuh/filebeat.yml` 投 Redis |
+
+> **为什么另起一个 Filebeat**：manager 自带的那个是为「发往 Wazuh indexer」预设的，
+> 而「4.14 自带的 Filebeat 能否配 `output.redis`」没有实机验证过；Filebeat 又只支持单一
+> output。另起一个用我们自己的配置，行为与 Zeek 线一致、可控。
+
+细节与**待实机验证清单**见 [`ndr/wazuh/README.md`](ndr/wazuh/README.md)：
+
+- 想要**全量原始日志**：先在 manager 上幂等开 `logall_json`（`ndr/wazuh/enable-logall.sh`），
+  再把 `WAZUH_ARCHIVES_ENABLED=true` 传给 `wazuh-filebeat`。原始日志默认**只入库、不喂检测器**
+  （`ST_WAZUH_ARCHIVE_TO_DETECTOR=false`）—— 量级比告警大得多，容量估算见
+  [`docs/ndr-redesign.md`](docs/ndr-redesign.md) 第 6 期。
+- 界面上接 API：「采集接入 → Wazuh」填地址 `https://<manager>:55000` 与凭据、点测试连接，
+  面板显示 API 版本 / Agent 在线情况 / **近 24h 入库的告警与原始日志条数**（后者是链路真通了的证据），
+  并可下发本地规则文件（下发后回读校验）。凭据存库，`ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` /
+  `ST_WAZUH_API_PASSWORD` / `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` 只是默认值。
+
+### 3.2 接外部已有的 Wazuh
+
+不要起本仓库的 `wazuh-manager`，把 `ndr/wazuh/filebeat.yml` 拷到能读到 `alerts.json` 的机器上，
+改 `WAZUH_LOG_DIR` 与 `REDIS_HOST`/`REDIS_PORT`/`REDIS_KEY`，起 Filebeat 即可；再到 NDR 界面填那台
+manager 的 API 地址与凭据。
+
+两个字段改配置时别丢：`overwrite_keys: true`（否则 Filebeat 自己的 ECS 顶层 `agent` 会盖掉 Wazuh
+的 `agent.name`，主机名就丢了）与 **不设 ndjson `target`**（归一化服务直接从根读
+`rule`/`data`/`agent`/`full_log`）。
 
 ---
 
 ## 四、部署后必做
 
 1. **登录改密**（admin/admin123）
-2. **配置分析网段**（系统配置 → 分析网段）——不配则不会分析任何日志
-3. **填云端模型 API Key**（系统配置 → 云端模型）
-4. 边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
-5. 建议点「边缘模型 → 测试连接」确认可达
-6. 需要时在「系统配置 → 采集侧 · Logstash 管道」调整采集链路
+2. **配置监控网段**（左侧「监控网段」页）——填要监控的网段/IP（每行一条，1~200 条）。
+   保存后约 10 秒 Zeek 自动重载，`bpf_filter` / `local_nets` 由网段清单自动生成。
+   网段在 **Zeek 抓包层**生效：没抓到的流量后面谁也看不到，这一步必须先做对
+3. （智能体线路）**填云端模型 API Key**（系统配置 → 云端模型）
+4. （智能体线路）边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
+5. （智能体线路）建议点「边缘模型 → 测试连接」确认可达
+6. （NDR 线路）需要时在「数据存储 → Logstash 管道」调整入库管道
    （参数表单或管道全文；保存后 Logstash 约 10 秒自动重载，无需重启容器；
    每次保存自动备份上一版，界面可一键回滚）
-7. 需要时在「系统配置 → 排除过滤」加降噪规则（可选；详见下节）
+7. （NDR 线路）需要时在「过滤规则 → 降噪过滤」把日常噪声挡在检测器外（**先用试运行看命中样例**）、
+   在「过滤规则 → 排除过滤」把某些规则的分析关掉（可选；详见下节）
+8. （NDR 线路）**生成 MCP 令牌**（智能体对接 → MCP 服务）：明文只显示一次，复制进智能体线路的 `NDR_MCP_TOKEN`；
+   该面板还能看令牌用量、最近调用、智能体写回的结论与全部工具清单
+9. （两条线路）**配好摘要推送**：先给智能体线路设 `PUSH_TOKEN`（或 `ST_PUSH_TOKEN`），
+   再到 NDR「智能体对接 → 摘要推送」填地址（`http://<agent>:8000/api/push/digests`）与同一令牌，
+   点「测试连接」应为连通；之后检测器命中就会直接推过去（面板可看送达与失败计数）
+10. （NDR 线路，可选）**接 Wazuh**：叠加 `docker-compose.wazuh.yml` 起 `wazuh-manager` 与
+   `wazuh-filebeat`（见 §三；生产记得改 `WAZUH_API_USER`/`WAZUH_API_PASSWORD`），
+   再到「采集接入 → Wazuh」填那台 manager 的 API 地址与凭据、点测试连接；
+   要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`
+11. **日常盯「运行状态」页**（左侧导航最后一项，每 15 秒自刷新）：队列积压 / 本分钟投递 /
+    推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量。历史上 Redis 写满（noeviction）会让
+    整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆
 
 ---
 
-## 四之二、投递前去重与排除过滤
+## 四之二、摘要推送与判重、降噪过滤与排除过滤
 
-**投递前去重（默认开）**：检测器投递前会按「规则 + 源 IP + 30 分钟时间桶」指纹查库，
-同一事件组在桶内只投一次，避免同一事件反复跑完整 LLM 链（最多可省 ~30 次/桶）。
+**HTTP 推送（第 5 期起，检测器 → 智能体）**：检测器把聚合摘要 POST 到智能体的
+`/api/push/digests`（Bearer 令牌，两侧必须一致），**收到 2xx 就是送达**（响应当回执）。
 
-- 两态标记：`inflight`（已投递、图在跑，检测器写）→ `done`（图正常跑完，worker 写）
-- 失败不会永久吞事件：任务异常保持 `inflight`，超过在途 TTL（40 分钟）后允许重投
-- 代价：被拦下的摘要，其命中次数不会补进事件组（事件在、桶内规模可能低估）
-- 关掉：`ST_DEDUP_ENABLED=false`；状态看「采集侧」面板的「去重闸门」一行
+- 没配地址或关了开关 → 回落旧的 `shentong:events:dispatch` 队列通道（仅对未升级的智能体有意义）
+- 推送失败 → 整批落 `shentong:events:pushretry`（带 processing 队列防进程崩），检测循环每轮自动重发；
+  失败原因与待重发批数在「智能体对接 → 摘要推送」面板里看（已送达 / 失败待重发 / 重发成功 / 重发失败）
+- **判重在智能体侧**（只有它知道某个事件组分析过没有）：收到逐条算「事件组指纹」（源+目的 IP 集合 +
+  `ST_GROUP_BUCKET_MINUTES` 时间桶，与落库用的同一套算法），
+  ① 库里已有该组 → 只 `event_count += 摘要条数`、窗口前移，**不重复出报告**；
+  ② 库里没有但 Redis 桶内占位已存在（同桶第一批还在跑）→ 跳过；③ 都没有 → 占位 + 投 Celery 跑图
+- 代价：NDR 侧不再有闸门，同一事件在**不同时间桶**里会再推一次（这正是「同一事件持续发生时还能再报」的来源）；
+  Redis 不可用时判重放行（宁可多跑、不漏报）
+- 配置项见下表 `ST_AGENT_PUSH_*`（NDR 侧）与 `ST_PUSH_TOKEN`（智能体侧）
 
-**排除过滤（可选）**：命中排除条件的事件**仍进事件列表**（状态为“已排除”、默认折叠）且可回溯，
+**降噪过滤（可选，检查点在归一化之后、规则之前）**：命中的事件**照样完整落进 ES**
+（事件列表里查得到、可回溯，也就是“全量入库”没被破坏），只是**不投检测器**，因此不产生告警、
+不花模型成本。适合挡掉扫描器日常噪声、监控探活、心跳域名这类“看着像攻击、其实每天都有”的流量。
+
+- 条件只能引用**地址/端口 + 协议内容字段**（不允许拿 `raw` 全字段匹配），自带「内网互扫 / 监控探活 UA /
+  心跳域名」三个现成示例
+- 保存前必须能**试运行**：拿最近 N 小时的历史事件（ES → 检测器队列 → 采集队列依次取）跑一遍，
+  告你这条条件会挡下多少条（含命中比例与最多 10 条样例）——先看清楚再启用
+- 保存时三道校验：拒绝空条件、拒绝未知字段、校验正则；运行时求值失败按“不命中”处理（宁可多跑检测器，不漏报）
+- 生效最多 30 秒（`ST_INGEST_FILTER_CACHE_SECONDS`）；「降噪过滤」面板能看到每条例挡下多少、最近挡下了什么
+- **绝不用 Logstash `drop` 实现**：`drop` 会终止整条事件、连 ES 那份一起丢；这里是归一化服务里的一次判断，
+  ES 输出永远无条件
+
+**排除过滤（可选，检查点在规则命中之后）**：命中排除条件的事件**仍进事件列表**（状态为“已排除”、默认折叠）且可回溯，
 但跳过边缘研判、深度分析、定级、处置、报告生成与记忆写入，因此不花模型成本。
 
 - 条件可引用日志字段 + 命中规则元数据（`hit_rule` / `rule_source` / `rule_severity`），
@@ -116,46 +213,86 @@ output.logstash:
 - 保存时三道校验：拒绝空条件、拒绝未知字段、校验正则；运行时读配置失败按“不排除”处理（宁可多分析，不漏报）
 - 生效最多 30 秒（`ST_EXCLUSION_CACHE_SECONDS`）；「排除过滤」面板能看到每个过滤器排掉了多少、最近排掉了什么
 
+两者都导致「没有告警」：**降噪**是连检测器都没进，**排除**是进了检测器但不分析。智能体可用 MCP
+`list_filters` 同时看到两道闸门，避免把“被过滤”误读成“没有异常”。
+
 ---
 
 ## 五、关键配置项（环境变量，`ST_` 前缀）
 
+NDR 线路（采集与检测）：
+
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ST_ANALYSIS_INTERVAL_MINUTES` | 15 | 兜底任务间隔（实时链路为主） |
-| `ST_FALLBACK_MAX_BACKFILL_HOURS` | 24 | 单次最大回补时长（防长期停机后拉爆） |
-| `ST_DETECTOR_ENABLED` | true | 关掉则退化为「纯定时拉取」 |
-| `ST_DETECTOR_AGG_SECONDS` | 60 | 短窗聚合时长（源IP+规则） |
+| `ST_ES_EVENTS_INDEX` | shentong-events-* | 统一事件索引（确认模板写入 `shentong-events-%{+yyyy.MM.dd}`） |
+| `ST_ES_RETENTION_DAYS` | 30 | ES 保留期（ILM 策略） |
+| `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度（智能体查询窗口的上限） |
+| `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「Zeek 抓包」写入的值优先） |
+| `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
+| `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
+| `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 默认凭据（界面「Wazuh 接入」保存的值优先，密码只写不回显） |
+| `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |
+| `ST_COLLECTOR_COLLECT_QUEUE` | shentong:events:collect | Filebeat 写入的**采集队列** |
+| `ST_COLLECTOR_CONSUME_BATCH` / `ST_COLLECTOR_POLL_TIMEOUT` | 500 / 5 | 归一化服务每轮取批与轮询超时 |
+| `ST_COLLECTOR_POST_RETRIES` / `ST_COLLECTOR_RETRY_BACKOFF_SECONDS` | 3 / 1.0 | 写 Logstash 失败的重试次数与退避 |
+| `ST_COLLECTOR_QUEUE_MAX` | 30000 | 采集队列封顶（超出裁掉最旧的，防 Redis 打满） |
+| `ST_DETECTOR_ENABLED` | true | 关掉则只归一化入库、不做检测 |
+| `ST_DETECTOR_AGG_SECONDS` | 300 | 短窗聚合时长（源IP+规则） |
 | `ST_DETECTOR_BATCH_SECONDS` / `ST_DETECTOR_BATCH_MAX` | 20 / 5 | 攒批投递触发条件 |
-| `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE` | 8 | 投递速率上限（对齐边缘模型实测容量 3~4 条/分钟） |
-| `ST_DEDUP_ENABLED` | true | 投递前去重闸门（按指纹查库，已分析过的不再重复投） |
-| `ST_DEDUP_INFLIGHT_TTL_SECONDS` | 2400 | 在途标记有效期（需 > 任务硬超时 1800s） |
-| `ST_ANALYZED_RETENTION_DAYS` | 7 | 已完结指纹保留天数 |
+| `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE` | 24 | 投递速率上限（对齐模型容量） |
+| `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；空 = 回落旧队列 |
+| `ST_AGENT_PUSH_TOKEN` | 空 | 推送令牌（与智能体 `ST_PUSH_TOKEN` 一致） |
+| `ST_AGENT_PUSH_ENABLED` | true | 推送开关（关掉回落旧队列） |
+| `ST_AGENT_PUSH_TIMEOUT_SECONDS` / `ST_AGENT_PUSH_MAX_PER_PUSH` | 10 / 200 | 单次请求超时与每批条数（超出分片） |
+| `ST_DETECTOR_PUSH_RETRY_QUEUE` / `..._PROCESSING_QUEUE` | shentong:events:pushretry / ...:processing | 推送失败的重发队列（ReliableQueue） |
+| `ST_DETECTOR_PUSH_RETRY_MAX_PER_ROUND` | 50 | 每轮最多重发多少批 |
 | `ST_EXCLUSION_CACHE_SECONDS` | 30 | 排除过滤配置缓存（跨进程生效延迟上限） |
-| `ST_FREQ_WINDOW_SECONDS` / `ST_FREQ_COOLDOWN_SECONDS` | 300 / 300 | 频率规则滑动窗口与冷却 |
-| `ST_MAX_LOGS_PER_WINDOW` | 20000 | 单次拉取上限 |
+| `ST_INGEST_FILTER_CACHE_SECONDS` | 30 | 降噪过滤配置缓存（同上） |
+| `ST_INGEST_FILTER_DRY_RUN_HOURS` | 24 | 试运行默认回看时长（界面可改） |
+| `ST_INGEST_FILTER_DRY_RUN_MAX` | 500 | 试运行默认取样条数上限（硬上限 5000） |
 | `ST_LOGSTASH_API_URL` | http://logstash:9600 | Logstash 监控 API（后端读状态用） |
+| `ST_LOGSTASH_HTTP_PORT` | 8080 | 归一化服务写 Logstash 的 http 输入 |
 | `ST_LOGSTASH_PIPELINE_CONF` | /logstash/logstash.conf | 管道配置路径（共享卷内；文件名必须叫 logstash.conf，否则会与镜像自带示例管道同时被加载） |
 | `ST_LOGSTASH_PIPELINE_BACKUP` | /logstash-backup/logstash.conf.bak | 管道备份路径（**必须与管道目录分开**：Logstash 会把管道目录里所有文件当配置读，备份放进去就变成第二个管道） |
+| `ST_MCP_HOST` / `ST_MCP_PORT` / `ST_MCP_PATH` | 0.0.0.0 / 8090 / /mcp | MCP 服务监听与路径 |
+| `ST_MCP_PUBLIC_URL` | http://ndr-mcp:8090 | MCP 对外地址（面板显示与自检用） |
+| `ST_MCP_MAX_ROWS` | 500 | 单次查询返回条数上限 |
+| `ST_MCP_CONCLUSION_RETENTION_DAYS` | 7 | 智能体写回结论的保留期（与判重窗口对齐） |
+
+智能体线路（取数与分析）：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ST_MCP_URL` | http://ndr-mcp:8090/mcp | **取数唯一入口**（NDR 的 MCP 服务） |
+| `ST_MCP_TOKEN` | 空 | 在 NDR 后台「智能体对接 → MCP 服务」生成的令牌；空 = 取数不可用 |
+| `ST_MCP_TIMEOUT_SECONDS` | 90 | 单次工具调用超时（要大于 NDR 侧单次 ES 查询的 45s） |
+| `ST_PUSH_TOKEN` | 空 | **接收 NDR 推送的令牌**（与 NDR「智能体推送」里填的一致）；空 = 拒绝所有推送（503） |
+| `ST_PUSH_DEDUP_KEY` | shentong:agent:push | 判重占位键前缀（Redis，TTL = 两个时间桶） |
+| `ST_PUSH_MAX_ITEMS` | 500 | 单次最多接收多少条摘要（超出 413） |
+| `ST_GROUP_BUCKET_MINUTES` | 30 | 事件组时间桶（判重与落库共用，两侧必须一致） |
+| `ST_LOOKBACK_MAX_LOGS` / `ST_LOOKBACK_MAX_EVENTS` | 5000 / 200 | 回溯取原始日志与落地窗口事件的条数上限 |
 
 模型与凭据：
-- 边缘模型：连接信息固化在 `backend/app/edge_config.py`（仅 IP 可在界面改）
-- 云端模型：模型名固化（`backend/app/models/registry.py`），API Key 在界面录入、存数据库
+- 边缘模型：连接信息固化在 `agent/backend/app/edge_config.py`（仅 IP 可在界面改）
+- 云端模型：模型名固化（`agent/backend/app/models/registry.py`），API Key 在界面录入、存数据库
 
 ---
 
 ## 六、开发约定
 
 - **只用 GitHub Actions 构建镜像**，禁止本地构建（`docker build` / `npm run build`）
-- 本地质量门：`cd backend && .venv/bin/ruff check app/ && .venv/bin/pyright app/`；前端 `npx tsc --noEmit`
-- 推送 `main` 触发 CI 构建三个镜像（backend / frontend / zeek）到 GHCR
+- 本地质量门（仓库根执行）：`.venv/bin/ruff check ndr/backend/app agent/backend/app`、
+  `.venv/bin/pyright ndr/backend/app agent/backend/app`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`
+- 推送 `main` 触发 CI 构建五个镜像到 GHCR：`shentong-ndr`、`shentong-ndr-frontend`、`shentong-zeek`
+  （NDR 线路）与 `shentong-agent`、`shentong-agent-frontend`（智能体线路）
 
 
 ## 数据路径（两层）
 
-1. **实时车道**：Logstash 双写 → Redis → 旁路检测器（规则命中才进智能体，额度对齐模型容量）。
-   实测能力约 130 条/秒（平稳）；突发峰值（~1850 条/秒）排队，极端时按上限裁剪最老的日志。
-2. **ES 全量事实源**：原始日志长期保留，可随时回溯/按需查询（自主调查工具直接查 ES）。
+1. **实时车道**：Filebeat → Redis 采集队列 → 归一化服务 → 检测器（规则命中才进智能体，额度对齐模型容量）。
+   归一化服务同时把同一份文档写进 ES；检测器队列裁剪最老的日志以封顶 Redis 内存。
+2. **ES 全量事实源**：归一化后的全量文档长期保留（统一索引族 `shentong-events-*`），
+   随时可按需查询/回溯——智能体经 **NDR 的 MCP 工具**查（不直连 ES），界面在 NDR 后台查。
 
 **「水位兜底（全量重放）」已彻底移除**：实测单轮过完整图必被硬超时、水位永不推进，反而占死 worker。
 因此不承诺自动补齐历史——被裁剪或停机期间的日志只留在 ES，按需查询。

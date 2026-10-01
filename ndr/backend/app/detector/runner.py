@@ -1,0 +1,653 @@
+"""检测器主循环：消费归一化队列 → 网段过滤 → 规则（逐条+滑窗频率）
+→ 短窗聚合 → 攒批投递给智能体分析。
+
+文档由采集侧归一化服务拍平后投进队列（`shentong:events:raw`）；检测器只做
+判定与聚合，不再重复归一化（队列里若还压着原始文档，会自动回退归一化）。
+替代原来「智能体每 N 分钟主动拉 ES 全量」的入口；智能体只处理被提炼过的
+聚合摘要，不再自己捞数据。
+"""
+
+from __future__ import annotations
+
+import atexit
+import json
+import signal
+import time
+from collections import Counter
+from datetime import UTC, datetime
+from typing import Any
+
+import redis
+
+from app import triage_policy
+from app.config import settings
+from app.db.base import SessionLocal
+from app.detector import health, push
+from app.detector.aggregate import Aggregator
+from app.detector.fingerprint import digest_age
+from app.detector.frequency import FreqWindow
+from app.detector.handled import HandledRegistry, doc_hash
+from app.detector.leader import Leader
+from app.detector.queue import ReliableQueue
+from app.ingestion import exclusion
+from app.ingestion.es_client import build_networks, in_scope
+from app.ingestion.normalizer import normalize, source_of
+from app.ingestion.scope import monitored_nets
+from app.rules.engine import (
+    build_rule_index,
+    evaluate_conditions,
+    is_count_rule,
+    match_rule,
+    rules_for_log_type,
+    whitelisted,
+)
+from app.rules.service import get_enabled_rules
+from app.schemas import UnifiedLog
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
+
+_RATE_KEY = "shentong:detector:delivered"
+_BACKLOG_WARN = 50_000
+_THROTTLE_LOG_INTERVAL = 60  # 限流/丢弃告警最小间隔（秒），避免刷屏
+_last_throttle_log = 0.0
+_last_drop_log = 0.0
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def rate_bucket() -> str:
+    """当前分钟桶的键（固定窗口限流计数）。"""
+    return f"{_RATE_KEY}:{_to_int(time.time() // 60, 0)}"
+
+
+def _load_rules() -> dict[str, list[dict[str, Any]]]:
+    with SessionLocal() as db:
+        rules = get_enabled_rules(db)
+    return {
+        "per_event": [r for r in rules if not is_count_rule(r)],
+        "count": [r for r in rules if is_count_rule(r)],
+    }
+
+
+def _load_scopes() -> list[Any]:
+    return build_networks(monitored_nets())
+
+
+def _with_index(rules: dict[str, Any]) -> dict[str, Any]:
+    """给规则表挂上 log_type 索引（幂等，只在规则加载时调用一次）。"""
+    if "index" not in rules:
+        rules["index"] = build_rule_index(list(rules.get("per_event") or []))
+    return rules
+
+
+def _source_of(doc: dict[str, Any]) -> str:
+    """判定日志来源（实现见 `app.ingestion.normalizer.source_of`）。"""
+    return source_of(doc)
+
+
+# 已归一化文档的判别标记：这三个字段同时在场就认为采集侧已经拍平过
+_NORMALIZED_MARKERS = ("source_system", "event_type", "raw")
+
+
+def _to_entry(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
+    """拿到归一化后的 entry。
+
+    采集侧的归一化服务已经把文档拍平过一遍，检测器再拍一次纯属浪费 CPU；
+    但队列里可能还压着升级前遗留的原始文档（或人工重放的旧数据），
+    所以保留「现场归一化」这条兜底路径。
+    """
+    if all(key in doc for key in _NORMALIZED_MARKERS):
+        try:
+            return UnifiedLog.model_validate(doc)
+        except Exception:  # noqa: BLE001
+            log.debug("队列文档带归一化标记但校验失败，按原始文档重新归一化")
+    return normalize(source, doc)
+
+
+def _entry_in_scope(entry: UnifiedLog, nets: list[Any]) -> bool:
+    """按归一化后的 src_ip / dst_ip 判网段：任一落在网段内即算监控范围内。"""
+    return in_scope(entry.src_ip, nets) or in_scope(entry.dst_ip, nets)
+
+
+def run() -> None:
+    """常驻循环（由 docker compose 的 detector 服务拉起）。"""
+    client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    raw_q = ReliableQueue(client, settings.detector_raw_queue, settings.detector_processing_queue)
+    digest_q = ReliableQueue(
+        client,
+        settings.detector_digest_queue,
+        f"{settings.detector_digest_queue}:processing",
+    )
+
+    handled = HandledRegistry(client, settings.detector_handled_key, settings.detector_handled_ttl)
+    freq = FreqWindow(client, settings.freq_window_seconds, settings.freq_cooldown_seconds)
+    agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
+    # 判重（第 5 期起）在智能体侧：只有它知道某个事件组分析过没有。本侧只负责投递。
+    # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
+    leader = Leader(client)
+    elected = False  # 本次持有租约期间是否已做过启动回灌
+
+    def _on_term(_signum: int, _frame: Any) -> None:
+        raise SystemExit(0)  # 让退出路径（atexit）能执行让位
+
+    signal.signal(signal.SIGTERM, _on_term)
+    atexit.register(leader.release)
+
+    rules = _with_index(_load_rules())
+    scopes = _load_scopes()
+    last_rule_load = time.time()
+    last_scope_load = last_rule_load
+
+    stats: Counter[str] = Counter()
+    last_flush = time.time()
+    last_stats = time.time()
+    # 速率快照的上一采样点（用于算"本区间增量"，避免用 ts 反推导致失真）
+    rate_prev: dict[str, float] = {
+        "ts": last_stats,
+        "scanned": 0.0,
+        "hit": 0.0,
+        "digest": 0.0,
+        "delivered": 0.0,
+        "raw_trimmed": 0.0,
+    }
+    log.info(
+        "检测器启动：逐条规则 %d 条 / 频率规则 %d 条 / 监控网段 %d 个 / 聚合窗口 %ds",
+        len(rules["per_event"]),
+        len(rules["count"]),
+        len(scopes),
+        settings.detector_agg_seconds,
+    )
+
+    while True:
+        if not leader.try_acquire():
+            # 非持锁实例：待命热备，不消费 / 不聚合 / 不投递
+            if elected and not leader.is_leader:
+                log.warning("检测器已失去主身份，转为待命")
+                elected = False
+            time.sleep(leader.renew_seconds)
+            continue
+        if not elected:
+            elected = True
+            # 每次当选只做一次：回灌上次未确认的消息（避免反复回灌正在处理的项）
+            raw_q.recover()
+            digest_q.recover()
+            backlog, _ = raw_q.depth()
+            if backlog > _BACKLOG_WARN:
+                log.warning(
+                    "raw 队列积压 %d 条（常见原因：采集侧重读了历史日志），将按速率护栏逐步消化",
+                    backlog,
+                )
+
+        now = time.time()
+        if now - last_rule_load >= 60:  # 规则可能被后台改动
+            rules = _with_index(_load_rules())
+            last_rule_load = now
+        if now - last_scope_load >= settings.detector_scope_refresh_seconds:
+            scopes = _load_scopes()
+            last_scope_load = now
+
+        # 批量消费：一次循环处理一批（固定开销只在每批一次），提升扫描吞吐
+        consumed_any = False
+        for payload in raw_q.consume_many(
+            settings.detector_consume_batch, settings.detector_poll_timeout
+        ):
+            consumed_any = True
+            try:
+                _handle(payload, rules, scopes, freq, agg, handled, stats)
+            except Exception:
+                log.exception("处理队列消息失败（已确认，避免卡死队列）")
+            finally:
+                raw_q.ack(payload)
+        _ = consumed_any
+
+        # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
+        for digest in agg.pop_due():
+            _apply_routine_policy(digest, client, stats)
+            digest_q.push(json.dumps(digest, ensure_ascii=False))
+            stats["digest"] += 1
+
+        # raw 队列持续封顶：采集速率（实测几万条/分钟）远高于检测器处理能力，
+        # 不封顶就会把 Redis 撑满 → noeviction 拒写 → 检测器与 Celery 全线卡死（真实事故）。
+        # 保留最新的（LPUSH 头部最新）；丢掉的计入 dropped.raw_trimmed（可查、不静默）。
+        _trim_queue(
+            raw_q, client, stats, limit=settings.detector_raw_queue_max, reason="raw_trimmed"
+        )
+
+        # 攒批：凑够 N 条或等待超时即处理一次
+        # 注意：即使被限流也要走 _flush —— 否则连「清理超龄」都做不了，队列只增不减
+        pending_raw, _ = digest_q.depth()
+        if pending_raw and (
+            pending_raw >= settings.detector_batch_max
+            or time.time() - last_flush >= settings.detector_batch_seconds
+        ):
+            _flush(digest_q, client, stats)
+            _trim_queue(digest_q, client, stats)
+            last_flush = time.time()
+
+        # 第 5 期：把上次推送失败、落在持久重试队列里的摘要在后台重发
+        # （放在这里而不是另起线程：检测循环本来就是分钟级节奏，够用且不引入并发）
+        push.retry_pending(client, stats)
+
+        if time.time() - last_stats >= settings.detector_stats_log_seconds:
+            q_raw, q_proc = raw_q.depth()
+            # Redis 体检：内存吃满 → noeviction 拒写 → 全链路静默卡死（真实事故，必须提前叫）
+            mem = health.redis_memory(client)
+            if mem.get("max") and mem.get("perc", 0) >= settings.redis_memory_warn_perc:
+                log.warning(
+                    "%s —— 超过 maxmemory 后 Redis 会拒绝所有写命令，分析链路会整体卡死；"
+                    "请用 redis-cli --bigkeys 找大键（历史事故键：shentong:handled:docs）",
+                    health.describe(mem),
+                )
+            if handled.skipped:
+                try:
+                    client.set(f"{settings.detector_handled_key}:skipped", handled.skipped)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("登记丢弃计数写入失败: %s", exc)
+            log.info(
+                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
+                "/ 投递 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
+                "/ 策略跳过(内网常规 %d) / 登记丢弃 %d "
+                "| 队列 raw=%d processing=%d | 聚合中 %d | %s",
+                leader.me,
+                stats["scanned"],
+                stats["hit"],
+                stats["freq_hit"],
+                stats["duplicate"],
+                stats["excluded"],
+                stats["digest"],
+                stats["delivered"],
+                stats["throttled"],
+                stats["requeued"],
+                stats["dropped_expired"],
+                stats["dropped_trimmed"],
+                stats["dropped_raw_trimmed"],
+                stats["policy_internal_routine"],
+                handled.skipped,
+                q_raw,
+                q_proc,
+                agg.pending(),
+                health.describe(mem),
+            )
+            # 速率快照落库（G4）：写入"本区间增量 + 区间秒数"，端点据此精确算速率
+            now_ts = time.time()
+            interval = max(0.1, now_ts - rate_prev["ts"])
+            try:
+                client.hset(
+                    "shentong:detector:rates",
+                    mapping={
+                        "ts": str(now_ts),
+                        "interval_seconds": str(interval),
+                        "d_scanned": str(stats["scanned"] - rate_prev["scanned"]),
+                        "d_hit": str(stats["hit"] - rate_prev["hit"]),
+                        "d_digest": str(stats["digest"] - rate_prev["digest"]),
+                        "d_delivered": str(stats["delivered"] - rate_prev["delivered"]),
+                        "d_raw_trimmed": str(
+                            stats["dropped_raw_trimmed"] - rate_prev["raw_trimmed"]
+                        ),
+                        "scanned": str(stats["scanned"]),
+                        "hit": str(stats["hit"]),
+                        "freq_hit": str(stats["freq_hit"]),
+                        "digest": str(stats["digest"]),
+                        "delivered": str(stats["delivered"]),
+                        "raw_trimmed": str(stats["dropped_raw_trimmed"]),
+                        "limit_saturated": str(stats["limit_saturated"]),
+                        "requeued": str(stats["requeued"]),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("写入速率快照失败: %s", exc)
+            rate_prev.update(
+                {
+                    "ts": now_ts,
+                    "scanned": stats["scanned"],
+                    "hit": stats["hit"],
+                    "digest": stats["digest"],
+                    "delivered": stats["delivered"],
+                    "raw_trimmed": stats["dropped_raw_trimmed"],
+                }
+            )
+            last_stats = now_ts
+
+
+def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[str]) -> None:
+    """分级放行：把「内网常规流量」打标（事件仍落库可查，只是不跑模型、不出报告）。
+
+    为什么判定放在**聚合结果定稿之后**（而不是每条命中时）：目标数与连接状态要积累完
+    才知道；而且排除位参与聚合键，逐条判定会把同一 (源,规则) 拆成两个桶，反而更乱。
+    """
+    if digest.get("excluded"):
+        return  # 已被排除过滤器命中，不重复判定
+    direction = triage_policy.direction_of(digest.get("src_ip"), digest.get("dst_ips"))
+    reason = triage_policy.internal_routine_reason(
+        direction=direction,
+        rule_severity=digest.get("rule_severity"),
+        dst_count=len(digest.get("dst_ips") or []),
+        success=triage_policy.has_success(digest.get("event_types"), digest.get("conn_states")),
+        # 规则名参与白名单判定：名单外/取不到名字 → 不跳（fail-open，防漏报）
+        rule_name=str(digest.get("rule") or ""),
+    )
+    if not reason:
+        return
+    digest["excluded"] = True
+    digest["exclude_reason"] = reason
+    digest["direction"] = direction
+    stats["policy_internal_routine"] += 1
+    triage_policy.count_skip(client, "internal_routine")
+
+
+def _sleep_to_next_minute(now: float | None = None) -> float:
+    """睡到下一个分钟桶边界（投递额度按分钟重置）；最多睡 5 秒保持响应。"""
+    current = time.time() if now is None else now
+    wait = 60.0 - (current % 60.0)
+    wait = max(0.2, min(5.0, wait))
+    time.sleep(wait)
+    return wait
+
+
+def _rate_remaining(client: Any) -> int:
+    """本分钟还剩多少投递额度（cap<=0 表示不限）。"""
+    cap = settings.detector_max_digests_per_minute
+    if cap <= 0:
+        return 1 << 30
+    return max(0, cap - _to_int(client.get(rate_bucket()), 0))
+
+
+def _drop(client: Any, reason: str, count: int, stats: Counter[str]) -> None:
+    """记录被丢弃的摘要，避免「静默漏分析」。
+
+    原因：expired（超龄未及分析）/ trimmed（队列超上限裁掉最老的）。
+    计数写 Redis（跨重启可查），并限频告警。
+    """
+    global _last_drop_log
+    if count <= 0:
+        return
+    stats[f"dropped_{reason}"] += count
+    try:
+        client.hincrby(settings.detector_drop_key, reason, count)
+        client.hset(settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat())
+        client.expire(settings.detector_drop_key, 30 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入丢弃计数失败: %s", exc)
+    now = time.time()
+    if now - _last_drop_log >= _THROTTLE_LOG_INTERVAL:
+        _last_drop_log = now
+        log.warning(
+            "有摘要被丢弃（%s）本进程累计 %d 条 —— 说明分析能力跟不上产出，这些事件不会进入分析",
+            reason,
+            stats[f"dropped_{reason}"],
+        )
+
+
+def _digest_age(entry: dict[str, Any]) -> float:
+    """摘要已存在秒数（取 last_seen；解析失败返回 0 视为新鲜）。
+
+    实现放在 ``detector.fingerprint.digest_age``：任务侧（workers.tasks）也要用同一个判据。
+    """
+    return digest_age(entry)
+
+
+def _flush(
+    q: ReliableQueue,
+    client: Any,
+    stats: Counter[str],
+) -> None:
+    """弹出并处理一批摘要：超龄丢弃 → 按速率额度投递，超出的放回队尾。
+
+    要点：
+    - **丢弃不受投递限额约束**：否则限流时连清理都做不了，队列只增不减
+    - **严格按剩余额度投递**：不再出现「已用 59 + 整批 50 = 109」的超发
+    - 投递失败的摘要立即放回队列（原来会卡在 processing 里直到重启）
+    - 超龄摘要丢弃时落 Redis 计数 + 告警，不再是静默丢失
+    - **判重在智能体侧**（第 5 期）：本侧不再查库去重，重复推送由接收端按
+      事件组指纹吸收（已分析过只累加计数、桶内在跑直接跳过），故这里不设闸门
+    """
+    global _last_throttle_log
+    budget = _rate_remaining(client)
+    if budget <= 0:
+        # 额度耗尽：**不再空转**（原来会把整批取出再放回队尾 —— 实测回队 15 万次白烧）
+        stats["limit_saturated"] += 1
+        _sleep_to_next_minute()
+        return
+    max_age = settings.detector_digest_max_age_seconds
+    items: list[tuple[str, dict[str, Any]]] = []
+    expired = 0
+    for _ in range(settings.detector_max_per_batch):
+        payload = q.try_consume()
+        if payload is None:
+            break
+        try:
+            digest = json.loads(payload)
+        except (TypeError, ValueError):
+            q.ack(payload)
+            continue
+        if not isinstance(digest, dict):
+            q.ack(payload)
+            continue
+        if max_age > 0 and _digest_age(digest) > max_age:
+            q.ack(payload)
+            expired += 1
+            continue
+        items.append((payload, digest))
+
+    # 严格按剩余额度投递：超出的放回队尾（下轮优先）
+    surplus = [payload for payload, _ in items[budget:]]
+    items = items[:budget]
+    for payload in surplus:
+        q.requeue(payload)
+    if surplus:
+        stats["requeued"] += len(surplus)
+        stats["throttled"] += 1
+        now = time.time()
+        if now - _last_throttle_log >= _THROTTLE_LOG_INTERVAL:
+            _last_throttle_log = now
+            log.warning(
+                "投递额度已用完（%d 条/分钟），%d 条摘要放回队列下轮再投",
+                settings.detector_max_digests_per_minute,
+                len(surplus),
+            )
+    if expired:
+        _drop(client, "expired", expired, stats)
+    if not items:
+        return
+
+    # 交接契约（第 5 期）：优先 **HTTP 推**给智能体（2xx 即回执）；
+    # 没配地址/关了开关 → 回落旧的 LPUSH 队列；推送失败 → 落持久重试队列后台重发。
+    # 三种情况下「批」的语义不变：一批 = 一次图运行 = 一次跨摘要关联归组。
+    digests = [d for _, d in items]
+    outcome, detail = push.deliver(client, digests, stats)
+    if outcome == "off":
+        delivery_key = settings.detector_delivery_queue
+        try:
+            client.lpush(
+                delivery_key,
+                json.dumps(digests, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("投递摘要到队列失败，摘要放回队尾待重试: %s", exc)
+            for payload, _ in items:
+                q.requeue(payload)
+            return
+        log.info("已投递 %d 条聚合摘要到队列 %s", len(items), delivery_key)
+    elif outcome == "lost":
+        # 推送失败、重试队列也写不进去（Redis 挂了）：摘要放回检测队列，绝不静默丢
+        log.warning("推送失败且无法落重试队列（%s），%d 条摘要放回队尾", detail, len(items))
+        for payload, _ in items:
+            q.requeue(payload)
+        return
+    elif outcome == "pushed":
+        log.info("已推送 %d 条聚合摘要给智能体（HTTP 2xx 即回执）", len(items))
+    else:
+        log.warning("推送失败（%s），%d 条摘要已落重试队列待重发", detail, len(items))
+    for payload, _ in items:
+        q.ack(payload)
+    stats["delivered"] += len(items)
+    bkey = rate_bucket()
+    client.incrby(bkey, len(items))
+    client.expire(bkey, 120)
+
+
+def _trim_queue(
+    q: ReliableQueue,
+    client: Any,
+    stats: Counter[str],
+    *,
+    limit: int | None = None,
+    reason: str = "trimmed",
+) -> None:
+    """队列超上限时裁掉最老的（LPUSH 新→旧，故裁尾部），保证积压有界。"""
+    cap = settings.detector_queue_max if limit is None else limit
+    if cap <= 0:
+        return
+    depth, _ = q.depth()
+    if depth <= cap:
+        return
+    try:
+        client.ltrim(q.raw, 0, cap - 1)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("裁剪队列 %s 失败: %s", q.raw, exc)
+        return
+    _drop(client, reason, depth - cap, stats)
+    if reason == "raw_trimmed":
+        # 记录裁剪时段（H1）：兜底按水位扫 ES 会补回这些日志，这里留下面证供对账
+        try:
+            import json as _json
+            from datetime import UTC as _UTC, datetime as _dt
+
+            client.lpush(
+                "shentong:trimmed:windows",
+                _json.dumps(
+                    {
+                        "at": _dt.now(_UTC).isoformat(),
+                        "dropped": int(depth - cap),
+                        "queue_depth": int(depth),
+                        "cap": int(cap),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            client.ltrim("shentong:trimmed:windows", 0, 49)
+            client.expire("shentong:trimmed:windows", 7 * 24 * 3600)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("记录裁剪时段失败: %s", exc)
+
+
+def _handle(
+    payload: str,
+    rules: dict[str, list[dict[str, Any]]],
+    scopes: list[Any],
+    freq: FreqWindow,
+    agg: Aggregator,
+    handled: HandledRegistry,
+    stats: Counter[str],
+) -> None:
+    """处理单条队列消息。"""
+    try:
+        doc = json.loads(payload)
+    except (TypeError, ValueError):
+        stats["bad_message"] += 1
+        return
+    if not isinstance(doc, dict):
+        stats["bad_message"] += 1
+        return
+
+    source = _source_of(doc)
+    digest_key = doc_hash(doc)
+    # 输入去重：采集侧重试/重放会造成同一文档重复投递，会让聚合次数虚高、产生重复摘要
+    if handled.is_handled(digest_key):
+        stats["duplicate"] += 1
+        return
+    handled.mark_many([digest_key])  # 无论是否命中都登记：兜底只补“检测器没看到的”
+
+    # ② 归一化 + 网段过滤前置：不在监控网段 → 直接丢弃（只计数，不写 PG；ES 仍保留全量）
+    entry = _to_entry(source, doc)
+    if entry is None:
+        stats["normalize_failed"] += 1
+        return
+    if scopes and not _entry_in_scope(entry, scopes):
+        stats["out_of_scope"] += 1
+        stats["prefiltered_scope"] += 1
+        return
+    stats["scanned"] += 1
+
+    # ③ 用户自定义排除过滤器前置：命中即丢弃（只计数；ES 仍保留全量）
+    #    为什么要前置：这些日志"注定不会被分析"，放在规则之后跑纯属浪费扫描吞吐。
+    pre_name = exclusion.check_filter(entry)
+    if pre_name:
+        stats["prefiltered_exclusion"] += 1
+        exclusion.record_hit(pre_name, entry)
+        return
+
+    # ④ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
+    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
+    stats["rules_evaluated"] += len(candidates)
+    hit = next((r for r in candidates if match_rule(r, entry)), None)
+    if hit is not None:
+        stats["hit"] += 1
+        _aggregate(agg, entry, hit, entry.raw, source, **_exclusion_of(entry, hit, stats))
+
+    # 注意：命中逐条规则后**必须继续**评估频率规则。
+    # 若在此 return，内置逐条规则（如“扫描尝试连接”匹配所有 scan_attempt）会把
+    # 频率规则“饿死”——18 条频率规则几乎永不触发（现场统计：9065 次命中仅触发 14 次）。
+    for rule in rules["count"]:
+        cond = rule.get("conditions") or {}
+        if whitelisted(cond, entry) or not evaluate_conditions(cond, entry):
+            continue
+        if freq.observe(rule, entry):
+            stats["freq_hit"] += 1
+            _aggregate(agg, entry, rule, entry.raw, source, **_exclusion_of(entry, rule, stats))
+
+
+def _exclusion_of(entry: Any, rule: dict[str, Any], stats: Counter[str]) -> dict[str, Any]:
+    """规则命中后判一次排除过滤，命中则返回 {excluded, exclude_reason}。
+
+    检查点必须在“规则命中之后”：条件要能引用命中规则元数据（规则名/来源/严重度），
+    这是“关掉某条规则的全部噪声”的关键；代价只是规则匹配照跑（极廉价）。
+    求值异常在 exclusion 内部按“未命中”处理（fail-open，宁可多分析不漏报）。
+    """
+    rule_name = str(rule.get("name") or "")
+    name = exclusion.check_filter(
+        entry,
+        rule_name=rule_name,
+        rule_source=str(rule.get("source") or ""),
+        rule_severity=str(rule.get("severity") or ""),
+    )
+    if not name:
+        return {}
+    stats["excluded"] += 1
+    exclusion.record_hit(name, entry, rule_name=rule_name)
+    return {"excluded": True, "exclude_reason": name}
+
+
+def _aggregate(
+    agg: Aggregator,
+    entry: Any,
+    rule: dict[str, Any],
+    raw_doc: dict[str, Any],
+    source: str,
+    *,
+    excluded: bool = False,
+    exclude_reason: str = "",
+) -> None:
+    """投递一条摘要样本。
+
+    `raw_doc` 必须是**原始文档**（`entry.raw`）而不是拍平后的字段：智能体侧会拿它
+    再跑一次 `normalize()` 做证据展示（`agent/backend/app/agents/nodes.py`）。
+    """
+    agg.add(
+        # 源 IP 缺失时用 "-"（未知）归并；不能用 dst_ip 代替——那是目标，语义错位
+        src_ip=str(entry.src_ip or "-"),
+        rule=str(rule.get("name") or ""),
+        severity=str(rule.get("severity") or "medium"),
+        source=str(rule.get("source") or "builtin"),
+        entry=entry,
+        raw_doc=raw_doc,
+        log_source=source,
+        excluded=excluded,
+        exclude_reason=exclude_reason,
+    )

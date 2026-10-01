@@ -1,0 +1,33 @@
+# Logstash 服务端设置（由深瞳提供，只读挂载）
+#
+# 关键：开启管道自动重载 —— 后台「系统配置 → Logstash 管道」保存后写共享卷，
+# Logstash 检测到文件变化即重载（约 10 秒生效），无需重启容器。
+# 性能参数（worker 数、批大小）固化在此，后台界面不暴露（改这里需重启容器）。
+
+http.host: "0.0.0.0"
+api.enabled: true
+
+# 管道目录：由 compose 把共享卷**挂在镜像默认位置** /usr/share/logstash/pipeline 上，
+# 后端往卷里写 logstash.conf（文件名与镜像自带的示例管道相同 → 正好把它覆盖）。
+# 因此这里**不需要**设 path.config，也不要用 pipelines.yml 去改目录：
+# Logstash 的优先级是 命令行 > pipelines.yml > 本文件，绕来绕去很容易让管道来源变得不明。
+# 历史教训：曾用 path.config 指向 /logstash 且同时存在镜像的 pipelines.yml，最终加载的
+# 管道里混进了镜像示例管道（两个 beats 抢 5044、多一个 stdout），排查了很久。
+# 现在只有一条规则：**管道目录 = 共享卷 = 只放后端写的 logstash.conf**。
+
+config.reload.automatic: true
+config.reload.interval: 10s
+
+# 事件持久化队列：归一化服务把「Logstash 回 2xx」当作入库成功并确认队列消息，
+# 只有开了持久化队列这个语义才成立（否则 200 只代表事件进了内存队列，重启即丢）。
+# 改这里同样需要重启 logstash 容器。
+queue.type: persisted
+path.queue: /usr/share/logstash/data/queue
+queue.max_bytes: 2gb
+
+# 性能（按服务器规格设定；改完需重启 logstash 容器）
+pipeline.workers: 6
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
+
+log.level: info

@@ -1,0 +1,91 @@
+# 深瞳 · NDR —— Wazuh 4.14 接入叠加编排（opt-in，不写进默认 compose）
+#
+# 用法（在 ndr/ 下，与默认编排叠加启动）：
+#   docker compose -f docker-compose.yml        -f docker-compose.wazuh.yml up -d
+#   docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
+#
+# 这个文件只加两个服务：
+#   wazuh-manager  —— 官方 Wazuh manager 镜像（**不含** indexer 与 dashboard）
+#   wazuh-filebeat —— 官方 Filebeat 镜像，只读挂载 manager 的日志卷，
+#                     把 alerts.json / archives.json 投进 Redis 采集队列
+#
+# 采集链路与 Zeek 那条线一致：
+#   wazuh-filebeat → Redis(shentong:events:collect) → normalizer → 检测器 + Logstash → ES
+#
+# 为什么不复用 manager 自带的 Filebeat：它是为「发往 Wazuh indexer」预设的，而
+# 「4.14 自带的 Filebeat 能不能配 output.redis」没有实机验证过（README §三 的老问题）。
+# 单独起一个 Filebeat 用我们自己的 wazuh/filebeat.yml，行为可控、与 Zeek 线一致。
+#
+# ── 待实机验证（没有真实 Wazuh 环境，以下都只在纸面成立）────────────────────
+#   · 镜像 tag 与启动参数（API_USERNAME/API_PASSWORD、卷路径、ulimits）
+#   · manager 自带的 Filebeat 在缺 indexer 时的行为（预期只是报错重试，不影响采集）
+#   · 1514/1515 是否需要对外暴露（按 agent 上报方式决定）
+# ──────────────────────────────────────────────────────────────────────────
+services:
+  wazuh-manager:
+    image: ${WAZUH_IMAGE:-wazuh/wazuh-manager:4.14.8}
+    hostname: wazuh-manager
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    environment:
+      TZ: Asia/Shanghai
+      # 深瞳后台「系统配置 → Wazuh 接入」填同一组（默认管理员 wazuh / wazuh，
+      # 这里是 API 用户，注意别把默认口令带到生产）
+      API_USERNAME: ${WAZUH_API_USER:-wazuh-wui}
+      API_PASSWORD: ${WAZUH_API_PASSWORD:-change-me-wazuh-api}
+      # 本叠加编排不带 Wazuh indexer / dashboard：manager 自带的 Filebeat 会因为
+      # 没有 indexer 一直报连接失败（不影响 manager 与我们的采集线）。已有 indexer
+      # 的环境可把下面三项打开指向它。
+      # INDEXER_URL: ${WAZUH_INDEXER_URL:-}
+      # INDEXER_USERNAME: ${WAZUH_INDEXER_USER:-}
+      # INDEXER_PASSWORD: ${WAZUH_INDEXER_PASSWORD:-}
+    ports:
+      - "55000:55000"   # Wazuh API（深瞳 NDR 后台调用：状态 / agents / 规则下发）
+      - "1514:1514"     # agent 事件上报（按需；不需要就别开）
+      - "1515:1515"     # agent 注册（按需）
+    volumes:
+      - wazuh-etc:/var/ossec/etc
+      - wazuh-logs:/var/ossec/logs
+      - wazuh-queue:/var/ossec/queue
+      - wazuh-api-config:/var/ossec/api/configuration
+      - wazuh-var-multigroups:/var/ossec/var/multigroups
+      - wazuh-integrations:/var/ossec/integrations
+      - wazuh-active-response:/var/ossec/active-response/bin
+      - wazuh-agent-config:/var/ossec/etc/shared
+
+  wazuh-filebeat:
+    # 与 ES / Zeek 侧一致的 8.15.3
+    image: ${WAZUH_FILEBEAT_IMAGE:-docker.elastic.co/beats/filebeat:8.15.3}
+    restart: unless-stopped
+    user: root                 # 日志卷属于 wazuh 用户，只读也要能读
+    command: ["filebeat", "-e", "-strict.perms=false", "-c", "/usr/share/filebeat/wazuh.yml"]
+    environment:
+      WAZUH_LOG_DIR: /var/ossec/logs
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_KEY: shentong:events:collect
+      # 默认只收告警；原始日志（logall_json）量级大得多，要用再打开
+      WAZUH_ARCHIVES_ENABLED: ${WAZUH_ARCHIVES_ENABLED:-false}
+    volumes:
+      - ./wazuh/filebeat.yml:/usr/share/filebeat/wazuh.yml:ro
+      - wazuh-logs:/var/ossec/logs:ro
+    depends_on:
+      - wazuh-manager
+      - redis
+
+volumes:
+  wazuh-etc:
+  wazuh-logs:
+  wazuh-queue:
+  wazuh-api-config:
+  wazuh-var-multigroups:
+  wazuh-integrations:
+  wazuh-active-response:
+  wazuh-agent-config:

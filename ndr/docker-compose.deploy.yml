@@ -1,0 +1,225 @@
+# 深瞳 · NDR 线路 —— 服务器部署编排（检测 + 采集侧）
+#
+# 本线路拥有「数据面」基础设施：Elasticsearch（日志归档）+ Redis（契约队列总线）。
+# 智能体（agent）线路独立部署，经网络互访：
+#   - 本线路检测器命中后 **HTTP POST** 到 agent 的 /api/push/digests（收到 2xx 即回执；
+#     失败落本机持久队列 shentong:events:pushretry 后台重发）—— 2026 第 5 期起
+#   - 旧的 Redis 队列交接（shentong:events:dispatch + analyzed:done）已退役：
+#     地址留空或推送开关关闭时才会回落到 dispatch 队列（兼容未升级的 agent）
+#   - ES 的日志索引（agent 经 NDR 的 MCP 服务 8090/mcp 取数，不直连）
+#
+# 采集链路（第 2 期起，归一化前置）：
+#   Zeek/Wazuh 的 Filebeat --LPUSH--> shentong:events:collect
+#     → normalizer 取出并拍平成统一结构
+#         ├ LPUSH --> shentong:events:raw（detector 实时消费）
+#         └ POST  --> logstash:8080（http 输入）→ ES 统一索引 shentong-events-<日期>
+#   Logstash 的 2xx 是「入库成功」的唯一凭据（故 logstash.yml 开了持久化队列）。
+#
+# 智能体取数走 MCP（第 3 期起）：
+#   agent 线路 --Bearer 令牌--> ndr-mcp:8090/mcp（查询/调查/写回结论）
+#   智能体不再直连 ES —— 数据的看门狗在 NDR 这一侧，工具粒度、条数上限、令牌吊销都由它管。
+#   ⚠ 8090 端口只应放智能体那一台进来（防火墙/安全组限制），别暴露到公网。
+#
+# 用法（在 ndr/ 下）：
+#   docker compose -f docker-compose.deploy.yml up -d
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+
+  postgres:
+    # NDR 自己的库：User/Rule/SystemConfig/ExclusionFilter/IngestFilter，
+    # 无向量检索（不用 pgvector）。
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shentong
+      POSTGRES_PASSWORD: shentong
+      POSTGRES_DB: shentong
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # Redis：契约队列总线（agent 线路也连这里），另存旁路队列、已处理登记、频率滑窗与聚合态。
+  # 必须开持久化（AOF）——否则重启就丢 handled 登记，把已分析过的日志重分析一遍。
+  # noeviction：内存满时写入报错（采集侧背压）而不是静默淘汰关键状态。
+  redis:
+    image: redis:7
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 1536mb
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-ndr:latest
+    environment: &ndr-env
+      # 统一北京时间：容器日志与界面时间口径一致（数据仍按 UTC 存储）
+      TZ: Asia/Shanghai
+      ST_ES_URL: http://elasticsearch:9200
+      ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
+      ST_REDIS_URL: redis://redis:6379/0
+      # 管道文件名必须叫 logstash.conf（与镜像自带示例同名，才能把它覆盖掉）
+      ST_LOGSTASH_PIPELINE_CONF: /logstash/logstash.conf
+      # 备份必须放到**别的目录**（单独一个卷）：Logstash 会把管道目录里所有文件当配置读，
+      # 备份放进去就会变成第二个管道（两个 beats 抢 5044）
+      ST_LOGSTASH_PIPELINE_BACKUP: /logstash-backup/logstash.conf.bak
+      ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）
+      ST_ZEEK_CONF_DIR: /config
+      ST_ZEEK_IFACE_CONF: /config/interface.conf
+      ST_ZEEK_INTERFACES_JSON: /config/interfaces.json
+      # 第 5 期：检测器命中后经 HTTP 推给智能体（地址形如 http://<agent-host>:8000/api/push/digests）
+      ST_AGENT_PUSH_URL: ${NDR_AGENT_PUSH_URL:-}
+      ST_AGENT_PUSH_TOKEN: ${NDR_AGENT_PUSH_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - zeek-config:/config
+      # 采集侧管道配置：后端写、Logstash 读（自动重载）
+      - logstash-pipeline:/logstash
+      # 管道备份单独一个卷：**不能**跟管道同目录（否则被当成第二个管道）
+      - logstash-backup:/logstash-backup
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    restart: unless-stopped
+
+  # 事件驱动检测器：消费 Redis 旁路队列，实时检测 + 短窗聚合后投递摘要到契约队列
+  detector:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-ndr:latest
+    command: python -m app.detector
+    environment: *ndr-env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # 采集侧归一化：原始日志 → 统一结构 → 检测器队列 + Logstash → ES
+  # 「归一化只做一次」就在这里：检测器与智能体此后看到的都是同一份结构。
+  # 先投检测器、再 POST 入库；POST 失败把本批放回队尾重试（recover 只兜底崩溃残留）。
+  normalizer:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-ndr:latest
+    command: python -m app.collector.normalizer_service
+    environment: *ndr-env
+    depends_on:
+      - redis
+      - logstash
+    restart: unless-stopped
+
+  # MCP 服务：智能体分析事件时的查询 / 调查 / 写回结论入口
+  # 独立进程独立端口：调查期间工具调用会长时间占连接，不跟界面请求抢 worker。
+  ndr-mcp:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-ndr:latest
+    command: python -m app.mcp.server
+    environment: *ndr-env
+    ports:
+      - "8090:8090" # 仅供智能体线路访问（防火墙上限定来源，别开公网）
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # 采集侧入库：归一化服务 → Logstash → ES（统一索引）
+  # 管道内容由后台「系统配置 → Logstash 采集」维护（后端写共享卷，本容器自动重载）
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.15.3
+    environment:
+      LS_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      # 共享卷**直接挂在镜像默认管道目录**上：后端往卷里写 logstash.conf，
+      # 文件名与镜像自带的示例管道相同 → 正好覆盖它，目录里只剩我们这一份管道。
+      - logstash-pipeline:/usr/share/logstash/pipeline
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      # 持久化队列（logstash.yml 里开的 queue.type: persisted）也要能落盘，
+      # 否则 2xx 只代表事件进了内存队列。
+      - logstash-queue:/usr/share/logstash/data
+    ports:
+      - "8080:8080" # 归一化服务的 http 输入（JSON / NDJSON）
+      - "9600:9600" # 监控 API（后端读存活/吞吐/重载统计）
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  # Zeek 采集（内含 Filebeat，发 Redis 采集队列）
+  # host 网络 + NET_RAW/NET_ADMIN 才能抓宿主网卡；host 网络下 Redis 用 localhost
+  zeek:
+    image: ghcr.io/cxiyuan/sec-agent/shentong-zeek:latest
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      ZEEK_CONF_DIR: /config
+      ZEEK_IFACE_CONF: /config/interface.conf
+      ZEEK_INTERFACES_JSON: /config/interfaces.json
+      ZEEK_LOG_DIR: /logs
+      ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
+      # 采集侧发 Redis 采集队列（host 网络下用宿主地址）
+      REDIS_HOST: ${REDIS_HOST:-localhost}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_KEY: ${REDIS_KEY:-shentong:events:collect}
+    volumes:
+      - zeek-logs:/logs
+      - zeek-config:/config
+      # Filebeat 注册表持久化：不持久化的话，容器每次重建（改配置/升级镜像）都会
+      # 从头重读 /logs 全部日志 → 队列洪水（生产上已踩到）
+      - zeek-filebeat:/usr/local/bin/data
+    restart: unless-stopped
+
+  # NDR 管理台（规则/网段/排除/采集配置）
+  frontend:
+    # 后端地址在「构建时」烙进 Next 的 rewrites（默认取 compose 服务名 backend），
+    # 运行时再设 BACKEND_URL 无效，故此处不声明。
+    image: ghcr.io/cxiyuan/sec-agent/shentong-ndr-frontend:latest
+    environment:
+      TZ: Asia/Shanghai  # 服务端渲染与容器日志统一北京时间
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  es-data:
+  pg-data:
+  redis-data:
+  zeek-logs:
+  zeek-config:
+  zeek-filebeat:
+  logstash-pipeline:
+  logstash-backup:
+  logstash-queue:

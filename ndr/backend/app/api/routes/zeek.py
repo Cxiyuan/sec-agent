@@ -1,0 +1,235 @@
+"""Zeek 采集：监控网段 / 网卡配置下发、网卡清单、状态。
+
+「监控网段」是一份多行清单（一行一条 CIDR/IP），由它生成 Zeek 的两个参数：
+
+- `bpf_filter`：只抓这些网段（BPF 里 `net X` 本身即「源或目的落在 X」）；
+- `local_nets`：Zeek 的 `Site::local_nets`（规则里的 src_internal / dst_internal 依赖它）。
+
+后端只写**共享配置文件**（`/config/interface.conf`），Zeek 容器内的看门狗检测到变化后
+在容器内重载 Zeek —— 后端不接触 docker socket，也不需要宿主权限。
+
+清单同时落 SystemConfig：检测器（它不挂 /config 卷）读库里的那份，保证「抓什么就分析什么」。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import UTC, datetime
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.config import settings
+from app.db.base import get_db
+from app.db.models import SystemConfig, User
+from app.ingestion.scope import (
+    build_bpf,
+    monitored_nets,
+    nets_text,
+    networks_status,
+    parse_nets,
+    validate_nets,
+)
+
+router = APIRouter(prefix="/api/zeek", tags=["zeek"])
+
+#: interface.conf 里写哪些键（顺序即文件里的顺序）
+CONF_KEYS = ("interface", "monitored_nets", "bpf_filter", "local_nets", "bpf_extra")
+
+#: 只有 interface / monitored_nets / bpf_extra 是「输入」，另两个是由它们生成的输出
+DEFAULT_CONF = {
+    "interface": settings.zeek_interface,
+    "monitored_nets": settings.zeek_monitored_nets,
+    "bpf_filter": "",
+    "local_nets": "",
+    "bpf_extra": settings.zeek_bpf_extra,
+}
+
+
+class ZeekIfaceIn(BaseModel):
+    interface: str = ""  # 留空 = 保持当前网卡（首次向导只改网段时会用到）
+    networks: str = ""  # 监控网段：一行一条（换行或逗号分隔）
+    bpf_extra: str = ""  # 附加 BPF 条件（可选，如 not port 22）
+
+
+def _read_conf() -> dict[str, str]:
+    """读共享配置文件；不存在时返回默认值。"""
+    values = dict(DEFAULT_CONF)
+    path = settings.zeek_iface_conf
+    if not os.path.exists(path):
+        return values
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key in values:
+                    values[key] = val.strip()
+    except OSError:
+        return dict(DEFAULT_CONF)
+    return values
+
+
+def _write_conf(values: dict[str, str]) -> str | None:
+    """原子写（先临时文件再 rename），避免看门狗读到半截内容。
+
+    成功返回 None；失败返回错误说明（由调用方转成 400）。
+    """
+    path = settings.zeek_iface_conf
+    dirname = os.path.dirname(path) or "."
+    tmp = f"{path}.tmp"
+    lines = [
+        "# 由深瞳 Web 后台维护；本文件变化会被看门狗检测并重载 Zeek",
+        f"# updated_at={datetime.now(UTC).isoformat()}",
+    ]
+    lines += [f"{key}={values.get(key, '')}" for key in CONF_KEYS]
+    body = "\n".join(lines) + "\n"
+    try:
+        os.makedirs(dirname, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def _conf_nets(conf: dict[str, str]) -> list[str]:
+    """配置文件里的监控网段；文件里没有（如容器自建的空文件）则回落库里的那份。"""
+    return parse_nets(conf.get("monitored_nets", "")) or monitored_nets()
+
+
+def _put_config(db: Session, key: str, value: str) -> None:
+    row = db.get(SystemConfig, key)
+    if row is None:
+        row = SystemConfig(key=key, value={})
+        db.add(row)
+    row.value = {"value": value}
+
+
+def _read_interfaces() -> list[dict[str, Any]]:
+    """读 Zeek 容器写入的宿主网卡清单。"""
+    path = settings.zeek_interfaces_json
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _read_last_reload() -> str | None:
+    path = os.path.join(settings.zeek_conf_dir, "last_reload")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+@router.get("/status")
+def get_status(_: Annotated[User, Depends(get_current_user)]):
+    conf = _read_conf()
+    nets = _conf_nets(conf)
+    bpf_extra = conf.get("bpf_extra", "")
+    return {
+        "interface": conf.get("interface") or settings.zeek_interface,
+        "networks": nets,
+        "bpf_extra": bpf_extra,
+        "bpf_filter": build_bpf(nets, bpf_extra),
+        "local_nets": ",".join(nets),
+        "last_reload": _read_last_reload(),
+        "config_path": settings.zeek_iface_conf,
+        "detected": _read_interfaces(),
+        # 镜像内硬编码（见 zeek/README.md）
+        "rotation_hours": 24,
+        "retention_days_local": 3,
+    }
+
+
+@router.get("/networks/status")
+def get_networks_status(_: Annotated[User, Depends(get_current_user)]):
+    """供前端判断是否已配置监控网段（未配置 → 强制进首次向导）。"""
+    return networks_status()
+
+
+@router.put("/interface")
+def set_interface(
+    body: ZeekIfaceIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    conf = _read_conf()
+    iface = (body.interface or conf.get("interface") or settings.zeek_interface).strip()
+    if not iface:
+        return JSONResponse(
+            status_code=400,
+            content={"conflict": "field_error", "detail": "网卡名不能为空"},
+        )
+    if any(ch.isspace() for ch in iface):
+        return JSONResponse(
+            status_code=400,
+            content={"conflict": "field_error", "detail": "网卡名不能包含空格"},
+        )
+
+    nets = parse_nets(body.networks)
+    errors = validate_nets(nets)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={"conflict": "field_error", "detail": errors[0]["msg"], "field_errors": errors},
+        )
+
+    bpf_extra = body.bpf_extra.strip()
+    # 配置文件是 key=value 行格式，多行清单要压成逗号分隔（Zeek 侧按逗号切开渲染）
+    nets_csv = ",".join(nets)
+    values = {
+        "interface": iface,
+        "monitored_nets": nets_csv,
+        "bpf_filter": build_bpf(nets, bpf_extra),
+        "local_nets": nets_csv,
+        "bpf_extra": bpf_extra,
+    }
+
+    write_error = _write_conf(values)
+    if write_error:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "write_failed",
+                "detail": (
+                    f"写入网卡配置失败：{write_error}（请确认 /config 共享卷已挂载给后端与 Zeek）"
+                ),
+            },
+        )
+
+    # 同时落库：检测器不挂 /config 卷，它读这份；也便于展示与追溯
+    for key, value in (
+        ("zeek.interface", iface),
+        ("zeek.monitored_nets", nets_text(nets)),
+        ("zeek.bpf_filter", values["bpf_filter"]),
+        ("zeek.local_nets", nets_csv),
+        ("zeek.bpf_extra", bpf_extra),
+    ):
+        _put_config(db, key, value)
+    db.commit()
+
+    return {
+        "ok": True,
+        "interface": iface,
+        "networks": nets,
+        "bpf_extra": bpf_extra,
+        "bpf_filter": values["bpf_filter"],
+        "local_nets": nets_csv,
+        "note": "已下发；Zeek 看门狗将在约 10 秒内重载（期间约 1~2 秒中断抓包）",
+    }

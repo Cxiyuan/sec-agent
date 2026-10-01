@@ -1,7 +1,9 @@
 {
-  "include": ["backend"],
+  "venvPath": ".",
+  "venv": ".venv",
   "executionEnvironments": [
-    { "root": "backend" }
+    { "root": "ndr/backend" },
+    { "root": "agent/backend" }
   ],
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": "none",

@@ -1,0 +1,83 @@
+# 深瞳 · 智能体线路 —— 本地开发编排（本地 build 镜像）
+#
+# 本线路不拥有 ES / Redis（NDR 的数据面），经网络访问。同机开发时先起 ndr 线路，
+# 或用环境变量指到已有的 NDR 主机：
+#   NDR_MCP_URL=http://localhost:8090/mcp \
+#   NDR_MCP_TOKEN=<NDR 后台生成的令牌> \
+#   NDR_REDIS_URL=redis://localhost:6379/0 \
+#   PUSH_TOKEN=<与 NDR「智能体推送」里填的令牌一致> \
+#   docker compose up -d --build
+#
+# 同机开发端口避让（与 ndr 线路错开）：
+#   backend 宿主 8001（NDR 占 8000）、frontend 宿主 3001（NDR 占 3000）、postgres 宿主 5433。
+services:
+  postgres:
+    # 智能体自己的库（pgvector 支持 KnowledgeChunk 向量检索）
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: shentong
+      POSTGRES_PASSWORD: shentong
+      POSTGRES_DB: shentong
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    environment: &agent-env
+      # 统一北京时间：容器日志与界面时间口径一致（数据仍按 UTC 存储）
+      TZ: Asia/Shanghai
+      ST_MCP_URL: ${NDR_MCP_URL:-http://localhost:8090/mcp}
+      ST_MCP_TOKEN: ${NDR_MCP_TOKEN:-}
+      # 第 5 期：接收 NDR 的 HTTP 推送（与 NDR 侧 NDR_AGENT_PUSH_TOKEN 一致；空 = 拒绝所有推送）
+      ST_PUSH_TOKEN: ${PUSH_TOKEN:-}
+      ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
+      ST_REDIS_URL: ${NDR_REDIS_URL:-redis://localhost:6379/0}
+      ST_CELERY_BROKER_URL: ${NDR_CELERY_BROKER_URL:-redis://localhost:6379/1}
+      ST_CELERY_RESULT_BACKEND: ${NDR_CELERY_RESULT_BACKEND:-redis://localhost:6379/2}
+      ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
+    ports:
+      - "8001:8000"
+    depends_on:
+      - postgres
+
+  celery-worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app worker -l info --concurrency=2
+    environment: *agent-env
+    depends_on:
+      - postgres
+
+  celery-investigation:
+    build: ./backend
+    command: >
+      celery -A app.workers.celery_app worker -l info
+      -Q investigation --concurrency=1
+    environment: *agent-env
+    depends_on:
+      - postgres
+
+  celery-beat:
+    build: ./backend
+    command: celery -A app.workers.celery_app beat -l info
+    environment: *agent-env
+    depends_on:
+      - postgres
+
+  frontend:
+    # 共享包 packages/ui 在仓库根，故 build context 用仓库根、dockerfile 指到本 app。
+    # 后端地址在「构建时」烙进 rewrites（默认取 compose 服务名 backend）。
+    build:
+      context: ..
+      dockerfile: agent/frontend/Dockerfile
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "3001:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pg-data:
