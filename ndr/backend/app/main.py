@@ -27,12 +27,15 @@ _MIGRATIONS: tuple[str, ...] = ()
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
 
-#: 启动时下发 ILM/索引模板的最大尝试次数与间隔。compose 同时拉起十个服务时 ES 常比
-#: 后端起得晚（实测 ES 就绪要 30~40 秒），一次性下发会静默失败 —— 模板缺失，Logstash
-#: 自动建的索引拿到默认 `number_of_replicas: 1`，单节点集群恒 yellow（2026-10 从零
-#: 重建时实测）。12 × 5 秒 ≈ 1 分钟，够覆盖 ES 冷启动。
-_ES_SETUP_ATTEMPTS = 12
+#: 启动时下发 ILM/索引模板的节奏。compose 同时拉起十个服务时 ES 常比后端起得晚
+#: （实测 ES 就绪要 30~40 秒，`stop` 后再 `start` 更慢），一次性下发会静默失败 ——
+#: 模板缺失时 Logstash 自动建的索引拿到默认 `number_of_replicas: 1`，单节点集群恒
+#: yellow（2026-10 实机实测：12 × 5 秒 ≈ 1 分钟那次没等到 ES 回来就放弃了）。
+#: 所以前 24 次每 5 秒试（≈2 分钟），之后每 5 分钟复查一次；成功以后也继续复查，
+#: 这样模板被人删掉、或 ES 卷被换掉都能自己长回来（两次幂等 HTTP 调用，开销可忽略）。
+_ES_SETUP_ATTEMPTS = 24
 _ES_SETUP_INTERVAL_SECONDS = 5.0
+_ES_SETUP_RECHECK_SECONDS = 300.0
 
 
 def _dynamic_rule_spec(spec: dict[str, Any]) -> dict[str, Any]:
@@ -60,30 +63,35 @@ def _migrate() -> None:
 
 
 def _push_es_retention() -> None:
-    """幂等下发 ILM 策略与事件索引模板，ES 未就绪就重试（约 1 分钟）。
+    """幂等下发 ILM 策略与事件索引模板；ES 没就绪就一直等，之后定期复查。
 
     在后台线程里跑：ES 没起来不能拖住 API 就绪，也不能让采集链路等它。
-    全部尝试都失败才记 warning（并提示界面上那个手工入口）。
+    前 `_ES_SETUP_ATTEMPTS` 次每 5 秒试一次（覆盖 ES 冷启动），之后每 5 分钟
+    复查一次；第一次放弃高速重试时记一条 warning（并提示界面上那个手工入口），
+    之后不再刷日志。成功后也继续复查 —— 模板被删、ES 卷被换都能自动长回来。
     """
     from app.api.routes.es_admin import ensure_retention
 
-    for attempt in range(1, _ES_SETUP_ATTEMPTS + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             ensure_retention()
         except Exception as exc:  # noqa: BLE001
-            if attempt < _ES_SETUP_ATTEMPTS:
-                time.sleep(_ES_SETUP_INTERVAL_SECONDS)
-                continue
-            logger.warning(
-                "下发 ES 保留期策略/索引模板失败（重试 %d 次未成功，"
-                "可稍后在界面点「下发保留期」）：%s",
-                _ES_SETUP_ATTEMPTS,
-                exc,
-            )
-            return
+            if attempt == _ES_SETUP_ATTEMPTS:
+                logger.warning(
+                    "下发 ES 保留期策略/索引模板失败（重试 %d 次未成功，"
+                    "之后每 %.0f 秒自动重试，也可在界面点「下发保留期」）：%s",
+                    _ES_SETUP_ATTEMPTS,
+                    _ES_SETUP_RECHECK_SECONDS,
+                    exc,
+                )
+            slow = attempt >= _ES_SETUP_ATTEMPTS
+            time.sleep(_ES_SETUP_RECHECK_SECONDS if slow else _ES_SETUP_INTERVAL_SECONDS)
+            continue
         if attempt > 1:
             logger.info("ES 保留期策略/索引模板已在第 %d 次尝试下发成功", attempt)
-        return
+        time.sleep(_ES_SETUP_RECHECK_SECONDS)
 
 
 def _seed() -> None:

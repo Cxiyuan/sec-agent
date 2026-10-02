@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -23,6 +24,8 @@ from app.ingestion.es_client import get_es
 from app.ingestion.es_schema import clear_cache as clear_ip_field_cache
 
 router = APIRouter(prefix="/api/es", tags=["es"])
+
+logger = logging.getLogger(__name__)
 
 CONFIG_KEYS = (
     "es.url",
@@ -223,8 +226,9 @@ def ensure_retention(days: int | None = None) -> None:
     `manage_template => false`，索引由 ES 自动创建，单节点集群会拿到默认的
     `number_of_replicas: 1` —— 副本永远分配不出去，集群健康恒为 yellow
     （2026-10 实机部署踩到）。`0-1` 让 ES 自己按节点数伸缩：单节点 = 0 副本（green），
-    多节点 = 1 副本（有冗余），比硬写死 0 更稳。模板只影响之后新建的索引，已存在的
-    索引要用 `PUT <index>/_settings` 单独改（界面上的「下发保留期」不做这件事）。
+    多节点 = 1 副本（有冗余），比硬写死 0 更稳。模板只影响之后新建的索引，所以这里
+    顺手把**已经存在**的同类索引也改成同一口径（模板缺失期间建出来的索引仍是 1 副本，
+    会一直 yellow；改成 0 副本 + `0-1` 后 ES 会把多出来的副本撤掉，集群回 green）。
     """
     real_days = days if days is not None else es_config.retention_days()
     real_days = max(real_days, settings.lookback_max_days)
@@ -245,6 +249,21 @@ def ensure_retention(days: int | None = None) -> None:
             },
             priority=500,
         )
+    # 已存在的索引也拉回同一口径（幂等）。一个都没匹配上时 ES 报 index_not_found，
+    # 属正常情况，忽略即可。
+    for pattern in TEMPLATES:
+        try:
+            es.indices.put_settings(
+                index=pattern,
+                settings={
+                    "index": {
+                        "number_of_replicas": 0,
+                        "auto_expand_replicas": "0-1",
+                    }
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("回正已存在索引的副本设置失败（%s）：%s", pattern, exc)
 
 
 @router.post("/apply-retention")
