@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -238,6 +239,61 @@ def _http_event_type(method: str, path: str, content_type: str, status_code: int
     return "http_request"
 
 
+# ---------- 代理头 → 真实客户端 IP ----------
+#
+# Zeek 把「能表明请求经过代理」的请求头收进 HTTP::Info$proxied（默认清单见
+# base/protocols/http/main.zeek 的 option proxy_headers），元素形如
+# "X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"。XFF 是客户端自报、可伪造，
+# 因此只落成独立字段 real_client_ip，**不覆盖** src_ip（TCP 对端）。
+_XFF_HEADERS = ("X-FORWARDED-FOR", "X-FORWARDED-FROM", "FORWARDED", "CLIENT-IP")
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _first_ip(text: Any) -> str:
+    """从代理头值里取第一个合法 IP（XFF 形如 "客户端, 代理1, 代理2"）。"""
+    for part in str(text or "").replace(";", ",").split(","):
+        candidate = part.strip().strip('"')
+        if "=" in candidate:  # RFC 7239: for=1.2.3.4;proto=https
+            candidate = candidate.split("=", 1)[1].strip().strip('"')
+        if candidate.startswith("[") and "]" in candidate:  # [2001:db8::1]:4711
+            candidate = candidate[1 : candidate.index("]")]
+        if _is_ip(candidate):
+            return candidate
+        host, sep, _port = candidate.partition(":")
+        if sep and _is_ip(host):  # 1.2.3.4:5678
+            return host
+    return ""
+
+
+def _real_client_ip(doc: dict[str, Any]) -> str | None:
+    """解析代理头里的真实客户端 IP；没有就返回 None（落库为 NULL）。"""
+    raw = doc.get("proxied")
+    if not raw:
+        raw = _first(doc, ("x-forwarded-for", "X-Forwarded-For", "x_forwarded_for"))
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    for item in values:
+        text = str(item or "")
+        name, sep, value = text.partition("->")
+        if sep:
+            # Zeek 的 proxied 是 "头名 -> 头值"；不认识的头（如 VIA）跳过
+            if name.strip() and name.strip().upper() not in _XFF_HEADERS:
+                continue
+            found = _first_ip(value)
+        else:
+            # 上游直接给的裸代理头值（没有头名）
+            found = _first_ip(text)
+        if found:
+            return found
+    return None
+
+
 def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
     """抽取 HTTP/TLS/DNS/文件相关的扩展字段。"""
     body_value = _first(doc, _csv(settings.http_body_fields))
@@ -250,6 +306,11 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "uri_path": path[:512],
         "query_string": qs[:1024],
         "body": _clip(body_value, settings.http_body_max_chars),
+        "resp_body": _clip(
+            _first(doc, _csv(settings.http_resp_body_fields)), settings.http_resp_body_max_chars
+        ),
+        "resp_body_len": _to_int(doc.get("response_body_len")),
+        "real_client_ip": _real_client_ip(doc),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
         "cookie": _clip(doc.get("cookie"), settings.http_cookie_max_chars),
         "content_type": content_type[:128],

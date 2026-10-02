@@ -108,8 +108,11 @@ def _new_bucket(kind: str, key: str, display: str) -> dict[str, Any]:
 
 def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
     bucket["count"] += 1
-    if entry.src_ip:
-        bucket["src_ips"][str(entry.src_ip)] += 1
+    # 源 IP 优先用代理头解析出的真实客户端 IP（real_client_ip），没有才用 TCP 对端：
+    # 经反向代理进来的流量，画像要统计真实客户端，而不是代理地址。
+    client_ip = entry.real_client_ip or entry.src_ip
+    if client_ip:
+        bucket["src_ips"][str(client_ip)] += 1
     if entry.user_agent:
         bucket["user_agents"][entry.user_agent[:128]] += 1
     if entry.uri_path:

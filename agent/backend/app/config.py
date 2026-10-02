@@ -75,6 +75,9 @@ class Settings(BaseSettings):
         "request_body,body,post_body,payload,http.request.body,http.request_body"
     )
     http_body_max_chars: int = 2000
+    # 响应体（Zeek 侧由 site/shentong-httpbody.zeek 采到 HTTP::Info$resp_body）
+    http_resp_body_fields: str = "resp_body,response_body,http.response.body,http.response_body"
+    http_resp_body_max_chars: int = 2000
     http_cookie_max_chars: int = 200
     web_login_path_regex: str = (
         "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"

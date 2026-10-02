@@ -156,6 +156,19 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "响应 MIME 类型",
     },
+    "resp_body": {
+        "kind": "text",
+        "desc": "响应正文（Zeek resp_body 截断后入库，可能为空；完整字节数看 resp_body_len）",
+    },
+    "resp_body_len": {
+        "kind": "num",
+        "desc": "整条响应体的字节数（Zeek response_body_len，不受采集截断影响）",
+    },
+    "real_client_ip": {
+        "kind": "ip",
+        "desc": "真实客户端 IP：代理头（X-Forwarded-For/Forwarded/Client-IP）解析出的最左地址；"
+        "没带代理头时为 NULL（src_ip 仍是 TCP 对端，二者可能不同）",
+    },
     # ---------- TLS ----------
     "ja3": {
         "kind": "keyword",
@@ -210,6 +223,7 @@ SUMMARY_FIELDS: tuple[str, ...] = (
     "event_type",
     "source_system",
     "src_ip",
+    "real_client_ip",
     "src_port",
     "dst_ip",
     "dst_port",
@@ -247,6 +261,7 @@ SUMMARY_FIELDS: tuple[str, ...] = (
 # 允许聚合的字段（terms 聚合只对低基数维度有意义；对 uri/body 聚合会爆分桶）。
 AGG_FIELDS: tuple[str, ...] = (
     "src_ip",
+    "real_client_ip",
     "dst_ip",
     "src_port",
     "dst_port",

@@ -25,6 +25,9 @@ class UnifiedLog(BaseModel):
     src_port: int | None = None
     dst_port: int | None = None
     protocol: str | None = None
+    # 真实客户端 IP：代理头（X-Forwarded-For / Forwarded / Client-IP…）里的最左地址。
+    # 只有 HTTP 日志且带了代理头才有值，其余为 NULL（不覆盖 src_ip＝TCP 对端）。
+    real_client_ip: str | None = None
     # Zeek 连接状态（S0/REJ/SF…）：用于判定“是否真的建立了会话”（探活/扫描 vs 实际连接）
     conn_state: str = ""
     hostname: str | None = None
@@ -37,6 +40,8 @@ class UnifiedLog(BaseModel):
     query_string: str = ""  # HTTP 参数部分
     method: str = ""  # HTTP 方法
     body: str = ""  # 请求体（自动适配字段名 + 截断）
+    resp_body: str = ""  # 响应体（自动适配字段名 + 截断）
+    resp_body_len: int | None = None  # 整条响应体字节数（Zeek response_body_len，不受截断影响）
     referer: str = ""
     cookie: str = ""  # 截断；会话 id 只做哈希后入库
     auth_scheme: str = ""  # basic / bearer / jwt（不落库明文凭证）

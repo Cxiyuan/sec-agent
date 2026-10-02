@@ -90,10 +90,15 @@ docker compose restart zeek
   `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`），实测
   `ssl.log` 127 条 0 处 ja3。所以基于 `ja3` 字段的规则（`rules/builtin.py` 里那条空值
   模板）永远匹配不到；要用得另装/自写 JA3 脚本（社区 `ja3.zeek`、zkg 包）再接归一化
-- **不解析请求头**：Zeek 默认不把 HTTP 请求头写进 `http.log`（`HTTP::Info` 里没有头字段），
-  因此**经过反向代理时 `src_ip` 是代理的 IP**，拿不到 `X-Forwarded-For` / `X-Real-IP` /
-  `Forwarded` 里的原始客户端 IP；要用得自己接 `http_header` 事件加 `&log` 字段
-  （与 `shentong-httpbody.zeek` 同一套路），并配可信代理白名单（转发头可被伪造）
+- **请求头只采「代理相关」那几个（2026-10 修正）**：Zeek 不会把任意请求头写进 `http.log`，
+  但它自带的 HTTP 分析器会把**表明请求经过代理**的头收进 `HTTP::Info$proxied`
+  （默认清单：`X-Forwarded-For` / `X-Forwarded-From` / `Forwarded` / `Client-IP` /
+  `Via` / `Xroxy-Connection` / `Proxy-Connection`），值形如
+  `"X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"`；本项目 normalizer 已把它解析成归一化
+  字段 `real_client_ip`（没有代理头时是 NULL，`src_ip` 仍是 TCP 对端）。**Cookie 与其它自定义头
+  仍不落盘**，要采得自己接 `http_header` 事件加 `&log` 字段（与 `shentong-httpbody.zeek`
+  同一套路）。注意转发头是客户端自报、**可伪造**，拿它做封禁/画像必须配可信代理白名单
+  （本项目尚未做，`real_client_ip` 只代表「头里写了什么」）
 
 ## 上线后专项检查（日志与协议解析）
 
@@ -104,13 +109,13 @@ docker compose restart zeek
 |---|---|---|---|
 | 1 | 实际产出了哪些日志 | `docker exec <zeek> ls -la /logs` | 至少 `conn.log` / `http.log` / `dns.log` / `ssl.log`；有对应流量时出现 `files.log` / `smtp.log` / `ssh.log` / `dhcp.log` / `notice.log` |
 | 2 | 轮转与保留 | `ls /logs` 顶层活动日志 + `/logs/<YYYY-MM-DD>/` 子目录 | 每 24h 轮转进日期目录；超过 3 天的归档被入口清理循环删掉（活动日志不动） |
-| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`（**`ja3`/`ja3s` 拿不到**，见「已知限制」）；`site/shentong-extra.zeek` 加载的分析器都生效 |
-| 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body` 字段 | 有 `body`（请求方向、≤4096B、二进制跳过、UTF-8 放行）；GET/HEAD 无 body |
+| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`（**`ja3`/`ja3s` 拿不到**，见「已知限制」）；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
+| 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body`（请求体）与 `resp_body`（响应体） | 两者都有（各 ≤4096B，可用 `redef` 放大；二进制块跳过、UTF-8 放行）；GET/HEAD 无 `body` 但有 `resp_body`；**响应体完整字节数看 Zeek 自带的 `response_body_len`**（不受截断影响，落库为 `resp_body_len`） |
 | 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps -o args= -C zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成，命令里应出现 `-f net …`；`-f` 缺失会被 Zeek 当脚本名，启动即 fatal）；**未配网段时全量抓包** |
 | 6 | 是否重复告警 | 看 `notice.log` 有无内容 | 目前只加载 `policy/tuning/json-logs`，**没有**加载 `policy/protocols/*`，故 Zeek 自己不产检测类 notice；检测全由内置规则做 |
 | 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
-| 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `src_ip` | **当前拿不到**（= 代理 IP）。要支持需新增 `scripts.d/` 脚本接 `http_header` 取 `X-Forwarded-For`/`X-Real-IP`/`Forwarded` + `UnifiedLog` 加字段 + 归一化映射 + 可信代理白名单（四层代理不写这些头，只能靠 PROXY protocol 或回查 NAT/防火墙日志，本项目均未支持） |
+| 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）。**未做**：可信代理白名单（头可伪造）、`X-Real-IP`（不在 Zeek 默认清单）、四层代理（只转发 TCP 不写头）只能靠 PROXY protocol 或回查 NAT/防火墙日志 |
 
 ### 实机结果（2026-10，172.16.196.77）
 
@@ -118,10 +123,10 @@ docker compose restart zeek
 |---|---|---|
 | 1 | ✅ | `/logs`：conn.log 7.9MB、dhcp.log 23KB、dns.log 39KB、files.log 1140B、http.log、ssl.log 35KB、weird.log、x509.log、packet_filter.log；无 notice.log |
 | 2 | ⏳ | 启动当天，`/logs/<日期>/` 子目录尚未出现（24h 轮转未到），保留策略未能实测 |
-| 3 | ✅（除 ja3） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全。`ja3`/`ja3s` 在 Zeek 9.0 里不存在（见「已知限制」） |
-| 4 | ✅ 已修 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`） |
+| 3 | ✅（除 ja3） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全；带 `X-Forwarded-For` 的请求另有 `proxied`（见第 9 行）。`ja3`/`ja3s` 在 Zeek 9.0 里不存在（见「已知限制」） |
+| 4 | ✅ 已修 + 已扩到响应体 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`）。2026-10-02 又加响应体：`resp_body` + Zeek 自带 `response_body_len`，容器内 Zeek 单测 9 项全过（请求/响应分块截断、GET 只采响应体、NUL 双向拦、UTF-8 双向放行、PUT 采请求体） |
 | 5 | ✅ | 界面配 `172.16.196.0/24` 后启动命令变为 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 172.16.196.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 172.16.196.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
 | 6 | ✅ | 无 notice.log（未加载 `policy/protocols/*`），符合预期 |
 | 7 | ✅ | ES 聚合：log_type = conn 3168 / dhcp 18 / dns 8 / ssl 8 / http 2；event_type = rejected_connection 3140 / dhcp_activity 18 / conn_established 17 / scan_attempt 11 / dns_query 8 / tls_session 8 / http_request 2 |
 | 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内置-内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |
-| 9 | ❌ 不支持 | 见上表说明（需 `http_header` + XFF 全套改造） |
+| 9 | ✅ 已支持（2026-10-02） | 本机探针（uid `Cy2rDP36QlAdi9ru79`）发 `X-Forwarded-For: 198.51.100.77, 203.0.113.9` → `http.log` 得 `proxied: ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]`，`id.orig_h` 仍是 TCP 对端；归一化后 `real_client_ip=198.51.100.77`、`src_ip` 不变；同一条还有 `resp_body` 与 `resp_body_len=80` |

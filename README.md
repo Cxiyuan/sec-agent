@@ -195,9 +195,9 @@ manager 的 API 地址与凭据。
     整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆
 12. **专门核对 Zeek 的日志生成与协议解析**（真实网卡上线后必做一遍）：实际产出了哪些
     `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
-    `log_type`/`event_type` 与内置规则的命中情况；**反向代理场景的原始客户端 IP 目前拿不到**
-    （Zeek 默认不把请求头写进 http.log，`X-Forwarded-For` / `X-Real-IP` / `Forwarded` 需要自己接
-    `http_header` 事件 —— 本项目未实现）。逐条清单见
+    `log_type`/`event_type` 与内置规则的命中情况；反向代理场景的原始客户端 IP 走 `http.log` 的
+    `proxied` → 归一化字段 `real_client_ip`（无代理头时为 NULL，`src_ip` 仍是 TCP 对端），
+    响应体也采集（`resp_body` + `resp_body_len`，后者是整条响应体的字节数）。逐条清单见
     [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」
 13. （NDR 线路）**确认 ES 集群健康是 green**：事件索引模板在后端启动时自动下发，副本按
     `auto_expand_replicas: "0-1"`（单节点 = 0 副本，所以不会出现「副本分配不出去」的常驻 yellow）。
