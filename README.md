@@ -209,6 +209,12 @@ manager 的 API 地址与凭据。
     `0.0.0.0:...`** —— ES 与 Postgres 无额外鉴权、Redis 默认无密码，发布到 `0.0.0.0`
     等于同网段任何机器都能直接读写库与队列。只有智能体线路确实要连 Redis 时才按 §二
     放开一个受控地址（`REDIS_BIND` + `REDIS_HOST` 成对改）`
+15. （NDR 线路）**删卷重建后要重新做的事**：`docker compose down -v`（或换服务器）会清掉 ES 事件、
+    Postgres（规则/用户/系统配置）、Redis 队列、Zeek 配置与日志、提取件；重新 `up -d` 后**建表、
+    默认管理员 `admin`/`admin123`、内置规则、ES 模板与 ILM、Logstash 管道都会自动回来**，但
+    **监控网段与两个正文上限必须重新下发**（左侧「监控网段」页，或 `PUT /api/zeek/interface`），
+    MCP 令牌、摘要推送地址与令牌、Wazuh API 凭据、云端模型 Key 也都要重填。脚本里调登录接口注意
+    它是 **OAuth2 表单编码**（`-d 'username=admin&password=admin123'`），发 JSON 会 422 返回空 token
 
 ---
 

@@ -299,3 +299,18 @@ docker compose restart zeek
   必须四个一起重建；② **镜像口看不到采集机自身对部分外网目标的流量**（实测 Cloudflare/`postman-echo.com`
   在 `conn.log`/`http.log`/`files.log` 里完全没有记录，`mirrors.aliyun.com` 正常）——实机验收要挑可见目标，
   且高带宽流的丢包会让落盘件不完整（见「已知限制」）。
+
+**卷级重建复验（2026-10-02，删掉全部 10 个卷从零重建后）**
+
+- `zeek-config` / `zeek-logs` / `zeek-extract` 清空后 Zeek 回落默认：`interface.conf` 只剩 `interface=ens160`
+  与两个默认上限（`body_max_bytes=16384` / `resp_body_max_bytes=65536`），启动命令**不带** `-f`
+  （`packet_filter.log` = `"filter":"ip or not ip"`）——**网段是人工配置，删卷后必须重新下发**。
+- 经 `PUT /api/zeek/interface` 重下发 `172.16.196.0/24` + 16 KB / 64 KB 后：启动命令回到
+  `zeek -C -i ens160 -f net 172.16.196.0/24 …`，`packet_filter.log` `"filter":"net 172.16.196.0/24" … "success":true`，
+  容器内 `shentong-limits.zeek` 重新渲染成 16384 / 65536。
+- 提取/下载链路在空白卷上照样自愈：2400 B `text/plain` 与 2208 B `application/json` 上传 → 落盘
+  sha256 与原文件逐字一致、`GET /api/files/<fuid>` 200 且 `content-length` 与落盘一致、无令牌 401；
+  清理助手 `--dry-run` 对 6 件全保留（`text/json` 已在白名单内）。
+- **核数时的坑（复核）**：`fuid` / `extracted` 在 `_common` 里，**每种 `log_type` 都带这两个键（值为空串）**，
+  `exists extracted` 数出来的是全量文档（重建后 3770 / 总 3933）——数「有提取件的文件」要
+  `log_type.keyword=files` 加 `extracted` 非空。
