@@ -4,8 +4,8 @@
 - 尽量保留可被规则利用的字段（Web 深检：method/uri_path/query_string/body/
   referer/cookie/auth_scheme/ja3/tls/qtype/filename 等）
 - event_type 按日志类型细分，便于规则精准命中
-- **安全**：不落库明文口令/Token（仅保留 auth_scheme）；会话 cookie 由画像层
-  （`app.baseline.profile`）哈希后才落 `entity_profiles`，事件里只留截断值
+- **凭证明文**：body/resp_body 与请求头值**按既定口径原样保留**（智能体要原文做攻击分析，
+  见 docs/ndr-collect-plan.md「已接受的风险」）；只对持久化的 raw 做递归脱敏
 - 请求体字段名不固定 → 按配置候选择优，并截断
 """
 
@@ -18,21 +18,34 @@ from functools import lru_cache
 from typing import Any
 
 from app.config import settings
+from app.ingestion import log_types
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
-# Zeek 日志类型判别：按「特征字段」识别（ES 里各日志类型字段集不同）
+# Zeek 日志类型判别：按「特征字段」识别（各日志类型字段集不同）。
+# 只在 Filebeat **没给出** log_type 时兜底（历史扁平文档 / 人工重放 / 旧队列积压）。
+# 顺序 = 特异性从高到低：判定用 any()，撞上一个字段就定案，所以专用流必须排在共用字段的流
+# 前面（如 ja4ssh 与 ssh.log 都有 client/server，ja4ssh 必须在 ssh 之前）。
+# ja4ssh/ja4d 的字段取自上游脚本，批 2 用真实样本校正。
 _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
-    ("dns", ("query", "qtype", "rcode")),
+    ("x509", ("certificate", "fingerprint", "basic_constraints", "host_cert", "client_cert")),
+    ("notice", ("note", "msg", "sub")),
+    ("files", ("fuid", "mime_type", "filename", "md5", "sha1")),
     ("http", ("uri", "method", "status_code", "user_agent")),
     ("ssl", ("server_name", "ja3", "ja3s", "cipher")),
-    ("files", ("fuid", "mime_type", "filename", "md5", "sha1")),
+    ("dns", ("query", "qtype", "rcode")),
     ("smtp", ("mailfrom", "rcptto", "subject", "helo")),
-    ("ssh", ("auth_success", "client", "server", "auth_attempts")),
     ("dhcp", ("assigned_addr", "client_addr", "mac")),
-    ("notice", ("note", "msg", "sub")),
+    ("ja4ssh", ("hash", "direction", "kex")),
+    ("ja4d", ("hash", "ja4d")),
+    ("ssh", ("auth_success", "auth_attempts", "client", "server")),
+    ("stats", ("pkts_proc", "pkts_dropped", "events_proc", "pkt_lag")),
+    ("ntp", ("stratum", "root_delay", "root_disp", "ref_id")),
+    ("packet_filter", ("filter", "init", "success")),
+    ("reporter", ("level", "message", "location")),
+    ("weird", ("name", "peer", "addl")),
     ("conn", ("conn_state", "orig_bytes", "resp_bytes")),
 ]
 
@@ -58,7 +71,7 @@ def _clip(value: Any, limit: int) -> str:
     return text[:limit] if len(text) > limit else text
 
 
-# ---------- 凭证脱敏（仅用于持久化的 raw；body 保留供检测且不落库） ----------
+# ---------- 凭证脱敏（仅用于持久化的 raw；body/请求头按既定口径原样落库） ----------
 
 _SENSITIVE_KEYS = {
     "password",
@@ -90,7 +103,11 @@ def _mask_text(text: str) -> str:
 
 
 def _sanitize_raw(value: Any, depth: int = 0) -> Any:
-    """递归脱敏原始文档中的凭证字段（**不落库明文口令/Token**）。"""
+    """递归脱敏持久化 raw 里的凭证字段（按 key 名遮蔽，以及 `password=x` 形态的值）。
+
+    只作用于 raw 这一份：body/resp_body 与请求头值按既定口径**原样落库**
+    （已接受的风险，见 docs/ndr-collect-plan.md），不在这个函数里处理。
+    """
     if depth > 4:
         return value
     if isinstance(value, dict):
@@ -106,6 +123,20 @@ def _sanitize_raw(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return _mask_text(value)
     return value
+
+
+def _raw_with_type(doc: dict[str, Any], log_type: str, source_file: str) -> dict[str, Any]:
+    """持久化的 raw：解包后的内层原文 + 类型/来源文件名。
+
+    补 log_type/source_file 是为了让 MCP 的 raw_evidence 自解释（拿到原文就知道是哪条流、
+    哪个文件来的），ES 侧也能按 raw.log_type 统计每条流实际进来多少。
+    """
+    raw = _sanitize_raw(doc)
+    merged = dict(raw) if isinstance(raw, dict) else {"value": raw}
+    merged["log_type"] = log_type
+    if source_file:
+        merged["source_file"] = source_file
+    return merged
 
 
 # ---------- 基础转换 ----------
@@ -217,11 +248,25 @@ def _extract_account(path: str, body: str, query_string: str, user_field: Any) -
     return ""
 
 
-def _zeek_log_type(doc: dict[str, Any]) -> str:
+def _source_file(outer: dict[str, Any]) -> str:
+    """采集来源文件名（Filebeat 的 log.file.path 末段）。"""
+    path = str(_get(outer, "log.file.path") or outer.get("source_file") or "")
+    return path.rsplit("/", 1)[-1][:128]
+
+
+def _zeek_log_type(doc: dict[str, Any], outer: dict[str, Any]) -> tuple[str, bool]:
+    """判定 (log_type, 是否在采集白名单内)。
+
+    优先级：Filebeat 的文件名类型（最确定）→ 特征字段猜（兜底历史/重放文档）→ unknown。
+    白名单外的类型保留原始名字但 known=False（只入库、不进检测，可聚合巡检发现新流）。
+    """
+    explicit = log_types.canonical_log_type(outer.get("log_type") or doc.get("log_type") or "")
+    if explicit:
+        return explicit, log_types.is_known(explicit)
     for name, hints in _ZEEK_TYPE_HINTS:
         if any(h in doc for h in hints):
-            return name
-    return "conn"
+            return name, log_types.is_known(name)
+    return log_types.UNKNOWN, False
 
 
 def _http_event_type(method: str, path: str, content_type: str, status_code: int | None) -> str:
@@ -338,7 +383,8 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
     if isinstance(nested, dict):
         doc = nested
     ts = _to_dt(doc.get("ts") or outer.get("@timestamp"))
-    log_type = _zeek_log_type(doc)
+    log_type, log_type_known = _zeek_log_type(doc, outer)
+    source_file = _source_file(outer)
     note = doc.get("note")
     conn_state = doc.get("conn_state")
     src_ip = _get(doc, "id.orig_h")
@@ -361,6 +407,8 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         ts=ts,
         event_type=event_type,
         log_type=log_type,
+        log_type_known=log_type_known,
+        source_file=source_file,
         src_ip=str(src_ip) if src_ip else None,
         dst_ip=str(dst_ip) if dst_ip else None,
         src_port=_to_int(_get(doc, "id.orig_p")),
@@ -382,7 +430,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         ),
         severity="info",
         summary=str(note or doc.get("msg") or f"zeek {log_type} {conn_state or ''}").strip(),
-        raw=_sanitize_raw(doc),
+        raw=_raw_with_type(doc, log_type, source_file),
         **extra,
     )
 

@@ -18,8 +18,13 @@ class UnifiedLog(BaseModel):
     ts: datetime
     event_type: str  # 归一化事件类型：port_scan / brute_force / dns_query / ...
     log_type: str = (
-        ""  # Zeek 日志类型：conn/dns/http/ssl/files/smtp/ssh/dhcp/notice；Wazuh 为 wazuh
+        ""  # Zeek 日志类型：conn/dns/http/ssl/files/dhcp/x509/weird/notice…；Wazuh 为 wazuh
     )
+    # 类型是否在采集白名单内（config 的 zeek_event/ops 清单）：名单外的流保留原名，
+    # 只入库、不进检测/画像，靠 log_type.keyword 聚合巡检发现新流
+    log_type_known: bool = True
+    # 采集来源文件名（Filebeat 的 log.file.path 末段）：排查“这个字段是哪条流来的”
+    source_file: str = ""
     src_ip: str | None = None
     dst_ip: str | None = None
     src_port: int | None = None
@@ -43,8 +48,8 @@ class UnifiedLog(BaseModel):
     resp_body: str = ""  # 响应体（自动适配字段名 + 截断）
     resp_body_len: int | None = None  # 整条响应体字节数（Zeek response_body_len，不受截断影响）
     referer: str = ""
-    cookie: str = ""  # 截断；会话 id 只做哈希后入库
-    auth_scheme: str = ""  # basic / bearer / jwt（不落库明文凭证）
+    cookie: str = ""  # 截断；请求头值按既定口径原样保留（已接受的风险，见 docs/ndr-collect-plan.md）
+    auth_scheme: str = ""  # basic / bearer / jwt（只留方案名，凭证本体不在此字段）
     content_type: str = ""
     user_agent: str = ""
     status_code: int | None = None

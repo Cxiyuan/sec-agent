@@ -349,8 +349,14 @@ NDR 线路（采集与检测）：
 ## 六、开发约定
 
 - **只用 GitHub Actions 构建镜像**，禁止本地构建（`docker build` / `npm run build`）
-- 本地质量门（仓库根执行）：`.venv/bin/ruff check ndr/backend/app agent/backend/app`、
-  `.venv/bin/pyright ndr/backend/app agent/backend/app`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`
+- 本地质量门（仓库根执行，与 CI 的 `test` / `web` 两个作业一致）：
+  - `.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`
+  - `.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`
+  - `.venv/bin/python -m pytest tests/py --stack=ndr -q` 与 `--stack=agent -q`
+    （两个后端包的 import 名都是 `app`，只能分开跑；一致性用例会比对两侧归一化输出）
+  - `sh tests/zeek/run.sh`（在官方 Zeek 容器里跑 `ndr/zeek/site/*.zeek` 单测）
+  - 前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`
+  测试怎么加、覆盖什么见 `tests/README.md`
 - 推送 `main` 触发 CI 构建五个镜像到 GHCR：`shentong-ndr`、`shentong-ndr-frontend`、`shentong-zeek`
   （NDR 线路）与 `shentong-agent`、`shentong-agent-frontend`（智能体线路）
 

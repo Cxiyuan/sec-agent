@@ -4,15 +4,26 @@
 #      再分别投给检测器与 Logstash(:8080 http) 入库。这样入库的文档与检测器看到的
 #      是同一份结构，智能体查 ES 不用再猜 zeek.* / data.* 的差异。
 #      Zeek 字段仍收进 zeek.* 命名空间（见下），归一化服务负责解包。
+#
+# 这一层只干两件事：**采哪些文件**、**给每个事件贴一个类型名**。
+# 类型是否已知、能不能进检测（事件类/运维类/未知名单外）统统由归一化层判定
+# （app/ingestion/log_types.py），这里不做白名单 —— 两处判定必然漂移。
 
 filebeat.inputs:
   - type: filestream
     id: zeek-logs
     enabled: true
-    # Zeek 独立模式：活动日志在顶层，轮转后进日期子目录
+    # Zeek 轮转是**同目录平铺改名**：conn.log → conn.2026-10-01.log（不是日期子目录）。
+    # 两个 pattern 都留着：顶层活动日志，以及历史/其它部署可能出现的子目录布局。
     paths:
       - ${ZEEK_LOG_DIR:/logs}/*.log
       - ${ZEEK_LOG_DIR:/logs}/*/*.log
+    # 非事件文件排除名单：这些是 Zeek / Filebeat 的运行输出，不是日志流。
+    # 在读之前就排除（省 IO），也免得它们以"未知类型"混进事件索引。
+    # 注意：stats.log / packet_filter.log / reporter.log 是**运维类日志**，不在这里排除——
+    # 它们要入库当证据，只是不进检测（分类见 app/ingestion/log_types.py）。
+    exclude_files:
+      - '(^|/)(stderr|stdout|loaded_scripts|debug|prof|telemetry|threading|capture_loss)\.log$'
     parsers:
       # 关键：把 Zeek 字段收进 zeek.* 命名空间。
       # 否则 Filebeat 自己的元数据 host（对象 {name: 主机名}）会覆盖 Zeek 的
@@ -29,7 +40,9 @@ filebeat.inputs:
     close_removed: true
 
 processors:
-  # 从路径提取日志类型：/logs/conn.log -> conn；/logs/2026-09-23/conn.14-00-00.log -> conn
+  # 从文件名取类型：/logs/conn.log → conn；/logs/conn.2026-10-01.log → conn（去掉轮转日期）。
+  # 认不出的文件名也照样发（log_type 用它自己的名字），由归一化层标 log_type_known=false
+  # 并保留原名 —— 静默丢弃等于连"漏采/新流"的信号都没有了。
   # 注意①：filestream 输入只提供 log.file.path（没有 log.file.name）
   # 注意②：本镜像的 Filebeat 构建不含 grok 处理器，故用 JS script 处理器取文件名
   - script:
@@ -39,13 +52,27 @@ processors:
           var p = event.Get("log.file.path") || "";
           var parts = p.split("/");
           var nm = parts[parts.length - 1] || "";
-          var t = nm.split(".")[0];
+          var t = nm.replace(/\.log$/i, "")
+                    .replace(/\.\d{4}-\d{2}-\d{2}$/, "")
+                    .replace(/\.\d{2}-\d{2}-\d{2}$/, "");
           if (t) { event.Put("log_type", t); }
         }
-  - drop_event:
-      when:
-        not:
-          has_fields: ["log_type"]
+
+# 队列：落盘缓冲。Redis 不可用/重启时事件先攒在磁盘上，不丢：
+#   - 事件被 Redis 输出确认（LPUSH 成功）后才从队列删除并推进读取注册表，
+#     所以崩溃/重启都不会跳过未投递的事件，也不会重复投太久；
+#   - 队列目录与注册表都在命名卷 zeek-filebeat（/usr/local/bin/data）上，容器重建也还在。
+# 为什么不用默认的内存队列（queue.mem，默认 3200 条）：Redis 长时间不可用时它只能反压
+# 到日志读取（Filebeat 停止读新日志），一旦轮转文件被 3 天清理删掉，没读到的就真丢了。
+# 注意：这里用 queue.disk 而不是 queue.spool —— 本镜像的 Filebeat 是 OSS 构建，
+# 实测 `queue.spool` 报 "unrecognized queue type 'spool'"；queue.disk 虽有 deprecated
+# 提示但功能完整，`filebeat test config` 在容器内实测 Config OK（8.15.3）。
+queue.disk:
+  path: "${FILEBEAT_SPOOL_DIR:/usr/local/bin/data/spool}/filebeat"
+  max_size: 1GB
+  segment_size: 128MiB
+  write_ahead: 2048
+  read_ahead: 512
 
 # Redis 采集队列（LPUSH 到 list 左端；归一化服务用 BRPOPLPUSH 消费并确认）
 # 若把 Zeek 接回 Wazuh 自带的 Filebeat，这里要改成同样的 redis 输出配置。

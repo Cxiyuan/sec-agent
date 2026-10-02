@@ -3,7 +3,12 @@
   "venv": ".venv",
   "executionEnvironments": [
     { "root": "ndr/backend" },
-    { "root": "agent/backend" }
+    { "root": "agent/backend" },
+    {
+      "root": "tests/py",
+      "extraPaths": ["ndr/backend"],
+      "reportMissingImports": "none"
+    }
   ],
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": "none",

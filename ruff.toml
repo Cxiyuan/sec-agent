@@ -1,0 +1,10 @@
+# 仓库根的统一 ruff 配置。
+#
+# 后端各自还有一份同值配置（ndr/backend/pyproject.toml、agent/backend/pyproject.toml）
+# —— 那两个文件是各自可独立部署的包的清单；这里补一份是为了让 tests/ 这类
+# 不在任何 pyproject 层级下的目录也按同一套规则检查（行宽 100、py311、import 合并）。
+line-length = 100
+target-version = "py311"
+
+[lint.isort]
+combine-as-imports = true

@@ -28,7 +28,7 @@ from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue, make_blocking_client
-from app.ingestion import exclusion
+from app.ingestion import exclusion, log_types
 from app.ingestion.es_client import build_networks, in_scope
 from app.ingestion.normalizer import normalize, source_of
 from app.ingestion.scope import monitored_nets
@@ -578,6 +578,12 @@ def _handle(
     entry = _to_entry(source, doc)
     if entry is None:
         stats["normalize_failed"] += 1
+        return
+    # ②b 日志类型闸门（批 1）：运维类（ntp/packet_filter/reporter/stats/ja4ssh/ja4d）与
+    #     白名单外的未知类型不进检测（ES 里仍有全量事实）。兜底放在检测器这一侧，是因为
+    #     队列里可能还压着升级前的旧文档或人工重放数据，归一化服务那道闸门管不到它们。
+    if not log_types.is_detectable(entry):
+        stats[f"{log_types.classify_entry(entry)}_skipped"] += 1
         return
     if scopes and not _entry_in_scope(entry, scopes):
         stats["out_of_scope"] += 1

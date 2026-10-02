@@ -35,7 +35,7 @@ import httpx
 
 from app.config import settings
 from app.detector.queue import ReliableQueue, make_blocking_client
-from app.ingestion import ingest_filter
+from app.ingestion import ingest_filter, log_types
 from app.ingestion.normalizer import normalize, source_of
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
@@ -225,6 +225,13 @@ def run() -> None:
                         # 检测器跑的是告警规则，原始日志进去只会白占队列与模型容量；
                         # 需要时把 ST_WAZUH_ARCHIVE_TO_DETECTOR 打开即可（见 README 第六节）。
                         stats["archive_es_only"] += 1
+                    elif not log_types.is_detectable(entry):
+                        # 日志类型闸门（批 1）：运维类（ntp/packet_filter/reporter/stats/ja4ssh/ja4d）
+                        # 与白名单外的未知类型只入库当证据——进了检测只会污染画像与规则命中率。
+                        # 名单外的类型没有静默丢：ES 里 log_type 保留原名且 log_type_known=False，
+                        # 用 log_type.keyword 聚合就能看出"多了哪条流"。
+                        cls = log_types.classify_entry(entry)
+                        stats[f"{cls}_es_only"] += 1
                     else:
                         kept.append((item, payload))
 

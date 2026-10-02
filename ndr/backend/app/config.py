@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     http_resp_body_fields: str = "resp_body,response_body,http.response.body,http.response_body"
     http_resp_body_max_chars: int = 2000
     http_cookie_max_chars: int = 200
+    # Zeek 日志流分类（契约，两侧一致）：event=入库且进检测/画像；ops=只入库（当证据）。
+    # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
+    zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"
+    zeek_ops_log_types: str = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"
     web_login_path_regex: str = (
         "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
     )
