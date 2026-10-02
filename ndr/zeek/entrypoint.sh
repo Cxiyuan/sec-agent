@@ -106,7 +106,9 @@ start_zeek() {
   cd "$LOG_DIR"
   if [ -n "${bpf// /}" ]; then
     log "启动 Zeek：iface=${iface} bpf='${bpf}'"
-    zeek -C -i "$iface" "$bpf" "${SITE_DIR}/local.zeek" &
+    # 过滤器必须用 -f 传给 Zeek：直接当位置参数写会被当成脚本文件名，
+    # Zeek 启动即报 `fatal error: can't find net 172.16.196.0/24` 并无限重启。
+    zeek -C -i "$iface" -f "$bpf" "${SITE_DIR}/local.zeek" &
   else
     log "启动 Zeek：iface=${iface}"
     zeek -C -i "$iface" "${SITE_DIR}/local.zeek" &
