@@ -8,7 +8,9 @@
   ``unrecognized queue type 'spool'``，只能用 ``queue.disk``（8.15.3 实测 Config OK）；
 - ``filestream`` 输入只提供 ``log.file.path``（没有 ``log.file.name``），
   且该构建不含 grok 处理器，取文件名只能用 JS script 处理器；
-- Zeek 轮转是**同目录平铺改名**（``conn.log`` → ``conn.2026-10-01.log``），不是日期子目录。
+- Zeek 轮转是**同目录平铺改名**（``conn.log`` → ``conn.2026-10-01.log``），不是日期子目录；
+- 排除名单必须写在 ``prospector.scanner.exclude_files``：写成输入顶层的
+  ``exclude_files``（旧 ``log`` 输入选项）8.15.3 实测无效，``stderr.log`` 照样入库。
 """
 
 from __future__ import annotations
@@ -55,7 +57,11 @@ def test_filestream_input() -> None:
 
 
 def test_non_event_files_excluded() -> None:
-    patterns = cfg()["filebeat.inputs"][0]["exclude_files"]
+    item = cfg()["filebeat.inputs"][0]
+    # 必须写在 prospector.scanner 下：顶层 exclude_files 是旧 log 输入的选项，
+    # filestream 会把它当无关字段收下但不生效（8.15.3 实机探针验证过）。
+    assert "exclude_files" not in item, "filestream 的排除名单不能写在输入顶层（不生效）"
+    patterns = item["prospector"]["scanner"]["exclude_files"]
     assert patterns, "必须有排除名单，否则运行输出会以未知类型混进事件索引"
     joined = " ".join(patterns)
     for name in EXCLUDED:

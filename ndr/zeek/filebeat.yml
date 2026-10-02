@@ -20,10 +20,15 @@ filebeat.inputs:
       - ${ZEEK_LOG_DIR:/logs}/*/*.log
     # 非事件文件排除名单：这些是 Zeek / Filebeat 的运行输出，不是日志流。
     # 在读之前就排除（省 IO），也免得它们以"未知类型"混进事件索引。
-    # 注意：stats.log / packet_filter.log / reporter.log 是**运维类日志**，不在这里排除——
-    # 它们要入库当证据，只是不进检测（分类见 app/ingestion/log_types.py）。
-    exclude_files:
-      - '(^|/)(stderr|stdout|loaded_scripts|debug|prof|telemetry|threading|capture_loss)\.log$'
+    # 注意①：必须写在 `prospector.scanner.exclude_files`（filestream 的 Scanner 选项）。
+    #   写成输入顶层的 `exclude_files:`（那是旧 log 输入的选项）在 8.15.3 实测**完全无效**：
+    #   探针 /logs/stderr.log 照样被采集并进了事件索引（见 docs/ndr-redesign.md 批 1 验收）。
+    # 注意②：stats.log / packet_filter.log / reporter.log 是**运维类日志**，不在这里排除——
+    #   它们要入库当证据，只是不进检测（分类见 app/ingestion/log_types.py）。
+    prospector:
+      scanner:
+        exclude_files:
+          - '(^|/)(stderr|stdout|loaded_scripts|debug|prof|telemetry|threading|capture_loss)\.log$'
     parsers:
       # 关键：把 Zeek 字段收进 zeek.* 命名空间。
       # 否则 Filebeat 自己的元数据 host（对象 {name: 主机名}）会覆盖 Zeek 的

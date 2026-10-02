@@ -53,7 +53,8 @@
 - `ndr/zeek/filebeat.yml`：显式文件名→类型（JS 处理器去 `.log` + `.YYYY-MM-DD`/`.HH-MM-SS`）、**不再 `drop_event`**（认不出也发，下游标 unknown）、排除名单（stderr/stdout/loaded_scripts/debug/prof/telemetry/threading/capture_loss；stats/packet_filter/reporter 不排除）、落盘队列 `queue.disk`（`/usr/local/bin/data/spool/filebeat`，1GB，与注册表同在命名卷 `zeek-filebeat` 上）。**`queue.spool` 在本镜像不可用**（OSS 构建），已在服务器容器内 `filebeat test config` 实测 `Config OK`。
 - 测试（进 CI）：`tests/py/`（`test_log_types.py` 判定矩阵、`test_normalizer_fields.py` 字段契约、`test_xff_respbody.py` 由 `/tmp` 搬入、`test_stack_consistency.py` 子进程比对两侧、`test_filebeat_yml.py` 采集配置形状）+ `tests/zeek/hb_test.zeek`（由 `/tmp` 搬入，`tests/zeek/run.sh` 在官方 Zeek 容器里跑）。
 - CI（`.github/workflows/ci.yml`）：新增 `test` 作业（ruff + pyright + 两个栈各跑一遍 pytest + Zeek 容器单测）与 `web` 作业（`npm ci` + 两侧 `tsc --noEmit`）；根 `ruff.toml` 补统一规则（`tests/` 不在任何 pyproject 层级下）、`pyrightconfig.json` 加 `tests/py` 执行环境。
-- 待办：服务器部署验收（ES 断言四个字段；停 Redis 发事件再启确认不丢），证据写进 `docs/ndr-redesign.md`。
+- **服务器验收已完成（2026-10-02）**：ES 断言 `log_type`/`log_type_known`/`raw.log_type`/`raw.source_file`、未知流保留原名、停 Redis 不丢事件、两侧闸门计数（归一化「类型闸门只入库」/检测器「类型跳过(运维 N)」）全部实测通过；完整证据见 `docs/ndr-redesign.md` 第 9 期。
+- 验收抓出并修掉的缺陷：排除名单原写在 filestream 输入**顶层** `exclude_files`（那是旧 `log` 输入的键）**实测完全无效**，已改为 `prospector.scanner.exclude_files`；`filebeat test config` 对两种写法都回 `Config OK`、`filebeat --once` 也在首次扫描前就退出（约 40ms），**只有端到端探针能判定** —— `tests/py/test_filebeat_yml.py` 已加「顶层不得再出现该键」的断言。
 
 
 ### 批 2：Zeek 指纹与文件元数据
