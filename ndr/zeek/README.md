@@ -106,7 +106,7 @@ docker compose restart zeek
 | 2 | 轮转与保留 | `ls /logs` 顶层活动日志 + `/logs/<YYYY-MM-DD>/` 子目录 | 每 24h 轮转进日期目录；超过 3 天的归档被入口清理循环删掉（活动日志不动） |
 | 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`（**`ja3`/`ja3s` 拿不到**，见「已知限制」）；`site/shentong-extra.zeek` 加载的分析器都生效 |
 | 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body` 字段 | 有 `body`（请求方向、≤4096B、二进制跳过、UTF-8 放行）；GET/HEAD 无 body |
-| 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps aux \| grep zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成）；**未配网段时全量抓包** |
+| 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps -o args= -C zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成，命令里应出现 `-f net …`；`-f` 缺失会被 Zeek 当脚本名，启动即 fatal）；**未配网段时全量抓包** |
 | 6 | 是否重复告警 | 看 `notice.log` 有无内容 | 目前只加载 `policy/tuning/json-logs`，**没有**加载 `policy/protocols/*`，故 Zeek 自己不产检测类 notice；检测全由内置规则做 |
 | 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
@@ -120,7 +120,7 @@ docker compose restart zeek
 | 2 | ⏳ | 启动当天，`/logs/<日期>/` 子目录尚未出现（24h 轮转未到），保留策略未能实测 |
 | 3 | ✅（除 ja3） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全。`ja3`/`ja3s` 在 Zeek 9.0 里不存在（见「已知限制」） |
 | 4 | ✅ 已修 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`） |
-| 5 | ⚠️ 待配 | 启动命令 `zeek -C -i ens160 /usr/local/zeek/share/zeek/site/local.zeek` **无 BPF**，`/config/interface.conf` 里 `monitored_nets=` / `local_nets=` 为空 → 当前全量抓包，需在界面配监控网段后复核 |
+| 5 | ✅ | 界面配 `172.16.196.0/24` 后启动命令变为 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 172.16.196.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 172.16.196.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
 | 6 | ✅ | 无 notice.log（未加载 `policy/protocols/*`），符合预期 |
 | 7 | ✅ | ES 聚合：log_type = conn 3168 / dhcp 18 / dns 8 / ssl 8 / http 2；event_type = rejected_connection 3140 / dhcp_activity 18 / conn_established 17 / scan_attempt 11 / dns_query 8 / tls_session 8 / http_request 2 |
 | 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内置-内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |

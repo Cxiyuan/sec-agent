@@ -53,7 +53,7 @@ Wazuh(Filebeat) ┘                    ↓
 前置：Linux 宿主、Docker + Compose；NDR 宿主还需 `vm.max_map_count=262144`（ES 硬要求）。
 两条线路各自一个 compose 文件，可同机（端口已错开）或分机部署。
 镜像在**私有 GHCR** 里，服务器上要先 `docker login ghcr.io`（PAT 需带 `read:packages`）才拉得动。
-实机部署过程、验收结果与上线时踩到的五个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
+实机部署过程、验收结果与上线时踩到的六个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
 
 **NDR 线路**（`ndr/docker-compose.deploy.yml`）：
 
@@ -169,6 +169,8 @@ manager 的 API 地址与凭据。
 1. **登录改密**（admin/admin123）
 2. **配置监控网段**（左侧「监控网段」页）——填要监控的网段/IP（每行一条，1~200 条）。
    保存后约 10 秒 Zeek 自动重载，`bpf_filter` / `local_nets` 由网段清单自动生成。
+   复核一下真的吃到了：`docker exec <zeek> ps -o args= -C zeek` 里要出现 `-f net <你的网段>`
+   （少了 `-f` 会被 Zeek 当成脚本名、启动即 fatal 重启循环——上线时踩过，见 docs 部署记录第 6 条）。
    网段在 **Zeek 抓包层**生效：没抓到的流量后面谁也看不到，这一步必须先做对
 3. （智能体线路）**填云端模型 API Key**（系统配置 → 云端模型）
 4. （智能体线路）边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
