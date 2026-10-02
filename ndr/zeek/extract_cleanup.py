@@ -55,19 +55,34 @@ DEFAULT_MIME_ALLOW: tuple[str, ...] = (
 )
 
 
+def normalize_mime(mime: str) -> str:
+    """取 MIME 的**主类型**：剥掉 ``; charset=utf-8`` 这类参数、去空白、转小写。
+
+    files.log 里的 ``mime_type`` 直接来自 HTTP 的 ``Content-Type``，实测会带参数
+    （``text/html; charset=utf-8``）甚至大小写不一；不归一化就会把正常网页当
+    "白名单外"删掉。
+    """
+    return (mime or "").split(";", 1)[0].strip().lower()
+
+
 def mime_allowed(mime: str, allow: tuple[str, ...] | list[str]) -> bool:
     """判断 MIME 是否在白名单里（支持 ``application/foo.*`` 前缀条目）。
 
-    ``mime`` 为空（files.log 没记类型）视为不允许 —— 宁可少留一个可疑文件，
+    比较前先过 :func:`normalize_mime`（剥参数 / 转小写）。``mime`` 为空
+    （files.log 没记类型）视为不允许 —— 宁可少留一个可疑文件，
     也不要留一个来源不明的二进制。
     """
-    if not mime:
+    candidate = normalize_mime(mime)
+    if not candidate:
         return False
     for item in allow:
-        if item.endswith(".*"):
-            if mime.startswith(item[:-1]):
+        pattern = (item or "").strip().lower()
+        if not pattern:
+            continue
+        if pattern.endswith(".*"):
+            if candidate.startswith(pattern[:-1]):
                 return True
-        elif mime == item:
+        elif candidate == pattern:
             return True
     return False
 

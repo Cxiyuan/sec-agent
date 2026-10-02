@@ -106,8 +106,10 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
   `X-Extract-Cutoff: 1` 与 `X-Extract-Size`，别把截断件当完整样本。
 - **白名单是唯一的"能下载"口径**：`extract_cleanup.py` 里的 `DEFAULT_MIME_ALLOW`
   （文本 / XML / JSON / PDF / 邮件 / Office / 常见压缩包；**不含** `application/octet-stream`
-  与可执行体）。容器入口每 5 分钟跑一次清理：白名单外的删、files.log 里查不到记录的删
-  （来源不是 HTTP/FTP 或分析器没落元数据）；只动 mtime 早于 120 秒的文件。
+  与可执行体）。比较前会**剥掉 `; charset=…` 参数并统一小写**（files.log 的 `mime_type` 直接来自
+  HTTP 的 `Content-Type`，实测带参数），否则正常网页会被当"白名单外"删掉。容器入口每 5 分钟跑一次清理：
+  白名单外的删、files.log 里查不到记录的删（来源不是 HTTP/FTP 或分析器没落元数据）；
+  只动 mtime 早于 120 秒的文件。
 - **目录容量默认 10 GiB**：超过就按 mtime 从最老开始淘汰（先删老的，再保留新的）。
 - 可调环境变量（`entrypoint.sh` 读取，重启容器生效）：
 

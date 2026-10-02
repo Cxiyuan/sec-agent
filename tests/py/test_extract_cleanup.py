@@ -65,6 +65,19 @@ def test_whitelist_excludes_executables_and_unknown() -> None:
     assert helper.mime_allowed("application/vnd.oasis.opendocument.text", allow)
 
 
+def test_mime_comparison_strips_parameters_and_case() -> None:
+    allow = helper.DEFAULT_MIME_ALLOW
+    # HTTP 的 Content-Type 实测带参数（还可能有大小写），不归一化会把正常网页删掉
+    assert helper.normalize_mime("text/html; charset=utf-8") == "text/html"
+    assert helper.mime_allowed("text/html; charset=utf-8", allow)
+    assert helper.mime_allowed("Text/HTML", allow)
+    assert helper.mime_allowed("application/PDF; version=1.7", allow)
+    assert not helper.mime_allowed("application/octet-stream; charset=binary", allow)
+    assert not helper.mime_allowed("   ", allow)
+    # 自定义白名单也要归一化（命令行传大写/带空格不该失效）
+    assert helper.mime_allowed("text/plain; charset=gbk", [" Text/Plain "])
+
+
 def test_load_fuid_mime_reads_plain_and_rotated_log(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     _write_log(logs, "files.2026-10-01.log", [{"fuid": "FxOld", "mime_type": "application/pdf"}])
