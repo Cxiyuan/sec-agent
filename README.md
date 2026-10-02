@@ -53,7 +53,7 @@ Wazuh(Filebeat) ┘                    ↓
 前置：Linux 宿主、Docker + Compose；NDR 宿主还需 `vm.max_map_count=262144`（ES 硬要求）。
 两条线路各自一个 compose 文件，可同机（端口已错开）或分机部署。
 镜像在**私有 GHCR** 里，服务器上要先 `docker login ghcr.io`（PAT 需带 `read:packages`）才拉得动。
-实机部署过程、验收结果与上线时踩到的四个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
+实机部署过程、验收结果与上线时踩到的五个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
 
 **NDR 线路**（`ndr/docker-compose.deploy.yml`）：
 
@@ -69,6 +69,18 @@ docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```
 
+存储端口默认只绑宿主机回环（ES 9200 / Postgres 5432 / Redis 6379 都不对外，ES 与 Postgres
+本身无额外鉴权）。**智能体线路要连这台机器的 Redis 时**（`NDR_REDIS_URL`），在 `.env` 里加：
+
+```bash
+REDIS_BIND=10.255.12.4   # Redis 监听的宿主地址（换成两边互通的地址）
+REDIS_HOST=10.255.12.4   # zeek 容器是 host 网络，它的 Filebeat 用这个地址投采集队列
+```
+
+两行必须指向同一个可访问地址：`REDIS_BIND` 决定 Redis 发布在哪，`REDIS_HOST` 决定采集侧往哪投；
+默认值（`127.0.0.1` / `localhost`）是同一台机器自洽的一套。隧道/该地址断开时采集会在 Filebeat
+侧积压（不丢数据），恢复后继续投。
+
 **智能体线路**（`agent/docker-compose.deploy.yml`）：
 
 ```bash
@@ -78,7 +90,7 @@ JWT_SECRET=<随机 64 位>
 CORS_ORIGINS=http://<智能体服务器IP>:3000
 NDR_MCP_URL=http://<NDR服务器IP>:8090/mcp
 NDR_MCP_TOKEN=<在 NDR 后台「智能体对接 → MCP 服务」生成的令牌>
-NDR_REDIS_URL=redis://<NDR服务器IP>:6379/0
+NDR_REDIS_URL=redis://10.255.12.4:6379/0   # 必须是 NDR 侧 REDIS_BIND 放开的那个地址
 EOF
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
@@ -190,6 +202,11 @@ manager 的 API 地址与凭据。
     后端若比 ES 先起来，模板可能没下发成功（启动日志里有一条 warning）——到「数据存储 → 保留期」
     点一次「下发保留期」即可；**模板只管之后新建的索引**，已经建好的那些要单独改一次：
     `PUT shentong-events-*/_settings {"index":{"auto_expand_replicas":"0-1"}}`
+14. （NDR 线路）**确认存储端口没有对外暴露**：`docker compose ps` 里 ES/Postgres/Redis 的
+    PORTS 应显示 `127.0.0.1:...`（或 `.env` 里 `REDIS_BIND` 指定的那一个地址），**不应是
+    `0.0.0.0:...`** —— ES 与 Postgres 无额外鉴权、Redis 默认无密码，发布到 `0.0.0.0`
+    等于同网段任何机器都能直接读写库与队列。只有智能体线路确实要连 Redis 时才按 §二
+    放开一个受控地址（`REDIS_BIND` + `REDIS_HOST` 成对改）`
 
 ---
 

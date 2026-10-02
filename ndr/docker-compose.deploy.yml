@@ -30,7 +30,9 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms2g -Xmx2g
     ports:
-      - "9200:9200"
+      # 只监听本机：ES 无鉴权（xpack.security 关着），对内只有 backend / logstash
+      # 走容器网络访问，宿主机上的排查用 curl 127.0.0.1:9200 就够，不需要对外发布。
+      - "127.0.0.1:9200:9200"
     volumes:
       - es-data:/usr/share/elasticsearch/data
     restart: unless-stopped
@@ -44,7 +46,8 @@ services:
       POSTGRES_PASSWORD: shentong
       POSTGRES_DB: shentong
     ports:
-      - "5432:5432"
+      # 只监听本机：Postgres 只给 backend 用（容器网络），宿主机上排查走 127.0.0.1:5432。
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -65,7 +68,11 @@ services:
       - --maxmemory-policy
       - noeviction
     ports:
-      - "6379:6379"
+      # 监听地址：默认只听本机；agent 线路（另一台机器）要连这里的 Redis 时，
+      # 在 .env 里把 REDIS_BIND 设成两边互通的地址（如 10.255.12.4）。
+      # 注意：zeek 容器是 host 网络，它的 Filebeat 走 REDIS_HOST 连同一个地址，
+      # 改这里必须同步改 .env 的 REDIS_HOST（默认 localhost 与本机绑定配套）。
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
     volumes:
       - redis-data:/data
     restart: unless-stopped
@@ -187,7 +194,9 @@ services:
       ZEEK_INTERFACES_JSON: /config/interfaces.json
       ZEEK_LOG_DIR: /logs
       ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
-      # 采集侧发 Redis 采集队列（host 网络下用宿主地址）
+      # 采集侧发 Redis 采集队列（host 网络下用宿主地址）。
+      # 必须与上面 redis 服务的 REDIS_BIND 指向同一个可访问地址：两者都留默认
+      # 时是 localhost/127.0.0.1（同一台机器自洽），跨机开放 Redis 时一起改。
       REDIS_HOST: ${REDIS_HOST:-localhost}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_DB: ${REDIS_DB:-0}

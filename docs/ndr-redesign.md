@@ -97,7 +97,7 @@
 4. **Zeek 把中文请求体整块丢掉**（commit `5499fb3`）——`ndr/zeek/site/shentong-httpbody.zeek` 的守卫 `/[^\x09\x0a\x0d\x20-\x7e]/` 只放行可打印 ASCII，UTF-8 多字节全被当二进制丢（同一 POST 路径：英文有 `body`、中文没有）。修法：改成只拦 NUL / C0 控制字符 / DEL（`/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/`），实机复验中英文 `body` 都进 `http.log`。
 5. **ES 集群健康恒为 yellow**（commit `26052e1`）——Logstash 输出是 `manage_template => false`，索引由 ES 自动创建，单节点集群拿到默认 `number_of_replicas: 1`，副本永远分配不出去（`_cluster/allocation/explain` 说得很直白：这份分片已经在本节点上了）。修法：`ndr/backend/app/api/routes/es_admin.py` 抽出 `ensure_retention()`，模板设置改成 `number_of_replicas: 0` + `auto_expand_replicas: "0-1"`（单节点 0 副本 = green，真多节点时 ES 自动补 1 副本），并让 `ndr/backend/app/main.py` 启动时幂等下发（原来只有界面点「下发保留期」才下发，且下发的内容不含副本设置，ES 起得晚还会静默跳过）；**已存在的索引**模板管不到，要用 `PUT <index>/_settings {"index":{"auto_expand_replicas":"0-1"}}` 单独改一次。
 
-**遗留事项**：① **监控网段未配**（`/config/interface.conf` 里 `monitored_nets` / `local_nets` 为空 → Zeek 启动命令无 BPF、全量抓包），要用户拍板；② **暴露面**：compose 把 `6379`（redis，无密码）与 `5432`（postgres）也发布到 0.0.0.0，同网段可直连，建议只留 3000/8000/8090 或用防火墙收紧；③ 24h 轮转的日期目录与 3 天清理当天未见（时间未到），XFF 原始客户端 IP 仍不支持（见第 8 节开放问题 8）。
+**遗留事项**：① **监控网段未配**（`/config/interface.conf` 里 `monitored_nets` / `local_nets` 为空 → Zeek 启动命令无 BPF、全量抓包），要用户拍板；② **暴露面已收紧（2026-10）**：compose 原先把 `9200`（ES，无鉴权）、`5432`（postgres）、`6379`（redis，无密码）都发布在 `0.0.0.0`（同网段可直连）。现改为 ES / Postgres 只绑 `127.0.0.1`、Redis 绑到隧道地址 `10.255.12.4`（`.env` 里 `REDIS_BIND=10.255.12.4`，同时把 zeek 容器的 `REDIS_HOST` 改成同一地址 —— 该容器是 host 网络，它的 Filebeat 必须连到 Redis 实际监听的地址，否则采集队列投不进去）；③ 24h 轮转的日期目录与 3 天清理当天未见（时间未到），XFF 原始客户端 IP 仍不支持（见第 8 节开放问题 8）。
 
 ### 两条已确认的既有事实
 
