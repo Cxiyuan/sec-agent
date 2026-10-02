@@ -164,3 +164,16 @@ docker compose restart zeek
 | 7 | ✅ | ES 聚合：log_type = conn 3168 / dhcp 18 / dns 8 / ssl 8 / http 2；event_type = rejected_connection 3140 / dhcp_activity 18 / conn_established 17 / scan_attempt 11 / dns_query 8 / tls_session 8 / http_request 2 |
 | 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内置-内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |
 | 9 | ✅ 已支持（2026-10-02） | 本机探针（uid `Cy2rDP36QlAdi9ru79`）发 `X-Forwarded-For: 198.51.100.77, 203.0.113.9` → `http.log` 得 `proxied: ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]`，`id.orig_h` 仍是 TCP 对端；归一化后 `real_client_ip=198.51.100.77`、`src_ip` 不变；同一条还有 `resp_body` 与 `resp_body_len=80` |
+
+**批 2 实机复验（2026-10-02，镜像 `shentong-zeek` `244ec0300d17` → `213e76f6fc69`）**
+
+- **指纹**：从服务器发起外网 HTTPS → ES 30 分钟内 `log_type:ssl` 187 条，带真实值
+  `ja3:"7704a11cf87dfcf33080b90ce11d5527"`、`ja3s:"f4febc55ea12b31ae17cfb7e614afda8"`、
+  `ja4:"t13d1715h2_5b57614c22b0_a54fffd0eb61"`（`ja4` 值分布：该值 ×20、另一个 ×1；另有 83 条旧会话为空）。
+- **文件哈希**：明文下载 254968 字节 → `files.log` 的 `analyzers:["SHA256","SHA1","MD5"]`，`md5`
+  `1696fa2694f099d735d609ea8bd8dee6`、`sha256` `26758a13cecfaff9ff274d31ea9a4633674a999bd130c09f6ecd66a4b8071184`
+  **与服务器上本地 `md5sum`/`sha256sum` 逐字一致**；ES 文档另有 `fuid`/`file_source:"HTTP"`/`file_is_orig:false`。
+- **stats 流**：`stats.log` 开始产出（5 分钟一报）→ ES 2 条（`log_type:"stats"`、`log_type_known:true`、
+  `source_file:"stats.log"`），归一化记「类型闸门只入库 2 条」，**不进检测**。
+- 核 ES 时两个坑：`log_type` 是 `text`，聚合要用 `log_type.keyword`（否则 `Fielddata is disabled`）；
+  normalizer 对缺失字段写空字符串，`exists` 会把空值也算上，别用它数「有值的文档」。

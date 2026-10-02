@@ -82,7 +82,7 @@
 - 归一化（两侧逐字一致，只差 NDR 的 `source_of()`）：`schemas.py` 加 `ja4`、`fuid`、`md5`、`sha1`、`sha256`、`file_source`、`file_is_orig`；`normalizer.py` 新增 `_to_bool()`（`"T"/"F"` 兼容），`_ZEEK_TYPE_HINTS` 的 ssl 加 `ja4`、files 加 `sha256`，`_http_fields` 搬运这些字段（哈希/FUID 各 64 字符、`file_source` 32）；`catalog.py` 注册新字段并进 SUMMARY/AGG（`sha256` 的 path 从 `raw.sha256` **改为 `sha256`**，因为现在真有这个归一化字段了）；`rules/engine.py` 的 `_FIELD_TYPES` 把 `md5/sha1/sha256/file_source/file_is_orig` 挂 `files`、`ja4` 挂 `ssl`（之前规则根本取不到哈希）。
 - 测试：`tests/py` 加 ssl `ja4`、files 哈希/方向/来源断言（含 `is_orig` 的 `"T"/"F"` 字符串）；新增 `tests/zeek/batch2_test.zeek`（断言 `SSL::Info$ja4` 字段存在、分隔符与两个开关默认值、`Stats::report_interval` 已加载、`Notice::LOG` 已关）；`tests/zeek/run.sh` 改为复制**整棵 site 树**并逐个跑 `*_test.zeek`（原来只扁平 `cp *.zeek`，相对 `@load ./vendor/...` 会找不到文件）。
 - **容器实测（`zeek/zeek:9.0`，`-i lo`）**：真实 TLS 握手 → `ssl.log` 得 `ja3`/`ja3s`/`ja4` 三值 + `client_version`/`server_version`（ssl-log-ext 生效）✓；HTTP 下载 5000 字节 → `files.log` 的 `md5`/`sha1`/`sha256` 与 Python hashlib **逐字一致**，`fuid`/`source:"HTTP"`/`is_orig:false`/`seen_bytes=total_bytes=5000` ✓；`stats.log` 有行 ✓；无 `notice.log`，无 `tlsfp.log`/`ja3sfp.log`/`fingerprint_ja4.log` ✓。（回环上用 200KB 单文件会 `truncated_tcp_payload` 导致 `resp_fuids` 为空——测试环境的回环大包现象，小文件正常。）
-- 服务器验收见 `docs/ndr-redesign.md` 第 10 期。
+- 服务器验收（2026-10-02）已完成，实机证据见 `docs/ndr-redesign.md` 第 10 期：真实 HTTPS 得 `ja3`/`ja3s`/`ja4` 落库、明文下载的 `md5`/`sha256` 与本地 `md5sum`/`sha256sum` 逐字一致、`stats` 流只入库不进检测。
 
 ### 批 3：请求头 + 正文上限可设置
 
