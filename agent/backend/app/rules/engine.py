@@ -318,11 +318,17 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "mime_type": ("files",),
     "filename": ("files",),
     "fuid": ("files",),
+    "md5": ("files",),
+    "sha1": ("files",),
+    "sha256": ("files",),
+    "file_source": ("files",),
+    "file_is_orig": ("files",),
     "seen_bytes": ("files",),
     # ssl
     "server_name": ("ssl",),
     "ja3": ("ssl",),
     "ja3s": ("ssl",),
+    "ja4": ("ssl",),
     "issuer": ("ssl",),
 }
 _COMMON_FIELDS = {

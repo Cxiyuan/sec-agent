@@ -501,6 +501,29 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **已知取舍与遗留**：① 运维流（`packet_filter`/`ntp`/`weird`/`x509`/`reporter`）本身极低频，上线后十余分钟没有自然新行，闸门证据以合成探针为准；② Redis 不可用时归一化/检测器进程会退出并由重启策略拉起（重启计数上涨，**不丢数据**，是既有行为、非本批引入）；③ 本批只动类型与去向，正文上限不一致、请求头值、JA4/JA4S、文件哈希与提取分别留给批 2/3/4。
 
+### 第 10 期 · 采集面改造批 2：指纹与文件元数据 ✅ 已完成（2026-10-02，实施记录）
+
+**起因**：第 8 期的实机专项检查（见 `## 8. 开放问题` 第 8 条）抓出两条硬事实 —— ① Zeek 9.0 自带分析器**没有** `ja3`/`ja3s` 字段（`local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`），基于它的规则永不命中；② `files.log` 的 `analyzers` 是空数组，**没有任何哈希**、没有文件名。本期补上指纹与文件元数据。逐条决定见 `docs/ndr-collect-plan.md` 的批 2。
+
+1. **许可证收窄（用户决策：本产品会对外售卖/托管给客户）→ 只收 BSD-3-Clause**：JA3/JA3S（`salesforce/ja3`，commit `502cc6395811c54743b0561419d61900a6df3ff7`）与 **JA4 本体**（`FoxIO-LLC/ja4-zeek-scripts`，commit `8bf9feca52790ae8c926c6a8d79a3547ac19541a`，其 `LICENSE-JA4` 就是 BSD-3）。**JA4S / JA4H / JA4L / JA4LS / JA4T / JA4TS / JA4D / JA4SSH / JA4X 一律不进仓库** —— 它们是 `FoxIO License 1.1`（版权许可仅限非商业；FAQ 明确「作为产品功能出售、托管给客户、用它给付费客户提供价值」都需 FoxIO OEM 授权），因此原计划里的 `ja4s`/`ja4h` 归一化**取消**。
+2. **vendor 落在 `ndr/zeek/site/vendor/`**（`ndr/zeek/Dockerfile:28` 只把 `site/` 整棵复制进镜像；放 `ndr/zeek/vendor/` 会直接 `fatal error in /site/shentong-fingerprints.zeek … can't find ./vendor/ja3`）：
+   - `vendor/ja3/{ja3.zeek,ja3s.zeek,LICENSE.txt,zkg.meta}` 逐字 + **自建** `vendor/ja3/__load__.zeek`（只加载 `ja3.zeek`/`ja3s.zeek`；上游那个还会加载 `intel_ja3.zeek`，它把 JA3 接进 Intel 框架并另开 `ja3sfp.log`，本项目不用）。
+   - `vendor/ja4/LICENSE-JA4.txt` + 逐字 `ja4/{__load__,helpers,main}.zeek`、`utils/{common,ssl-consts}.zeek` + **自建** `vendor/ja4/__load__.zeek`（Zeek 9 的 base 里没有 `FINGERPRINT` 模块，`FINGERPRINT::Info` 与 `redef record connection += { fp: … }` 必须自己声明）与最小 `vendor/ja4/config.zeek`（只留 `delimiter`/`JA4_raw`，不含 JA4+ 的开关）。
+   - `vendor/README.md`：来源 commit、逐字 vs 自建清单、**为什么 JA4+ 不进仓库**、`site/` 位置约束。
+3. **两个新站点脚本**：`site/shentong-fingerprints.zeek`（`option ja3_enabled = T` / `option ja4_enabled = T`，在 `@if` 里 `@load ./vendor/ja3` 与 `./vendor/ja4`）；`site/shentong-policies.zeek`（`policy/protocols/ssl/ssl-log-ext.zeek`、`policy/frameworks/files/hash-all-files.zeek`、`policy/misc/stats.zeek` + `event zeek_init() &priority=-10 { Log::disable_stream(Notice::LOG); }`）。**不需要**再关 `tlsfp`/`ja3sfp`/`fingerprint_ja4` 流：三家的脚本都没有给这些流写入口（实测都不产生）。`site/local.zeek` 顺序变为 json → extra → policies → httpbody → fingerprints → nets → scripts-d。
+4. **归一化（两侧逐字一致，只差 NDR 独有的 `source_of()`）**：`schemas.py` 加 `ja4`、`fuid`、`md5`、`sha1`、`sha256`、`file_source`、`file_is_orig`；`normalizer.py` 新增 `_to_bool()`（吃掉 Zeek 的 `"T"`/`"F"` 字符串）、`_ZEEK_TYPE_HINTS` 的 ssl 加 `ja4` / files 加 `sha256`、`_http_fields` 搬运上述字段（哈希与 `fuid` 截 64 字符、`file_source` 截 32）；`investigation/catalog.py` 注册新字段并进 SUMMARY/AGG —— 顺带修掉一处**一直取不到值**的路径：`sha256` 的 `path` 原写 `raw.sha256`，而 `rules/engine.py` 的 `_get_field` 只认 extra → `VIRTUAL_FIELDS` → `getattr(log, field)`，**根本不支持 `raw.` 前缀**，所以批 2 之前基于文件哈希的规则永远匹配不到，现在 path 改成 `sha256`（真有这个归一化字段了）；`rules/engine.py` 的 `_FIELD_TYPES` 把 `md5`/`sha1`/`sha256`/`file_source`/`file_is_orig` 挂 `files`、`ja4` 挂 `ssl`。
+5. **测试**：`tests/py` 增 ssl `ja4` 与 files 哈希/方向/来源断言（含 `_to_bool` 的 `"T"/"F"` 两种写法）；新增 `tests/zeek/batch2_test.zeek`（断言 `SSL::Info$ja4` 字段在编译期存在、`FINGERPRINT::delimiter == "_"`、`JA4_raw` 默认关、两个开关默认开、`Stats::report_interval` 已加载、`Notice::LOG !in Log::active_streams`）；`tests/zeek/run.sh` 重写为**复制整棵 site 树**并逐个跑 `tests/zeek/*_test.zeek`（旧版只扁平 `cp *.zeek`，相对 `@load ./vendor/...` 必然加载失败）。
+
+**验收（四步）**
+
+- **① 容器内 Zeek 单测**：`sh tests/zeek/run.sh` → `batch2_test.zeek` 7 条 PASS + `hb_test.zeek` 9 条 PASS，两个 `FAILS=0`，`ZEEK TESTS: ALL PASS`。
+- **① 附带：容器内真实样本实测**（`zeek/zeek:9.0`，`-i lo`，镜像里没有 `curl`，用 `openssl s_server`/`s_client` 造 TLS 握手、用 `python3 -m http.server` 造下载）：`ssl.log` 得 `ja3:"284deaeae14ea5ddc96c5d7e59855422"`、`ja3s:"15af977ce25de452b96affa2addb1036"`、`ja4:"t13d301200_1d37bd780c83_ecd0401ec68b"`、`client_version`/`server_version`=771（ssl-log-ext 生效）；`files.log` 的 `md5`/`sha1`/`sha256` 与 Python `hashlib` **逐字一致**、另有 `fuid`/`source:"HTTP"`/`is_orig:false`/`seen_bytes`/`total_bytes`=5000；`stats.log` 有行；**不产生** `notice.log`/`tlsfp.log`/`ja3sfp.log`/`fingerprint_ja4.log`。已知测试环境现象：回环上单个 200KB 响应会 `truncated_tcp_payload`，使 `http.log` 的 `resp_fuids` 为空（小文件正常），不是脚本缺陷。
+- **② 本地两侧一致性 + 质量门**：`pytest tests/py --stack=ndr -q` **142 passed**、`--stack=agent -q` **141 passed, 1 skipped**（NDR 专属画像用例）；`ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`pyright` 同一组路径 0 errors / 0 warnings / 0 informations。
+- **③ CI**：代码与文档提交后由 GitHub Actions 构建镜像并跑三作业（`build`/`test`/`web`）；本批提交的 run 待补。
+- **④ 服务器部署与实机探针**：待补（本批先合并代码，`docker compose -f docker-compose.deploy.yml pull zeek && up -d zeek` 后核 `ssl.log` 的 `ja3`/`ja3s`/`ja4`、`files.log` 的 `md5`/`sha1`/`sha256`、`stats.log` 入库与归一化字段落库）。
+
+**已知取舍与遗留**：① JA4S/JA4H 等 JA4+ 未收录（许可证），智能体侧/规则侧不依赖它们；② `file_source` 只记 Zeek 的 `source` 字段（HTTP/FTP/SMTP/SSL…），不代表真实落地路径；③ 请求头值、正文上限与文件内容提取仍留给批 3/批 4。
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

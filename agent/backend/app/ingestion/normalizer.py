@@ -32,9 +32,9 @@ log = get_logger(__name__)
 _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ("x509", ("certificate", "fingerprint", "basic_constraints", "host_cert", "client_cert")),
     ("notice", ("note", "msg", "sub")),
-    ("files", ("fuid", "mime_type", "filename", "md5", "sha1")),
+    ("files", ("fuid", "mime_type", "filename", "md5", "sha1", "sha256")),
     ("http", ("uri", "method", "status_code", "user_agent")),
-    ("ssl", ("server_name", "ja3", "ja3s", "cipher")),
+    ("ssl", ("server_name", "ja3", "ja3s", "ja4", "cipher")),
     ("dns", ("query", "qtype", "rcode")),
     ("smtp", ("mailfrom", "rcptto", "subject", "helo")),
     ("dhcp", ("assigned_addr", "client_addr", "mac")),
@@ -175,6 +175,22 @@ def _to_int(v: Any) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def _to_bool(v: Any) -> bool | None:
+    """Zeek 的布尔值可能是 JSON 布尔，也可能是 "T"/"F" 字符串（旧扁平文档）。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        text = v.strip().lower()
+        if text in ("t", "true", "yes", "1"):
+            return True
+        if text in ("f", "false", "no", "0"):
+            return False
+        return None
+    if isinstance(v, int):
+        return bool(v)
+    return None
 
 
 def _to_str_list(v: Any) -> str:
@@ -362,11 +378,18 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "resp_mime": resp_mime[:128],
         "ja3": str(doc.get("ja3") or "")[:64],
         "ja3s": str(doc.get("ja3s") or "")[:64],
+        "ja4": str(doc.get("ja4") or "")[:64],
         "tls_version": str(doc.get("version") or doc.get("tls_version") or "")[:32],
         "cert_issuer": str(doc.get("cert_issuer") or doc.get("issuer") or "")[:256],
         "qtype": str(doc.get("qtype") or doc.get("qtype_name") or "")[:16],
         "filename": str(doc.get("filename") or "")[:256],
         "mime_type": str(doc.get("mime_type") or "")[:128],
+        "fuid": str(doc.get("fuid") or "")[:64],
+        "md5": str(doc.get("md5") or "")[:64],
+        "sha1": str(doc.get("sha1") or "")[:64],
+        "sha256": str(doc.get("sha256") or "")[:64],
+        "file_source": str(doc.get("source") or "")[:32],
+        "file_is_orig": _to_bool(doc.get("is_orig")),
         "bytes_in": _to_int(doc.get("resp_bytes") or doc.get("response_body_len")),
     }
 

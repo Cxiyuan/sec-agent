@@ -17,14 +17,28 @@ zeek/
 ├── entrypoint.sh           # 网卡枚举 / 脚本渲染 / 启动 / 看门狗 / 清理
 ├── filebeat.yml            # 发运到 Redis 采集队列（shentong:events:collect）
 ├── site/
-│   ├── local.zeek              # 总入口
+│   ├── local.zeek              # 总入口（顺序：json → extra → policies → httpbody → fingerprints → nets → scripts-d）
 │   ├── shentong-json.zeek      # JSON 输出 + 24h 轮转 + /logs 输出目录
 │   ├── shentong-extra.zeek     # 显式加载各协议分析器（保证字段齐全）
-│   ├── shentong-httpbody.zeek  # HTTP 请求体采集（截断 + 跳过二进制）
+│   ├── shentong-policies.zeek  # Zeek 自带策略：ssl-log-ext / hash-all-files / stats + 关掉 notice 流
+│   ├── shentong-httpbody.zeek  # HTTP 请求体/响应体采集（截断 + 跳过二进制）
+│   ├── shentong-fingerprints.zeek # 指纹开关：JA3/JA3S 与 JA4（BSD-3-Clause）
 │   ├── shentong-nets.zeek      # Site::local_nets（入口自动重写）
-│   └── shentong-scripts-d.zeek # scripts.d 加载器（入口自动重写）
+│   ├── shentong-scripts-d.zeek # scripts.d 加载器（入口自动重写）
+│   └── vendor/                 # 上游脚本（只收 BSD-3-Clause，见 vendor/README.md）
+│       ├── README.md           # 来源 commit、逐字 vs 自建、为什么 JA4+ 不进仓库
+│       ├── ja3/                # salesforce/ja3（+ 自建 __load__.zeek，不加载 intel_ja3）
+│       └── ja4/                # FoxIO ja4-zeek-scripts 的 ja4/ 与 utils/（+ 自建 __load__.zeek / config.zeek）
 └── scripts.d/              # ★ 可扩展目录：放 *.zeek 自动加载
 ```
+
+> **`site/vendor/` 只能放在 `site/` 下面**：`Dockerfile:28` 只把 `site/` 整棵复制进镜像的
+> `/usr/local/zeek/share/zeek/site/`，站点脚本用相对路径 `@load ./vendor/...`；放到 `zeek/vendor/`
+> 会直接 `fatal error … can't find ./vendor/ja3`。
+> **许可证**：只收录 BSD-3-Clause 的 JA3/JA3S（`salesforce/ja3`）与 **JA4 本体**（FoxIO 仓库里
+> 唯一 BSD-3 的部分）。JA4S / JA4H / JA4L / JA4LS / JA4T / JA4TS / JA4D / JA4SSH / JA4X 是
+> `FoxIO License 1.1`（仅非商业，出售/托管/给付费客户提供价值都需 OEM 授权），**本项目对外售卖
+> 与托管，因此一律不收录**，理由与来源见 `site/vendor/README.md`。
 
 ## 运行要求
 
@@ -93,12 +107,19 @@ docker compose restart zeek
 
 - 不做 Zeek 集群（manager/proxy/worker）
 - 不做脚本在线热更新（改脚本需重启容器）
-- HTTP 体只采请求方向、单条上限 4096 字节、跳过二进制（**放行 UTF-8**：2026-10 上线发现
+- HTTP 体采请求与响应两个方向、单条上限 4096 字节、跳过二进制（**放行 UTF-8**：2026-10 上线发现
   原判据只放行可打印 ASCII，中文请求体整块被丢，已改成只拦 NUL/C0 控制字符）
-- **不产 JA3 / JA3S 指纹**：Zeek 9.0 的 SSL 分析器里没有 `ja3`/`ja3s` 字段（容器内
-  `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`），实测
-  `ssl.log` 127 条 0 处 ja3。所以基于 `ja3` 字段的规则（`rules/builtin.py` 里那条空值
-  模板）永远匹配不到；要用得另装/自写 JA3 脚本（社区 `ja3.zeek`、zkg 包）再接归一化
+- **JA3 / JA3S / JA4 已可产出（2026-10，批 2）**：Zeek 9.0 自带的分析器里**没有** `ja3`/`ja3s`
+  字段（容器内 `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`），所以本仓库
+  vendor 了上游 BSD-3 脚本，由 `site/shentong-fingerprints.zeek` 加载：`ssl.log` 现有
+  `ja3` / `ja3s`（`salesforce/ja3`）与 `ja4`（FoxIO JA4 本体）。**JA4S / JA4H / JA4L / JA4T /
+  JA4SSH / JA4D / JA4X 一律不收录**（`FoxIO License 1.1` 仅非商业；见上面 vendor 那段与
+  `site/vendor/README.md`），需要时买 OEM 授权再把脚本丢进 `site/vendor/ja4/` 并 `@load`。
+  这三个上游脚本自带的独立日志流（`tlsfp.log`/`ja3sfp.log`/`fingerprint_ja4.log`）**都没有写入口**，
+  实测不会产生，所以只需关掉 `notice`（`shentong-policies.zeek` 里 `Log::disable_stream(Notice::LOG)`）
+- **文件哈希已可产出（2026-10，批 2）**：`policy/frameworks/files/hash-all-files.zeek` 让
+  `files.log` 带上 `md5`/`sha1`/`sha256`（容器内与 Python `hashlib` 逐字比对一致），归一化后落成
+  `md5`/`sha1`/`sha256` 字段；此前 `files.log` 的 `analyzers` 是空数组、没有任何哈希
 - **响应体可能含二进制乱码**：`shentong-httpbody.zeek` 的判据为了保住中文（UTF-8
   高位字节）只能拦 NUL/C0 控制字符，因此**压缩响应（gzip/br）或恰好不含这些字节的
   二进制响应**会以乱码形式写进 `resp_body`（字段不丢、内容不可读）。要精确跳过需再接
@@ -122,10 +143,10 @@ docker compose restart zeek
 |---|---|---|---|
 | 1 | 实际产出了哪些日志 | `docker exec <zeek> ls -la /logs` | 至少 `conn.log` / `http.log` / `dns.log` / `ssl.log`；有对应流量时出现 `files.log` / `smtp.log` / `ssh.log` / `dhcp.log` / `notice.log` |
 | 2 | 轮转与保留 | `ls /logs` 顶层活动日志与轮转归档 | 每 24h **同目录平铺改名**（`conn.log` → `conn.2026-10-01.log`，实机核对：**不是日期子目录**）；超过 3 天的归档被入口清理循环删掉（活动日志不动） |
-| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`（**`ja3`/`ja3s` 拿不到**，见「已知限制」）；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
+| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` / `files.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`/`version`（**批 2 起还有 `ja3`/`ja3s`/`ja4`**，见「已知限制」）；files 有 `md5`/`sha1`/`sha256`（`source`/`is_orig` 表明方向）；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
 | 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body`（请求体）与 `resp_body`（响应体） | 两者都有（各 ≤4096B，可用 `redef` 放大；二进制块跳过、UTF-8 放行）；GET/HEAD 无 `body` 但有 `resp_body`；**响应体完整字节数看 Zeek 自带的 `response_body_len`**（不受截断影响，落库为 `resp_body_len`） |
 | 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps -o args= -C zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成，命令里应出现 `-f net …`；`-f` 缺失会被 Zeek 当脚本名，启动即 fatal）；**未配网段时全量抓包** |
-| 6 | 是否重复告警 | 看 `notice.log` 有无内容 | 目前只加载 `policy/tuning/json-logs`，**没有**加载 `policy/protocols/*`，故 Zeek 自己不产检测类 notice；检测全由内置规则做 |
+| 6 | 是否重复告警 | 看 `notice.log` 有无内容 | **不产检测类 notice**：不加载 `policy/protocols/*`（只加载 json-logs 与 `shentong-policies.zeek` 里的 ssl-log-ext / hash-all-files / stats），且 `shentong-policies.zeek` 显式 `Log::disable_stream(Notice::LOG)` —— 检测全由内置规则做 |
 | 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
 | 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）。**未做**：可信代理白名单（头可伪造）、`X-Real-IP`（不在 Zeek 默认清单）、四层代理（只转发 TCP 不写头）只能靠 PROXY protocol 或回查 NAT/防火墙日志 |
@@ -136,7 +157,7 @@ docker compose restart zeek
 |---|---|---|
 | 1 | ✅ | `/logs`：conn.log 7.9MB、dhcp.log 23KB、dns.log 39KB、files.log 1140B、http.log、ssl.log 35KB、weird.log、x509.log、packet_filter.log；无 notice.log |
 | 2 | ✅ | 轮转是**同目录平铺改名**：`conn.2026-10-01.log`（121MB）、`ssl.2026-10-02.log`、`packet_filter.2026-10-02.log`、`reporter.2026-10-02.log`、`dhcp.2026-10-02.log` 等都在 `/logs` 顶层，没有日期子目录；每次 Zeek 启动/重建也会把当前日志改名成当天（2026-10-02 02:55 与 06:21 两次重建各产生一批）。清理由 `entrypoint.sh` 的 `cleanup_once()` 两条 `find` 做（平铺归档 `*.????-??-??.log` 与日期子目录两种布局都覆盖，只删轮转件、不动活动日志），按 `ZEEK_RETENTION_DAYS=3` 每 `ZEEK_CLEAN_INTERVAL=3600` 秒跑一次。**2026-10-02 探针实测**：`zzoldprobe.2026-09-20.log`（mtime 10 天前）与 `zznewprobe.2026-10-01.log`（mtime 1 天前）放进 `/logs` 后重建容器 → 启动清理循环自动删掉旧的那个、留下新的那个；同样两条 `find` 手工跑亦验证模式匹配 |
-| 3 | ✅（除 ja3） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全；带 `X-Forwarded-For` 的请求另有 `proxied`（见第 9 行）。`ja3`/`ja3s` 在 Zeek 9.0 里不存在（见「已知限制」） |
+| 3 | ✅（批 2 起含指纹） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全；带 `X-Forwarded-For` 的请求另有 `proxied`（见第 9 行）。**`ja3`/`ja3s` 在 Zeek 9.0 自带分析器里不存在**（见「已知限制」），批 2 起由 `site/vendor/` 里 vendor 的上游 BSD-3 脚本产出 `ja3`/`ja3s`/`ja4`（容器内实测：`ja3:"284deaeae14ea5ddc96c5d7e59855422"`、`ja3s:"15af977ce25de452b96affa2addb1036"`、`ja4:"t13d301200_1d37bd780c83_ecd0401ec68b"`），`files.log` 另带 `md5`/`sha1`/`sha256` |
 | 4 | ✅ 已修 + 已扩到响应体 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`）。2026-10-02 又加响应体：`resp_body` + Zeek 自带 `response_body_len`，容器内 Zeek 单测 9 项全过（请求/响应分块截断、GET 只采响应体、NUL 双向拦、UTF-8 双向放行、PUT 采请求体） |
 | 5 | ✅ | 界面配 `172.16.196.0/24` 后启动命令变为 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 172.16.196.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 172.16.196.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
 | 6 | ✅ | 无 notice.log（未加载 `policy/protocols/*`），符合预期 |

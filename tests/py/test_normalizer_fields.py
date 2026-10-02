@@ -93,6 +93,42 @@ def test_resp_body_truncated() -> None:
     assert entry.resp_body_len == 80
 
 
+def test_tls_fingerprints() -> None:
+    """SSL 流：ja3/ja3s 逐字搬运，ja4 是本批新增的 BSD 指纹（JA4+ 其余未收录）。"""
+    entry = normalize_zeek(samples.DOCS["ssl"])
+    assert entry is not None
+    assert entry.ja3 == samples.SSL["ja3"]
+    assert entry.ja3s == samples.SSL["ja3s"]
+    assert entry.ja4 == "t13d301200_1d37bd780c83_ecd0401ec68b"
+    assert entry.tls_version == "TLSv12"
+    # 非 SSL 流不串味
+    http_entry = normalize_zeek(samples.DOCS["http"])
+    assert http_entry is not None
+    assert http_entry.ja4 == ""
+
+
+def test_files_metadata() -> None:
+    """files 流：哈希/方向/来源协议进统一字段（批 2 前只有 raw 里翻得到）。"""
+    entry = normalize_zeek(samples.DOCS["files"])
+    assert entry is not None
+    assert entry.fuid == "Fabc123"
+    assert entry.md5 == samples.FILES["md5"]
+    assert entry.sha1 == samples.FILES["sha1"]
+    assert entry.sha256 == samples.FILES["sha256"]
+    assert entry.file_source == "HTTP"
+    assert entry.file_is_orig is False
+    assert entry.filename == "report.pdf"
+
+
+def test_file_is_orig_accepts_zeek_bool_strings() -> None:
+    """旧扁平文档里布尔可能是 "T"/"F" 字符串，别当成 True 一律收下。"""
+    for raw, want in (("T", True), ("F", False), (True, True), (False, False)):
+        doc = samples.envelope({**samples.FILES, "is_orig": raw}, "files", "/logs/files.log")
+        entry = normalize_zeek(doc)
+        assert entry is not None
+        assert entry.file_is_orig is want
+
+
 def test_unknown_type_keeps_name() -> None:
     """名单外的流保留原名 + known=False：能聚合巡检，不是静默丢。"""
     entry = normalize_zeek(samples.DOCS["unknown_stream"])

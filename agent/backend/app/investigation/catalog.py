@@ -178,6 +178,10 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "TLS 服务端指纹",
     },
+    "ja4": {
+        "kind": "keyword",
+        "desc": "JA4 TLS 客户端指纹（BSD 子集脚本产出；JA4S/JA4H 等 JA4+ 因许可证未收录，恒空）",
+    },
     "tls_version": {
         "kind": "keyword",
         "desc": "TLS 版本",
@@ -200,9 +204,29 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "文件类型",
     },
+    "fuid": {
+        "kind": "keyword",
+        "desc": "Zeek 文件 id：可与 http/dns/smtp 等日志里的 fuids 对上，串起“哪个连接传了它”",
+    },
+    "md5": {
+        "kind": "keyword",
+        "desc": "文件 MD5（Zeek FileHash 分析器算好落 files.log）",
+    },
+    "sha1": {
+        "kind": "keyword",
+        "desc": "文件 SHA1",
+    },
     "sha256": {
         "kind": "keyword",
-        "desc": "文件 SHA256：归一化没单列哈希字段，只在原样保留的 raw 里（Zeek files → raw.sha256）",
+        "desc": "文件 SHA256",
+    },
+    "file_source": {
+        "kind": "keyword",
+        "desc": "文件来源协议：HTTP / FTP / SMTP / SSL…（Zeek files.log 的 source）",
+    },
+    "file_is_orig": {
+        "kind": "keyword",
+        "desc": "文件方向：true=客户端上传，false=服务端下发",
     },
     # ---------- 流量 ----------
     "bytes_out": {
@@ -240,10 +264,13 @@ SUMMARY_FIELDS: tuple[str, ...] = (
     "qtype",
     "ja3",
     "ja3s",
+    "ja4",
     "tls_version",
     "cert_issuer",
     "filename",
     "mime_type",
+    "fuid",
+    "file_source",
     "sha256",
     "bytes_out",
     "bytes_in",
@@ -277,10 +304,16 @@ AGG_FIELDS: tuple[str, ...] = (
     "qtype",
     "ja3",
     "ja3s",
+    "ja4",
     "tls_version",
     "filename",
     "mime_type",
+    "fuid",
+    "md5",
+    "sha1",
     "sha256",
+    "file_source",
+    "file_is_orig",
     "user",
     "account",
     "severity",

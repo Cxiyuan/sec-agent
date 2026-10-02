@@ -59,11 +59,30 @@
 
 ### 批 2：Zeek 指纹与文件元数据
 
+计划内容（原样保留，便于对照）：
+
 - vendor：`ndr/zeek/site/vendor/ja3/`（`ja3.zeek`、`ja3s.zeek`、BSD `LICENSE.txt`）+ `ndr/zeek/site/vendor/ja4-zeek-scripts/`（整树 + `License FAQ.md` + FoxIO License 1.1，记录来源与版本）。
 - 新增 `ndr/zeek/site/shentong-fingerprints.zeek`：redef 开关（JA4 全量、`JA4X_enabled=F`）、`Log::disable_stream(tlsfp.log/ja3sfp.log/Notice::LOG)`。
 - `ndr/zeek/site/local.zeek`：加载 `shentong-fingerprints`、`policy/protocols/ssl/ssl-log-ext`、`policy/frameworks/files/hash-all-files`、`policy/misc/stats.zeek`（注释写明为何不加载 detect 类）。
 - 归一化：`ja4`/`ja4s`/`ja4h` 入 `UnifiedLog`；files.log 元数据入统一面；注册 `ndr/backend/app/investigation/catalog.py` 与 `ndr/backend/app/rules/engine.py:288-324`；两侧 `schemas.py` 加 `fuid/ja4/ja4s/ja4h/sha256/file_size/tx_hosts/rx_hosts`。
 - 验收探针：HTTPS → `ja3/ja3s/ja4/ja4s/orig_alpn`；HTTP → `ja4h`；下载 → 三哈希；`stats.log` 出现且不进检测。
+
+**实施记录（as-built）**：
+
+- **许可证收窄（用户 2026-10-02 决策：本产品对外售卖/托管给客户）→ 只收 BSD-3-Clause**：
+  - 收录：JA3 / JA3S（`salesforce/ja3`，BSD-3-Clause）与 **JA4 本体**（TLS 客户端指纹，`FoxIO-LLC/ja4-zeek-scripts` 里唯一 BSD-3 的部分）。
+  - **不收录**：JA4S / JA4H / JA4L / JA4LS / JA4T / JA4TS / JA4D / JA4SSH / JA4X —— 这些是 `FoxIO License 1.1`（仅非商业用途、专利待批），其 FAQ 明确「作为产品功能出售、托管给客户、用它给付费客户提供价值」都需先拿 FoxIO OEM 授权。**故原计划的 `ja4s`/`ja4h` 归一化取消**，不 vendor 整树、不带 FoxIO 许可证文件。
+- vendor 位置与文件（**必须在 `site/` 下**：`ndr/zeek/Dockerfile:28` 只 `COPY site/`）：
+  - `ndr/zeek/site/vendor/ja3/{ja3.zeek,ja3s.zeek,LICENSE.txt,zkg.meta}`（上游逐字，commit `502cc6395811c54743b0561419d61900a6df3ff7`）+ **自建** `__load__.zeek`（只加载 `ja3.zeek`/`ja3s.zeek`；上游 `__load__.zeek` 还会加载 `intel_ja3.zeek`——那把 JA3 接进 Intel 框架并另开 `ja3sfp.log`，本项目不用）。
+  - `ndr/zeek/site/vendor/ja4/LICENSE-JA4.txt` + 逐字 `ja4/{__load__,helpers,main}.zeek`、`utils/{common,ssl-consts}.zeek`（commit `8bf9feca52790ae8c926c6a8d79a3547ac19541a`）+ **自建** `vendor/ja4/__load__.zeek`（Zeek 9 的 base 里没有 `FINGERPRINT` 模块，`FINGERPRINT::Info` 与 `connection$fp` 必须自己声明）与最小 `config.zeek`（只留 `delimiter`/`JA4_raw`，不含 JA4+ 的开关）。
+  - `ndr/zeek/site/vendor/README.md`：来源 commit、逐字 vs 自建、**为什么 JA4+ 不进仓库**、位置约束。
+- `ndr/zeek/site/shentong-fingerprints.zeek`（自建开关）：`option ja3_enabled = T` / `option ja4_enabled = T`，在 `@if` 里 `@load ./vendor/ja3` / `./vendor/ja4`（编译期常量，加载后再 redef 无效）。
+- `ndr/zeek/site/shentong-policies.zeek`（自建清单）：`@load policy/protocols/ssl/ssl-log-ext.zeek`、`policy/frameworks/files/hash-all-files.zeek`、`policy/misc/stats.zeek` + `event zeek_init() &priority=-10 { Log::disable_stream(Notice::LOG); }`。**不再需要 `Log::disable_stream(tlsfp/ja3sfp)`**：两家的脚本都没有给这两个流写入口（实测也没有 `fingerprint_ja4.log`）。
+- `ndr/zeek/site/local.zeek` 顺序：json → extra → policies → httpbody → fingerprints → nets → scripts-d。
+- 归一化（两侧逐字一致，只差 NDR 的 `source_of()`）：`schemas.py` 加 `ja4`、`fuid`、`md5`、`sha1`、`sha256`、`file_source`、`file_is_orig`；`normalizer.py` 新增 `_to_bool()`（`"T"/"F"` 兼容），`_ZEEK_TYPE_HINTS` 的 ssl 加 `ja4`、files 加 `sha256`，`_http_fields` 搬运这些字段（哈希/FUID 各 64 字符、`file_source` 32）；`catalog.py` 注册新字段并进 SUMMARY/AGG（`sha256` 的 path 从 `raw.sha256` **改为 `sha256`**，因为现在真有这个归一化字段了）；`rules/engine.py` 的 `_FIELD_TYPES` 把 `md5/sha1/sha256/file_source/file_is_orig` 挂 `files`、`ja4` 挂 `ssl`（之前规则根本取不到哈希）。
+- 测试：`tests/py` 加 ssl `ja4`、files 哈希/方向/来源断言（含 `is_orig` 的 `"T"/"F"` 字符串）；新增 `tests/zeek/batch2_test.zeek`（断言 `SSL::Info$ja4` 字段存在、分隔符与两个开关默认值、`Stats::report_interval` 已加载、`Notice::LOG` 已关）；`tests/zeek/run.sh` 改为复制**整棵 site 树**并逐个跑 `*_test.zeek`（原来只扁平 `cp *.zeek`，相对 `@load ./vendor/...` 会找不到文件）。
+- **容器实测（`zeek/zeek:9.0`，`-i lo`）**：真实 TLS 握手 → `ssl.log` 得 `ja3`/`ja3s`/`ja4` 三值 + `client_version`/`server_version`（ssl-log-ext 生效）✓；HTTP 下载 5000 字节 → `files.log` 的 `md5`/`sha1`/`sha256` 与 Python hashlib **逐字一致**，`fuid`/`source:"HTTP"`/`is_orig:false`/`seen_bytes=total_bytes=5000` ✓；`stats.log` 有行 ✓；无 `notice.log`，无 `tlsfp.log`/`ja3sfp.log`/`fingerprint_ja4.log` ✓。（回环上用 200KB 单文件会 `truncated_tcp_payload` 导致 `resp_fuids` 为空——测试环境的回环大包现象，小文件正常。）
+- 服务器验收见 `docs/ndr-redesign.md` 第 10 期。
 
 ### 批 3：请求头 + 正文上限可设置
 
@@ -98,7 +117,7 @@
 - **明文凭证进 ES**：登录口令（body）、Bearer token、会话 Cookie 均为明文（头值截断对短凭据等于明文）；ES 无鉴权、只听 `127.0.0.1`、ILM 30 天。已二次确认接受，文档记为已知风险。
 - **关 notice**：没有 Zeek 自带检测，也不会有 `ssl.log.validation_status`（以后需要就单独加载 validate-certs 并保持关流）。
 - **提取目录只按 10G 淘汰**：不设年龄闸，低流量时文件会长期留存。
-- **JA4+ 许可**：内部自用可以；对外变现需 FoxIO OEM 许可（不做 JA4X，避免 C++ 插件编译）。
+- **JA4+ 许可**：本产品会对外售卖/托管给客户，所以 JA4S/JA4H/JA4L/JA4LS/JA4T/JA4TS/JA4D/JA4SSH/JA4X **一律不收录**（FoxIO License 1.1 仅非商业，出售/托管/给付费客户提供价值都需 OEM 授权）；只收 BSD-3-Clause 的 JA3/JA3S 与 JA4 本体。将来拿到 OEM 授权，把脚本丢进 `ndr/zeek/site/vendor/ja4/` 再 `@load` 即可。
 - **改上限/网段需重载 Zeek**：约 1~2 秒抓包中断。
 
 ## 六、后续未决

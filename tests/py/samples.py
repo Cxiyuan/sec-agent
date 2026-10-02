@@ -86,6 +86,11 @@ SSL = {
     "server_name": "example.internal",
     "ja3": "10894b8a9d67451b0cf4b49f237ba189",
     "ja3s": "a0e9f5d64349fb13191bc781f81f42e1",
+    # JA4 本体（BSD 子集脚本产出；值取自实机 9.0 容器的真实握手）
+    "ja4": "t13d301200_1d37bd780c83_ecd0401ec68b",
+    # ssl-log-ext 带来的数值版本（实机 ssl.log 里确实有）
+    "client_version": 771,
+    "server_version": 771,
     "resumed": False,
 }
 
@@ -102,6 +107,8 @@ FILES = {
     "filename": "report.pdf",
     "md5": "d41d8cd98f00b204e9800998ecf8427e",
     "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "is_orig": False,
     "seen_bytes": 20480,
     "total_bytes": 20480,
 }

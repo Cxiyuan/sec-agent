@@ -59,12 +59,22 @@ class UnifiedLog(BaseModel):
     # TLS 指纹与证书（工具识别 / 弱 TLS）
     ja3: str = ""
     ja3s: str = ""
+    # JA4 TLS 客户端指纹（BSD 子集的 ja4-zeek-scripts 产出）。
+    # JA4S/JA4H/JA4L/JA4T/JA4SSH/JA4D 属 FoxIO License 1.1（非商业），本项目未收录 → 恒空。
+    ja4: str = ""
     tls_version: str = ""
     cert_issuer: str = ""
     # DNS / 文件
     qtype: str = ""
     filename: str = ""
     mime_type: str = ""
+    # 文件（Zeek files.log）：哈希由 Zeek 的 FileHash 分析器算好落日志，这里原样搬运
+    fuid: str = ""  # Zeek 文件 id，可与 http/dns/smtp 等日志里的 fuids 对上
+    md5: str = ""
+    sha1: str = ""
+    sha256: str = ""
+    file_source: str = ""  # 文件来源协议：HTTP / FTP / SMTP / SSL…
+    file_is_orig: bool | None = None  # 方向：True=客户端上传，False=服务端下发
     # 账号（画像主键：user 字段优先，缺失时从请求体提取）
     account: str = ""
     # Wazuh 规则语义（保留原始规则信息，避免被压成通用类型）

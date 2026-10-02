@@ -6,6 +6,8 @@
 
 @load ./shentong-json
 @load ./shentong-extra
+@load ./shentong-policies
 @load ./shentong-httpbody
+@load ./shentong-fingerprints
 @load ./shentong-nets
 @load ./shentong-scripts-d
