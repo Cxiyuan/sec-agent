@@ -152,11 +152,12 @@ def _maybe_log(stats: Counter[str], last: float, queue: ReliableQueue) -> float:
     raw_depth, processing = queue.depth()
     if stats or raw_depth or processing:
         log.info(
-            "归一化服务：入库 %d 条 / 降噪挡下 %d 条 / 原始日志只入库 %d 条 / 待重试 %d 条"
-            " / 坏消息 %d 条 / 积压 %d 条（处理中 %d 条）",
+            "归一化服务：入库 %d 条 / 降噪挡下 %d 条 / 原始日志只入库 %d 条 / 类型闸门只入库 %d 条"
+            " / 待重试 %d 条 / 坏消息 %d 条 / 积压 %d 条（处理中 %d 条）",
             stats.get("delivered", 0),
             stats.get("filtered", 0),
             stats.get("archive_es_only", 0),
+            stats.get("ops_es_only", 0) + stats.get("unknown_es_only", 0),
             stats.get("deferred", 0),
             stats.get("bad_json", 0) + stats.get("normalize_failed", 0),
             raw_depth,

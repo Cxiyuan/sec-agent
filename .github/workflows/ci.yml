@@ -105,15 +105,26 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 两个后端包的 import 名都是 app，不能都 pip install；
-      # 这里按代码实际用到的第三方依赖装（清单见各自 backend/pyproject.toml）。
+      # 两个后端包的 import 名都是 app，不能把项目本身 pip install 进去；
+      # 但**第三方依赖必须装全**：pyright 在依赖缺失时会降级（导入解析不了 → 类型变 Any/None），
+      # 报出的错与本地（.venv 装全了）不一致，甚至凭空多出假错。
+      # 依赖清单直接从两侧 pyproject.toml 读，免得手工维护两份。
       - name: Create venv & install deps
         run: |
           python -m venv .venv
           .venv/bin/pip install -q --upgrade pip
-          .venv/bin/pip install -q \
-            "pydantic>=2.8" "pydantic-settings>=2.4" "sqlalchemy>=2.0" pyyaml \
-            "pytest>=8.0" "ruff>=0.6" pyright
+          .venv/bin/python - <<'PY' > /tmp/deps.txt
+          import pathlib, tomllib
+          deps: list[str] = []
+          for path in ("ndr/backend/pyproject.toml", "agent/backend/pyproject.toml"):
+              data = tomllib.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+              deps += data["project"]["dependencies"]
+              deps += data["project"].get("optional-dependencies", {}).get("dev", [])
+          # pyyaml 不在两侧依赖里但测试要用；pyright 是检查器本身
+          deps += ["pyyaml", "pyright"]
+          print("\n".join(dict.fromkeys(deps)))
+          PY
+          .venv/bin/pip install -q -r /tmp/deps.txt
 
       - name: Ruff
         run: .venv/bin/ruff check ndr/backend/app agent/backend/app tests/py

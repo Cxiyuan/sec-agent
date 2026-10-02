@@ -261,7 +261,7 @@ def run() -> None:
             log.info(
                 "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
                 "/ 投递 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
-                "/ 策略跳过(内网常规 %d) / 登记丢弃 %d "
+                "/ 策略跳过(内网常规 %d) / 类型跳过(运维 %d / 未知 %d) / 登记丢弃 %d "
                 "| 队列 raw=%d processing=%d | 聚合中 %d | %s",
                 leader.me,
                 stats["scanned"],
@@ -277,6 +277,8 @@ def run() -> None:
                 stats["dropped_trimmed"],
                 stats["dropped_raw_trimmed"],
                 stats["policy_internal_routine"],
+                stats["ops_skipped"],
+                stats["unknown_skipped"],
                 handled.skipped,
                 q_raw,
                 q_proc,
