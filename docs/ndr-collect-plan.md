@@ -108,7 +108,8 @@
 - compose 加 `zeek-extract` 卷（zeek rw / backend ro）。
 - API：`GET /api/files/{fuid}`（鉴权；从 ES 取 `extracted` 文件名后读卷，**绝不接受客户端路径**）。
 - 前端调查页的下载入口**不在本轮**：NDR 前端没有事件/调查页（事件组调查 UI 在智能体侧），留到「智能体侧对等适配」那轮接上。
-- 验收探针：上传白名单文件 → 落盘且 `extracted_size == total_bytes`；上传图片 → 不落盘；临时调小阈值验证淘汰。
+- 验收探针：上传白名单文件 → 落盘且字节数与 `files.log` 的 `total_bytes` 一致（**完整件的 `extracted_size` 是 NULL**，只有被上限截断时才写）；上传图片/二进制 → 5 分钟内被清理助手删掉、下载回 404；临时调小上限与容量阈值分别验证截断与淘汰。
+  **（2026-10-02 实机复验后修正**：原写「落盘且 `extracted_size == total_bytes`」不成立 —— FileExtract 只在 `file_extraction_limit` 事件里写 `extracted_size`，见下面的实测记录。）
 
 **实施记录（as-built，2026-10-02）**
 
@@ -118,7 +119,9 @@
 - **后端**：`config.py` 加 `extract_dir = "/extract"`；新增 `api/routes/files.py`（`GET /api/files/{fuid}`：fuid 正则 `^[A-Za-z0-9_-]{8,64}$` → 查 ES 最新一条带 `extracted` 的文件事件 → `resolve_extract_path()` 只接裸文件名并把 `resolve()` 结果钉在提取目录里（同时挡住目录穿越与符号链接逃逸）→ `FileResponse`；被清理的文件回 404 并说明原因；`extracted_cutoff` 为真时带 `X-Extract-Cutoff: 1` / `X-Extract-Size` 响应头）；`api/router.py` 注册。
 - **字段**：两侧 `schemas.py` 加 `extracted` / `extracted_size` / `extracted_cutoff`（`tests/py/test_stack_consistency.py` 要求两侧 UnifiedLog 字段集一致，所以两侧都加），两侧 `normalizer.py` 取值入库（`extracted` 截 128 字符），两侧 `rules/engine.py` 的 `_FIELD_TYPES` 与 `investigation/catalog.py` 同步注册。
 - **测试**：`tests/py/test_extract_cleanup.py`（白名单、日志覆盖顺序、半行容忍、在写保护、容量淘汰、dry-run、CLI 端到端、entrypoint/Dockerfile/local.zeek 接线）与 `tests/py/test_files_api.py`（路径安全：穿越/符号链接/下载名头注入/ fuid 正则；Zeek prefix 与后端 `extract_dir` 一致性）；`tests/zeek/batch4_test.zeek`（prefix/limit/来源集合/三个新字段）。
-- 本地质量门：`pytest --stack=ndr` **178 passed**、`--stack=agent` **159 passed / 19 skipped**（下载接口测试仅 NDR 侧）、ruff/pyright 全绿、`sh tests/zeek/run.sh` 四套 Zeek 单测 `ZEEK TESTS: ALL PASS`。
+- 本地质量门：`pytest --stack=ndr` **179 passed**、`--stack=agent` **160 passed / 19 skipped**（下载接口测试仅 NDR 侧）、ruff/pyright 全绿、`sh tests/zeek/run.sh` 四套 Zeek 单测 `ZEEK TESTS: ALL PASS`。
+- **实机复验（2026-10-02，172.16.196.77，镜像 `sha256:9adedfe6053d`）**：三段上传（2400B `text/plain`、3000B `application/octet-stream`、18.7MB `text/plain`）→ 白名单件落盘且 sha256 与本机原文一致、`GET /api/files/<fuid>` 200（`content-type` 取自 `mime_type`、`content-length` 与落盘字节一致）、无令牌 401、非法 fuid（`short` / 带空格 / 编码斜杠）400 或 404；二进制件（`mime_type` 为空）被清理助手判为白名单外删除、清理后下载回 404；`--max-bytes 2000` 从最老淘汰 8 件留 1 件；**截断链路**用容器内临时把 `default_limit` 改成 1000 验证（`extracted_size=1000`、`extracted_cutoff=true` 落 ES，下载响应带 `X-Extract-Cutoff: 1` + `X-Extract-Size: 1000`），测后按备份复原并校验 sha256 一致。
+- **实机复验暴露的三件事**（已分别修正/登记）：① `DEFAULT_MIME_ALLOW` 缺 `text/json`（Zeek 对 JSON 请求体实测报 `text/json` 而非 `application/json`）→ 已补 + 测试；② `shentong-ndr` 镜像被 backend/normalizer/detector/ndr-mcp **四个服务共用**，只 `up -d zeek backend` 会让 normalizer 继续跑旧镜像、新字段永远进不了 ES → 必须四个一起重建（本次执行 `up -d normalizer detector ndr-mcp` 后才在 ES 里看到 `extracted`）；③ 镜像口对**采集机自身**的部分外网目标（Cloudflare/postman-echo）不可见，且高带宽流丢包严重（18.7MB 上传 Zeek 只见到 184432 字节、落盘 5.3MB 而 `extracted_cutoff` 仍是 false）→ 实机验收必须挑可见目标（`mirrors.aliyun.com`），并把「落盘件可能因丢包不完整」记进 `ndr/zeek/README.md` 已知限制。
 
 ### 收尾
 

@@ -63,6 +63,9 @@ def test_whitelist_excludes_executables_and_unknown() -> None:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document", allow
     )
     assert helper.mime_allowed("application/vnd.oasis.opendocument.text", allow)
+    # JSON 的两条常见写法都要在：Zeek 对请求体实测报 text/json
+    assert helper.mime_allowed("application/json", allow)
+    assert helper.mime_allowed("text/json", allow)
 
 
 def test_mime_comparison_strips_parameters_and_case() -> None:

@@ -101,12 +101,15 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 
 - **只提取 HTTP/FTP**：`site/shentong-file-extract.zeek` 里 `sources = { "HTTP", "FTP" } &redef`；
   SSL/TLS 里的文件（加密流量）不碰。
-- **单文件上限 16 MiB**：`redef FileExtract::default_limit = 16777216`；超限时 FileExtract 只写
-  前 16 MiB 并把 `extracted_cutoff` 置真、`extracted_size` 记成上限 —— 下载响应会带
-  `X-Extract-Cutoff: 1` 与 `X-Extract-Size`，别把截断件当完整样本。
+- **单文件上限 16 MiB**：`redef FileExtract::default_limit = 16777216`；**只有超限时** FileExtract 才写
+  `extracted_size`（= 上限）并把 `extracted_cutoff` 置真，此时下载响应带 `X-Extract-Cutoff: 1` 与
+  `X-Extract-Size`，别把截断件当完整样本。**完整落盘的件 `extracted_size` 是 NULL** ——
+  要核对字节数请看 `files.log` 的 `total_bytes`（实机复验确认：FileExtract 只在
+  `file_extraction_limit` 事件里写 `extracted_size`）。
 - **白名单是唯一的"能下载"口径**：`extract_cleanup.py` 里的 `DEFAULT_MIME_ALLOW`
   （文本 / XML / JSON / PDF / 邮件 / Office / 常见压缩包；**不含** `application/octet-stream`
-  与可执行体）。比较前会**剥掉 `; charset=…` 参数并统一小写**（files.log 的 `mime_type` 直接来自
+  与可执行体）。JSON 同时收 `application/json` 与 `text/json`（Zeek 对 JSON 请求体实测报后者，
+  2026-10 实机复验补）。比较前会**剥掉 `; charset=…` 参数并统一小写**（files.log 的 `mime_type` 直接来自
   HTTP 的 `Content-Type`，实测带参数），否则正常网页会被当"白名单外"删掉。容器入口每 5 分钟跑一次清理：
   白名单外的删、files.log 里查不到记录的删（来源不是 HTTP/FTP 或分析器没落元数据）；
   只动 mtime 早于 120 秒的文件。
@@ -191,6 +194,13 @@ docker compose restart zeek
   **加密流量（SSL/TLS）不提取** —— "文件内容拿不到"只解决了一半，TLS 里的文件仍只能靠哈希/元数据。
   提取件是**原始明文**（上传的凭据、内部文档都会落盘），护栏只有容量上限与 MIME 白名单；
   `/extract` 卷只挂给 zeek（rw）与 backend（ro），下载必须登录且只认 fuid。
+- **落盘件可能因镜像丢包而不完整（2026-10 实机复验，未做护栏）**：提取只保证"Zeek 看到多少写多少"。
+  实机把 18.7 MB 主体上传到外网镜像时，`files.log` 记 `total_bytes=18700000` 而 `seen_bytes=184432`，
+  落盘件 5.3 MB —— 既不是上限截断（`extracted_cutoff=false`），也不是完整原文。
+  下载接口目前**无法告知这种不完整**（归一化 schema 没搬 `total_bytes`/`seen_bytes`，只有上限截断会在
+  元数据里留痕）。要处理得先把 `total_bytes` 纳入归一化并在响应头加 `X-Extract-Partial`（待办）。
+  影响面：被监测主机的大文件上传/下发（高带宽流）比小文件更容易丢；小文件（KB 级）实测字节数与
+  `total_bytes` 完全一致。
 
 ## 上线后专项检查（日志与协议解析）
 
@@ -209,7 +219,7 @@ docker compose restart zeek
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
 | 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）。**未做**：可信代理白名单（头可伪造）、`X-Real-IP`（不在 Zeek 默认清单）、四层代理（只转发 TCP 不写头）只能靠 PROXY protocol 或回查 NAT/防火墙日志 |
 
-| 10 | **文件提取（批 4）** | 经 HTTP 传一个白名单文件，看 `docker exec <zeek> ls -l /extract`、`files.log` 的 `extracted`/`extracted_size` 与 `GET /api/files/<fuid>` | `/extract/<fuid>` 存在且字节数与 `extracted_size` 一致（`extracted` 的值就是 fuid）；传图片等白名单外类型 → 5 分钟内被清理助手删掉（files.log 记录仍在）；**只覆盖 HTTP/FTP 明文**，TLS 里的文件不会出现；超 16 MiB 的文件被截断且响应带 `X-Extract-Cutoff: 1` |
+| 10 | **文件提取（批 4）** | 经 HTTP 传一个白名单文件，看 `docker exec <zeek> ls -l /extract`、`files.log` 的 `extracted`/`extracted_size` 与 `GET /api/files/<fuid>` | `/extract/<fuid>` 存在且字节数与 `files.log` 的 `total_bytes` 一致（`extracted` 的值就是 fuid；**完整件的 `extracted_size` 是 NULL**）；传图片等白名单外类型 → 5 分钟内被清理助手删掉（files.log 记录仍在），下载返回 404；**只覆盖 HTTP/FTP 明文**，TLS 里的文件不会出现；超 16 MiB 的文件被截断（`extracted_cutoff=true`、`extracted_size`=上限）且响应带 `X-Extract-Cutoff: 1` |
 
 ### 实机结果（2026-10，172.16.196.77）
 
@@ -262,3 +272,30 @@ docker compose restart zeek
   `filebeat.yml` 的 `add_error_key: true` 留下了 `raw.error`。批 3 的两条探针恰好落进这个窗口没进 ES，
   改在静默窗口重发即正常入库（上面证据即重发所得）。**未改 Filebeat 配置**（避免动已工作的采集链路），
   列为后续调查项。
+
+**批 4 实机复验（2026-10-02，镜像 `shentong-zeek` `716005bbe598` → `latest` 修复版；后端 `sha256:9adedfe6053d`）**
+
+- **落盘与下载全通**：`POST http://mirrors.aliyun.com/ubuntu/`（明文出方向，镜像看得到）带 2400B
+  `text/plain` 体 → `/extract/FKQO9x4uHwL5zeCR6` 落盘 2400B，**sha256 与服务器上原文件逐字一致**；
+  `GET /api/files/FKQO9x4uHwL5zeCR6`（带登录令牌）200，`content-type: text/plain; charset=utf-8`、
+  `content-length: 2400`、`content-disposition: attachment; filename="FKQO9x4uHwL5zeCR6"`。
+  同时那条请求的 404 响应体（2318B `text/html`）也落成一件（`is_orig:false`）。
+- **白名单真的在删**：3000B 随机字节（`application/octet-stream`）落盘后 files.log 的 `mime_type`
+  **为空** → 清理助手判「白名单外」删除（`--dry-run` 与真跑口径一致），删除后下载回 **404**；
+  `--max-bytes 2000` 一轮按 mtime 从最老淘汰 8 件、释放 5.1 MiB、只剩最新的 599B 件。
+- **鉴权与错误分支**：无令牌 **401**；fuid 长度不足（`short`）或带空格 **400**；URL 编码斜杠
+  （`..%2F..%2Fetc%2Fpasswd`）路由不匹配 **404**；库中不存在的 fuid **404**。
+- **截断链路（用临时调小的上限验证，非 16 MiB 实值）**：真实 18.7 MB 上传被远端 **413** 拒且镜像丢包
+  严重（`total_bytes=18700000` / `seen_bytes=184432` / 落盘 5.3 MB / `extracted_cutoff=false`，见「已知限制」），
+  所以把容器内 `default_limit` 临时改成 **1000** 再上传 2400B：两个 1000 字节截断件、
+  files.log `extracted_size=1000` + `extracted_cutoff=true`、ES 同步（`exists extracted_size`=2、
+  `extracted_cutoff=true`=2）、下载响应带 `x-extract-cutoff: 1` + `x-extract-size: 1000` +
+  `content-length: 1000`；测完按容器内备份覆盖回 `16777216`（sha256 校验一致），Zeek 重启后命令仍是
+  `zeek -C -i ens160 -f net 172.16.196.0/24 …`。16 MiB 这个具体数值由 `tests/zeek/batch4_test.zeek` 断言。
+- **ES 字段**：`exists fuid` 91637、`exists extracted` 2119、`exists extracted_size` 0（= 完整件不写）、
+  `extracted_cutoff=true` 0 → 调小上限验证后两者各变成 2。
+- **两个部署/环境坑**：① `shentong-ndr` 镜像被 backend / normalizer / detector / ndr-mcp 四个服务共用，
+  只 `up -d zeek backend` 会让 normalizer 跑旧镜像、新字段永远进不了 ES（`exists extracted` 恒为 0），
+  必须四个一起重建；② **镜像口看不到采集机自身对部分外网目标的流量**（实测 Cloudflare/`postman-echo.com`
+  在 `conn.log`/`http.log`/`files.log` 里完全没有记录，`mirrors.aliyun.com` 正常）——实机验收要挑可见目标，
+  且高带宽流的丢包会让落盘件不完整（见「已知限制」）。

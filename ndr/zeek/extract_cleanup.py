@@ -34,6 +34,8 @@ DEFAULT_MIME_ALLOW: tuple[str, ...] = (
     "text/xml",
     "application/xml",
     "application/json",
+    # Zeek 对 JSON 请求体实测报 text/json（不是 application/json），漏了会误删正常上传
+    "text/json",
     "application/rtf",
     # 文档
     "application/pdf",
