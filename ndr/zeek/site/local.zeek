@@ -8,6 +8,8 @@
 @load ./shentong-extra
 @load ./shentong-policies
 @load ./shentong-httpbody
+@load ./shentong-limits
+@load ./shentong-httpheaders
 @load ./shentong-fingerprints
 @load ./shentong-nets
 @load ./shentong-scripts-d

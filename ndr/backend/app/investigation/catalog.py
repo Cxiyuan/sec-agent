@@ -144,6 +144,16 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "num",
         "desc": "整条响应体的字节数（Zeek response_body_len，不受采集截断影响）",
     },
+    "req_headers": {
+        "path": "req_headers",
+        "kind": "text",
+        "desc": "请求头全量文本（每行一头「名: 值」；单头 256 字节、同向总量 4KB 封顶）",
+    },
+    "resp_headers": {
+        "path": "resp_headers",
+        "kind": "text",
+        "desc": "响应头全量文本（同 req_headers 的截断口径）",
+    },
     "real_client_ip": {
         "path": "real_client_ip",
         "kind": "ip",

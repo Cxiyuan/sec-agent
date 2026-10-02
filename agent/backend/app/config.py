@@ -74,10 +74,13 @@ class Settings(BaseSettings):
     http_body_fields: str = (
         "request_body,body,post_body,payload,http.request.body,http.request_body"
     )
-    http_body_max_chars: int = 2000
+    # 默认与 Zeek 侧一致（site/shentong-limits.zeek 的 16384/65536）；Web 后台
+    # 「采集 → 网段与上限」改这两个值时同时写 Zeek 侧 interface.conf 与 system_config 的
+    # http.body_max_chars / http.resp_body_max_chars，运行时经 runtime_config 生效（见 normalizer）
+    http_body_max_chars: int = 16384
     # 响应体（Zeek 侧由 site/shentong-httpbody.zeek 采到 HTTP::Info$resp_body）
     http_resp_body_fields: str = "resp_body,response_body,http.response.body,http.response_body"
-    http_resp_body_max_chars: int = 2000
+    http_resp_body_max_chars: int = 65536
     http_cookie_max_chars: int = 200
     # Zeek 日志流分类（契约，两侧一致）：event=入库且进检测/画像；ops=只入库（当证据）。
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py

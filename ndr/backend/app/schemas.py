@@ -47,6 +47,9 @@ class UnifiedLog(BaseModel):
     body: str = ""  # 请求体（自动适配字段名 + 截断）
     resp_body: str = ""  # 响应体（自动适配字段名 + 截断）
     resp_body_len: int | None = None  # 整条响应体字节数（Zeek response_body_len，不受截断影响）
+    # 请求/响应头全量文本（"头名: 值\n" 逐行）：Zeek 侧单头截 256 字节、同向总量 4KB 封顶
+    req_headers: str = ""
+    resp_headers: str = ""
     referer: str = ""
     cookie: str = ""  # 截断；请求头值按既定口径原样保留（已接受的风险，见 docs/ndr-collect-plan.md）
     auth_scheme: str = ""  # basic / bearer / jwt（只留方案名，凭证本体不在此字段）

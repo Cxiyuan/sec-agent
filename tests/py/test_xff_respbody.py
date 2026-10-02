@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 from app import schemas
+from app.config import settings
 from app.ingestion import normalizer
 from app.rules import engine
 
@@ -80,9 +81,11 @@ def test_plain_traffic_has_no_real_client_ip() -> None:
 
 
 def test_resp_body_truncation() -> None:
-    log = normalizer.normalize_zeek(dict(PROBE, resp_body="x" * 3000))
+    # 批 3 起响应体上限是 64KB（后台可调），按 settings 造一个必然超限的输入
+    limit = settings.http_resp_body_max_chars
+    log = normalizer.normalize_zeek(dict(PROBE, resp_body="x" * (limit + 100)))
     assert log is not None
-    assert len(log.resp_body) == 2000
+    assert len(log.resp_body) == limit
 
 
 def test_rule_matches_real_client_ip() -> None:

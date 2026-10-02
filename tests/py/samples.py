@@ -72,6 +72,13 @@ HTTP = {
     "proxied": ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"],
     "body": '{"user":"probe","password":"Zq7ProbePwd9"}',
     "resp_body": '{"detail":"unauthorized"}',
+    # 头全量文本（shentong-httpheaders.zeek 产出）：单头截 256、同向总量 4KB
+    "req_headers": (
+        "HOST: 172.16.196.80:8081\n"
+        "AUTHORIZATION: Basic cHJvYmU6WnE3UHJvYmVQd2Q5\n"
+        "X-LONG: " + "A" * 256 + "\n"
+    ),
+    "resp_headers": "CONTENT-TYPE: application/json\nCONTENT-LENGTH: 80\n",
 }
 
 SSL = {

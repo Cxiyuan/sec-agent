@@ -17,11 +17,13 @@ zeek/
 ├── entrypoint.sh           # 网卡枚举 / 脚本渲染 / 启动 / 看门狗 / 清理
 ├── filebeat.yml            # 发运到 Redis 采集队列（shentong:events:collect）
 ├── site/
-│   ├── local.zeek              # 总入口（顺序：json → extra → policies → httpbody → fingerprints → nets → scripts-d）
+│   ├── local.zeek              # 总入口（顺序：json → extra → policies → httpbody → limits → httpheaders → fingerprints → nets → scripts-d）
 │   ├── shentong-json.zeek      # JSON 输出 + 24h 轮转 + /logs 输出目录
 │   ├── shentong-extra.zeek     # 显式加载各协议分析器（保证字段齐全）
-│   ├── shentong-policies.zeek  # Zeek 自带策略：ssl-log-ext / hash-all-files / stats + 关掉 notice 流
+│   ├── shentong-policies.zeek  # Zeek 自带策略：ssl-log-ext / hash-all-files / stats / header-names / var-extraction-cookies + 关掉 notice 流
 │   ├── shentong-httpbody.zeek  # HTTP 请求体/响应体采集（截断 + 跳过二进制）
+│   ├── shentong-limits.zeek    # 正文上限（入口按 interface.conf 自动重写）
+│   ├── shentong-httpheaders.zeek # HTTP 请求/响应头全量值（单头 256、同向总量 4KB 封顶）
 │   ├── shentong-fingerprints.zeek # 指纹开关：JA3/JA3S 与 JA4（BSD-3-Clause）
 │   ├── shentong-nets.zeek      # Site::local_nets（入口自动重写）
 │   ├── shentong-scripts-d.zeek # scripts.d 加载器（入口自动重写）
@@ -124,15 +126,26 @@ docker compose restart zeek
   高位字节）只能拦 NUL/C0 控制字符，因此**压缩响应（gzip/br）或恰好不含这些字节的
   二进制响应**会以乱码形式写进 `resp_body`（字段不丢、内容不可读）。要精确跳过需再接
   `http_header` 事件记录 `Content-Encoding` 并维护「本事务不采」表，本项目尚未做。
-- **请求头只采「代理相关」那几个（2026-10 修正）**：Zeek 不会把任意请求头写进 `http.log`，
-  但它自带的 HTTP 分析器会把**表明请求经过代理**的头收进 `HTTP::Info$proxied`
-  （默认清单：`X-Forwarded-For` / `X-Forwarded-From` / `Forwarded` / `Client-IP` /
+- **请求头值已全量采集（2026-10，批 3）**：Zeek 自带的 HTTP 分析器只把**表明请求经过代理**的头收进
+  `HTTP::Info$proxied`（默认清单：`X-Forwarded-For` / `X-Forwarded-From` / `Forwarded` / `Client-IP` /
   `Via` / `Xroxy-Connection` / `Proxy-Connection`），值形如
   `"X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"`；本项目 normalizer 已把它解析成归一化
-  字段 `real_client_ip`（没有代理头时是 NULL，`src_ip` 仍是 TCP 对端）。**Cookie 与其它自定义头
-  仍不落盘**，要采得自己接 `http_header` 事件加 `&log` 字段（与 `shentong-httpbody.zeek`
-  同一套路）。注意转发头是客户端自报、**可伪造**，拿它做封禁/画像必须配可信代理白名单
-  （本项目尚未做，`real_client_ip` 只代表「头里写了什么」）
+  字段 `real_client_ip`（没有代理头时是 NULL，`src_ip` 仍是 TCP 对端）。注意转发头是客户端自报、
+  **可伪造**，拿它做封禁/画像必须配可信代理白名单（本项目尚未做，`real_client_ip` 只代表「头里写了什么」）。
+  其余头现在由自写的 `site/shentong-httpheaders.zeek` 落成 `req_headers` / `resp_headers` 两列
+  （逐行 `Name: value`，**单头截 256 字符、同方向累计封顶 4KB**；值里含任意控制字符 —— 包括
+  `\r`/`\n` 换行注入 —— 整体记成 `<binary>`），另有 `policy/protocols/http/header-names.zeek`
+  提供的**有序头名** `client_header_names` / `server_header_names`（只有名字没有值）。
+  **这两个字段是明文**：`Cookie` / `Authorization` / `Set-Cookie` 都会落库，是既定取舍
+  （见 `docs/ndr-collect-plan.md`「已接受的风险与取舍」）。
+- **正文上限可在后台改（2026-10，批 3）**：请求/响应正文的落库上限在
+  `site/shentong-limits.zeek`（默认请求 16 KB / 响应 64 KB），该文件由 `entrypoint.sh` 的
+  `render_limits()` 在启动时与看门狗检测到配置变化时，按 `/config/interface.conf` 的
+  `body_max_bytes` / `resp_body_max_bytes` 重写；界面上在「监控网段」页的 Zeek 面板改 KB 值
+  （后端同时写 `interface.conf` 与 `system_config` 的 `http.body_max_chars` /
+  `http.resp_body_max_chars`，normalizer 30 秒 TTL 内跟随）。**Zeek 记的
+  `request_body_len` / `response_body_len` 是完整字节数，不受截断影响**（落库为
+  `request_body_len` / `resp_body_len`）。改上限会触发 Zeek 重载（约 1~2 秒抓包中断）。
 
 ## 上线后专项检查（日志与协议解析）
 
@@ -143,10 +156,10 @@ docker compose restart zeek
 |---|---|---|---|
 | 1 | 实际产出了哪些日志 | `docker exec <zeek> ls -la /logs` | 至少 `conn.log` / `http.log` / `dns.log` / `ssl.log`；有对应流量时出现 `files.log` / `smtp.log` / `ssh.log` / `dhcp.log` / `notice.log` |
 | 2 | 轮转与保留 | `ls /logs` 顶层活动日志与轮转归档 | 每 24h **同目录平铺改名**（`conn.log` → `conn.2026-10-01.log`，实机核对：**不是日期子目录**）；超过 3 天的归档被入口清理循环删掉（活动日志不动） |
-| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` / `files.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`；ssl 有 `server_name`/`cipher`/`version`（**批 2 起还有 `ja3`/`ja3s`/`ja4`**，见「已知限制」）；files 有 `md5`/`sha1`/`sha256`（`source`/`is_orig` 表明方向）；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
-| 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body`（请求体）与 `resp_body`（响应体） | 两者都有（各 ≤4096B，可用 `redef` 放大；二进制块跳过、UTF-8 放行）；GET/HEAD 无 `body` 但有 `resp_body`；**响应体完整字节数看 Zeek 自带的 `response_body_len`**（不受截断影响，落库为 `resp_body_len`） |
+| 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` / `files.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`（**批 3 起还有 `req_headers`/`resp_headers` 全量头值与 `client_header_names`/`server_header_names`**）；ssl 有 `server_name`/`cipher`/`version`（**批 2 起还有 `ja3`/`ja3s`/`ja4`**，见「已知限制」）；files 有 `md5`/`sha1`/`sha256`（`source`/`is_orig` 表明方向）；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
+| 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body`（请求体）与 `resp_body`（响应体） | 两者都有（**批 3 起上限默认 16KB/64KB 且可在界面改**，见「已知限制」；二进制块跳过、UTF-8 放行）；GET/HEAD 无 `body` 但有 `resp_body`；**响应体完整字节数看 Zeek 自带的 `response_body_len`**（不受截断影响，落库为 `resp_body_len`） |
 | 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps -o args= -C zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成，命令里应出现 `-f net …`；`-f` 缺失会被 Zeek 当脚本名，启动即 fatal）；**未配网段时全量抓包** |
-| 6 | 是否重复告警 | 看 `notice.log` 有无内容 | **不产检测类 notice**：不加载 `policy/protocols/*`（只加载 json-logs 与 `shentong-policies.zeek` 里的 ssl-log-ext / hash-all-files / stats），且 `shentong-policies.zeek` 显式 `Log::disable_stream(Notice::LOG)` —— 检测全由内置规则做 |
+| 6 | 是否重复告警 | 看 `notice.log` 有无内容 | **不产检测类 notice**：不加载 `policy/protocols/*` 的检测脚本（只加载 json-logs 与 `shentong-policies.zeek` 里的 ssl-log-ext / hash-all-files / stats / header-names / var-extraction-cookies），且 `shentong-policies.zeek` 显式 `Log::disable_stream(Notice::LOG)` —— 检测全由内置规则做 |
 | 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
 | 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）。**未做**：可信代理白名单（头可伪造）、`X-Real-IP`（不在 Zeek 默认清单）、四层代理（只转发 TCP 不写头）只能靠 PROXY protocol 或回查 NAT/防火墙日志 |

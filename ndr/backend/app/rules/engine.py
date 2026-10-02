@@ -299,6 +299,8 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "response_body_len": ("http",),
     "resp_body": ("http",),
     "resp_body_len": ("http",),
+    "req_headers": ("http",),
+    "resp_headers": ("http",),
     "real_client_ip": ("http",),
     # dns
     "query": ("dns",),

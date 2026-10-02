@@ -19,6 +19,7 @@ from typing import Any
 
 from app.config import settings
 from app.ingestion import log_types
+from app.runtime_config import get as runtime_get
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
 
@@ -69,6 +70,28 @@ def _login_re() -> re.Pattern[str]:
 def _clip(value: Any, limit: int) -> str:
     text = str(value or "")
     return text[:limit] if len(text) > limit else text
+
+
+# ---------- HTTP 正文上限（后台可调，见 Web 后台「采集 → 网段与上限」） ----------
+# Zeek 侧另有硬上限（shentong-limits.zeek 渲染自 interface.conf 的 body_max_bytes /
+# resp_body_max_bytes）；这里再截一次是防「Zeek 已放宽但后端仍按旧值截断」时的口径不一致。
+# 单位是字符（Zeek 侧是字节）：ASCII 正文两者一致，非 ASCII 时后端可能多截一点，不敏感。
+
+
+def http_body_limit() -> int:
+    """请求正文落库上限（字符）。"""
+    try:
+        return int(runtime_get("http.body_max_chars", settings.http_body_max_chars))
+    except (TypeError, ValueError):
+        return settings.http_body_max_chars
+
+
+def http_resp_body_limit() -> int:
+    """响应正文落库上限（字符）。"""
+    try:
+        return int(runtime_get("http.resp_body_max_chars", settings.http_resp_body_max_chars))
+    except (TypeError, ValueError):
+        return settings.http_resp_body_max_chars
 
 
 # ---------- 凭证脱敏（仅用于持久化的 raw；body/请求头按既定口径原样落库） ----------
@@ -366,11 +389,13 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "method": str(doc.get("method") or "")[:16],
         "uri_path": path[:512],
         "query_string": qs[:1024],
-        "body": _clip(body_value, settings.http_body_max_chars),
+        "body": _clip(body_value, http_body_limit()),
         "resp_body": _clip(
-            _first(doc, _csv(settings.http_resp_body_fields)), settings.http_resp_body_max_chars
+            _first(doc, _csv(settings.http_resp_body_fields)), http_resp_body_limit()
         ),
         "resp_body_len": _to_int(doc.get("response_body_len")),
+        "req_headers": str(doc.get("req_headers") or "")[:8192],
+        "resp_headers": str(doc.get("resp_headers") or "")[:8192],
         "real_client_ip": _real_client_ip(doc),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
         "cookie": _clip(doc.get("cookie"), settings.http_cookie_max_chars),
@@ -530,7 +555,7 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
         uri_path=path[:512],
         query_string=qs[:1024],
         method=str(data.get("method") or "")[:16],
-        body=_clip(body_value, settings.http_body_max_chars),
+        body=_clip(body_value, http_body_limit()),
         referer=str(data.get("referer") or "")[:512],
         cookie=_clip(data.get("cookie"), settings.http_cookie_max_chars),
         auth_scheme=_auth_scheme({**data, **doc}),

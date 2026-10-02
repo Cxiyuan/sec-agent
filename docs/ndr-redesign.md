@@ -530,6 +530,25 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **已知取舍与遗留**：① JA4S/JA4H 等 JA4+ 未收录（许可证），智能体侧/规则侧不依赖它们；② `file_source` 只记 Zeek 的 `source` 字段（HTTP/FTP/SMTP/SSL…），不代表真实落地路径；③ 请求头值、正文上限与文件内容提取仍留给批 3/批 4。
 
+### 第 11 期 · 采集面改造批 3：请求头全量值 + 正文上限可设置 ✅ 已完成（2026-10-02，实施记录）
+
+**起因**：第 8 期实机检查确认 `HTTP::Info` 只有少数几个头落成独立字段（`host`/`user_agent`/`referrer`/`origin`/`proxied`/认证信息），`policy/protocols/http/header-names.zeek` 也只记**头名**（且默认只记客户端侧）不记值 —— `Cookie`、`Authorization`、`Content-Type`、`Set-Cookie`、`X-Forwarded-*` 这些调查要用的值在日志里根本没有；同时请求正文与响应正文在 Zeek 侧是**硬编码 4096 字节**（`site/shentong-httpbody.zeek` 的 `max_body_len`/`max_resp_body_len`），用户改不了。本期补头值采集，并把两个正文上限做成后台可配、可热重载。逐条决定见 `docs/ndr-collect-plan.md` 的批 3。
+
+1. **头值采集（自写 `site/shentong-httpheaders.zeek`）**：`module ShentongHTTPHeaders`；`redef record HTTP::Info += { req_headers, resp_headers }`（都是 `string &log &optional`，逐行 `"Name: value\n"`）；`const max_header_value_len = 256 &redef`、`const max_headers_len = 4096 &redef`（单方向各自累计）；`append_header(current, name, value)` 单头先截 256 字符、总量到 4096 后**停止追加**（最后一行允许被截断）；`clean_header_value(value)` 把含任意 C0 控制字符（字符类 `[\x00-\x1f\x7f]`，**含 `\r`/`\n`**）的值整体替换成 `<binary>` —— 头值里出现换行会在日志里伪造出假头行。**这是本期的实测修正**：初版沿用了正文脚本的字符类（`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`，故意放行 tab/CR/LF 以便正文保留换行），被 `tests/zeek/batch3_test.zeek` 的注入用例抓出来；两个函数在 `export` 块里声明为 `global`（定义在块外），否则模块外无法调用、单测也调不到。
+2. **`site/shentong-policies.zeek` 扩到 5 个 `@load`**：新增 `policy/protocols/http/header-names.zeek`（提供**有序**的 `client_header_names`/`server_header_names`，与本脚本的头值互为补充）与 `policy/protocols/http/var-extraction-cookies.zeek`（请求 `Cookie` 的变量名进 `cookie_vars`）。
+3. **上限可配 + 热重载**：`site/shentong-limits.zeek` 是镜像内默认值（请求 16 KB / 响应 64 KB）；`entrypoint.sh` 新增 `render_limits()`（`conf_get body_max_bytes` / `resp_body_max_bytes`，**只接受纯数字**，缺失或非法回落 16384/65536，写出 `## 由 entrypoint.sh 自动生成（render_limits）…` + 两行 `redef`），并在 `main` 与看门狗（10 秒轮询 `interface.conf` 的 sha256）检测到变化时都调用 —— 后台改上限 → 写 `interface.conf` → 看门狗重载 Zeek 时重建 `shentong-limits.zeek`。`local.zeek` 顺序变为 json → extra → policies → httpbody → **limits** → **httpheaders** → fingerprints → nets → scripts-d（`limits` 必须排在 `httpbody` 之后：它 `redef` 的是后者声明的 const）。
+4. **后端**：`api/routes/zeek.py` 的 `CONF_KEYS`/`DEFAULT_CONF` 加 `body_max_bytes`/`resp_body_max_bytes`（**不加进 `CONF_KEYS` 则 `_read_conf` 读不到**）；`ZeekIfaceIn` 加 `body_max_kb`/`resp_body_max_kb`（`None` = 沿用当前值），KB 范围 1~1024，越界回 400 `field_error`；`PUT /interface` 同时写 `interface.conf` 与 `system_config` 的 `http.body_max_chars`/`http.resp_body_max_chars`，并 `runtime_config.invalidate()`；`GET /status` 回这两个值。两侧 `config.py` 的 `http_body_max_chars`/`http_resp_body_max_chars` 默认 2000 → **16384/65536**；两侧 `normalizer.py` 新增 `http_body_limit()`/`http_resp_body_limit()`（经 `runtime_config.get` 读 `system_config`，30 秒 TTL，读不到就回落 settings，单位是字符）替换原来直接读 settings 的两处截断；`schemas.py` 加 `req_headers`/`resp_headers`（后端再截 8192 字符兜底）；`investigation/catalog.py` 注册两个字段、`rules/engine.py` 的 `_FIELD_TYPES` 把它们挂到 `http`。
+5. **前端**：监控网段页的 Zeek 面板新增「请求正文上限（KB，1~1024）」「响应正文上限（KB，1~1024）」两个输入框（留空或非法就不提交，后端沿用当前值），「当前生效」多显示一行当前上限；`lib/api.ts` 的 `ZeekStatus` 加两个字段。
+6. **测试**：`tests/py` 新增 `test_http_headers_captured`（头值逐字搬运 + 非 HTTP 流不串味）、`test_http_limits_follow_settings`（无 `system_config` 行时回落 settings）与 `test_zeek_limits.py`（镜像内默认值与 `settings` 一致、`local.zeek` 里 `limits` 在 `httpbody` 之后、把 `render_limits` 抽出来用 bash 真跑三种 conf：正常值原样写出、缺键与非法值回落默认）；新增 `tests/zeek/batch3_test.zeek`（字段/常量存在性、单头截断 256、总量封顶 4096、`\r\n` 注入中和）；原有两处「上限 2000」的断言改为按 `settings` 造必然超限的输入。
+
+**验收（四步）**
+
+- **① 容器内 Zeek 单测**：`sh tests/zeek/run.sh` → `batch3_test.zeek` 9 条 PASS + `batch2_test.zeek` 7 条 PASS + `hb_test.zeek` 9 条 PASS，三个 `FAILS=0`，`ZEEK TESTS: ALL PASS`。
+- **① 附带：容器内真实流量实测**（`zeek/zeek:9.0`，`-i lo` + python 探针，默认上限）：GET 带 30 个 190 字符自定义头 + `X-Long: A×400` → `req_headers` 总长 **4096**（22 行）、`X-Long` 值 **256** 字符，`client_header_names` 有序出现（HOST/X-LONG/X-H00…）；POST 4000 字节 → `body` 长 4000、`request_body_len` 4000、`cookie_vars:["a","b"]`；响应 8000 字节 + `X-Resp-Long: D×400` → `resp_headers` 334 字符且 `X-RESP-LONG` 值 256、`resp_body` 长 8000、`response_body_len` 8000。把 `shentong-limits.zeek` 换成 `max_body_len = 1024` / `max_resp_body_len = 1500` 再跑一遍 → `body` 长 **1024**、`resp_body` 长 **1500**，而 `response_body_len` 仍是 **8000** —— 证明「截断只影响落库文本，完整字节数不受影响」。已知测试环境现象：回环上单个大 payload（≳8 KB 单包）会 `truncated_tcp_payload` 并把整条请求的头/方法丢掉（容器内没有 `ip` 命令，改不了 lo MTU），所以探针请求总字节要压在 ~8 KB 内，要验证 16 KB 这类上限就用挂载覆盖的 limits 文件把上限调小。
+- **② 本地两侧一致性 + 质量门**：`pytest tests/py --stack=ndr -q` **149 passed**、`--stack=agent -q` **148 passed, 1 skipped**；`ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`pyright` 同一组路径 0 errors / 0 warnings / 0 informations。
+- **③ CI**：提交推送后 GitHub Actions 三作业全绿（`build` 构建并推送镜像 / `test` ruff+pyright+两侧 pytest+Zeek 容器单测 / `web` 两侧 `tsc --noEmit`）。
+- **④ 服务器部署与实机探针**：见本节末（部署后补记）。
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

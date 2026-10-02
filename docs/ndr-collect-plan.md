@@ -91,6 +91,15 @@
 - `config.py`：`http_body_max_chars=16384`/`http_resp_body_max_chars=65536`，运行时读 `system_config` 同数字覆盖；`schemas.py:46-47` 两句"不落明文凭证"的注释按新口径改掉。
 - 验收探针：ES 断言头值存在且被截断；改界面值 → 重载后正文长度变化；`resp_body_len` 仍为完整字节数。
 
+**实施记录（as-built，2026-10-02）**
+
+- **Zeek 侧**：新增 `site/shentong-httpheaders.zeek`（`req_headers`/`resp_headers` 两个 `&log &optional` 字段；`max_header_value_len=256`、`max_headers_len=4096`；`append_header()` 单头截断 + 总量封顶；`clean_header_value()` 把含**任意 C0 控制字符（含 `\r`/`\n`）**的值换成 `<binary>` —— 初版沿用正文脚本的字符类漏掉了 `\r`/`\n`，被 `batch3_test.zeek` 的注入用例抓出来改成 `[\x00-\x1f\x7f]`；两个函数在 `export` 里声明为 `global` 才能在模块外调用/单测）；`site/shentong-policies.zeek` 增到 5 个 `@load`（新加 `policy/protocols/http/header-names.zeek` 与 `.../var-extraction-cookies.zeek`）；新增 `site/shentong-limits.zeek`（镜像内默认 16384/65536）；`entrypoint.sh` 新增 `render_limits()`（只接受纯数字、缺失或非法回落默认值）并在 `main` 与看门狗触发重载时各调一次；`local.zeek` 顺序 json → extra → policies → httpbody → **limits** → **httpheaders** → fingerprints → nets → scripts-d。
+- **后端**：`api/routes/zeek.py` 的 `CONF_KEYS`/`DEFAULT_CONF` 加两个新键（否则 `_read_conf` 读不到）；`ZeekIfaceIn` 加 `body_max_kb`/`resp_body_max_kb`（`None` = 沿用当前值，范围 1~1024，越界 400 `field_error`）；`PUT /interface` 同时写 `interface.conf` 与 `system_config.http.body_max_chars`/`http.resp_body_max_chars` 并 `runtime_config.invalidate()`；`GET /status` 回这两个值。两侧 `config.py` 默认值 2000 → 16384/65536；两侧 `normalizer.py` 新增 `http_body_limit()`/`http_resp_body_limit()`（`runtime_config.get`，30 秒 TTL，读不到回落 settings）替换原来直接读 settings 的截断；`schemas.py` 加 `req_headers`/`resp_headers`（后端 8192 字符兜底截断）；`catalog.py` + `rules/engine.py` 的 `_FIELD_TYPES` 同步注册（挂 `http`）。
+- **前端**：`ndr/frontend/components/zeek-panel.tsx`（监控网段页）加两个 KB 输入框（留空/非法不提交，后端沿用当前值）+「当前生效」显示当前上限；`lib/api.ts` 的 `ZeekStatus` 加两字段。
+- **测试**：`tests/py` 新增 `test_http_headers_captured`、`test_http_limits_follow_settings`、`tests/py/test_zeek_limits.py`（默认值与 settings 一致、`limits` 在 `httpbody` 之后、用 bash 真跑 `render_limits` 三种 conf）；新增 `tests/zeek/batch3_test.zeek`（9 条）；原来两处「上限 2000」断言改为按 `settings` 造超限输入。
+- **容器实测**（`zeek/zeek:9.0`，`-i lo`）：默认上限下 `req_headers` 总长 4096 / 单头 256、`resp_headers` 单头 256、POST 4000 → `body` 4000、响应 8000 → `resp_body` 8000；把 limits 换成 1024/1500 → `body` 1024、`resp_body` 1500，而 `response_body_len` 仍 8000（截断不影响完整字节数）。
+- 服务器验收（2026-10-02）已完成，实机证据见 `docs/ndr-redesign.md` 第 11 期末尾。
+
 ### 批 4：文件提取 + 下载通道
 
 - 新增 `ndr/zeek/site/shentong-file-extract.zeek`：`redef FileExtract::default_limit = 16777216`、`redef FileExtract::prefix = "/extract/"`；`file_new` 按 `f$source`（HTTP/FTP）挂 `Files::ANALYZER_EXTRACT`；`file_sniff`/`file_state_remove` 按 MIME 白名单判定，非白名单删文件（files.log 记录保留）。

@@ -49,6 +49,8 @@ monitored_nets=${ZEEK_MONITORED_NETS:-}
 bpf_filter=${ZEEK_BPF_FILTER:-}
 local_nets=${ZEEK_LOCAL_NETS:-}
 bpf_extra=${ZEEK_BPF_EXTRA:-}
+body_max_bytes=${ZEEK_BODY_MAX_BYTES:-16384}
+resp_body_max_bytes=${ZEEK_RESP_BODY_MAX_BYTES:-65536}
 EOF
     log "已生成默认网卡配置（interface=${ZEEK_IFACE:-eth0}）"
   fi
@@ -80,6 +82,20 @@ render_nets() {
     fi
   } > "${SITE_DIR}/shentong-nets.zeek"
   log "网段脚本已渲染（local_nets=${nets:-空}）"
+}
+
+render_limits() {
+  local body resp
+  body="$(conf_get body_max_bytes)"; resp="$(conf_get resp_body_max_bytes)"
+  # 只接受纯数字（防手改配置写坏脚本 / 注入）；缺失或非法都回落到默认值
+  case "$body" in ''|*[!0-9]*) body=16384;; esac
+  case "$resp" in ''|*[!0-9]*) resp=65536;; esac
+  {
+    echo "## 由 entrypoint.sh 自动生成（render_limits），请勿手工修改"
+    echo "redef ShentongHTTP::max_body_len = ${body};"
+    echo "redef ShentongHTTP::max_resp_body_len = ${resp};"
+  } > "${SITE_DIR}/shentong-limits.zeek"
+  log "正文上限脚本已渲染（请求 ${body} 字节 / 响应 ${resp} 字节）"
 }
 
 render_scripts_loader() {
@@ -160,8 +176,9 @@ start_watchdog() {
       cur="$(sha256sum "$IFACE_CONF" | awk '{print $1}')"
       [ "$cur" = "$last" ] && continue
       last="$cur"
-      log "检测到网卡配置变化，重载 Zeek"
+      log "检测到采集配置变化，重载 Zeek"
       render_nets
+      render_limits
       if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null || true
       fi
@@ -176,6 +193,7 @@ main() {
   write_interfaces
   ensure_iface_conf
   render_nets
+  render_limits
   render_scripts_loader
   start_filebeat
   start_cleanup_loop

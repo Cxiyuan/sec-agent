@@ -38,6 +38,8 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
   const [iface, setIface] = React.useState("");
   const [netsText, setNetsText] = React.useState("");
   const [bpfExtra, setBpfExtra] = React.useState("");
+  const [bodyKb, setBodyKb] = React.useState("");
+  const [respKb, setRespKb] = React.useState("");
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -51,6 +53,8 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
     setIface(d.interface);
     setNetsText(d.networks.join("\n"));
     setBpfExtra(d.bpf_extra || "");
+    setBodyKb(String(Math.round((d.body_max_bytes || 0) / 1024)));
+    setRespKb(String(Math.round((d.resp_body_max_bytes || 0) / 1024)));
   }
 
   React.useEffect(() => {
@@ -61,9 +65,19 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
     setBusy(true);
     setMsg("");
     try {
+      const payload: Record<string, unknown> = {
+        interface: iface,
+        networks: netsText,
+        bpf_extra: bpfExtra,
+      };
+      // 上限按 KB 传；留空或非法就不传（后端沿用当前值，不会被清掉）
+      const bodyKbNum = Number(bodyKb);
+      const respKbNum = Number(respKb);
+      if (Number.isFinite(bodyKbNum) && bodyKbNum > 0) payload.body_max_kb = bodyKbNum;
+      if (Number.isFinite(respKbNum) && respKbNum > 0) payload.resp_body_max_kb = respKbNum;
       const r = await apiFetch<{ interface: string; note: string }>("/api/zeek/interface", {
         method: "PUT",
-        body: JSON.stringify({ interface: iface, networks: netsText, bpf_extra: bpfExtra }),
+        body: JSON.stringify(payload),
       });
       setMsg(`已保存：网卡 ${r.interface}。${r.note}`);
       setTimeout(() => load().catch(() => {}), 12000);
@@ -161,6 +175,37 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
           </div>
         )}
 
+        {showNets && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                请求正文上限（KB，1~1024）
+              </label>
+              <Input
+                value={bodyKb}
+                onChange={(e) => setBodyKb(e.target.value)}
+                placeholder="16"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                响应正文上限（KB，1~1024）
+              </label>
+              <Input
+                value={respKb}
+                onChange={(e) => setRespKb(e.target.value)}
+                placeholder="64"
+              />
+            </div>
+            <p className="col-span-2 text-xs text-muted-foreground">
+              Zeek 侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
+              <span className="font-mono">resp_body_len</span> /{" "}
+              <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
+              约 10 秒内重载 Zeek。
+            </p>
+          </div>
+        )}
+
         {section === "networks" && (
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
@@ -211,6 +256,10 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
             <p className="mt-1 flex items-center gap-2">
               <Badge variant="info">轮转 {status.rotation_hours}h</Badge>
               <Badge variant="medium">本地保留 {status.retention_days_local} 天</Badge>
+              <Badge variant="info">
+                正文上限 {Math.round(status.body_max_bytes / 1024)} /{" "}
+                {Math.round(status.resp_body_max_bytes / 1024)} KB
+              </Badge>
               <span className="font-mono text-muted-foreground">{status.config_path}</span>
             </p>
           </div>

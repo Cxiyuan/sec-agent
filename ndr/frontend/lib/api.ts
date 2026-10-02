@@ -135,6 +135,9 @@ export interface ZeekStatus {
   last_reload: string | null;
   config_path: string;
   detected: ZeekIfaceInfo[];
+  /** HTTP 正文落库上限（字节）：Zeek 侧截正文用，后端 normalizer 用同一个数字再截一次 */
+  body_max_bytes: number;
+  resp_body_max_bytes: number;
   rotation_hours: number;
   retention_days_local: number;
 }

@@ -85,12 +85,38 @@ def test_http_without_xff_is_null() -> None:
 
 
 def test_resp_body_truncated() -> None:
-    doc = samples.envelope({**samples.HTTP, "resp_body": "x" * 5000}, "http", "/logs/http.log")
+    doc = samples.envelope(
+        {**samples.HTTP, "resp_body": "x" * (settings.http_resp_body_max_chars + 100)},
+        "http",
+        "/logs/http.log",
+    )
     entry = normalize_zeek(doc)
     assert entry is not None
     assert len(entry.resp_body) == settings.http_resp_body_max_chars
     # 字节数是 Zeek 记的完整长度，不受截断影响
     assert entry.resp_body_len == 80
+
+
+def test_http_headers_captured() -> None:
+    """批 3：请求/响应头全量文本逐字搬运（Zeek 侧已截断，后端再按 8192 字符兜底）。"""
+    entry = normalize_zeek(samples.DOCS["http"])
+    assert entry is not None
+    assert "AUTHORIZATION: Basic cHJvYmU6WnE3UHJvYmVQd2Q5" in entry.req_headers
+    assert entry.req_headers.endswith("X-LONG: " + "A" * 256 + "\n")
+    assert entry.resp_headers.startswith("CONTENT-TYPE: application/json\n")
+    # 非 HTTP 流不串味
+    ssl_entry = normalize_zeek(samples.DOCS["ssl"])
+    assert ssl_entry is not None
+    assert ssl_entry.req_headers == ""
+    assert ssl_entry.resp_headers == ""
+
+
+def test_http_limits_follow_settings() -> None:
+    """两侧共用的运行时上限函数：无 system_config 行时回落到 settings 默认值。"""
+    from app.ingestion.normalizer import http_body_limit, http_resp_body_limit
+
+    assert http_body_limit() == settings.http_body_max_chars == 16384
+    assert http_resp_body_limit() == settings.http_resp_body_max_chars == 65536
 
 
 def test_tls_fingerprints() -> None:
