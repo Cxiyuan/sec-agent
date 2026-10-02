@@ -29,9 +29,12 @@ COPY site/ /usr/local/zeek/share/zeek/site/
 COPY scripts.d/ /usr/local/zeek/share/zeek/site/scripts.d/
 COPY filebeat.yml /etc/filebeat/filebeat.yml
 COPY entrypoint.sh /start.sh
-RUN chmod +x /start.sh
+# 提取件清理助手（批 4）：用镜像自带的 python3 跑（zeek/zeek 基础镜像为 zkg 装有 python3），
+# 读 files.log 判定 MIME 白名单并控制 /extract 容量。
+COPY extract_cleanup.py /usr/local/bin/extract_cleanup.py
+RUN chmod +x /start.sh /usr/local/bin/extract_cleanup.py
 
-VOLUME ["/logs", "/config"]
+VOLUME ["/logs", "/config", "/extract"]
 
 # 抓包需要 root + NET_RAW/NET_ADMIN；看门狗与清理循环在 start.sh 内
 ENTRYPOINT ["/usr/bin/tini", "--", "/start.sh"]

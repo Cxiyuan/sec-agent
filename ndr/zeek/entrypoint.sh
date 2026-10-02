@@ -5,6 +5,7 @@
 #   3) 启动 Zeek + Filebeat
 #   4) 看门狗：网卡配置变化 → 容器内重载 Zeek（不重启容器、不需要 docker socket）
 #   5) 本地日志只保留 3 天（Zeek 日志框架只做轮转、不做过期删除，故由这里保证）
+#   6) 提取件清理：只留白名单类型，目录超上限按 mtime 淘汰（批 4）
 set -euo pipefail
 
 CONF_DIR="${ZEEK_CONF_DIR:-/config}"
@@ -17,6 +18,13 @@ PID_FILE="/tmp/zeek.pid"
 RETENTION_DAYS="${ZEEK_RETENTION_DAYS:-3}"
 WATCH_INTERVAL="${ZEEK_WATCH_INTERVAL:-10}"
 CLEAN_INTERVAL="${ZEEK_CLEAN_INTERVAL:-3600}"
+# 提取件（采集批 4）：Zeek 把明文文件落到 EXTRACT_DIR，这里按白名单与容量上限清理。
+EXTRACT_DIR="${ZEEK_EXTRACT_DIR:-/extract}"
+EXTRACT_CLEAN_INTERVAL="${ZEEK_EXTRACT_CLEAN_INTERVAL:-300}"
+EXTRACT_MAX_BYTES="${ZEEK_EXTRACT_MAX_BYTES:-10737418240}"
+EXTRACT_MIN_AGE="${ZEEK_EXTRACT_MIN_AGE:-120}"
+EXTRACT_MIME_ALLOW="${ZEEK_EXTRACT_MIME_ALLOW:-}"
+EXTRACT_HELPER="${ZEEK_EXTRACT_HELPER:-/usr/local/bin/extract_cleanup.py}"
 
 log() { echo "[zeek-entry] $*"; }
 
@@ -165,7 +173,39 @@ start_cleanup_loop() {
   log "清理循环已启动（保留 ${RETENTION_DAYS} 天）"
 }
 
-# ---------- 5) 看门狗 ----------
+# ---------- 5) 提取件清理（批 4）----------
+# Zeek 侧只负责落盘（site/shentong-file-extract.zeek），判定与删除在这里做：Zeek 脚本没有
+# 删文件的 BIF。助手读 files.log 的 mime_type，删掉「没有记录 / 不在白名单」的提取件，
+# 再把目录按容量上限从最老开始淘汰。
+extract_cleanup_once() {
+  [ -d "$EXTRACT_DIR" ] || return 0
+  if ! command -v python3 > /dev/null 2>&1; then
+    log "未找到 python3，跳过提取件清理"
+    return 0
+  fi
+  if [ ! -f "$EXTRACT_HELPER" ]; then
+    log "未找到提取件清理助手 ${EXTRACT_HELPER}，跳过"
+    return 0
+  fi
+  local args=(--dir "$EXTRACT_DIR" --logs "$LOG_DIR" --max-bytes "$EXTRACT_MAX_BYTES" --min-age "$EXTRACT_MIN_AGE")
+  if [ -n "$EXTRACT_MIME_ALLOW" ]; then
+    args+=(--mime-allow "$EXTRACT_MIME_ALLOW")
+  fi
+  python3 "$EXTRACT_HELPER" "${args[@]}" || log "提取件清理异常（已忽略，下一轮重试）"
+}
+
+start_extract_cleanup_loop() {
+  (
+    extract_cleanup_once
+    while true; do
+      sleep "$EXTRACT_CLEAN_INTERVAL"
+      extract_cleanup_once
+    done
+  ) &
+  log "提取件清理循环已启动（目录 ${EXTRACT_DIR}，每 ${EXTRACT_CLEAN_INTERVAL}s，上限 ${EXTRACT_MAX_BYTES} 字节）"
+}
+
+# ---------- 6) 看门狗 ----------
 start_watchdog() {
   (
     local last
@@ -189,7 +229,7 @@ start_watchdog() {
 
 # ---------- 主流程 ----------
 main() {
-  mkdir -p "$CONF_DIR" "$LOG_DIR" "${SITE_DIR}/scripts.d"
+  mkdir -p "$CONF_DIR" "$LOG_DIR" "$EXTRACT_DIR" "${SITE_DIR}/scripts.d"
   write_interfaces
   ensure_iface_conf
   render_nets
@@ -197,6 +237,7 @@ main() {
   render_scripts_loader
   start_filebeat
   start_cleanup_loop
+  start_extract_cleanup_loop
   start_watchdog
 
   # 保持 Zeek 存活；配置变化时看门狗会杀进程，这里自动拉起

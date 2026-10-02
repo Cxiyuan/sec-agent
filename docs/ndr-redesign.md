@@ -553,6 +553,24 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
   - **字段归属**：`req_headers` / `resp_headers` / `resp_body_len` 有顶层归一化字段；`client_header_names` / `server_header_names` / `cookie_vars` 只在 `raw.*` 下（归一化 schema 不带这三个）。
   - **已知限制（实测，非本期引入）**：Filebeat 偶发 `ndjson` 解析失败会让事件变成**空壳文档**（有 `@timestamp` / `log_type`，其余字段空串，`raw.error.type=json`）或直接丢。90 分钟内实测 **9 条**，跨 `conn`/`http`/`files`/`x509`/`stats`/`weird` 多种日志、时间跨本期部署前后，**多落在 Zeek 重启/日志轮转前后约半分钟内**（看门狗 07:44:47 重载后 9s 与 33s 各一次），疑为轮转窗口读到非行首片段；`filebeat.yml` 的 `add_error_key: true` 留下了 `raw.error`。本期两条探针恰好落进这个窗口没进 ES，改在静默窗口重发即正常入库（上面的证据即重发所得）。**未改 Filebeat 配置**（避免动已工作的采集链路），列为后续调查项，同时写进 `ndr/zeek/README.md` 的「已知限制」。
 
+### 第 12 期 · 采集面改造批 4：文件提取 + 下载通道 ✅ 已完成（2026-10-02，实施记录）
+
+**起因**：批 2 起 `files.log` 已经有文件元数据（fuid / mime / filename / 大小 / 哈希），但**文件内容本身没有落盘** —— 现场想知道"这个 HTTP 上传/下载到底是什么"，只能拿着 sha256 去别处找样本。本期把 HTTP/FTP 明文传输的文件按白名单提取到磁盘，并给后端一个按 fuid 取文件的下载接口。逐条决定见 `docs/ndr-collect-plan.md` 的批 4。
+
+1. **Zeek 侧提取（新增 `site/shentong-file-extract.zeek`）**：`@load base/frameworks/files` + `@load base/files/extract`；`redef FileExtract::prefix = "/extract/"`、`redef FileExtract::default_limit = 16777216`（16 MiB）；`const sources: set[string] = { "HTTP", "FTP" } &redef`；`event file_new(f)` 里 `if ( ! f?$source || f$source !in sources ) return;` 然后 `Files::add_analyzer(f, Files::ANALYZER_EXTRACT, [$extract_filename=f$id])`。**为什么要把文件名显式指定成 fuid**：FileExtract 默认取名 `extract-<时间>-<来源>-<fuid>`，而它写进 files.log 的 `f$info$extracted` 是**裸文件名**（`prefix` 只影响磁盘路径，不进日志）—— 指定成 `f$id` 之后，日志里的 `extracted` 就等于 fuid，磁盘路径恒为 `/extract/<fuid>`，下载接口不需要解析任何命名规则。超过 16 MiB 时 FileExtract 会截断并置 `extracted_cutoff` / `extracted_size`。
+2. **删除为什么不在 Zeek 里做**：Zeek 没有 unlink / system 这类 BIF（`zeek -NN` 里也没有），脚本根本删不了文件，因此"在 Zeek 脚本里判完 MIME 直接删"这条路走不通。改由容器入口的清理助手 `ndr/zeek/extract_cleanup.py` 承担：每 5 分钟读 `/logs/files.log` + `files.*.log`（**先轮转件、后活动日志**，后者覆盖前者；半行与非 JSON 行跳过，容忍 Zeek 正在写的最后一行）建出 `fuid → mime_type` 表，再扫 `/extract`：**白名单外**删、**没有记录**（来源不是 HTTP/FTP，或分析器没落元数据）删，但只动 `mtime` 早于 `--min-age`（默认 120 秒）的文件（避免删掉还在写的提取件）；最后按 mtime 从最老淘汰，直到目录不超过 `--max-bytes`（默认 10 GiB）。白名单 `DEFAULT_MIME_ALLOW`（文本 / XML / JSON / PDF / 邮件 / Office（含 `…officedocument.*`、`…opendocument.*` 前缀）/ 常见压缩包，**不含** `application/octet-stream` 与可执行体）**只在助手这一处定义**，下载接口不重复判定。files.log 记录本身保留（删的是提取件，不是日志）。
+3. **卷与权限**：compose 两个文件都加 `zeek-extract`（zeek `rw` / backend `ro`）。后端只读挂载，写权限只留在采集容器里。
+4. **下载接口（新增 `api/routes/files.py`）**：`GET /api/files/{fuid}`，鉴权沿用 `get_current_user`；`fuid` 先过 `^[A-Za-z0-9_-]{8,64}$`（不合法 400）；再用 fuid 去 ES 查**最新一条带 `extracted` 的文件事件**，文件名取自服务端的 `extracted` 字段；`resolve_extract_path()` 只接受裸文件名（空 / `.` / `..` / 含 `/` 或 `\` 一律拒绝），并要求 `resolve()` 后的 `parent` 正好是提取目录 —— **目录穿越与符号链接逃逸同时挡住**；`FileResponse` 的下载名再清洗一次（控制字符 / 引号 / 分隔符换成 `_`、128 字符截断），避免响应头注入。文件已被清理时回 404 并说明原因（"非白名单类型或超出容量上限"）；`extracted_cutoff` 为真时加 `X-Extract-Cutoff: 1` 与 `X-Extract-Size` 响应头，让下载方一眼看出拿到的是截断文件。**接口绝不接受客户端提供的路径**。
+5. **字段（两侧同改）**：UnifiedLog 加 `extracted`（落盘文件名，等于 fuid）/ `extracted_size`（实际落盘字节数，截断时是上限）/ `extracted_cutoff`（布尔）。`tests/py/test_stack_consistency.py` 要求两侧字段集完全一致，故两侧同时改 `schemas.py`、`ingestion/normalizer.py`（`extracted` 截 128 字符）、`rules/engine.py` 的 `_FIELD_TYPES` 与 `investigation/catalog.py`。
+6. **测试**：`tests/py/test_extract_cleanup.py`（白名单、日志读取顺序、半行容忍、在写保护、容量淘汰、dry-run、CLI 端到端、entrypoint/Dockerfile/local.zeek 接线）与 `tests/py/test_files_api.py`（目录穿越 / 符号链接 / 下载名头注入 / fuid 正则、Zeek `prefix` 与后端 `extract_dir` 一致；仅 NDR 侧，`--stack=agent` 下跳过）；`tests/zeek/batch4_test.zeek`（prefix / limit / 来源集合 / 三个新字段）。**顺手修掉两个自己的坑**：助手最初"先 `files.log` 后轮转件"，会让旧记录覆盖新记录；端到端用例一开始拿固定的"未来"时间当 mtime，被在写保护直接跳过（改成真实时钟）。
+
+**验收（四步）**
+
+- **① 容器内 Zeek 单测**：`sh tests/zeek/run.sh` → `batch4_test.zeek` 6 条 PASS + `batch3_test.zeek` 9 条 + `batch2_test.zeek` 7 条 + `hb_test.zeek` 9 条，四个 `FAILS=0`，`ZEEK TESTS: ALL PASS`（exit 0）。
+- **② 本地质量门**：`pytest tests/py --stack=ndr -q` **178 passed**；`--stack=agent -q` **159 passed, 19 skipped**（下载接口与提取目录一致性的用例只在 NDR 侧跑）；`ruff check ndr/backend/app agent/backend/app ndr/zeek/extract_cleanup.py tests/py` All checks passed；`pyright` 同组路径 0 errors / 0 warnings；两个 compose `docker compose config -q` 通过。
+- **③ CI**：（部署后补记）
+- **④ 服务器部署与实机探针**：（部署后补记）
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

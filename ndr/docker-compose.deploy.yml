@@ -107,6 +107,8 @@ services:
       - logstash-pipeline:/logstash
       # 管道备份单独一个卷：**不能**跟管道同目录（否则被当成第二个管道）
       - logstash-backup:/logstash-backup
+      # Zeek 提取的明文文件（批 4）：zeek 写、后端只读（下载接口按 fuid 读它）
+      - zeek-extract:/extract:ro
     depends_on:
       - postgres
       - redis
@@ -207,6 +209,8 @@ services:
       # Filebeat 注册表持久化：不持久化的话，容器每次重建（改配置/升级镜像）都会
       # 从头重读 /logs 全部日志 → 队列洪水（生产上已踩到）
       - zeek-filebeat:/usr/local/bin/data
+      # 明文文件提取件（批 4）：Zeek 写入，后端只读挂载下载
+      - zeek-extract:/extract
     restart: unless-stopped
 
   # NDR 管理台（规则/网段/排除/采集配置）
@@ -229,6 +233,7 @@ volumes:
   zeek-logs:
   zeek-config:
   zeek-filebeat:
+  zeek-extract:
   logstash-pipeline:
   logstash-backup:
   logstash-queue:

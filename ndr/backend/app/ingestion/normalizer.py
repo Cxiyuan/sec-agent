@@ -415,6 +415,10 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "sha256": str(doc.get("sha256") or "")[:64],
         "file_source": str(doc.get("source") or "")[:32],
         "file_is_orig": _to_bool(doc.get("is_orig")),
+        # 明文文件提取（批 4）：文件名 / 实际落盘字节数 / 是否被上限截断
+        "extracted": str(doc.get("extracted") or "")[:128],
+        "extracted_size": _to_int(doc.get("extracted_size")),
+        "extracted_cutoff": _to_bool(doc.get("extracted_cutoff")),
         "bytes_in": _to_int(doc.get("resp_bytes") or doc.get("response_body_len")),
     }
 

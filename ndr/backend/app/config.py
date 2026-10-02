@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     http_resp_body_fields: str = "resp_body,response_body,http.response.body,http.response_body"
     http_resp_body_max_chars: int = 65536
     http_cookie_max_chars: int = 200
+    # 明文文件提取（批 4）：Zeek 容器的 /extract 卷只读挂到这里，下载接口 GET /api/files/{fuid}
+    # 按 files.log 的 extracted 字段（当前 = fuid）读它。白名单与容量清理在 Zeek 容器入口
+    # （ndr/zeek/extract_cleanup.py）里做，后端不重复判定，只做路径校验。
+    extract_dir: str = "/extract"
     # Zeek 日志流分类（契约，两侧一致）：event=入库且进检测/画像；ops=只入库（当证据）。
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
     zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"

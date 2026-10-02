@@ -9,6 +9,7 @@ from app.api.routes import (
     detector,
     es_admin,
     exclusions,
+    files,
     ingest_filters,
     logstash,
     mcp,
@@ -27,6 +28,7 @@ api_router.include_router(logstash.router)
 api_router.include_router(detector.router)
 api_router.include_router(baseline.router)
 api_router.include_router(zeek.router)
+api_router.include_router(files.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)
 api_router.include_router(wazuh.router)

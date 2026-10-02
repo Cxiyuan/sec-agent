@@ -10,6 +10,7 @@
 @load ./shentong-httpbody
 @load ./shentong-limits
 @load ./shentong-httpheaders
+@load ./shentong-file-extract
 @load ./shentong-fingerprints
 @load ./shentong-nets
 @load ./shentong-scripts-d

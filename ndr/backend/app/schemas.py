@@ -78,6 +78,13 @@ class UnifiedLog(BaseModel):
     sha256: str = ""
     file_source: str = ""  # 文件来源协议：HTTP / FTP / SMTP / SSL…
     file_is_orig: bool | None = None  # 方向：True=客户端上传，False=服务端下发
+    # 明文文件提取（Zeek site/shentong-file-extract.zeek，批 4）：
+    # extracted 是提取件落在 Zeek 容器 /extract 里的文件名（当前 = fuid），
+    # extracted_size 是实际落盘字节数（被单文件上限截断时 < total_bytes），
+    # extracted_cutoff=True 表示被上限截断（只留了前 N 字节）。
+    extracted: str = ""
+    extracted_size: int | None = None
+    extracted_cutoff: bool | None = None
     # 账号（画像主键：user 字段优先，缺失时从请求体提取）
     account: str = ""
     # Wazuh 规则语义（保留原始规则信息，避免被压成通用类型）

@@ -62,6 +62,8 @@ services:
       - zeek-config:/config
       - logstash-pipeline:/logstash
       - logstash-backup:/logstash-backup
+      # Zeek 提取的明文文件（批 4）：zeek 写、后端只读（下载接口按 fuid 读它）
+      - zeek-extract:/extract:ro
     depends_on:
       - postgres
       - redis
@@ -144,6 +146,8 @@ services:
       - zeek-logs:/logs
       - zeek-config:/config
       - zeek-filebeat:/usr/local/bin/data
+      # 明文文件提取件（批 4）：Zeek 写入，后端只读挂载下载
+      - zeek-extract:/extract
     restart: unless-stopped
 
 volumes:
@@ -152,6 +156,7 @@ volumes:
   zeek-logs:
   zeek-config:
   zeek-filebeat:
+  zeek-extract:
   logstash-pipeline:
   logstash-backup:
   logstash-queue:

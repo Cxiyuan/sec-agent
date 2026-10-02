@@ -325,6 +325,9 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "sha256": ("files",),
     "file_source": ("files",),
     "file_is_orig": ("files",),
+    "extracted": ("files",),
+    "extracted_size": ("files",),
+    "extracted_cutoff": ("files",),
     "seen_bytes": ("files",),
     # ssl
     "server_name": ("ssl",),

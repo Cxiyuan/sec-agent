@@ -193,6 +193,21 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "文件方向：true=客户端上传，false=服务端下发",
     },
+    "extracted": {
+        "path": "extracted",
+        "kind": "keyword",
+        "desc": "提取件在 Zeek 容器 /extract 里的文件名（当前 = fuid）；下载走 GET /api/files/{fuid}",
+    },
+    "extracted_size": {
+        "path": "extracted_size",
+        "kind": "num",
+        "desc": "提取件实际落盘字节数（被单文件上限截断时小于 total_bytes）",
+    },
+    "extracted_cutoff": {
+        "path": "extracted_cutoff",
+        "kind": "keyword",
+        "desc": "提取件是否被单文件上限截断（true=只留了前 N 字节）",
+    },
     # ---------- 流量 ----------
     "bytes_out": {
         "path": "bytes_out",

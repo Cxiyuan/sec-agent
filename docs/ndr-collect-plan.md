@@ -102,11 +102,23 @@
 
 ### 批 4：文件提取 + 下载通道
 
-- 新增 `ndr/zeek/site/shentong-file-extract.zeek`：`redef FileExtract::default_limit = 16777216`、`redef FileExtract::prefix = "/extract/"`；`file_new` 按 `f$source`（HTTP/FTP）挂 `Files::ANALYZER_EXTRACT`；`file_sniff`/`file_state_remove` 按 MIME 白名单判定，非白名单删文件（files.log 记录保留）。
-- `entrypoint.sh` 看门狗：每 5 分钟 `du` 超 10G → 按 mtime 删最老至 ≤10G（留日志）。
+- 新增 `ndr/zeek/site/shentong-file-extract.zeek`：`redef FileExtract::default_limit = 16777216`、`redef FileExtract::prefix = "/extract/"`；`file_new` 按 `f$source`（HTTP/FTP）挂 `Files::ANALYZER_EXTRACT`，并把 `extract_filename` 指定成 `f$id`（fuid）→ files.log 的 `extracted` 与磁盘文件名都是 fuid，下载接口据此拼路径。
+- **MIME 白名单判定与删除不放 Zeek 里做**（Zeek 没有删文件的 BIF）：改由 `ndr/zeek/extract_cleanup.py` 承担 —— 容器入口每 5 分钟跑一次，读 `/logs/files.log` + `files.*.log` 的 `mime_type`，白名单外或没有记录就删文件；**白名单的唯一来源就是这个助手**（下载接口不重复判定）。files.log 记录保留。
+- 容量：同一个助手每轮按 mtime 从最老开始淘汰，直到目录不超过 10 GiB（`ZEEK_EXTRACT_MAX_BYTES`）；`--min-age`（默认 120 秒）跳过可能还在写的文件。
 - compose 加 `zeek-extract` 卷（zeek rw / backend ro）。
-- API：`GET /api/files/{fuid}`（鉴权；从 ES 取 `extracted` 文件名后读卷，**绝不接受客户端路径**）；前端调查页加下载入口。
+- API：`GET /api/files/{fuid}`（鉴权；从 ES 取 `extracted` 文件名后读卷，**绝不接受客户端路径**）。
+- 前端调查页的下载入口**不在本轮**：NDR 前端没有事件/调查页（事件组调查 UI 在智能体侧），留到「智能体侧对等适配」那轮接上。
 - 验收探针：上传白名单文件 → 落盘且 `extracted_size == total_bytes`；上传图片 → 不落盘；临时调小阈值验证淘汰。
+
+**实施记录（as-built，2026-10-02）**
+
+- **Zeek 侧**：新增 `site/shentong-file-extract.zeek`（`module ShentongFileExtract`；`redef FileExtract::prefix = "/extract/"`、`redef FileExtract::default_limit = 16777216`、`const sources: set[string] = { "HTTP", "FTP" } &redef`；`event file_new` 里 `if ( ! f?$source || f$source !in sources ) return;` 再 `Files::add_analyzer(f, Files::ANALYZER_EXTRACT, [$extract_filename=f$id])`）；`site/local.zeek` 在 httpheaders 与 fingerprints 之间加 `@load ./shentong-file-extract`（共 10 个 @load）。
+- **容器入口**：新增 `ndr/zeek/extract_cleanup.py`（只用标准库，镜像自带 python3 跑）；`entrypoint.sh` 新增第 5 段 `extract_cleanup_once()` + `start_extract_cleanup_loop()`（`ZEEK_EXTRACT_DIR` / `ZEEK_EXTRACT_CLEAN_INTERVAL=300` / `ZEEK_EXTRACT_MAX_BYTES=10737418240` / `ZEEK_EXTRACT_MIN_AGE=120` / `ZEEK_EXTRACT_MIME_ALLOW` / `ZEEK_EXTRACT_HELPER` 可覆盖），`main()` 里建目录并在常规清理循环之后起循环；`Dockerfile` COPY 助手 + `RUN chmod +x`，`VOLUME` 加 `/extract`。
+- **助手口径**：读 `files.*.log`（轮转件）**再**读 `files.log`（活动日志），后者覆盖前者；跳过非 JSON 行与半行（Zeek 正在写的最后一行）；`DEFAULT_MIME_ALLOW` 覆盖 text/*、XML/JSON、PDF、邮件、Office（`application/vnd.openxmlformats-officedocument.*` / `application/vnd.oasis.opendocument.*` 前缀）与常见压缩包，**不含** `application/octet-stream` 与可执行体；`--dry-run` 只统计不删。
+- **后端**：`config.py` 加 `extract_dir = "/extract"`；新增 `api/routes/files.py`（`GET /api/files/{fuid}`：fuid 正则 `^[A-Za-z0-9_-]{8,64}$` → 查 ES 最新一条带 `extracted` 的文件事件 → `resolve_extract_path()` 只接裸文件名并把 `resolve()` 结果钉在提取目录里（同时挡住目录穿越与符号链接逃逸）→ `FileResponse`；被清理的文件回 404 并说明原因；`extracted_cutoff` 为真时带 `X-Extract-Cutoff: 1` / `X-Extract-Size` 响应头）；`api/router.py` 注册。
+- **字段**：两侧 `schemas.py` 加 `extracted` / `extracted_size` / `extracted_cutoff`（`tests/py/test_stack_consistency.py` 要求两侧 UnifiedLog 字段集一致，所以两侧都加），两侧 `normalizer.py` 取值入库（`extracted` 截 128 字符），两侧 `rules/engine.py` 的 `_FIELD_TYPES` 与 `investigation/catalog.py` 同步注册。
+- **测试**：`tests/py/test_extract_cleanup.py`（白名单、日志覆盖顺序、半行容忍、在写保护、容量淘汰、dry-run、CLI 端到端、entrypoint/Dockerfile/local.zeek 接线）与 `tests/py/test_files_api.py`（路径安全：穿越/符号链接/下载名头注入/ fuid 正则；Zeek prefix 与后端 `extract_dir` 一致性）；`tests/zeek/batch4_test.zeek`（prefix/limit/来源集合/三个新字段）。
+- 本地质量门：`pytest --stack=ndr` **178 passed**、`--stack=agent` **159 passed / 19 skipped**（下载接口测试仅 NDR 侧）、ruff/pyright 全绿、`sh tests/zeek/run.sh` 四套 Zeek 单测 `ZEEK TESTS: ALL PASS`。
 
 ### 收尾
 
