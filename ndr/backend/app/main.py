@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -24,6 +26,13 @@ _MIGRATIONS: tuple[str, ...] = ()
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
+
+#: 启动时下发 ILM/索引模板的最大尝试次数与间隔。compose 同时拉起十个服务时 ES 常比
+#: 后端起得晚（实测 ES 就绪要 30~40 秒），一次性下发会静默失败 —— 模板缺失，Logstash
+#: 自动建的索引拿到默认 `number_of_replicas: 1`，单节点集群恒 yellow（2026-10 从零
+#: 重建时实测）。12 × 5 秒 ≈ 1 分钟，够覆盖 ES 冷启动。
+_ES_SETUP_ATTEMPTS = 12
+_ES_SETUP_INTERVAL_SECONDS = 5.0
 
 
 def _dynamic_rule_spec(spec: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +57,33 @@ def _migrate() -> None:
     with engine.begin() as conn:
         for stmt in _MIGRATIONS:
             conn.exec_driver_sql(stmt)
+
+
+def _push_es_retention() -> None:
+    """幂等下发 ILM 策略与事件索引模板，ES 未就绪就重试（约 1 分钟）。
+
+    在后台线程里跑：ES 没起来不能拖住 API 就绪，也不能让采集链路等它。
+    全部尝试都失败才记 warning（并提示界面上那个手工入口）。
+    """
+    from app.api.routes.es_admin import ensure_retention
+
+    for attempt in range(1, _ES_SETUP_ATTEMPTS + 1):
+        try:
+            ensure_retention()
+        except Exception as exc:  # noqa: BLE001
+            if attempt < _ES_SETUP_ATTEMPTS:
+                time.sleep(_ES_SETUP_INTERVAL_SECONDS)
+                continue
+            logger.warning(
+                "下发 ES 保留期策略/索引模板失败（重试 %d 次未成功，"
+                "可稍后在界面点「下发保留期」）：%s",
+                _ES_SETUP_ATTEMPTS,
+                exc,
+            )
+            return
+        if attempt > 1:
+            logger.info("ES 保留期策略/索引模板已在第 %d 次尝试下发成功", attempt)
+        return
 
 
 def _seed() -> None:
@@ -97,13 +133,8 @@ def _seed() -> None:
     seed_if_missing()
 
     # 存储侧：幂等下发 ILM 策略与事件索引模板（含副本数 0，否则单节点集群恒 yellow）。
-    # ES 可能比后端起得晚（compose 同时拉起），失败只记日志、不阻断启动。
-    from app.api.routes.es_admin import ensure_retention
-
-    try:
-        ensure_retention()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("下发 ES 保留期策略/索引模板失败（可稍后在界面点「下发保留期」）：%s", exc)
+    # ES 可能比后端起得晚（compose 同时拉起），所以丢给后台线程重试，不阻断启动。
+    threading.Thread(target=_push_es_retention, name="es-retention", daemon=True).start()
 
 
 @asynccontextmanager
