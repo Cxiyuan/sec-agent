@@ -11,6 +11,10 @@
 ##      ③ 响应体的**完整字节数**由 Zeek 自带的 response_body_len 记录，与这里
 ##         的截断无关（normalizer 会落成 resp_body_len）。
 ##
+## 已知限制：判据②放行所有高位字节（为了中文），所以**压缩响应（gzip/br）或恰好
+## 不含 NUL/C0 的二进制响应**会被当成文本写进 resp_body（乱码但不丢字段）。
+## 要按 Content-Encoding 精确跳过，需再接 http_header 事件维护一份「本事务跳过」表。
+##
 ## 放大上限（改常量即可，写在 site/local.zeek 里）：
 ##      redef ShentongHTTP::max_resp_body_len = 65536;
 

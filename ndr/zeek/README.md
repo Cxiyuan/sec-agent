@@ -90,6 +90,10 @@ docker compose restart zeek
   `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`），实测
   `ssl.log` 127 条 0 处 ja3。所以基于 `ja3` 字段的规则（`rules/builtin.py` 里那条空值
   模板）永远匹配不到；要用得另装/自写 JA3 脚本（社区 `ja3.zeek`、zkg 包）再接归一化
+- **响应体可能含二进制乱码**：`shentong-httpbody.zeek` 的判据为了保住中文（UTF-8
+  高位字节）只能拦 NUL/C0 控制字符，因此**压缩响应（gzip/br）或恰好不含这些字节的
+  二进制响应**会以乱码形式写进 `resp_body`（字段不丢、内容不可读）。要精确跳过需再接
+  `http_header` 事件记录 `Content-Encoding` 并维护「本事务不采」表，本项目尚未做。
 - **请求头只采「代理相关」那几个（2026-10 修正）**：Zeek 不会把任意请求头写进 `http.log`，
   但它自带的 HTTP 分析器会把**表明请求经过代理**的头收进 `HTTP::Info$proxied`
   （默认清单：`X-Forwarded-For` / `X-Forwarded-From` / `Forwarded` / `Client-IP` /
