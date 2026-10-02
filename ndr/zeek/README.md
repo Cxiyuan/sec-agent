@@ -48,6 +48,13 @@ zeek/
 > 两条 `find`（`entrypoint.sh:137-138`）分别处理**平铺改名的归档**与历史/其它部署可能出现的
 > **日期子目录**布局，只删超过 3 天的**已轮转文件**，**不动正在写的活动日志**（`conn.log` 这类）。
 > 另外每次 Zeek 重启也会把当前日志改名成当天（如今日 02:55 重建产生了 `*.2026-10-02.log`）。
+>
+> **2026-10-02 实测**：往 `/logs` 放两个轮转命名的探针（`zzoldprobe.2026-09-20.log` 的 mtime 改成 10 天前、`zznewprobe.2026-10-01.log` 改成 1 天前）→ 容器重建时**启动清理循环在没有任何人工干预的情况下**就把旧的那个删掉、新的那个留下；同样两条 `find` 手工跑一遍也验证了模式匹配。
+
+**Filebeat 发运的两个易错点**（都实测过，别再踩）：
+
+1. **非事件文件的排除必须写在 `prospector.scanner.exclude_files`**（filestream 的 Scanner 选项）。写成输入顶层的 `exclude_files:`（那是旧 `log` 输入的键）在 Filebeat 8.15.3 上**完全无效**：探针 `/logs/stderr.log` 照样被采集并进了事件索引。而且 `filebeat test config` 对两种写法都回 `Config OK`（不报未知键）、`filebeat --once` 也在第一次扫描前就退出（约 40ms、harvester 0）—— **只有端到端探针能判定**。
+2. **输出用 `queue.disk`，不要用 `queue.spool`**：本镜像的 Filebeat 是 OSS 构建，`spool` 直接报 `unrecognized queue type 'spool'`。磁盘队列目录与注册表同在命名卷 `zeek-filebeat` 上，所以 Redis 停掉期间事件留在磁盘、恢复后补齐（实测：停用期间两条标记在 ES 里 0 条，`start redis` 后各 1 条），容器重建也不丢。
 
 ## 网卡配置（由 Web 后台管理）
 
@@ -128,7 +135,7 @@ docker compose restart zeek
 | # | 结果 | 证据 |
 |---|---|---|
 | 1 | ✅ | `/logs`：conn.log 7.9MB、dhcp.log 23KB、dns.log 39KB、files.log 1140B、http.log、ssl.log 35KB、weird.log、x509.log、packet_filter.log；无 notice.log |
-| 2 | ✅ 轮转 / ⏳ 清理实效 | 轮转是**同目录平铺改名**：`conn.2026-10-01.log`（121MB）、`ssl.2026-10-02.log`、`packet_filter.2026-10-02.log`、`reporter.2026-10-02.log`、`dhcp.2026-10-02.log` 等都在 `/logs` 顶层，没有日期子目录；每次 Zeek 启动/重建也会把当前日志改名成当天（2026-10-02 02:55 与 06:21 两次重建各产生一批）。清理由 `entrypoint.sh` 的 `cleanup_once()` 两条 `find` 做（平铺归档 `*.????-??-??.log` 与日期子目录两种布局都覆盖，只删轮转件、不动活动日志），按 `ZEEK_RETENTION_DAYS=3` 每 `ZEEK_CLEAN_INTERVAL=3600` 秒跑一次；**整点清理循环的实效仍待用探针文件（改 mtime 的旧归档）复验** |
+| 2 | ✅ | 轮转是**同目录平铺改名**：`conn.2026-10-01.log`（121MB）、`ssl.2026-10-02.log`、`packet_filter.2026-10-02.log`、`reporter.2026-10-02.log`、`dhcp.2026-10-02.log` 等都在 `/logs` 顶层，没有日期子目录；每次 Zeek 启动/重建也会把当前日志改名成当天（2026-10-02 02:55 与 06:21 两次重建各产生一批）。清理由 `entrypoint.sh` 的 `cleanup_once()` 两条 `find` 做（平铺归档 `*.????-??-??.log` 与日期子目录两种布局都覆盖，只删轮转件、不动活动日志），按 `ZEEK_RETENTION_DAYS=3` 每 `ZEEK_CLEAN_INTERVAL=3600` 秒跑一次。**2026-10-02 探针实测**：`zzoldprobe.2026-09-20.log`（mtime 10 天前）与 `zznewprobe.2026-10-01.log`（mtime 1 天前）放进 `/logs` 后重建容器 → 启动清理循环自动删掉旧的那个、留下新的那个；同样两条 `find` 手工跑亦验证模式匹配 |
 | 3 | ✅（除 ja3） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全；带 `X-Forwarded-For` 的请求另有 `proxied`（见第 9 行）。`ja3`/`ja3s` 在 Zeek 9.0 里不存在（见「已知限制」） |
 | 4 | ✅ 已修 + 已扩到响应体 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`）。2026-10-02 又加响应体：`resp_body` + Zeek 自带 `response_body_len`，容器内 Zeek 单测 9 项全过（请求/响应分块截断、GET 只采响应体、NUL 双向拦、UTF-8 双向放行、PUT 采请求体） |
 | 5 | ✅ | 界面配 `172.16.196.0/24` 后启动命令变为 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 172.16.196.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 172.16.196.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |

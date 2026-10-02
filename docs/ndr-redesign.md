@@ -492,7 +492,14 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
   - **上线后 24h `source_file`×`log_type`**：conn.log 10350 / dns.log 43 / ssl.log 25 / zzprobe.log 3 / stderr.log 1；`packet_filter`/`ntp`/`weird`/`x509` **部署后十余分钟内没有新行**（本身极低频，基线里运维类 24h 约 62 条），运维闸门以合成探针为准。10 分钟窗口里 3 条「缺 `raw.conn_state` 的 conn」是旧镜像切换前入库的遗留文档（`ts` 06:19:09Z / 06:21:15Z，无 `source_file` / `raw.log_type` 字段），**不是回归**。
 - **验收抓出的缺陷（已修，随本期提交）**：排除名单最初写在 filestream 输入的**顶层 `exclude_files`**，实机探针证明完全无效 —— `/logs/stderr.log` 照样入库（ES 命中探针 1 条、Filebeat 注册表里 `stderr.log` 3 处）。按官方 8.15 文档，filestream 的排除是 Scanner 选项 **`prospector.scanner.exclude_files`**，顶层那个是旧 `log` 输入才有的键；`filebeat test config` 对两种写法都回 `Config OK`（不报未知键），`filebeat --once` 也在第一次扫描前就退出（约 40ms、harvester 0）—— **只有端到端探针能判定**。已移到 `prospector.scanner.exclude_files` 并在注释里记下这次实测，`tests/py/test_filebeat_yml.py` 加断言（顶层不得再出现该键）。
 
-**未取证**：① 修复后的排除名单要在下一次 `pull` + `up -d` 后用探针复验（写 `/logs/stderr.log` → ES 与注册表都应查不到）；② 保留策略（24h 轮转、3 天清理）当天未见日期归档，待用探针文件加整点清理循环实测（清理命令见 `ndr/zeek/README.md`）。
+**部署修复后的复验（2026-10-02，`shentong-zeek` 镜像 `f19ce18abebc` → `244ec0300d17`）**
+
+- **排除名单生效**：投探针 `{"probe":"exclude-stderr-2"}` 到 `/logs/stderr.log` → 75 秒后 ES 命中 **0 条**，Filebeat 注册表里 `stderr.log` 的条数 **4 → 4 不变**（修复前是能被采集并入库的）。
+- **运维类仍入库**：同批投 `/logs/stats.log` → ES 命中 1 条，`log_type:"stats"`、`log_type_known:true`、`source_file:"stats.log"`、`event_type:"generic"`；归一化周期日志「类型闸门只入库 2 条」、检测器「类型跳过(运维 1 / 未知 0)」照旧。
+- **保留策略实测**：往 `/logs` 放两个轮转命名的探针（`zzoldprobe.2026-09-20.log` mtime 改成 10 天前、`zznewprobe.2026-10-01.log` mtime 改成 1 天前）→ 重建容器后**启动清理循环在没有任何人工干预的情况下**删掉了旧的那个、留下新的那个；同样的两条 `find` 手工跑一遍也验证了模式匹配（`entrypoint.sh:137-138`，`ZEEK_RETENTION_DAYS=3`）。
+- 复验后探针文件与 ES 探针文档（5 条）已清理，10 容器全 Up，`collect`/`raw` 队列为 0，Zeek 命令仍是 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`。
+
+**已知取舍与遗留**：① 运维流（`packet_filter`/`ntp`/`weird`/`x509`/`reporter`）本身极低频，上线后十余分钟没有自然新行，闸门证据以合成探针为准；② Redis 不可用时归一化/检测器进程会退出并由重启策略拉起（重启计数上涨，**不丢数据**，是既有行为、非本批引入）；③ 本批只动类型与去向，正文上限不一致、请求头值、JA4/JA4S、文件哈希与提取分别留给批 2/3/4。
 
 ### 每期收尾门禁
 

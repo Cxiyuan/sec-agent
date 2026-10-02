@@ -54,7 +54,7 @@
 - 测试（进 CI）：`tests/py/`（`test_log_types.py` 判定矩阵、`test_normalizer_fields.py` 字段契约、`test_xff_respbody.py` 由 `/tmp` 搬入、`test_stack_consistency.py` 子进程比对两侧、`test_filebeat_yml.py` 采集配置形状）+ `tests/zeek/hb_test.zeek`（由 `/tmp` 搬入，`tests/zeek/run.sh` 在官方 Zeek 容器里跑）。
 - CI（`.github/workflows/ci.yml`）：新增 `test` 作业（ruff + pyright + 两个栈各跑一遍 pytest + Zeek 容器单测）与 `web` 作业（`npm ci` + 两侧 `tsc --noEmit`）；根 `ruff.toml` 补统一规则（`tests/` 不在任何 pyproject 层级下）、`pyrightconfig.json` 加 `tests/py` 执行环境。
 - **服务器验收已完成（2026-10-02）**：ES 断言 `log_type`/`log_type_known`/`raw.log_type`/`raw.source_file`、未知流保留原名、停 Redis 不丢事件、两侧闸门计数（归一化「类型闸门只入库」/检测器「类型跳过(运维 N)」）全部实测通过；完整证据见 `docs/ndr-redesign.md` 第 9 期。
-- 验收抓出并修掉的缺陷：排除名单原写在 filestream 输入**顶层** `exclude_files`（那是旧 `log` 输入的键）**实测完全无效**，已改为 `prospector.scanner.exclude_files`；`filebeat test config` 对两种写法都回 `Config OK`、`filebeat --once` 也在首次扫描前就退出（约 40ms），**只有端到端探针能判定** —— `tests/py/test_filebeat_yml.py` 已加「顶层不得再出现该键」的断言。
+- 验收抓出并修掉的缺陷：排除名单原写在 filestream 输入**顶层** `exclude_files`（那是旧 `log` 输入的键）**实测完全无效**，已改为 `prospector.scanner.exclude_files`；`filebeat test config` 对两种写法都回 `Config OK`、`filebeat --once` 也在首次扫描前就退出（约 40ms），**只有端到端探针能判定** —— `tests/py/test_filebeat_yml.py` 已加「顶层不得再出现该键」的断言。**修复后已部署复验**：`/logs/stderr.log` 探针 ES 命中 0、注册表条数不增长，同批 `/logs/stats.log` 探针正常入库（`log_type=stats` / `known=true` / `source_file=stats.log`）；保留策略探针（mtime 10 天前 vs 1 天前）在容器重建时由启动清理循环自动处理（旧删新留）。
 
 
 ### 批 2：Zeek 指纹与文件元数据
