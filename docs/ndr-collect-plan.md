@@ -98,7 +98,7 @@
 - **前端**：`ndr/frontend/components/zeek-panel.tsx`（监控网段页）加两个 KB 输入框（留空/非法不提交，后端沿用当前值）+「当前生效」显示当前上限；`lib/api.ts` 的 `ZeekStatus` 加两字段。
 - **测试**：`tests/py` 新增 `test_http_headers_captured`、`test_http_limits_follow_settings`、`tests/py/test_zeek_limits.py`（默认值与 settings 一致、`limits` 在 `httpbody` 之后、用 bash 真跑 `render_limits` 三种 conf）；新增 `tests/zeek/batch3_test.zeek`（9 条）；原来两处「上限 2000」断言改为按 `settings` 造超限输入。
 - **容器实测**（`zeek/zeek:9.0`，`-i lo`）：默认上限下 `req_headers` 总长 4096 / 单头 256、`resp_headers` 单头 256、POST 4000 → `body` 4000、响应 8000 → `resp_body` 8000；把 limits 换成 1024/1500 → `body` 1024、`resp_body` 1500，而 `response_body_len` 仍 8000（截断不影响完整字节数）。
-- 服务器验收（2026-10-02）已完成，实机证据见 `docs/ndr-redesign.md` 第 11 期末尾。
+- 服务器验收（2026-10-02）已完成：清理旧镜像与容器后全新部署（10 容器 Up），回落路径（conf 无新键 → 16384/65536）被实机走通；探针得 `req_headers` 450 字符（单头截 256）、`Cookie` 明文、`cookie_vars=['probe','sid']`；`body_max_kb:1`/`resp_body_max_kb:4` 热改后 `body` 落 1024、254968 字节响应的 `resp_body` 落 4096 而 `resp_body_len` 仍 254968，改回 16K/64K 亦生效。实机证据与 Filebeat 偶发解析失败（非本期引入）见 `docs/ndr-redesign.md` 第 11 期 ④ 与 `ndr/zeek/README.md` 的「批 3 实机复验」。
 
 ### 批 4：文件提取 + 下载通道
 

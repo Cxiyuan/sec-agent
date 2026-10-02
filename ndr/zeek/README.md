@@ -190,3 +190,28 @@ docker compose restart zeek
   `source_file:"stats.log"`），归一化记「类型闸门只入库 2 条」，**不进检测**。
 - 核 ES 时两个坑：`log_type` 是 `text`，聚合要用 `log_type.keyword`（否则 `Fielddata is disabled`）；
   normalizer 对缺失字段写空字符串，`exists` 会把空值也算上，别用它数「有值的文档」。
+
+**批 3 实机复验（2026-10-02，镜像 `shentong-zeek` `213e76f6fc69` → `716005bbe598`）**
+
+- **头值全量入库**：服务器本机 `curl -X POST http://mirrors.aliyun.com/ubuntu/dists/noble/Release
+  -H 'X-Probe-Long: B×400' -H 'X-Probe: b3-ev-post' -H 'Cookie: probe=abc123; sid=xyz'
+  --data-binary @/tmp/b3_body.txt`（体 3908 字节）→ ES 文档 `@timestamp 2026-10-02T07:49:13.426Z`
+  （与 Zeek 事件的 `ts` 同在毫秒级）：顶层 `req_headers` **450** 字符、`resp_headers` **496** 字符，
+  `X-PROBE-LONG` 的值被截到 **256** 字符，`COOKIE: probe=abc123; sid=xyz` **明文落库**；
+  `raw.client_header_names` = `['HOST','USER-AGENT','ACCEPT','X-PROBE-LONG','X-PROBE','COOKIE','CONTENT-LENGTH','CONTENT-TYPE']`、
+  `raw.cookie_vars` = `['probe','sid']`。
+- **正文上限热改（双向都通）**：`PUT /api/zeek/interface` 带 `body_max_kb:1` / `resp_body_max_kb:4` →
+  `interface.conf` 写入 `body_max_bytes=1024` / `resp_body_max_bytes=4096` → 看门狗 ~10 秒内重写容器内
+  `shentong-limits.zeek` 并重载（`last_reload` 前进，约 1~2 秒抓包中断）。此时同一 POST 的 `body=1024`、
+  GET 一条 254968 字节响应的 `resp_body=4096`，而 **`resp_body_len` 仍是 254968**（Zeek 的
+  `raw.response_body_len`、请求侧 `raw.request_body_len=3908` 同样完整）。随后改回 16 KB / 64 KB，
+  `interface.conf` 与容器内脚本均复验为 `16384`/`65536`。
+- **字段归属**：`req_headers` / `resp_headers` / `resp_body_len` 有顶层归一化字段；
+  `client_header_names` / `server_header_names` / `cookie_vars` **只在 `raw.*` 下**（归一化 schema 不带）。
+- **已知限制（实测，非批 3 引入）**：Filebeat 偶发 `ndjson` 解析失败会让事件变成**空壳文档**
+  （有 `@timestamp` / `log_type`，其余字段空串，`raw.error.type=json`）或直接丢失。90 分钟内实测 **9 条**，
+  跨 `conn`/`http`/`files`/`x509`/`stats`/`weird` 多种日志、时间跨批 3 部署前后，**多落在 Zeek 重启/日志轮转
+  前后约半分钟内**（看门狗 07:44:47 重载后 9s 与 33s 各一次），疑为轮转窗口读到非行首片段；
+  `filebeat.yml` 的 `add_error_key: true` 留下了 `raw.error`。批 3 的两条探针恰好落进这个窗口没进 ES，
+  改在静默窗口重发即正常入库（上面证据即重发所得）。**未改 Filebeat 配置**（避免动已工作的采集链路），
+  列为后续调查项。
