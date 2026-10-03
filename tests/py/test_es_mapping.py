@@ -11,16 +11,19 @@
 
 这里的断言是防回归的"真源"：① ``raw`` 声明成不解析的 object；
 ② 模板真的把它下发了；③ 老索引（动态映射、或已建的 flattened）会被明确报警。
+
+这些模块只在 NDR 侧存在，所以按同目录既有做法：**在 fixture 里 import**，
+`--stack=agent` 下整文件跳过（模块顶层 import 会让 agent 轮次收集失败）。
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
+from types import ModuleType
+from typing import Any
 
 import pytest
-from app.api.routes import es_admin
-from app.collector.es_mapping import EVENT_INDEX_MAPPINGS, is_safe_raw_mapping
-from app.ingestion.normalizer import normalize_wazuh
 
 WZ_ALERT = {
     "timestamp": "2026-10-03T07:20:00.000+0000",
@@ -31,6 +34,17 @@ WZ_ALERT = {
     # Filebeat 给每条告警补的采集路径（raw 的 source_file 取自末段）
     "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
 }
+
+
+@pytest.fixture(scope="module")
+def mods(request: pytest.FixtureRequest) -> dict[str, ModuleType]:
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("ES 索引映射只在 NDR 侧")
+    return {
+        "es_admin": importlib.import_module("app.api.routes.es_admin"),
+        "es_mapping": importlib.import_module("app.collector.es_mapping"),
+        "normalizer": importlib.import_module("app.ingestion.normalizer"),
+    }
 
 
 class _FakeIndices:
@@ -63,25 +77,26 @@ class _FakeEs:
         self.ilm = _FakeIlm()
 
 
-def test_event_index_mappings_disable_raw_parsing() -> None:
+def test_event_index_mappings_disable_raw_parsing(mods: dict[str, ModuleType]) -> None:
     """形状不统一的原文只声明 ``raw`` 不解析，别的字段交给动态映射。"""
-    assert EVENT_INDEX_MAPPINGS == {
+    assert mods["es_mapping"].EVENT_INDEX_MAPPINGS == {
         "properties": {"raw": {"type": "object", "enabled": False}}
     }
 
 
-def test_is_safe_raw_mapping() -> None:
+def test_is_safe_raw_mapping(mods: dict[str, ModuleType]) -> None:
     """只有「object + enabled: false」算安全；flattened 与动态映射都不算。"""
-    assert is_safe_raw_mapping({"type": "object", "enabled": False}) is True
-    assert is_safe_raw_mapping({"type": "flattened"}) is False
-    assert is_safe_raw_mapping({"properties": {"id": {"type": "object"}}}) is False
-    assert is_safe_raw_mapping(None) is False
-    assert is_safe_raw_mapping({}) is False
+    is_safe = mods["es_mapping"].is_safe_raw_mapping
+    assert is_safe({"type": "object", "enabled": False}) is True
+    assert is_safe({"type": "flattened"}) is False
+    assert is_safe({"properties": {"id": {"type": "object"}}}) is False
+    assert is_safe(None) is False
+    assert is_safe({}) is False
 
 
-def test_wazuh_raw_id_is_a_string() -> None:
+def test_wazuh_raw_id_is_a_string(mods: dict[str, ModuleType]) -> None:
     """Wazuh 告警的 ``raw.id`` 是字符串（Zeek conn 的是对象）—— 正是必须禁解析的原因。"""
-    entry = normalize_wazuh(dict(WZ_ALERT))
+    entry = mods["normalizer"].normalize_wazuh(dict(WZ_ALERT))
     assert entry is not None
     raw = entry.model_dump(mode="json")["raw"]
     assert isinstance(raw["id"], str)
@@ -90,8 +105,11 @@ def test_wazuh_raw_id_is_a_string() -> None:
     assert raw["source_file"] == "alerts.json"
 
 
-def test_ensure_retention_ships_raw_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_retention_ships_raw_mapping(
+    mods: dict[str, ModuleType], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``ensure_retention`` 必须把 mappings 一起下发（只下发 settings 就会重演事故）。"""
+    es_admin = mods["es_admin"]
     fake = _FakeEs()
     monkeypatch.setattr(es_admin, "get_es", lambda: fake)
 
@@ -105,48 +123,58 @@ def test_ensure_retention_ships_raw_mapping(monkeypatch: pytest.MonkeyPatch) -> 
     assert call["priority"] == 500
     template = call["template"]
     assert isinstance(template, dict)
-    assert template["mappings"] == EVENT_INDEX_MAPPINGS
+    assert template["mappings"] == mods["es_mapping"].EVENT_INDEX_MAPPINGS
     settings = template["settings"]
     assert isinstance(settings, dict)
     assert settings["auto_expand_replicas"] == "0-1"
 
 
-def test_legacy_raw_mapping_warns(caplog: pytest.LogCaptureFixture) -> None:
+def _warn(mods: dict[str, ModuleType], mapping: dict[str, Any]) -> None:
+    mods["es_admin"]._warn_legacy_raw_mapping(_FakeEs(mapping), "shentong-events-*")
+
+
+def test_legacy_raw_mapping_warns(
+    mods: dict[str, ModuleType], caplog: pytest.LogCaptureFixture
+) -> None:
     """老索引（``raw`` 已被动态映射成 object）要报警，且提示只能 reindex。"""
     legacy = {
         "shentong-events-2026.10.03": {
             "mappings": {"properties": {"raw": {"properties": {"id": {"type": "object"}}}}}
         }
     }
-    with caplog.at_level(logging.WARNING, logger=es_admin.logger.name):
-        es_admin._warn_legacy_raw_mapping(_FakeEs(legacy), "shentong-events-*")
+    with caplog.at_level(logging.WARNING, logger=mods["es_admin"].logger.name):
+        _warn(mods, legacy)
 
     assert "shentong-events-2026.10.03" in caplog.text
     assert "reindex" in caplog.text
 
 
-def test_flattened_index_still_warns(caplog: pytest.LogCaptureFixture) -> None:
+def test_flattened_index_still_warns(
+    mods: dict[str, ModuleType], caplog: pytest.LogCaptureFixture
+) -> None:
     """flattened 不是安全形状（单值 > 32766 字节仍整条丢），要照旧报警。"""
     flattened = {
         "shentong-events-2026.10.04": {
             "mappings": {"properties": {"raw": {"type": "flattened"}}}
         }
     }
-    with caplog.at_level(logging.WARNING, logger=es_admin.logger.name):
-        es_admin._warn_legacy_raw_mapping(_FakeEs(flattened), "shentong-events-*")
+    with caplog.at_level(logging.WARNING, logger=mods["es_admin"].logger.name):
+        _warn(mods, flattened)
 
     assert "shentong-events-2026.10.04" in caplog.text
     assert "reindex" in caplog.text
 
 
-def test_safe_raw_mapping_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+def test_safe_raw_mapping_does_not_warn(
+    mods: dict[str, ModuleType], caplog: pytest.LogCaptureFixture
+) -> None:
     """新模板建出来的索引（``raw`` 不解析）不该再报警。"""
     fixed = {
         "shentong-events-2026.10.05": {
             "mappings": {"properties": {"raw": {"type": "object", "enabled": False}}}
         }
     }
-    with caplog.at_level(logging.WARNING, logger=es_admin.logger.name):
-        es_admin._warn_legacy_raw_mapping(_FakeEs(fixed), "shentong-events-*")
+    with caplog.at_level(logging.WARNING, logger=mods["es_admin"].logger.name):
+        _warn(mods, fixed)
 
     assert "reindex" not in caplog.text
