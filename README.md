@@ -59,15 +59,23 @@ Wazuh(Filebeat) ┘                    ↓
 
 ```bash
 mkdir -p /opt/shentong-ndr && cd /opt/shentong-ndr
-# 放置 ndr/docker-compose.deploy.yml 与 .env
+# 三个编排文件要放同一目录：docker-compose.deploy.yml、docker-compose.wazuh.yml、wazuh/filebeat.yml
 cat > .env <<'EOF'
 JWT_SECRET=<随机 64 位>
 CORS_ORIGINS=http://<NDR服务器IP>:3000
 ZEEK_IFACE=ens224          # 镜像/SPAN 抓包口
+# 内置 Wazuh 4.14：这组变量同时喂给 wazuh-manager 和后台（ST_WAZUH_API_*），两边不会各写一份。
+# 口令必须满足 Wazuh 复杂度要求（≥8 位且含大小写/数字/符号），否则 manager 的 API 起不来。
+WAZUH_API_USER=wazuh-wui
+WAZUH_API_PASSWORD=<强口令>
 EOF
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```
+
+部署编排默认 `include` 了 `docker-compose.wazuh.yml`（Wazuh 是本项目的**内置服务**，随项目一起发布），
+所以这一条 `up -d` 会把 `wazuh-manager` + `wazuh-filebeat` 一起带起来。想临时不接 Wazuh 就按服务名起：
+`docker compose -f docker-compose.deploy.yml up -d backend normalizer detector ndr-mcp`。
 
 存储端口默认只绑宿主机回环（ES 9200 / Postgres 5432 / Redis 6379 都不对外，ES 与 Postgres
 本身无额外鉴权）。**智能体线路要连这台机器的 Redis 时**（`NDR_REDIS_URL`），在 `.env` 里加：
@@ -107,7 +115,7 @@ docker compose -f docker-compose.deploy.yml up -d
 | NDR | `ndr-mcp` | MCP 服务（`python -m app.mcp.server`，宿主 `:8090`） |
 | NDR | `logstash` | 归一化文档入 ES（只有 ES 一个去处） |
 | NDR | `zeek` | 抓包（host 网络 + NET_RAW/NET_ADMIN） |
-| NDR | `wazuh-manager` / `wazuh-filebeat` | **可选**（叠加 `docker-compose.wazuh.yml`）：官方 Wazuh 4.14 manager（不含 indexer/dashboard）+ 独立 Filebeat 采集，见 §三 |
+| NDR | `wazuh-manager` / `wazuh-filebeat` | **内置**（部署编排默认 `include`，见 §三）：官方 Wazuh 4.14 manager（不含 indexer/dashboard）+ 独立 Filebeat 采集 |
 | 智能体 | `postgres` | 智能体自己的库（pgvector 支持向量检索） |
 | 智能体 | `backend` / `frontend` | API + 管理后台/驾驶舱 |
 | 智能体 | `celery-worker` / `celery-investigation` / `celery-beat` | 分析任务 / 调查 worker / 定时任务（**摘要由 NDR 直接 HTTP 推给 `backend`**，不再有队列消费者进程） |
@@ -121,13 +129,17 @@ docker compose -f docker-compose.deploy.yml up -d
 Wazuh 的日志走**和 Zeek 一样的路**：Filebeat → NDR 的 Redis 采集队列 `shentong:events:collect`
 （不直连 Logstash，也不直连 ES）。
 
-### 3.1 用本仓库自带的 manager（可选叠加编排）
+### 3.1 用本仓库自带的 manager（内置服务，部署默认带上）
 
-`ndr/docker-compose.wazuh.yml` 是 **opt-in** 的叠加编排，不接 Wazuh 的部署完全不受影响：
+`ndr/docker-compose.wazuh.yml` 是内置服务的编排：部署编排 `docker-compose.deploy.yml` 用
+`include` 引入它，所以部署就是一条命令（`up -d` 里已经含 Wazuh）：
 
 ```bash
 cd ndr
-docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
+docker compose -f docker-compose.deploy.yml up -d          # 含 wazuh-manager + wazuh-filebeat
+
+# 本地开发默认编排不含 Wazuh，要接就显式叠加
+docker compose -f docker-compose.yml -f docker-compose.wazuh.yml up -d
 ```
 
 它加两个官方镜像服务：
@@ -141,7 +153,9 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
 > 而「4.14 自带的 Filebeat 能否配 `output.redis`」没有实机验证过；Filebeat 又只支持单一
 > output。另起一个用我们自己的配置，行为与 Zeek 线一致、可控。
 
-细节与**待实机验证清单**见 [`ndr/wazuh/README.md`](ndr/wazuh/README.md)：
+细节与**实机验证记录**见 [`ndr/wazuh/README.md`](ndr/wazuh/README.md)（2026-10-03 已在
+真实 Wazuh 4.14.8 环境上逐条跑过，六条清单全绿，过程中修掉 5 个真 bug —— 包括「告警被 ES
+静默丢弃」「面板恒报读 ES 失败」「规则下发其实没生效」这三个会让「接入成功」站不住的问题）：
 
 - 想要**全量原始日志**：先在 manager 上幂等开 `logall_json`（`ndr/wazuh/enable-logall.sh`），
   再把 `WAZUH_ARCHIVES_ENABLED=true` 传给 `wazuh-filebeat`。原始日志默认**只入库、不喂检测器**
@@ -192,10 +206,12 @@ manager 的 API 地址与凭据。
 9. （两条线路）**配好摘要推送**：先给智能体线路设 `PUSH_TOKEN`（或 `ST_PUSH_TOKEN`），
    再到 NDR「智能体对接 → 摘要推送」填地址（`http://<agent>:8000/api/push/digests`）与同一令牌，
    点「测试连接」应为连通；之后检测器命中就会直接推过去（面板可看送达与失败计数）
-10. （NDR 线路，可选）**接 Wazuh**：叠加 `docker-compose.wazuh.yml` 起 `wazuh-manager` 与
-   `wazuh-filebeat`（见 §三；生产记得改 `WAZUH_API_USER`/`WAZUH_API_PASSWORD`），
-   再到「采集接入 → Wazuh」填那台 manager 的 API 地址与凭据、点测试连接；
-   要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`
+10. （NDR 线路）**Wazuh 已内置，部署即已接入**：`up -d` 会一起起 `wazuh-manager` 与
+   `wazuh-filebeat`；只需确认 `.env` 里的 `WAZUH_API_USER`/`WAZUH_API_PASSWORD` 是强口令
+   （与 manager 共用同一组变量，后台的 `ST_WAZUH_API_*` 默认值也取它），
+   再到「采集接入 → Wazuh」点测试连接即可（地址默认已是 `https://wazuh-manager:55000`）；
+   要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`。
+   只有接**外部已有**的 Wazuh 时才需要看 §3.2
 11. **日常盯「运行状态」页**（左侧导航最后一项，每 15 秒自刷新）：队列积压 / 本分钟投递 /
     推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量 / **基线观测**（已学维度、过了观测期的维度数、
     在册画像、过阈值异常 TOP5）。历史上 Redis 写满（noeviction）会让
