@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -214,6 +215,33 @@ def _str_or_none(value: Any) -> str | None:
     同名时会把 Zeek 的字符串字段顶掉，直接透传给 pydantic 会报错。
     """
     return value if isinstance(value, str) and value else None
+
+
+def _text_or_none(value: Any) -> str | None:
+    """把「可能是对象」的字段收敛成可读字符串（用于 Wazuh 的 process/user/command/protocol）。
+
+    Wazuh 的 syscollector / FIM 解码器会把 ``data.process``、``data.user`` 这类字段给成**对象**
+    （如 ``{"name": "svchost.exe", "pid": "676", ...}``），直接透传给 ``UnifiedLog`` 的 ``str``
+    字段会被 pydantic 拒掉，**整条记录进死信队列**：2026-10-03 实机开 archives（全量原始日志）
+    后 373 条 ``normalize_failed`` 全是这一类。
+
+    与 ``_str_or_none`` 的区别：那个用于「同名对象顶掉字符串，宁缺勿滥」的 Zeek 字段；
+    这里面对的是**原始日志本身的内容**，丢字段可以、丢整条记录不行，所以对象优先取可读的
+    名字类字段，取不到再退化成紧凑 JSON。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, dict):
+        for key in ("name", "command", "path", "cmd", "id"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner:
+                return inner
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)[:256] or None
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(x) for x in value)[:256] or None
+    return str(value)
 
 
 def _to_int(v: Any) -> int | None:
@@ -574,7 +602,8 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
     path, qs = _split_uri(url)
     body_value = _first({**data, **doc}, _csv(settings.http_body_fields))
     status_code = _to_int(data.get("status"))
-    user_field = data.get("user") or data.get("srcuser") or data.get("dstuser")
+    # 见 `_text_or_none`：syscollector/FIM 的 data.user 可能是对象，透传会把整条原始日志打成死信。
+    user_field = _text_or_none(data.get("user") or data.get("srcuser") or data.get("dstuser"))
 
     if is_archive:
         raw_text = str(doc.get("full_log") or "").replace("\n", " ").strip()
@@ -595,11 +624,11 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
         dst_ip=str(dst_ip) if dst_ip else None,
         src_port=_to_int(data.get("srcport")),
         dst_port=_to_int(data.get("dstport")),
-        protocol=data.get("protocol"),
+        protocol=_text_or_none(data.get("protocol")),
         hostname=str(hostname) if hostname else None,
         user=user_field,
-        process=data.get("process"),
-        command=data.get("command"),
+        process=_text_or_none(data.get("process")),
+        command=_text_or_none(data.get("command")),
         query=url,
         uri_path=path[:512],
         query_string=qs[:1024],

@@ -229,3 +229,54 @@ def test_wazuh_raw_is_self_describing() -> None:
     assert entry.log_type == "wazuh"
     assert entry.raw["log_type"] == "wazuh"
     assert entry.raw["source_file"] == "alerts.json"
+
+
+def test_wazuh_syscollector_archive_keeps_process_as_text() -> None:
+    """syscollector/FIM 原始日志的 ``data.process`` 是对象，不能因为类型不符丢掉整条记录。
+
+    2026-10-03 实机开 archives（全量原始日志）后：正常入库 148 条，另有 **373 条进死信**
+    （``reason=normalize_failed``），pydantic 原话是
+    ``process: Input should be a valid string [input_value={'name': 'svchost.exe', ...}]``。
+    原始日志只入库供回溯，丢一个字段可以、丢整条记录不行，所以对象要收敛成可读字符串。
+    """
+    doc = {
+        "@timestamp": "2026-10-03T10:24:40.639Z",
+        "id": "1791022749.12345",
+        "decoder": {"name": "syscollector"},
+        "location": "syscheck",
+        "agent": {"id": "003", "name": "WIN-MSRG5PALH14", "ip": "172.16.199.63"},
+        "data": {
+            "checksum": "c3adc15179a17226edad8129036fc5d8ffe81dec",
+            "cmd": "C:\\Windows\\System32\\svchost.exe",
+            "name": "svchost.exe",
+            "pid": "676",
+            "process": {"name": "svchost.exe", "pid": "676", "ppid": "596"},
+            "user": {"name": "SYSTEM"},
+        },
+        "full_log": '{"data":{"checksum":"c3adc15179a17226edad8129036fc5d8ffe81dec","operation":"MODIFIED"}}',
+    }
+    entry = normalize_wazuh(doc)
+    assert entry.log_type == "wazuh_archive"
+    assert entry.event_type == "wazuh_log"
+    assert entry.process == "svchost.exe"
+    assert entry.user == "SYSTEM"
+    assert entry.account == "SYSTEM"
+
+
+def test_wazuh_object_fields_fall_back_to_compact_json() -> None:
+    """对象里没有名字类字段时退化成紧凑 JSON，列表则按逗号拼接——都不许抛异常。"""
+    doc = {
+        "@timestamp": "2026-10-03T10:24:41.000Z",
+        "decoder": {"name": "syscollector"},
+        "data": {
+            "process": {"pid": 1, "state": "R"},
+            "user": ["alice", "bob"],
+            "command": 42,
+            "protocol": None,
+        },
+    }
+    entry = normalize_wazuh(doc)
+    assert entry.process == '{"pid": 1, "state": "R"}'
+    assert entry.user == "alice, bob"
+    assert entry.command == "42"
+    assert entry.protocol is None
