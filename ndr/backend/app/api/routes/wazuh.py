@@ -191,8 +191,15 @@ def _api(
     params: dict[str, Any] | None = None,
     content: bytes | None = None,
     headers: dict[str, str] | None = None,
+    raw: bool = False,
 ) -> tuple[Any | None, str]:
-    """带鉴权的 Wazuh API 请求；返回 (响应 JSON, 错误说明)。"""
+    """带鉴权的 Wazuh API 请求；返回 (响应内容, 错误说明)。
+
+    `raw=True` 表示这个端点回的是**原文而不是 JSON**（如
+    `GET /rules/files/<name>?raw=true` 回 `application/xml`）。不区分就会在
+    `resp.json()` 上炸掉、判成「Wazuh API 响应不是 JSON」——实机踩到：后果是
+    「下发规则文件」的回读原文那一步永远失败、`verified` 永远 false。
+    """
     token, err = _login(cfg)
     if not token:
         return None, err
@@ -226,10 +233,41 @@ def _api(
             return None, f"请求 Wazuh API 失败：{exc}"
     if resp.status_code >= 400:
         return None, f"Wazuh API 返回 HTTP {resp.status_code}：{resp.text[:200]}"
+    if raw:
+        return resp.text, ""
     try:
         return resp.json(), ""
     except ValueError:
         return None, "Wazuh API 响应不是 JSON"
+
+
+def _count_rules(
+    cfg: dict[str, Any], filename: str, want: int, timeout: float = 8.0
+) -> tuple[int, str]:
+    """回读某个规则文件在 manager 上**生效的规则条数**（带轮询）。
+
+    为什么轮询而不是读一次：实机踩到「下发后立刻回读拿到 0」——manager 侧的规则集
+    是有扫描滞后的（实测几秒后才看得见；同样的操作第二次又可能立刻可见）。读一次就
+    把结果当结论，会把「已经生效」误判成「没生效」，而这个数字正是「下发是否真的
+    生效」的唯一证据。轮询到期仍未到 `want` 也按当前条数返回，交给调用方判定。
+
+    返回 (条数, 错误说明)：只有一次都没读成功才带错误说明。
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    total = 0
+    last_err = ""
+    while True:
+        data, err = _api(cfg, "GET", "/rules", params={"filename": filename, "limit": 1})
+        if err:
+            last_err = err
+        else:
+            last_err = ""
+            total = int(_as_dict(_as_dict(data).get("data")).get("total_affected_items") or 0)
+            if total >= want:
+                return total, ""
+        if time.monotonic() >= deadline:
+            return total, last_err
+        time.sleep(0.5)
 
 
 def _probe(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -588,21 +626,19 @@ def upload_rule_file(
     }
     if body.verify:
         # ① 该文件在 manager 上生效的规则条数（最能说明「真的生效了」）
-        data, err = _api(
-            cfg,
-            "GET",
-            "/rules",
-            params={"filename": filename, "limit": 1},
-        )
+        #    轮询到几秒：manager 侧规则集扫描有滞后（见 `_count_rules`）
+        total, err = _count_rules(cfg, filename, want=len(rule_ids))
         if err:
             result["detail"] = f"已上传，但回读校验失败：{err}"
             return JSONResponse(
                 status_code=400, content={**result, "ok": False, "conflict": "verify_failed"}
             )
-        total = _as_dict(_as_dict(data).get("data")).get("total_affected_items")
-        result["applied_rules"] = int(total or 0)
+        result["applied_rules"] = total
         # ② 回读原文，确认落地内容与我们发出的内容一致（忽略行尾空白）
-        raw, raw_err = _api(cfg, "GET", f"/rules/files/{filename}", params={"raw": "true"})
+        #    `raw=true` 回的是 XML 原文，必须让 `_api` 别按 JSON 解析
+        raw, raw_err = _api(
+            cfg, "GET", f"/rules/files/{filename}", params={"raw": "true"}, raw=True
+        )
         if raw_err:
             result["detail"] = (
                 f"已上传（生效 {result['applied_rules']} 条），但回读原文失败：{raw_err}"
