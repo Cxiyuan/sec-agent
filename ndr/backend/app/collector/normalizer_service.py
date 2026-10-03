@@ -4,11 +4,18 @@
 Wazuh 落在 `data.*`），检测器与智能体各自再归一化一遍，结构还不一致。现在归一化
 只做一次、只在这里做：
 
-    Filebeat(Zeek/Wazuh) --LPUSH--> shentong:events:collect
-      └ BRPOPLPUSH --> shentong:events:collect:processing
+    Filebeat(Zeek/Wazuh) --RPUSH--> shentong:events:collect
+      └ RPOPLPUSH（从右端取 = 最新优先）--> shentong:events:collect:processing
           ├ 降噪过滤（命中 → 跳过①，②照走）
-          ├ ① LPUSH 归一化文档 --> shentong:events:raw（检测器消费）
-          └ ② POST 归一化文档  --> Logstash http(:8080) → ES（2xx 才算入库成功）
+          ├ ① LPUSH 归一化文档 --> shentong:events:raw（检测器 BRPOPLPUSH 从右端取最旧
+          │     = 先进先出；这条队列是我们自产自销，方向与采集口相反是对的）
+          ├ ② POST 归一化文档  --> Logstash http(:8080) → ES（2xx 才算入库成功）
+          └ 坏消息（JSON 坏了 / 归一化失败）--> shentong:events:dead（死信，有上限）
+
+队列方向以实机为准（2026-10 复核）：Filebeat 的 redis output 在 `datatype: list` 时用的是
+**RPUSH**（官方文档明写），我们又是 RPOPLPUSH 从右端取 —— 左端最旧、右端最新，消费的是
+最新那批。`_trim_queue()` 的裁剪方向必须与之一致（积压时丢最旧），否则丢的正是「攻击当下」
+的事件（改造前就是这个写反的 bug）。
 
 **降噪过滤**（`app/ingestion/ingest_filter.py`）在这里判定，而不是写成 Logstash 的
 `drop`：原始日志已经不经过 Logstash，而 ES 只由这里写入 —— 用 `drop` 会连 ES 那份一起
@@ -28,6 +35,7 @@ import json
 import signal
 import time
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,6 +49,17 @@ from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
+
+#: 坏消息（JSON 坏了 / 归一化失败）的死信队列：LPUSH 进、LTRIM 保最新，防止永远好不了的
+#: 消息把队列撑爆；原文整条留着，方便事后捞出来重放或定位。
+#: 这两个值暂用模块内常量（配置项在 app/config.py，属 E 组白名单）；若要提成配置项，
+#: 建议命名 `ST_COLLECTOR_DEAD_LETTER_QUEUE` / `ST_COLLECTOR_DEAD_LETTER_MAX`。
+_DEAD_LETTER_KEY = "shentong:events:dead"
+_DEAD_LETTER_MAX = 10000
+
+#: 坏消息的持久计数（Redis hash，按原因分桶）：进程内 `stats` 每轮日志后就地清零，
+#: 界面/巡检看不到历史，累计值写这里——`HGETALL shentong:collector:stats` 就能看。
+_COLLECTOR_STATS_KEY = "shentong:collector:stats"
 
 
 # ---------- 辅助 ----------
@@ -70,32 +89,69 @@ def _ndjson(payloads: list[dict[str, Any]]) -> bytes:
     return (body + "\n").encode("utf-8")
 
 
-def _split(items: list[str], stats: Counter[str]) -> tuple[list[tuple[str, UnifiedLog]], list[str]]:
+def _record_dead(client: Any, item: str, reason: str, stats: Counter[str]) -> None:
+    """坏消息进死信队列 + 持久计数（尽最大努力，绝不把常驻循环带崩）。
+
+    改造前这类消息是**直接确认掉、只在进程内记个数**：日志一刷就再也查不到，ES 里也没有，
+    等于静默丢事件（违反「ES 是全量事实源」）。现在原文整条进 `_DEAD_LETTER_KEY`，累计条数
+    进 `_COLLECTOR_STATS_KEY`，日志里还会报积压。
+
+    Redis 写失败只告警不上抛：调用方紧接着要 ack 这条消息，异常传出去会让循环退出。这种
+    极端情况（Redis 连不上）下 ack 同样会失败，消息会留在 processing 里等下次启动回灌，
+    不会静默消失。
+    """
+    stats[f"dead_{reason}"] += 1
+    record = {
+        "at": datetime.now(UTC).isoformat(),
+        "reason": reason,
+        "payload": item,
+    }
+    try:
+        client.lpush(_DEAD_LETTER_KEY, json.dumps(record, ensure_ascii=False))
+        client.ltrim(_DEAD_LETTER_KEY, 0, _DEAD_LETTER_MAX - 1)
+        client.hincrby(_COLLECTOR_STATS_KEY, f"dead_{reason}", 1)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("写入死信队列失败（%s）：%s", reason, exc)
+
+
+def _dead_letter_depth(client: Any) -> int:
+    """死信队列当前积压；读不到返回 -1（只用于日志，不参与控制流）。"""
+    try:
+        return int(client.llen(_DEAD_LETTER_KEY))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _split(
+    items: list[str], stats: Counter[str]
+) -> tuple[list[tuple[str, UnifiedLog]], list[tuple[str, str]]]:
     """把队列消息分成 (能归一化的, 永远好不了的)。
 
-    后一类不能一直留在队列里重试（一条坏消息会把整条链路卡死），所以直接确认掉，
-    只记数——它们本来也无法进 ES。
+    后一类不能一直留在队列里重试（一条坏消息会把整条链路卡死），所以调用方会确认掉它们；
+    但确认之前先写死信队列并计数（见 `_record_dead`），做到「不丢 + 可观测」。
+
+    返回的坏消息带原因（`bad_json` / `normalize_failed`），死信记录与计数都按原因分桶。
 
     这里刻意返回 **UnifiedLog**（而不是线上形态的 dict）：降噪过滤要按字段求值，而每条
     文档的 `model_dump` 只该做一次（在调用方合并成一次循环）。
     """
     good: list[tuple[str, UnifiedLog]] = []
-    bad: list[str] = []
+    bad: list[tuple[str, str]] = []
     for item in items:
         try:
             doc = json.loads(item)
         except (TypeError, ValueError):
             stats["bad_json"] += 1
-            bad.append(item)
+            bad.append((item, "bad_json"))
             continue
         if not isinstance(doc, dict):
             stats["bad_json"] += 1
-            bad.append(item)
+            bad.append((item, "bad_json"))
             continue
         entry = normalize(source_of(doc), doc)
         if entry is None:
             stats["normalize_failed"] += 1
-            bad.append(item)
+            bad.append((item, "normalize_failed"))
             continue
         good.append((item, entry))
     return good, bad
@@ -126,7 +182,15 @@ def _post(client: httpx.Client, url: str, payloads: list[dict[str, Any]]) -> boo
 
 
 def _trim_queue(client: Any, key: str, limit: int) -> int:
-    """队列封顶：超出就裁掉**最旧**的（列表左端是最新，LPUSH 进来的）。"""
+    """队列封顶：超出就裁掉**最旧**的，保留最新。
+
+    方向依据（2026-10 实机 `redis-cli monitor` 抓到活流量 + Filebeat 官方文档）：Filebeat
+    的 redis output 在 `datatype: list` 时用 **RPUSH**，我们又是 RPOPLPUSH 从右端取 ——
+    左端最旧、右端最新。改造前这里是 `ltrim(key, 0, limit - 1)`（保最旧、砍最新），积压时
+    丢掉的正好是「攻击当下」的最新事件，而日志还写着「已裁掉最旧的」。
+    """
+    if limit <= 0:
+        return 0
     try:
         size = int(client.llen(key))
     except Exception as exc:  # noqa: BLE001
@@ -136,7 +200,7 @@ def _trim_queue(client: Any, key: str, limit: int) -> int:
         return 0
     dropped = size - limit
     try:
-        client.ltrim(key, 0, limit - 1)
+        client.ltrim(key, -limit, -1)
     except Exception as exc:  # noqa: BLE001
         log.warning("裁剪采集队列失败: %s", exc)
         return 0
@@ -144,7 +208,9 @@ def _trim_queue(client: Any, key: str, limit: int) -> int:
     return dropped
 
 
-def _maybe_log(stats: Counter[str], last: float, queue: ReliableQueue) -> float:
+def _maybe_log(
+    stats: Counter[str], last: float, queue: ReliableQueue, client: Any
+) -> float:
     """周期性汇报（每 `collector_stats_log_seconds` 一次，不刷屏）。"""
     now = time.monotonic()
     if now - last < settings.collector_stats_log_seconds:
@@ -153,13 +219,14 @@ def _maybe_log(stats: Counter[str], last: float, queue: ReliableQueue) -> float:
     if stats or raw_depth or processing:
         log.info(
             "归一化服务：入库 %d 条 / 降噪挡下 %d 条 / 原始日志只入库 %d 条 / 类型闸门只入库 %d 条"
-            " / 待重试 %d 条 / 坏消息 %d 条 / 积压 %d 条（处理中 %d 条）",
+            " / 待重试 %d 条 / 坏消息 %d 条（已进死信，积压 %d 条） / 积压 %d 条（处理中 %d 条）",
             stats.get("delivered", 0),
             stats.get("filtered", 0),
             stats.get("archive_es_only", 0),
             stats.get("ops_es_only", 0) + stats.get("unknown_es_only", 0),
             stats.get("deferred", 0),
             stats.get("bad_json", 0) + stats.get("normalize_failed", 0),
+            _dead_letter_depth(client),
             raw_depth,
             processing,
         )
@@ -202,12 +269,15 @@ def run() -> None:
                 settings.collector_consume_batch, settings.collector_poll_timeout
             )
             if not items:
-                last_log = _maybe_log(stats, last_log, queue)
+                last_log = _maybe_log(stats, last_log, queue, client)
                 _trim_queue(client, settings.collector_collect_queue, settings.collector_queue_max)
                 continue
 
             good, bad = _split(items, stats)
-            for item in bad:
+            # 坏消息：先把原文写进死信队列并计数，再确认掉。确认是为了不卡住链路——
+            # 留在 processing 等 recover 只会在下次启动时又冒出来，永远处理不掉。
+            for item, reason in bad:
+                _record_dead(client, item, reason, stats)
                 queue.ack(item)
 
             if good:
@@ -260,7 +330,7 @@ def run() -> None:
                         queue.requeue(item)
                     time.sleep(settings.collector_retry_backoff_seconds)
 
-            last_log = _maybe_log(stats, last_log, queue)
+            last_log = _maybe_log(stats, last_log, queue, client)
             _trim_queue(client, settings.collector_collect_queue, settings.collector_queue_max)
 
 

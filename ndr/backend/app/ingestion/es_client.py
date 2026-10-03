@@ -1,33 +1,46 @@
 """Elasticsearch 客户端 + 「监控网段」判定工具。
 
-- `get_es()`：构造客户端（连接信息取自运行时配置：DB 覆盖 env）
-- `build_networks` / `in_scope` / `doc_in_scope`：检测器的网段前置过滤用
-  （原始文档按字段路径取值，已归一化文档直接用 `src_ip` / `dst_ip`）
+- `get_es()`：取 ES 客户端（连接信息取自运行时配置：DB 覆盖 env，按连接三要素缓存复用）
+- `build_networks` / `in_scope`：检测器的网段前置过滤用
+- `_get_path`：按字段路径取值（`app/investigation/es_query.py` 也在用它）
+
+「原始文档按配置字段路径判断网段」的 `doc_in_scope()` 已删：归一化前置之后不再分来源，
+检测器判网段用的是已归一化文档的 `src_ip` / `dst_ip`（`in_scope`）。
 """
 
 from __future__ import annotations
 
 import ipaddress
+from functools import lru_cache
 from typing import Any
 
 from elasticsearch import Elasticsearch
 
 from app.config import settings
 from app.ingestion import es_config
-from app.ingestion.es_schema import split_fields
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
 
+@lru_cache(maxsize=8)
+def _client(url: str, auth: tuple[str, str] | None, verify: bool) -> Elasticsearch:
+    return Elasticsearch(url, basic_auth=auth, verify_certs=verify, request_timeout=60)
+
+
 def get_es() -> Elasticsearch:
-    """构造 ES 客户端（连接信息取自运行时配置：DB 覆盖 env）。"""
+    """取 ES 客户端（连接信息取自运行时配置：DB 覆盖 env）。
+
+    客户端按「连接三要素」缓存复用：改造前每次调用都新建一个，而它在热路径上（MCP 每个
+    工具、检索、试运行都会调），每个请求一个新连接池、旧的也不 close，白付连接与 TLS 开销。
+    后台改配置后 `es_config.invalidate()` 会让缓存键跟着变，不会用到旧连接；maxsize=8 只是
+    防反复改配置时无限堆积。客户端本身线程安全（elasticsearch-py 自带连接池）。
+    """
     cfg = es_config.current()
-    return Elasticsearch(
-        cfg.get("es.url") or settings.es_url,
-        basic_auth=es_config.auth_pair(),
-        verify_certs=settings.es_verify_certs,
-        request_timeout=60,
+    return _client(
+        str(cfg.get("es.url") or settings.es_url),
+        es_config.auth_pair(),
+        bool(settings.es_verify_certs),
     )
 
 
@@ -84,10 +97,3 @@ def _get_path(doc: dict[str, Any], path: str) -> Any:
         else:
             return None
     return node
-
-
-def doc_in_scope(doc: dict[str, Any], fields: dict[str, str], nets: list[Any]) -> bool:
-    for f in split_fields(fields.get("src", "")) + split_fields(fields.get("dst", "")):
-        if in_scope(_get_path(doc, f), nets):
-            return True
-    return False

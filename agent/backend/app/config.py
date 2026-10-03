@@ -50,9 +50,9 @@ class Settings(BaseSettings):
     # 单次推送最多接受的摘要条数（防止一个请求打爆图）
     push_max_items: int = 500
 
-    # 误报治理（判据集中在 triage_policy，两侧一致）
+    # 误报治理（判据集中在 triage_policy，两侧一致）；名字必须与 app/rules/builtin.py 逐字一致
     policy_internal_routine_skip: bool = True
-    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-文件传输可观测"]
+    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-恶意文件传输"]
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True

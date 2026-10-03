@@ -117,6 +117,10 @@ class McpToken(Base):
     忘了就只能吊销重建（所以额外存了 `prefix` 供界面辨认是哪一个）。
 
     吊销 = `enabled=False`，不删行——调用记录还要能追溯到它。
+
+    `expires_at` 为空 = **永不过期**（既有令牌语义不变）；到期判定在
+    `app/mcp/auth.py` 的 `verify()`（D 组），轮换与改到期时间在 `app/api/routes/mcp.py`。
+    老库靠 `main.py` 的 `_MIGRATIONS` 补列（`ADD COLUMN IF NOT EXISTS`）。
     """
 
     __tablename__ = "mcp_tokens"
@@ -128,6 +132,7 @@ class McpToken(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     call_count: Mapped[int] = mapped_column(Integer, default=0)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

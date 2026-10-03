@@ -13,9 +13,10 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  UserRound,
 } from "lucide-react";
 import { cn, Button } from "@shentong/ui";
-import { apiFetch, clearToken, type NetworksStatus } from "@/lib/api";
+import { apiFetch, clearToken, type AuthMe, type NetworksStatus } from "@/lib/api";
 
 // 第 7 期拆页：左侧导航按链路分段，配置总览（/admin/settings）挂在左上角标题上。
 const items = [
@@ -26,11 +27,13 @@ const items = [
   { href: "/admin/filters", label: "过滤规则", icon: Filter },
   { href: "/admin/agent", label: "智能体对接", icon: Bot },
   { href: "/admin/status", label: "运行状态", icon: Activity },
+  { href: "/admin/account", label: "账户", icon: UserRound },
 ];
 
 export function Nav() {
   const pathname = usePathname();
   const router = useRouter();
+  const [me, setMe] = React.useState<AuthMe | null>(null);
 
   // 首次使用强制向导：未配置监控网段 -> 跳 /setup（网段同时也是 Zeek 的抓包范围）
   React.useEffect(() => {
@@ -45,6 +48,19 @@ export function Nav() {
       alive = false;
     };
   }, [pathname, router]);
+
+  // 还在用出厂口令的话，导航栏一直挂一条红字提醒（点进「账户」改）
+  React.useEffect(() => {
+    let alive = true;
+    apiFetch<AuthMe>("/api/auth/me")
+      .then((m) => {
+        if (alive) setMe(m);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [pathname]);
 
   return (
     <>
@@ -79,6 +95,14 @@ export function Nav() {
           })}
         </nav>
         <div className="border-t p-3">
+          {me?.default_password_in_use && (
+            <Link
+              href="/admin/account"
+              className="mb-2 block rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
+            >
+              仍在使用出厂口令 admin123 —— 点这里去改
+            </Link>
+          )}
           <Button
             variant="ghost"
             className="w-full justify-start"

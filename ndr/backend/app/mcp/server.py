@@ -250,7 +250,12 @@ def record_conclusion(
     detail: dict[str, Any] | None = None,
     thread_id: str = "",
 ) -> str:
-    """把调查结论写回 NDR（界面可见；同一事件只留一份）。"""
+    """把调查结论写回 NDR（界面可见；同一事件只留一份）。
+
+    `status` 可填：true_positive / false_positive / benign / suspicious / inconclusive /
+    pending / done（默认 done）；`severity` 可填：info / low / medium / high / critical
+    （默认 info）。中文别名（真阳性、误报、高危…）也认；填了不认识的值会报错并列出可选值。
+    """
     return _run(
         "record_conclusion",
         _clean(

@@ -6,41 +6,67 @@ import {
   apiFetch,
   errorText,
   type AgentPushPayload,
+  type AgentPushStatus,
   type AgentPushTestResult,
 } from "@/lib/api";
 import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = { main: "智能体推送配置与状态（/api/agent-push）" } as const;
+
+/**
+ * 真积压批数：后端 `retry_backlog_batches` = queue_depth + processing_depth。
+ * 老后端没这个字段时退回两数之和，绝不再用只增不减的累计 `queued` 冒充积压。
+ */
+function backlog(st: AgentPushStatus): number {
+  return st.retry_backlog_batches ?? (st.queue_depth ?? 0) + (st.processing_depth ?? 0);
+}
 
 /** 智能体推送：地址 / 令牌 / 开关 + 送达与失败计数 + 待重发队列 + 一键自检、立即重发。 */
 export function AgentPushPanel() {
   const [data, setData] = React.useState<AgentPushPayload | null>(null);
   const [url, setUrl] = React.useState("");
   const [token, setToken] = React.useState("");
+  const [clearToken, setClearToken] = React.useState(false);
   const [enabled, setEnabled] = React.useState(true);
   const [timeout, setTimeoutSeconds] = React.useState(10);
   const [maxPerPush, setMaxPerPush] = React.useState(200);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const errs = usePanelErrors();
 
   const apply = React.useCallback((d: AgentPushPayload) => {
     setData(d);
     setUrl(d.config.url);
     setToken("");
+    setClearToken(false);
     setEnabled(d.config.enabled);
     setTimeoutSeconds(d.config.timeout_seconds);
     setMaxPerPush(d.config.max_per_push);
   }, []);
 
   async function load() {
-    const d = await apiFetch<AgentPushPayload>("/api/agent-push");
-    apply(d);
+    await loadInto(errs, SRC.main, "/api/agent-push", apply);
   }
 
   React.useEffect(() => {
-    load().catch(() => setData(null));
+    void load();
+    // 只在挂载时读一次；load 内部自己收错误
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * 提交给后端的令牌值（后端约定：null = 不改动，"" = 清空）。
+   * 界面上：token 输入框留空 = 不改动；勾「清除已保存令牌」= 传空串清空。
+   */
+  function tokenPayload(): string | null {
+    if (clearToken) return "";
+    return token === "" ? null : token;
+  }
 
   async function save() {
     setBusy(true);
@@ -48,10 +74,9 @@ export function AgentPushPanel() {
     try {
       const d = await apiFetch<AgentPushPayload>("/api/agent-push", {
         method: "PUT",
-        // token 空串 = 不改动已保存的令牌（要用新令牌才填）
         body: JSON.stringify({
           url,
-          token: token === "" ? null : token,
+          token: tokenPayload(),
           enabled,
           timeout_seconds: timeout,
           max_per_push: maxPerPush,
@@ -61,7 +86,7 @@ export function AgentPushPanel() {
       setMsg(
         d.config.active
           ? "已保存 —— 检测器下次投递就改走 HTTP 推送"
-          : "已保存，但地址为空或开关关闭：检测器仍走旧的 Redis 队列交接",
+          : "已保存，但地址为空或开关关闭：检测器仍走旧的 Redis 队列交接（已退役，不再有人消费）",
       );
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
@@ -76,7 +101,7 @@ export function AgentPushPanel() {
     try {
       const r = await apiFetch<AgentPushTestResult>("/api/agent-push/test", {
         method: "POST",
-        body: JSON.stringify({ url: url || null, token: token === "" ? null : token }),
+        body: JSON.stringify({ url: url || null, token: tokenPayload() }),
       });
       setMsg(r.ok ? `连通正常（${r.url}）` : `连不通：${r.detail}`);
     } catch (e) {
@@ -90,15 +115,21 @@ export function AgentPushPanel() {
     setBusy(true);
     setMsg("");
     try {
-      const r = await apiFetch<{ result: { tried: number; sent: number; failed: number } } & AgentPushPayload>(
-        "/api/agent-push/retry",
-        { method: "POST" },
-      );
+      const r = await apiFetch<
+        {
+          result: { tried: number; sent: number; failed: number; lost: number; locked: boolean };
+          busy: boolean;
+          detail: string;
+        } & AgentPushPayload
+      >("/api/agent-push/retry", { method: "POST" });
       apply(r);
       setMsg(
-        r.result.tried === 0
-          ? "没有待重发的批"
-          : `重发完成：试了 ${r.result.tried} 批，成功 ${r.result.sent} 条，失败 ${r.result.failed} 条`,
+        r.busy
+          ? r.detail
+          : r.result.tried === 0
+            ? "没有待重发的批（重发队列是空的）"
+            : `重发完成：试了 ${r.result.tried} 批，成功 ${r.result.sent} 条，失败 ${r.result.failed} 条` +
+              (r.result.lost ? `，判死丢弃 ${r.result.lost} 条` : ""),
       );
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "重发失败");
@@ -121,6 +152,7 @@ export function AgentPushPanel() {
       </CardHeader>
       <CardContent className="space-y-3">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         {cfg && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
@@ -144,14 +176,32 @@ export function AgentPushPanel() {
           </label>
           <label className="space-y-1 text-xs">
             <span className="text-muted-foreground">
-              令牌（与智能体 ST_PUSH_TOKEN 一致；留空表示不改动）
+              令牌（与智能体 ST_PUSH_TOKEN 一致；留空 = 不改动已保存的令牌）
             </span>
             <Input
               value={token}
               type="password"
-              placeholder={cfg?.token_set ? "留空 = 保持不变" : "填一个长随机串"}
+              disabled={clearToken}
+              placeholder={
+                clearToken
+                  ? "保存后令牌被清空"
+                  : cfg?.token_set
+                    ? "留空 = 保持不变"
+                    : "填一个长随机串"
+              }
               onChange={(e) => setToken(e.target.value)}
             />
+            {/* 后端约定：null = 不改动、"" = 清空。光靠输入框留空没法表达「清空」，所以给个显式开关 */}
+            {cfg?.token_set && (
+              <span className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  checked={clearToken}
+                  onChange={(e) => setClearToken(e.target.checked)}
+                />
+                <span className="text-destructive">清除已保存的令牌（保存后生效）</span>
+              </span>
+            )}
           </label>
           <label className="space-y-1 text-xs">
             <span className="text-muted-foreground">超时（秒）</span>
@@ -178,7 +228,8 @@ export function AgentPushPanel() {
         </label>
 
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy} onClick={save}>
+          {/* 配置没读到就禁止保存：空表单点保存会把地址/开关覆盖掉 */}
+          <Button size="sm" disabled={busy || !data} onClick={save}>
             保存
           </Button>
           <Button size="sm" variant="outline" disabled={busy || !url} onClick={test}>
@@ -187,22 +238,55 @@ export function AgentPushPanel() {
           <Button size="sm" variant="outline" disabled={busy} onClick={retry}>
             立即重发
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => load()}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>
             刷新
           </Button>
+          {!data && (
+            <span className="self-center text-xs text-destructive">
+              配置未读到，已禁用保存（避免空表单覆盖现有配置）
+            </span>
+          )}
         </div>
 
         {st && (
           <div className="space-y-2">
             <div className="flex flex-wrap gap-3 rounded-md border p-3 text-xs">
               <span>已送达 {st.sent}</span>
-              <span className={st.queued ? "text-destructive" : "text-muted-foreground"}>
-                失败待重发 {st.queued}
+              {/* 真积压 = 待重发批数（queue_depth + processing_depth）；st.queued 是累计入队数，只增不减 */}
+              <span
+                className={backlog(st) ? "text-destructive" : "text-muted-foreground"}
+                title="当前真的压在重发队列里没发出去的批数"
+              >
+                失败待重发 {backlog(st)} 批
+              </span>
+              <span
+                className="text-muted-foreground"
+                title="累计值（自 Redis 计数以来落过重发队列的批数），不是当前积压"
+              >
+                累计失败入队 {st.queued}
               </span>
               <span>重发成功 {st.retried}</span>
               <span className={st.retry_failed ? "text-destructive" : "text-muted-foreground"}>
                 重发失败 {st.retry_failed}
               </span>
+              {typeof st.retry_lost === "number" && st.retry_lost > 0 && (
+                <span
+                  className="text-destructive"
+                  title="连试多次仍失败、已判死丢弃的批数（不会再自动重发）"
+                >
+                  判死丢弃 {st.retry_lost}
+                </span>
+              )}
+              {typeof st.retry_dropped === "number" && st.retry_dropped > 0 && (
+                <span className="text-destructive" title="重试队列写入失败、当场丢掉的条数">
+                  队列写失败丢弃 {st.retry_dropped}
+                </span>
+              )}
+              {typeof st.undelivered === "number" && st.undelivered > 0 && (
+                <span className="text-destructive" title="投递失败且没能进重试队列的条数（真丢）">
+                  未送达 {st.undelivered}
+                </span>
+              )}
               <span>待重发批数 {st.queue_depth}</span>
               <span>重发处理中 {st.processing_depth}</span>
             </div>

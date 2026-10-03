@@ -29,12 +29,19 @@ COPY site/ /usr/local/zeek/share/zeek/site/
 COPY scripts.d/ /usr/local/zeek/share/zeek/site/scripts.d/
 COPY filebeat.yml /etc/filebeat/filebeat.yml
 COPY entrypoint.sh /start.sh
+COPY healthcheck.sh /usr/local/bin/healthcheck.sh
 # 提取件清理助手（批 4）：用镜像自带的 python3 跑（zeek/zeek 基础镜像为 zkg 装有 python3），
 # 读 files.log 判定 MIME 白名单并控制 /extract 容量。
 COPY extract_cleanup.py /usr/local/bin/extract_cleanup.py
-RUN chmod +x /start.sh /usr/local/bin/extract_cleanup.py
+RUN chmod +x /start.sh /usr/local/bin/healthcheck.sh /usr/local/bin/extract_cleanup.py
 
 VOLUME ["/logs", "/config", "/extract"]
+
+# 采集面健康检查：Zeek 反复启动失败 / Filebeat 掉线时容器变 unhealthy（docker ps 可见），
+# 否则「采集其实啥都没采」和「一切正常」在表面上完全一样。判据由 entrypoint 写的哨兵文件提供。
+# start-period 给 Zeek 编译站点脚本 + 第一拍健康循环留时间；unhealthy 不会触发重启。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD /usr/local/bin/healthcheck.sh
 
 # 抓包需要 root + NET_RAW/NET_ADMIN；看门狗与清理循环在 start.sh 内
 ENTRYPOINT ["/usr/bin/tini", "--", "/start.sh"]

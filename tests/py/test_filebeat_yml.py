@@ -8,7 +8,8 @@
   ``unrecognized queue type 'spool'``，只能用 ``queue.disk``（8.15.3 实测 Config OK）；
 - ``filestream`` 输入只提供 ``log.file.path``（没有 ``log.file.name``），
   且该构建不含 grok 处理器，取文件名只能用 JS script 处理器；
-- Zeek 轮转是**同目录平铺改名**（``conn.log`` → ``conn.2026-10-01.log``），不是日期子目录；
+- Zeek 轮转是**同目录平铺改名**（``conn.log`` → ``conn.2026-10-02-09-30-15.log``），不是日期子目录；
+  ``ndr/wazuh/filebeat.yml`` 是同一套投递形状（disk queue + 命名卷注册表），单独一组测试；
 - 排除名单必须写在 ``prospector.scanner.exclude_files``：写成输入顶层的
   ``exclude_files``（旧 ``log`` 输入选项）8.15.3 实测无效，``stderr.log`` 照样入库。
 """
@@ -22,6 +23,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 FB_PATH = ROOT / "ndr" / "zeek" / "filebeat.yml"
+WAZUH_FB_PATH = ROOT / "ndr" / "wazuh" / "filebeat.yml"
+WAZUH_COMPOSE_PATH = ROOT / "ndr" / "docker-compose.wazuh.yml"
 
 # 非事件文件（Zeek / Filebeat 自身输出）必须被排除
 EXCLUDED = (
@@ -78,10 +81,16 @@ def test_log_type_derived_from_filename() -> None:
     src = scripts[0]["source"]
     assert scripts[0]["lang"] == "javascript"
     assert "log.file.path" in src
-    # 去掉 .log 与两种轮转后缀（YYYY-MM-DD / HH-MM-SS）
+    # 去掉 .log 与轮转时间戳；轮转名是 <name>.<YYYY-MM-DD-HH-MM-SS>.log，
+    # 历史上还出现过只到天的 <name>.<YYYY-MM-DD>.log，所以两种都要能剥。
     assert r"\.log$" in src
-    assert r"\.\d{4}-\d{2}-\d{2}$" in src
-    assert r"\.\d{2}-\d{2}-\d{2}$" in src
+    full = r"\.\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$"
+    date_only = r"\.\d{4}-\d{2}-\d{2}$"
+    assert full in src
+    assert date_only in src
+    # 顺序不能反：先剥「日期+时分秒」，否则 conn.2026-10-02-09-30-15 会被剥成
+    # conn.2026-10-02（多留一段日期 → log_type 变成不存在的流，静默漏检测）。
+    assert src.index(full) < src.index(date_only), "完整时间戳规则必须排在只到天的规则之前"
     assert 'event.Put("log_type", t)' in src
 
 
@@ -107,3 +116,50 @@ def test_redis_output() -> None:
     assert "shentong:events:collect" in out["key"]
     assert out["data_type"] == "list"
     assert out["hosts"] and "${REDIS_HOST" in out["hosts"][0]
+
+
+# ---------- Wazuh 线路（与 Zeek 线同一套投递形状，2026-10 QA 后对齐）----------
+
+
+def wazuh_cfg() -> dict[str, Any]:
+    return yaml.safe_load(WAZUH_FB_PATH.read_text(encoding="utf-8"))
+
+
+def test_wazuh_inputs_and_parsers() -> None:
+    inputs = wazuh_cfg()["filebeat.inputs"]
+    assert [i["id"] for i in inputs] == ["wazuh-alerts", "wazuh-archives"]
+    for item in inputs:
+        assert item["type"] == "filestream"
+        ndjson = item["parsers"][0]["ndjson"]
+        # Wazuh 的 rule/data/agent/full_log 在根；套 target 归一化就读不到
+        assert "target" not in ndjson, "Wazuh 输入不能设 ndjson target"
+        assert ndjson["overwrite_keys"] is True, "否则 Filebeat 的 ECS agent 会盖掉 Wazuh agent.name"
+        assert item["fields"]["source_system"] == "wazuh"
+        assert item["fields_under_root"] is True
+    # archives 默认关闭：要 .env 里 WAZUH_ARCHIVES_ENABLED=true + enable-logall.sh 两处都开
+    assert inputs[1]["enabled"] == "${WAZUH_ARCHIVES_ENABLED:false}"
+
+
+def test_wazuh_disk_queue_matches_zeek_line() -> None:
+    conf = wazuh_cfg()
+    assert "queue.spool" not in conf, "OSS 版 Filebeat 不支持 queue.spool（Zeek 线实测）"
+    disk = conf["queue.disk"]
+    # 队列目录与读取注册表都要落在命名卷上（docker-compose.wazuh.yml 挂载点）
+    assert "/usr/share/filebeat/data" in disk["path"], disk["path"]
+    assert disk["max_size"] == "1GB"
+    assert disk["segment_size"] == "128MiB"
+    assert disk["write_ahead"] >= 1
+
+
+def test_wazuh_registry_volume_persisted() -> None:
+    """注册表/队列必须持久化：否则每次重建都从头重读全部 alerts.json（生产踩过）。"""
+    compose = yaml.safe_load(WAZUH_COMPOSE_PATH.read_text(encoding="utf-8"))
+    svc = compose["services"]["wazuh-filebeat"]
+    assert "wazuh-filebeat:/usr/share/filebeat/data" in svc["volumes"]
+    assert "wazuh-filebeat" in compose["volumes"]
+
+
+def test_wazuh_redis_output() -> None:
+    out = wazuh_cfg()["output.redis"]
+    assert out["data_type"] == "list"
+    assert out["key"] == "${REDIS_KEY:shentong:events:collect}"

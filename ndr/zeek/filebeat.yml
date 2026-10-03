@@ -13,7 +13,7 @@ filebeat.inputs:
   - type: filestream
     id: zeek-logs
     enabled: true
-    # Zeek 轮转是**同目录平铺改名**：conn.log → conn.2026-10-01.log（不是日期子目录）。
+    # Zeek 轮转是**同目录平铺改名**：conn.log → conn.2026-10-02-09-30-15.log（不是日期子目录）。
     # 两个 pattern 都留着：顶层活动日志，以及历史/其它部署可能出现的子目录布局。
     paths:
       - ${ZEEK_LOG_DIR:/logs}/*.log
@@ -45,7 +45,7 @@ filebeat.inputs:
     close_removed: true
 
 processors:
-  # 从文件名取类型：/logs/conn.log → conn；/logs/conn.2026-10-01.log → conn（去掉轮转日期）。
+  # 从文件名取类型：/logs/conn.log → conn；/logs/conn.2026-10-02-09-30-15.log → conn（去掉轮转时间戳）。
   # 认不出的文件名也照样发（log_type 用它自己的名字），由归一化层标 log_type_known=false
   # 并保留原名 —— 静默丢弃等于连"漏采/新流"的信号都没有了。
   # 注意①：filestream 输入只提供 log.file.path（没有 log.file.name）
@@ -58,13 +58,13 @@ processors:
           var parts = p.split("/");
           var nm = parts[parts.length - 1] || "";
           var t = nm.replace(/\.log$/i, "")
-                    .replace(/\.\d{4}-\d{2}-\d{2}$/, "")
-                    .replace(/\.\d{2}-\d{2}-\d{2}$/, "");
+                    .replace(/\.\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/, "")
+                    .replace(/\.\d{4}-\d{2}-\d{2}$/, "");
           if (t) { event.Put("log_type", t); }
         }
 
 # 队列：落盘缓冲。Redis 不可用/重启时事件先攒在磁盘上，不丢：
-#   - 事件被 Redis 输出确认（LPUSH 成功）后才从队列删除并推进读取注册表，
+#   - 事件被 Redis 输出确认（RPUSH 成功）后才从队列删除并推进读取注册表，
 #     所以崩溃/重启都不会跳过未投递的事件，也不会重复投太久；
 #   - 队列目录与注册表都在命名卷 zeek-filebeat（/usr/local/bin/data）上，容器重建也还在。
 # 为什么不用默认的内存队列（queue.mem，默认 3200 条）：Redis 长时间不可用时它只能反压
@@ -79,7 +79,10 @@ queue.disk:
   write_ahead: 2048
   read_ahead: 512
 
-# Redis 采集队列（LPUSH 到 list 左端；归一化服务用 BRPOPLPUSH 消费并确认）
+# Redis 采集队列。**方向已核实**：Filebeat 8.15.3 的 redis output 在 `data_type: list`
+# 下用的是 **RPUSH**（官方文档 + 服务器 `redis-cli monitor` 实测均为 RPUSH），即新事件追加到
+# 右端（队尾）；归一化服务用 BRPOPLPUSH 从右端取出 ⇒ 左端最旧、右端最新，整条队列是
+# **最新优先（LIFO）**，积压时先处理新事件、最老的事件排在最后。
 # 若把 Zeek 接回 Wazuh 自带的 Filebeat，这里要改成同样的 redis 输出配置。
 output.redis:
   hosts: ["${REDIS_HOST:redis}:${REDIS_PORT:6379}"]

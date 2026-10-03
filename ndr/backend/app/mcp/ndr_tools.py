@@ -194,10 +194,6 @@ def _detector_status(args: dict[str, Any]) -> dict[str, Any]:
             "count": _hint(client, settings.detector_drop_key, "dropped"),
             "last_at": _hstr(client, settings.detector_drop_key, "last_dropped_at"),
         },
-        "dedup": {
-            "skipped": _hint(client, settings.detector_dedup_key, "skipped"),
-            "last_at": _hstr(client, settings.detector_dedup_key, "last_skipped_at"),
-        },
         "task_failed": {
             "failed": _hint(client, settings.detector_task_failed_key, "failed"),
             "last_at": _hstr(client, settings.detector_task_failed_key, "last_failed_at"),
@@ -303,6 +299,90 @@ def _list_filters(args: dict[str, Any]) -> dict[str, Any]:
 
 # ---------- record_conclusion ----------
 
+# 结论状态 / 定级的枚举。以前是把模型给的原字符串截断直接落库，于是库里既有
+# "true_positive" 又有 "高危"、还有拼错的词，界面按状态统计/过滤全不准。这里改成
+# 「先归一化、再校验」：认识的值统一成规范写法入库，不认识的值报错并列出可选值，
+# 让模型自我纠正（与工具集其它参数的 fail-closed 纪律一致）。
+STATUS_VALUES = (
+    "true_positive",
+    "false_positive",
+    "benign",
+    "suspicious",
+    "inconclusive",
+    "pending",
+    "done",
+)
+SEVERITY_VALUES = ("info", "low", "medium", "high", "critical")
+_STATUS_ALIASES = {
+    "true_positive": "true_positive",
+    "truepositive": "true_positive",
+    "tp": "true_positive",
+    "真阳性": "true_positive",
+    "确认攻击": "true_positive",
+    "攻击": "true_positive",
+    "false_positive": "false_positive",
+    "falsepositive": "false_positive",
+    "fp": "false_positive",
+    "误报": "false_positive",
+    "误判": "false_positive",
+    "benign": "benign",
+    "正常": "benign",
+    "白名单": "benign",
+    "无异常": "benign",
+    "suspicious": "suspicious",
+    "可疑": "suspicious",
+    "存疑": "suspicious",
+    "inconclusive": "inconclusive",
+    "待定": "inconclusive",
+    "不确定": "inconclusive",
+    "未定": "inconclusive",
+    "pending": "pending",
+    "处理中": "pending",
+    "待处理": "pending",
+    "进行中": "pending",
+    "done": "done",
+    "完成": "done",
+    "结案": "done",
+    "已结案": "done",
+    "已处理": "done",
+}
+_SEVERITY_ALIASES = {
+    "info": "info",
+    "信息": "info",
+    "提示": "info",
+    "low": "low",
+    "低": "low",
+    "低危": "low",
+    "medium": "medium",
+    "中": "medium",
+    "中危": "medium",
+    "moderate": "medium",
+    "high": "high",
+    "高": "high",
+    "高危": "high",
+    "critical": "critical",
+    "严重": "critical",
+    "紧急": "critical",
+}
+
+
+def _enum_value(
+    raw: Any,
+    *,
+    default: str,
+    allowed: tuple[str, ...],
+    aliases: dict[str, str],
+    label: str,
+) -> tuple[str, str]:
+    """归一化一个枚举参数，返回 ``(规范值, 错误信息)``；空值用默认值，错误信息为空表示通过。"""
+    text = str(raw or "").strip()
+    if not text:
+        return default, ""
+    value = aliases.get(text.lower())
+    if value is None:
+        return "", f"{label} 不认识：{text!r}。只能填：{'、'.join(allowed)}（中文别名也认）"
+    return value, ""
+
 
 def _record_conclusion(args: dict[str, Any]) -> dict[str, Any]:
     """把调查结论写回 NDR（界面可见）。
@@ -323,6 +403,25 @@ def _record_conclusion(args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(detail, dict):
         detail = {"text": detail} if detail not in (None, "") else {}
 
+    status, err = _enum_value(
+        args.get("status"),
+        default="done",
+        allowed=STATUS_VALUES,
+        aliases=_STATUS_ALIASES,
+        label="status",
+    )
+    if err:
+        return {"error": err}
+    severity, err = _enum_value(
+        args.get("severity"),
+        default="info",
+        allowed=SEVERITY_VALUES,
+        aliases=_SEVERITY_ALIASES,
+        label="severity",
+    )
+    if err:
+        return {"error": err}
+
     now = datetime.now(UTC)
     with SessionLocal() as db:
         row = db.execute(
@@ -335,8 +434,8 @@ def _record_conclusion(args: dict[str, Any]) -> dict[str, Any]:
         row.event_id = event_id or row.event_id or ""
         row.fingerprint = fingerprint or row.fingerprint or ""
         row.thread_id = str(args.get("thread_id") or row.thread_id or "")[:64]
-        row.status = str(args.get("status") or "done").strip()[:32]
-        row.severity = str(args.get("severity") or "info").strip()[:16]
+        row.status = status[:32]
+        row.severity = severity[:16]
         row.summary = summary
         row.detail = detail
         row.updated_at = now
@@ -369,6 +468,81 @@ def _str_list(value: Any, cap: int = 200) -> list[str]:
     return [i for i in items if i][:cap]
 
 
+def _es_index() -> str:
+    """当前**运行时**事件索引族。
+
+    后台「系统配置」里 `es.events_index` 是可改的（`ndr/backend/app/ingestion/es_config.py`），
+    只读静态 `settings.es_events_index` 会出现「采集已写进新索引族、这里还在查老的」——
+    表现为「明明有数据却查不到」。静态值只作兜底。
+    """
+    from app.ingestion import es_config
+
+    return str(es_config.current().get("es.events_index") or settings.es_events_index)
+
+
+def _es_path(index: str, field: str) -> str:
+    """统一字段名 → ES 精确匹配路径（text 字段必须走 `.keyword`）。"""
+    from app.investigation import catalog
+
+    paths = catalog.term_paths(index, catalog.resolve(field) or field)
+    return paths[0] if paths else field
+
+
+def _octet_prefix(net: Any) -> str | None:
+    """按字节对齐的 IPv4 网段（/8 /16 /24）→ keyword 前缀串，其他返回 None。
+
+    ``str(network_address)`` 在非对齐网段上会给出「网络地址」而非调用方原串（例如
+    172.16.196.5/24 → 172.16.196.0），拿它做前缀会多匹配，所以只接受对齐网段。
+    """
+    if getattr(net, "version", 0) != 4 or net.prefixlen not in (8, 16, 24):
+        return None
+    octets = str(net.network_address).split(".")
+    return ".".join(octets[: net.prefixlen // 8]) + "."
+
+
+def _net_clauses(
+    index: str, networks: list[Any], paths: tuple[str, str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把网段尽量下推到 ES，返回 ``(子句列表, 只能取回后本地过滤的网段字符串)``。
+
+    字段是 ES `ip` 类型时用 CIDR term（原生支持）；否则 text/keyword 只能：
+    - `/8 /16 /24` 这类按字节对齐的网段 → `prefix`（实测可用）；
+    - 单个地址（/32、/128）→ 精确 `term`；
+    - 其余（如 /12、/20）→ 下推一定不准，交给调用点本地过滤并在 note 里说明。
+    """
+    from app.investigation import catalog
+
+    if catalog.es_type(index, "src_ip") == "ip":
+        cidrs = [str(n) for n in networks]
+        return (
+            [
+                {
+                    "bool": {
+                        "should": [{"terms": {paths[0]: cidrs}}, {"terms": {paths[1]: cidrs}}],
+                        "minimum_should_match": 1,
+                    }
+                }
+            ],
+            [],
+        )
+
+    should: list[dict[str, Any]] = []
+    local_only: list[str] = []
+    for net in networks:
+        prefix = _octet_prefix(net)
+        if prefix is not None:
+            should.extend([{"prefix": {paths[0]: prefix}}, {"prefix": {paths[1]: prefix}}])
+        elif net.prefixlen == net.max_prefixlen:
+            host = str(net.network_address)
+            should.extend([{"term": {paths[0]: host}}, {"term": {paths[1]: host}}])
+        else:
+            local_only.append(str(net))
+    if not should:
+        return [], local_only
+    # 多个网段是「或」：用 should + minimum_should_match=1 合并成一条子句。
+    return [{"bool": {"should": should, "minimum_should_match": 1}}], local_only
+
+
 def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
     """按时间窗（可再按网段/IP）整批取回事件条目，交给调用方自己筛。
 
@@ -390,17 +564,40 @@ def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
     ips = _str_list(args.get("ips"))
     nets = build_networks(_str_list(args.get("nets")))
 
-    boolean: dict[str, Any] = {"filter": [{"range": {"@timestamp": {"gte": start, "lt": end}}}]}
+    # 索引取运行时配置：后台「系统配置」能改 es.events_index，只读静态 settings 会
+    # 出现「采集写进新索引族、这个工具还在查老的」。（静态值仍作兜底。）
+    index = _es_index()
+    src_path, dst_path = _es_path(index, "src_ip"), _es_path(index, "dst_ip")
+
+    conditions: list[dict[str, Any]] = [{"range": {"@timestamp": {"gte": start, "lt": end}}}]
     if ips:
-        # 指定了 IP 就用它收窄——这正是调用方本来要做的事，放在 ES 侧做省得白拉一堆
-        boolean["should"] = [{"terms": {"src_ip": ips}}, {"terms": {"dst_ip": ips}}]
-        boolean["minimum_should_match"] = 1
-    query: dict[str, Any] = {"bool": boolean}
+        # 指定了 IP 就用它收窄——这正是调用方本来要做的事，放在 ES 侧做省得白拉一堆。
+        # 路径必须是 keyword 路径：src_ip 实机是 text（动态映射），对主路径做 terms
+        # 只在“分词后恰好留住整串”时才匹配，属于会静默丢结果的坑。
+        conditions.append(
+            {
+                "bool": {
+                    "should": [
+                        {"terms": {src_path: ips}},
+                        {"terms": {dst_path: ips}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }
+        )
+
+    nets_pushed = False
+    local_only_nets: list[str] = []
+    if nets:
+        pushable, local_only_nets = _net_clauses(index, nets, (src_path, dst_path))
+        nets_pushed = not local_only_nets
+        conditions.extend(pushable)
+
+    query: dict[str, Any] = {"bool": {"filter": conditions}}
 
     from app.ingestion.es_client import get_es
 
     es = get_es()
-    index = settings.es_events_index
     try:
         total = int(es.count(index=index, query=query).get("count") or 0)
         resp = es.search(
@@ -424,10 +621,20 @@ def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
         notes.append(f"窗口内共 {total} 条，本次只取回 {len(logs)} 条（按时间从早到晚）")
     if not ips and not nets:
         notes.append("未限定网段/ IP：这是整段时间窗的全量条目")
+    if local_only_nets:
+        # 下推不了的那部分网段只能取回后本地过滤 —— total 是「下推条件」的计数，
+        # 不含这部分，必须说清楚，否则调用方会拿 total 当「返回条数的上限」用。
+        notes.append(
+            "以下网段无法下推到 ES（字段不是 ip 类型且网段不按字节对齐），"
+            f"只在取回后本地过滤：{', '.join(local_only_nets)}；"
+            "total 是下推条件下的条数（不含这部分）。"
+        )
     return {
         "window": {"start": start, "end": end},
+        "index": index,
         "total": total,
         "returned": len(logs),
+        "nets_pushed_down": bool(nets) and nets_pushed,
         "logs": logs,
         "notes": notes,
     }
@@ -543,8 +750,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "summary": "结论正文（必填）",
             "event_id": "事件ID",
             "fingerprint": "指纹",
-            "status": "结论状态（真阳性/误报/待定…）",
-            "severity": "定级",
+            "status": f"结论状态（可省，默认 done；可选：{'、'.join(STATUS_VALUES)}；中文别名也认）",
+            "severity": f"定级（可省，默认 info；可选：{'、'.join(SEVERITY_VALUES)}；中文别名也认）",
             "detail": "对象：证据、处置建议等",
             "thread_id": "分析线程 ID",
         },
@@ -580,17 +787,6 @@ TOOLS: dict[str, dict[str, Any]] = {
 
 def tool_names() -> list[str]:
     return sorted(TOOLS)
-
-
-def tool_catalog_text(*, max_chars: int = 2600) -> str:
-    """给模型看的工具清单（与 ES 侧工具同一格式）。"""
-    lines: list[str] = []
-    for name in sorted(TOOLS):
-        spec = TOOLS[name]
-        params = spec.get("params") or {}
-        arg_text = ", ".join(f"{k}: {v}" for k, v in params.items()) or "无参数"
-        lines.append(f"- {name}（{arg_text}）：{spec['desc']}")
-    return "\n".join(lines)[:max_chars]
 
 
 def execute(name: str, params: dict[str, Any]) -> dict[str, Any]:

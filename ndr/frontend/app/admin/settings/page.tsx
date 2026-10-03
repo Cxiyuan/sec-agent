@@ -39,6 +39,11 @@ const entries = [
     title: "运行状态",
     desc: "队列积压、投递速率、推送重发、Redis 内存与 Wazuh 入库量。",
   },
+  {
+    href: "/admin/account",
+    title: "账户",
+    desc: "修改管理员口令；还在用出厂口令 admin123 时导航栏和这一页都会红字提醒。",
+  },
 ];
 
 export default function SettingsPage() {

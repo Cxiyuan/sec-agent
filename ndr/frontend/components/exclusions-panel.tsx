@@ -23,6 +23,15 @@ import {
   type ExclusionFilterItem,
   type ExclusionStats,
 } from "@/lib/api";
+import { emptyOrFailed, loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
+import { condValueLabel } from "@/lib/qtype";
+
+/** 读取失败的接口名（错误条与空态用）。 */
+const SRC = {
+  list: "排除过滤列表（/api/exclusions）",
+  stats: "命中统计（/api/exclusions/stats）",
+  fields: "可选字段（/api/exclusions/fields）",
+} as const;
 
 /** 条件摘要文本（嵌套条件组用文字标出，避免“看着像扁平条件”的误解）。 */
 function condSummary(c: ExclusionConditions | undefined): string {
@@ -32,8 +41,8 @@ function condSummary(c: ExclusionConditions | undefined): string {
   return rules
     .map((r) => {
       if (r.logic || r.rules) return "（嵌套条件组）";
-      const value = Array.isArray(r.value) ? r.value.join(",") : (r.value ?? "");
-      return `${r.field ?? "-"} ${r.op ?? "-"} ${String(value)}`.trim();
+      // qtype 落库是数字码，摘要里翻成人读（16 → TXT（16））
+      return `${r.field ?? "-"} ${r.op ?? "-"} ${condValueLabel(r.field, r.value)}`.trim();
     })
     .join(logic);
 }
@@ -52,25 +61,31 @@ export function ExclusionsPanel() {
   const [logic, setLogic] = React.useState("and");
   const [conds, setConds] = React.useState<Cond[]>([EMPTY_COND]);
   const [nested, setNested] = React.useState(false);
+  const errs = usePanelErrors();
 
   async function load() {
-    const [list, st] = await Promise.all([
-      apiFetch<{ items: ExclusionFilterItem[] }>("/api/exclusions"),
-      apiFetch<ExclusionStats>("/api/exclusions/stats").catch(() => null),
+    await Promise.all([
+      loadInto(errs, SRC.list, "/api/exclusions", (list: { items: ExclusionFilterItem[] }) =>
+        setItems(list.items),
+      ),
+      loadInto(errs, SRC.stats, "/api/exclusions/stats", (st: ExclusionStats) => setStats(st)),
     ]);
-    setItems(list.items);
-    if (st) setStats(st);
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
-    apiFetch<ExclusionFields>("/api/exclusions/fields")
-      .then((f) => {
-        // 日志字段 + 规则元数据（hit_rule / rule_source / rule_severity）
-        const merged = [...f.fields, ...f.rule_fields];
-        setFields(merged.length ? merged : RULE_FIELDS);
-      })
-      .catch(() => {});
+    void (async () => {
+      errs.reset();
+      await Promise.all([
+        load(),
+        loadInto(errs, SRC.fields, "/api/exclusions/fields", (f: ExclusionFields) => {
+          // 日志字段 + 规则元数据（hit_rule / rule_source / rule_severity）
+          const merged = [...f.fields, ...f.rule_fields];
+          setFields(merged.length ? merged : RULE_FIELDS);
+        }),
+      ]);
+    })();
+    // 只在挂载时读一次；load 内部自己收错误
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function reset() {
@@ -170,6 +185,7 @@ export function ExclusionsPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         <div className="space-y-3 rounded-md border p-3">
           <div className="grid grid-cols-4 gap-3">
@@ -258,7 +274,8 @@ export function ExclusionsPanel() {
                     {f.enabled ? "启用" : "禁用"}
                   </Badge>
                 </TableCell>
-                <TableCell>{stats?.counts?.[f.name] ?? 0}</TableCell>
+                {/* 统计没读到就显示 “—”，不要用 0 冒充「一条没命中」 */}
+                <TableCell>{stats ? (stats.counts?.[f.name] ?? 0) : "—"}</TableCell>
                 <TableCell className="space-x-2">
                   <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
                     编辑
@@ -275,7 +292,7 @@ export function ExclusionsPanel() {
             {!items.length && (
               <TableRow>
                 <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                  暂无排除过滤
+                  {emptyOrFailed(errs, SRC.list, "暂无排除过滤")}
                 </TableCell>
               </TableRow>
             )}

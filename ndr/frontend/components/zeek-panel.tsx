@@ -6,10 +6,14 @@ import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
 const SELECT_CLS = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
 const TEXTAREA_CLS =
   "h-28 w-full rounded-md border border-input bg-transparent p-2 font-mono text-sm";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = { status: "Zeek 状态（/api/zeek/status）" } as const;
 
 /** 与后端 parse_nets 同规则：换行/逗号分隔，忽略空行与 # 注释，去重保序。 */
 function parseNets(text: string): string[] {
@@ -42,23 +46,28 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
   const [respKb, setRespKb] = React.useState("");
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const errs = usePanelErrors();
 
   const nets = parseNets(netsText);
   const showIface = section === "all" || section === "iface";
   const showNets = section === "all" || section === "networks";
 
   async function load() {
-    const d = await apiFetch<ZeekStatus>("/api/zeek/status");
-    setStatus(d);
-    setIface(d.interface);
-    setNetsText(d.networks.join("\n"));
-    setBpfExtra(d.bpf_extra || "");
-    setBodyKb(String(Math.round((d.body_max_bytes || 0) / 1024)));
-    setRespKb(String(Math.round((d.resp_body_max_bytes || 0) / 1024)));
+    errs.reset();
+    await loadInto(errs, SRC.status, "/api/zeek/status", (d: ZeekStatus) => {
+      setStatus(d);
+      setIface(d.interface);
+      setNetsText(d.networks.join("\n"));
+      setBpfExtra(d.bpf_extra || "");
+      setBodyKb(String(Math.round((d.body_max_bytes || 0) / 1024)));
+      setRespKb(String(Math.round((d.resp_body_max_bytes || 0) / 1024)));
+    });
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    void load();
+    // 只在挂载时读一次；load 内部自己收错误
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function save() {
@@ -80,7 +89,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
         body: JSON.stringify(payload),
       });
       setMsg(`已保存：网卡 ${r.interface}。${r.note}`);
-      setTimeout(() => load().catch(() => {}), 12000);
+      setTimeout(() => void load(), 12000);
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
     } finally {
@@ -111,12 +120,13 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
       </CardHeader>
       <CardContent className="space-y-3">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         {showIface && (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">
-                监听网卡（探测到 {status?.detected.length ?? 0} 张）
+                监听网卡（{status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）
               </label>
               {status && status.detected.length > 0 ? (
                 <select
@@ -138,7 +148,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                 <Input
                   value={iface}
                   onChange={(e) => setIface(e.target.value)}
-                  placeholder="eth0（未探测到清单，可手填）"
+                  placeholder="ens224（未探测到清单，可手填）"
                 />
               )}
             </div>
@@ -220,12 +230,18 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
         )}
 
         <div className="flex items-center gap-3">
-          <Button onClick={save} disabled={busy}>
+          {/* 状态没读到就禁止保存：空表单点保存会把现有网段/网卡覆盖掉 */}
+          <Button onClick={save} disabled={busy || !status}>
             {busy ? "下发中…" : "保存并下发"}
           </Button>
-          <Button variant="outline" onClick={() => load()}>
+          <Button variant="outline" onClick={() => void load()}>
             刷新状态
           </Button>
+          {!status && (
+            <span className="text-xs text-destructive">
+              状态未读到，已禁用保存（避免空表单覆盖现有配置）
+            </span>
+          )}
           {status && (
             <span className="text-xs text-muted-foreground">
               最近重载：{status.last_reload ? status.last_reload.replace("T", " ").slice(0, 19) : "—"}

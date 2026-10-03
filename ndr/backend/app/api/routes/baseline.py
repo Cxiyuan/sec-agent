@@ -36,13 +36,11 @@ def _detector_counters() -> dict[str, Any]:
         return {"alive": False}
     out: dict[str, Any] = {"alive": bool(raw)}
     for field, value in raw.items():
-        if field == "flush_at":
+        # Redis 里全是字符串，统一按数字解析；解不出来就原样回（别把 None 变成 0）
+        try:
             out[field] = int(float(value or 0))
-        else:
-            try:
-                out[field] = int(float(value or 0))
-            except (TypeError, ValueError):
-                out[field] = value
+        except (TypeError, ValueError):
+            out[field] = value
     return out
 
 
@@ -80,7 +78,11 @@ def baseline_profiles(
     limit: int = 50,
     offset: int = 0,
 ):
-    """账号/会话画像列表（按风险降序），可按 kind / 风险下限过滤。"""
+    """账号/会话画像列表（按风险降序），可按 kind / 风险下限过滤。
+
+    界面目前只画了 `GET /api/baseline` 总览里的 TOP 画像，这个列表接口还**没接前端**；
+    它是第 8 期交付时写进 `docs/ndr-redesign.md` 的对外只读能力，保留（未删）。
+    """
     kind_clean = kind.strip().lower() if kind else ""
     return profiles.list_profiles(
         kind=kind_clean if kind_clean in (profiles.ACCOUNT, profiles.SESSION) else None,
@@ -97,5 +99,8 @@ def baseline_stats(
     key: str = "",
     limit: int = 50,
 ):
-    """数值基线明细：给 IP 查它的全部维度，或给完整 key 查单个维度。"""
+    """数值基线明细：给 IP 查它的全部维度，或给完整 key 查单个维度。
+
+    同 `/profiles`：文档里的对外只读能力，尚未接前端，保留。
+    """
     return stats_mod.lookup(ip=ip, key=key, limit=max(1, min(int(limit or 50), 500)))

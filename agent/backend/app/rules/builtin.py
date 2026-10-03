@@ -557,13 +557,19 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-Web攻击（Wazuh规则组）",
-        "description": "Wazuh web/attack 规则组命中",
+        "description": "Wazuh web/attack 规则组或描述里带 SQL 注入特征（web_attack / wazuh_web_attack）",
         "source": "builtin",
         "priority": 10,
         "severity": "high",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_web_attack"}],
+            "rules": [
+                {
+                    "field": "event_type",
+                    "op": "in",
+                    "value": ["wazuh_web_attack", "web_attack"],
+                }
+            ],
         },
     },
     # ================= C. 探测 / 漏洞挖掘 =================
@@ -814,7 +820,7 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-扫描尝试连接",
-        "description": "Zeek 记录的扫描尝试（S0/S1/S2/S3 状态）",
+        "description": "Zeek 记录的扫描尝试（conn_state = S0：只发 SYN、没有任何回应）",
         "source": "builtin",
         "priority": 20,
         "severity": "low",
@@ -1197,7 +1203,7 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "dns"},
-                {"field": "qtype", "op": "in", "value": ["16", "TXT"]},
+                {"field": "qtype", "op": "in", "value": ["16"]},
             ],
         },
     },

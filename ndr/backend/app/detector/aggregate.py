@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from app.config import settings
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -21,6 +22,11 @@ _PREFIX = "shentong:agg"
 _DUE_KEY = "shentong:agg:due"
 _MAX_SAMPLES = 3
 _MAX_SET = 50
+# 满额降级：原来只 warning 一次就 return，命中被静默丢掉（QA 应修 6）。
+# 现在把丢弃写进 `settings.detector_drop_key` 的 agg_full 计数（跨重启可查），并限频告警。
+_DROP_TTL = 30 * 24 * 3600
+_FULL_LOG_INTERVAL = 60.0
+_last_full_log = 0.0
 
 
 def _agg_key(src_ip: str, rule: str, excluded: bool = False) -> str:
@@ -44,6 +50,8 @@ class Aggregator:
         self.r = client
         self.window = max(1, _to_int(window_seconds, 60))
         self.max_keys = max(1, _to_int(max_keys, 5000))
+        # 本实例累计「因聚合态满被丢弃的命中数」；权威计数在 Redis 的 detector_drop_key
+        self.dropped = 0
 
     def add(
         self,
@@ -58,12 +66,21 @@ class Aggregator:
         excluded: bool = False,
         exclude_reason: str = "",
         now: float | None = None,
-    ) -> None:
+    ) -> bool:
         """累计一次命中（含样例文档，供后续分析构造事件）。
+
+        返回是否真的聚合进去了：``False`` 表示聚合态数量已达上限、本条命中被丢弃
+        （调用方要计入 dropped_agg_full）。
 
         excluded=True：该命中被排除过滤命中 —— 仍会产出摘要并投递（事件要可查），
         但图内会跳过全部模型调用与报告。
+
+        并发说明（QA 应修 7）：``_load → 改 state → set`` 是读改写，不做 CAS；检测器同时
+        只有一个 leader 在跑（``leader.py`` 租约），双主重叠的窗口内本字段可能少计几次。
+        这里不引 Lua/RedisJSON 换取绝对原子性——计数偏小的代价远低于把热路径变成脚本调用；
+        真正要求准确的是下面 agg_full 的丢弃计数（用 HINCRBY，原子）。
         """
+        global _last_full_log
         ts = time.time() if now is None else now
         key = _agg_key(src_ip, rule, excluded)
         state = self._load(key)
@@ -98,12 +115,35 @@ class Aggregator:
 
         current = _to_int(self.r.zcard(_DUE_KEY), 0)
         if current >= self.max_keys and not self.r.zscore(_DUE_KEY, key):
-            log.warning("聚合态数量达上限 %d，本条直接丢弃聚合（降级）", self.max_keys)
-            return
+            self.dropped += 1
+            self._record_dropped()
+            now_ts = time.time()
+            if now_ts - _last_full_log >= _FULL_LOG_INTERVAL:
+                _last_full_log = now_ts
+                log.warning(
+                    "聚合态数量达上限 %d，本条命中直接丢弃聚合（降级）——本实例累计丢弃 %d 条，"
+                    "计数见 %s 的 agg_full",
+                    self.max_keys,
+                    self.dropped,
+                    settings.detector_drop_key,
+                )
+            return False
 
         ttl = self.window * 2 + 600
         self.r.set(key, json.dumps(state, ensure_ascii=False), ex=ttl)
         self.r.zadd(_DUE_KEY, {key: _to_float(state.get("first_seen_ts"), ts) + self.window})
+        return True
+
+    def _record_dropped(self) -> None:
+        """把「聚合满丢弃」写进权威丢弃计数（HINCRBY，跨重启可查）。"""
+        try:
+            self.r.hincrby(settings.detector_drop_key, "agg_full", 1)
+            self.r.hset(
+                settings.detector_drop_key, "last_dropped_at", datetime.now(UTC).isoformat()
+            )
+            self.r.expire(settings.detector_drop_key, _DROP_TTL)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("写入聚合满丢弃计数失败: %s", exc)
 
     def pop_due(self, now: float | None = None) -> list[dict[str, Any]]:
         """取出已到期的聚合摘要（并清理聚合态）。"""

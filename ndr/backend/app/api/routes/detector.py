@@ -15,7 +15,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
 from app.detector import health
-from app.detector.runner import rate_bucket
+from app.detector.runner import FAILED_KEY, PAUSED_KEY, rate_bucket
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -23,35 +23,80 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/detector", tags=["detector"])
 
 
+def _window_estimate(d_delivered: float, interval: float, window_seconds: float) -> float | None:
+    """把「最近一个统计区间的投递增量」折算成请求窗口内的投递量（QA 应修 4）。
+
+    这是 coverage 量纲对齐的核心：ES 侧数的是窗口内文档，分子也必须是窗口内增量。
+    ``interval<=0``（快照缺字段/旧格式）返回 None，让上层明确「算不出来」而不是拿 0 去比。
+    """
+    if interval <= 0:
+        return None
+    return max(0.0, float(d_delivered)) * (float(window_seconds) / float(interval))
+
+
+def _snapshot_stale(snapshot_age: float | None, interval: float) -> bool:
+    """统计快照是否已过期：超过两个统计区间、且至少 900 秒没更新。"""
+    if interval <= 0 or snapshot_age is None:
+        return False
+    return snapshot_age > max(2 * interval, 900.0)
+
+
 @router.get("/coverage")
 def detector_coverage(
     _: Annotated[User, Depends(get_current_user)],
     minutes: int = 60,
 ):
-    """漏报兑底率：窗口内 ES 命中文档数 vs 已落库事件数（含丢弃计数）。
+    """漏报兑底率：窗口内「已投递摘要数」vs 窗口内 ES 命中文档数（含丢弃计数）。
 
     语义：比率 <1 是正常的（策略跳过、聚合归并都会减少落库事件），看的是**趋势突变**
     （比率骤降 = 大批事件没进分析），所以同时返回容量性丢弃计数供对照。
+
+    量纲必须一致（QA 应修 4）：ES 侧是「窗口内」计数，分子也必须是窗口内增量。原来分子取
+    `shentong:detector:rates` 里的**累计** delivered —— 实机出现
+    `delivered_total=5 / es_docs=55251 → ratio 0.0 / warn=true` 的恒假警。
+    现在用最近一个统计区间的 `d_delivered` 折算出窗口增量；快照过期就明确标注、不下判警。
     """
     from datetime import UTC, datetime, timedelta
 
     from app.config import settings
 
-    since = datetime.now(UTC) - timedelta(minutes=max(5, min(int(minutes or 60), 1440)))
+    window_minutes = max(5, min(int(minutes or 60), 1440))
+    since = datetime.now(UTC) - timedelta(minutes=window_minutes)
+    window_seconds = window_minutes * 60.0
     out: dict[str, Any] = {"minutes": minutes, "since": since.isoformat()}
     # 已投递摘要数（ndr 视角的"进入分析"计数；事件组/案件口径在 agent 侧）
-    delivered_total: int = 0
+    delivered_total = 0
+    d_delivered = 0.0
+    interval = 0.0
+    snapshot_age: float | None = None
     try:
         import redis as _redis
 
         _c = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
         snap = _c.hgetall("shentong:detector:rates")
-        if isinstance(snap, dict) and snap.get("delivered"):
-            delivered_total = int(float(snap["delivered"]) or 0)
+        if isinstance(snap, dict):
+            delivered_total = int(float(snap.get("delivered") or 0))
+            d_delivered = float(snap.get("d_delivered") or 0)
+            interval = float(snap.get("interval_seconds") or 0)
+            if snap.get("ts"):
+                try:
+                    snapshot_age = datetime.now(UTC).timestamp() - float(snap["ts"])
+                except (TypeError, ValueError):
+                    snapshot_age = None
     except Exception:  # noqa: BLE001
         # Redis 不可用时回退 0（与 log.py 的 fail-open 回退同一套风格）
         delivered_total = 0
     out["delivered_total"] = delivered_total
+    out["delivered_interval"] = int(d_delivered)
+    out["interval_seconds"] = round(interval, 1) if interval > 0 else None
+    out["snapshot_age_seconds"] = round(snapshot_age, 1) if snapshot_age is not None else None
+    # 快照超过两个统计周期（且至少 900s）没更新 → 检测器可能已停，计数不可信
+    stale = _snapshot_stale(snapshot_age, interval)
+    out["stale"] = stale
+    delivered_window = _window_estimate(d_delivered, interval, window_seconds)
+    out["delivered_window_est"] = (
+        round(delivered_window, 1) if delivered_window is not None else None
+    )
     es_docs: int | None = None
     try:
         from app.ingestion import es_config
@@ -67,10 +112,20 @@ def detector_coverage(
     except Exception as exc:  # noqa: BLE001
         out["es_error"] = str(exc)[:200]
     out["es_docs"] = es_docs
-    if es_docs and delivered_total:
-        ratio = float(delivered_total) / float(es_docs)
+    if es_docs and delivered_window is not None and not stale:
+        ratio = float(delivered_window) / float(es_docs)
         out["coverage_ratio"] = round(ratio, 3)
         out["warn"] = ratio < float(settings.detector_coverage_warn_ratio)
+    elif stale:
+        # 快照过期时旧口径会算出 ratio≈0 的假警，这里明确说「不判警」而不是发一个假告警
+        out["coverage_ratio"] = None
+        out["warn"] = False
+        out["warn_reason"] = (
+            f"检测器统计快照已过期（{out['snapshot_age_seconds']}s 未更新），投递计数不可信，不判警"
+        )
+    else:
+        out["coverage_ratio"] = None
+        out["warn"] = False
     try:
         import redis
 
@@ -89,7 +144,9 @@ def detector_rate(
     """五段速率：入队 / 扫描 / 命中 / 投递 / 分析（哪一段窄，一眼可见）。
 
     健康形态：入队 ≈ 扫描 > 命中 > 投递 ≈ 分析。
-    入队速率用守恒关系推算：入队 = 扫描 + 队列增长（无需生产者埋点）。
+    入队速率用守恒关系推算：入队 ≈ 扫描 + 被裁剪（进了队但没被消费掉的事件）。
+    不含队列自身增长——接口拿不到上一时刻的队列深度做基线，所以这是**下界**估计，
+    不是原来注释里说的完整守恒（QA 应修 4 顺带修正的注释与实现不符）。
     """
     from datetime import UTC, datetime
 
@@ -125,8 +182,14 @@ def detector_rate(
         out["raw_trimmed_total"] = int(_num("raw_trimmed"))
         out["limit_saturated"] = int(_num("limit_saturated"))
         out["requeued_total"] = int(_num("requeued"))
-        # 入队速率（守恒）：扫描 + 裁剪 + 队列增长 ≈ 入队
-        out["ingest_per_sec_est"] = out["scanned_per_sec"]
+        # 静默降级/丢失的累计口径（未投递 / 处理失败 / 聚合满丢弃），必须可查
+        out["undelivered_total"] = int(_num("undelivered"))
+        out["failed_total"] = int(_num("failed"))
+        out["agg_full_total"] = int(_num("agg_full"))
+        # 入队速率（下界）：扫描 + 被裁剪（这些事件入过队但没被消费）
+        out["ingest_per_sec_est"] = round(
+            float(out["scanned_per_sec"]) + _num("raw_trimmed") / window, 1
+        )
     # 覆盖修正：用「区间增量 ÷ 区间秒数」算速率。
     # 原来用 ts-vs-now 反推窗口，检测器重启/刷新周期内窗口失真，曾算出
     # delivered_per_min=471（上限只有 20）这种不可能值。
@@ -145,6 +208,9 @@ def detector_rate(
         out["digests_per_min"] = round(_delta2("d_digest") / interval * 60.0, 1)
         out["delivered_per_min"] = round(_delta2("d_delivered") / interval * 60.0, 1)
         out["raw_trimmed_in_interval"] = int(_delta2("d_raw_trimmed"))
+        out["ingest_per_sec_est"] = round(
+            _delta2("d_scanned") / interval + _delta2("d_raw_trimmed") / interval, 1
+        )
     if snap.get("ts"):
         try:
             out["snapshot_age_seconds"] = round(
@@ -186,6 +252,12 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         "queue_raw": None,
         "queue_digest": None,
         "queue_processing": None,
+        # 处理失败被隔离的消息数（QA 必修 2）：原来这种消息被静默 ack 丢掉，看不见
+        "queue_failed": None,
+        # 配置里 detector_enabled=false 时检测器真的停了没有（QA 应修 5）：
+        # 过去界面显示"检测关闭"而进程照常消费/推送，现在以这个 Redis 标记为准
+        "paused": False,
+        "paused_since": None,
         "delivered_this_minute": None,
         "rate_limit_per_minute": settings.detector_max_digests_per_minute,
         "queue_max": settings.detector_queue_max,
@@ -218,6 +290,10 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
         out["queue_raw"] = int(client.llen(settings.detector_raw_queue))
         out["queue_digest"] = int(client.llen(settings.detector_digest_queue))
         out["queue_processing"] = int(client.llen(settings.detector_processing_queue))
+        out["queue_failed"] = int(client.llen(FAILED_KEY))
+        paused_raw = client.get(PAUSED_KEY)
+        out["paused"] = bool(paused_raw)
+        out["paused_since"] = str(paused_raw) if paused_raw else None
         out["delivered_this_minute"] = int(client.get(rate_bucket()) or 0)
         dropped = client.hgetall(settings.detector_drop_key)
         raw_dropped = dropped if isinstance(dropped, dict) else {}

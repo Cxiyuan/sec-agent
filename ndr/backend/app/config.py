@@ -7,6 +7,12 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: 出厂默认管理员口令（常量，不可配）。两个用途：
+#: ① 首次部署、且运维没有用 `ST_DEFAULT_ADMIN_PASSWORD` 覆盖时，用它建号；
+#: ② 判断「出厂默认口令是否还在用」——运维换过口令后库里的哈希就不再匹配这个常量
+#: （见 `app/api/deps.default_password_in_use`），界面与启动日志据此提示改密。
+FACTORY_ADMIN_PASSWORD = "admin123"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="ST_", extra="ignore")
@@ -27,9 +33,6 @@ class Settings(BaseSettings):
     es_retention_days: int = 30  # ES 日志保留天数（后台可改，下限 = 回溯封顶 7 天）
     lookback_max_days: int = 7  # 回溯最大天数（契约：ES 保留期下限 + agent 回溯时长封顶）
     es_ilm_policy: str = "shentong-retention"
-    # 归一化文档里的源/目的地址字段（可用逗号分隔多个；以 mapping 自检结果为准）
-    es_events_src_fields: str = "src_ip"
-    es_events_dst_fields: str = "dst_ip"
 
     # PostgreSQL
     pg_url: str = "postgresql+psycopg://shentong:shentong@localhost:5432/shentong"
@@ -66,7 +69,8 @@ class Settings(BaseSettings):
 
     # 误报治理（策略级）：判据集中在 triage_policy，全部环境无关、可后台调；两侧一致
     policy_internal_routine_skip: bool = True
-    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-文件传输可观测"]
+    # 按名跳过（名字必须与 app/rules/builtin.py 的 `Rule.name` 逐字一致，写错会静默无效）。
+    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-恶意文件传输"]
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True
@@ -107,7 +111,6 @@ class Settings(BaseSettings):
     web_login_path_regex: str = (
         "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
     )
-    max_logs_per_window: int = 20000  # 单窗口拉取上限（护栏）
     exclusion_cache_seconds: int = 30  # 过滤器配置缓存秒数（跨进程最迟这么久生效）
     ingest_filter_cache_seconds: int = 30  # 降噪过滤（入库前）配置缓存秒数
     ingest_filter_dry_run_hours: int = 24  # 试运行默认回看时长（小时）
@@ -117,7 +120,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_expire_minutes: int = 720
     default_admin_username: str = "admin"
-    default_admin_password: str = "admin123"
+    # 首次部署建号用的口令：运维可用环境变量 `ST_DEFAULT_ADMIN_PASSWORD` 覆盖
+    # （compose 里透传同名 env 即可），只在「库里还没有这个用户」时生效。
+    # 「出厂默认口令还在用」的判断不依赖本字段，而是比 FACTORY_ADMIN_PASSWORD。
+    default_admin_password: str = FACTORY_ADMIN_PASSWORD
 
     # 局域网部署（CORS 允许的前端源，逗号分隔）
     cors_origins: str = "http://localhost:3000,http://localhost:8080"
@@ -127,7 +133,7 @@ class Settings(BaseSettings):
     zeek_conf_dir: str = "/config"
     zeek_iface_conf: str = "/config/interface.conf"
     zeek_interfaces_json: str = "/config/interfaces.json"
-    zeek_interface: str = "eth0"
+    zeek_interface: str = "ens224"
     # 监控网段清单（一行一条 CIDR/IP，也可逗号分隔）：由它生成 bpf_filter 与 local_nets
     zeek_monitored_nets: str = ""
     # 追加到 BPF 末尾的附加条件（可选，如 not port 22）
@@ -163,8 +169,7 @@ class Settings(BaseSettings):
     detector_coverage_warn_ratio: float = 0.6
     detector_consume_batch: int = 1000
     # ---- 摘要压缩 ----
-    digest_suppress_hours: int = 0
-    digest_merge_family: bool = False
+    # （原 `digest_suppress_hours` / `digest_merge_family` 已删：全仓无人读取。）
     detector_digest_max_age_seconds: int = 1800
     detector_poll_timeout: int = 5
     detector_scope_refresh_seconds: int = 60
@@ -223,6 +228,7 @@ class Settings(BaseSettings):
     logstash_api_url: str = "http://logstash:9600"
     # 归一化服务 POST 归一化文档进来的 http 输入端口（不再是 beats）
     logstash_http_port: int = 8080
+    # 只关「写默认管道」；管道目录里多余文件的清理属不变式，始终会做（见 logstash.seed_if_missing）
     logstash_seed_on_startup: bool = True
     logstash_pipeline_max_chars: int = 50000
 

@@ -171,7 +171,13 @@ FIELDS: dict[str, dict[str, Any]] = {
     "tls_version": {"path": "tls_version", "kind": "keyword", "desc": "TLS 版本"},
     "cert_issuer": {"path": "cert_issuer", "kind": "text", "desc": "证书签发者"},
     # ---------- DNS ----------
-    "qtype": {"path": "qtype", "kind": "keyword", "desc": "查询类型 A/AAAA/TXT…"},
+    # 存的是 Zeek dns.log 的原始数字码，不是类型名（实机聚合出来的就是 1/28/16/32）。
+    # 别按“值是 A/AAAA/TXT”去写过滤条件——那样永远查不到。
+    "qtype": {
+        "path": "qtype",
+        "kind": "keyword",
+        "desc": "DNS 查询类型的数字码：1=A、28=AAAA、16=TXT、32=SRV…（Zeek 原值，不是类型名）",
+    },
     # ---------- 文件 ----------
     "filename": {"path": "filename", "kind": "text", "desc": "文件名"},
     "mime_type": {"path": "mime_type", "kind": "keyword", "desc": "文件类型"},
@@ -190,8 +196,8 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "file_is_orig": {
         "path": "file_is_orig",
-        "kind": "keyword",
-        "desc": "文件方向：true=客户端上传，false=服务端下发",
+        "kind": "bool",
+        "desc": "文件方向：true=客户端上传，false=服务端下发（ES 里是 boolean 类型）",
     },
     "extracted": {
         "path": "extracted",
@@ -303,14 +309,6 @@ AGG_FIELDS: tuple[str, ...] = (
 
 _mapping_cache: dict[str, tuple[float, dict[str, str]]] = {}
 _MAPPING_TTL = 1800.0
-
-
-def field_names() -> list[str]:
-    return sorted(FIELDS)
-
-
-def spec(name: str) -> dict[str, Any] | None:
-    return FIELDS.get(name)
 
 
 def resolve(name: str) -> str | None:
@@ -433,17 +431,6 @@ def available_fields(index: str) -> dict[str, str]:
             continue
         out[name] = path
     return out
-
-
-def catalog_text(index: str, *, max_chars: int = 2600) -> str:
-    """给模型看的字段清单（紧凑文本，超长截断）。"""
-    fields = available_fields(index)
-    lines = [f"【NDR 统一事件】索引 {index}"]
-    for name in sorted(fields):
-        item = FIELDS[name]
-        lines.append(f"- {name}({item['kind']}): {item['desc']}")
-    text = "\n".join(lines)
-    return text[:max_chars]
 
 
 def agg_fields(index: str) -> list[str]:

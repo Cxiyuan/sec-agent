@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
 import { ApiError, apiFetch, errorText, type RuleItem } from "@/lib/api";
+import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
   ConditionEditor,
   RULE_FIELDS,
@@ -15,6 +16,9 @@ import {
   condsToRules,
   type Cond,
 } from "@/components/condition-editor";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = { list: "规则列表（/api/rules）" } as const;
 
 function ruleType(r: RuleItem): string {
   const c = (r.conditions || {}) as { mode?: string; key?: string[]; min_count?: number };
@@ -25,8 +29,10 @@ function ruleType(r: RuleItem): string {
 }
 
 export default function RulesPage() {
+  const errs = usePanelErrors();
   const [rules, setRules] = React.useState<RuleItem[]>([]);
   const [msg, setMsg] = React.useState("");
+  const [deleting, setDeleting] = React.useState("");
   const [name, setName] = React.useState("");
   const [severity, setSeverity] = React.useState("medium");
   const [priority, setPriority] = React.useState("100");
@@ -37,12 +43,12 @@ export default function RulesPage() {
   const [minCount, setMinCount] = React.useState("10");
 
   async function load() {
-    const d = await apiFetch<{ items: RuleItem[] }>("/api/rules");
-    setRules(d.items);
+    await loadInto(errs, SRC.list, "/api/rules", (d: { items: RuleItem[] }) => setRules(d.items));
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function setCond(i: number, patch: Partial<Cond>) {
@@ -84,7 +90,7 @@ export default function RulesPage() {
       setName("");
       setConds([{ field: "event_type", op: "eq", value: "" }]);
       setMsg("已添加");
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "添加失败");
     }
@@ -103,9 +109,28 @@ export default function RulesPage() {
           priority: r.priority,
         }),
       });
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "更新失败");
+    }
+  }
+
+  /** 删除用户自建规则（内置规则后端会拒，界面直接不给按钮）。 */
+  async function remove(r: RuleItem) {
+    if (r.source === "builtin") return;
+    if (!window.confirm(`删除规则「${r.name}」？删掉就没了，不能撤销（只想临时停用请点「禁用」）。`)) {
+      return;
+    }
+    setMsg("");
+    setDeleting(r.id);
+    try {
+      await apiFetch(`/api/rules/${r.id}`, { method: "DELETE" });
+      setMsg(`已删除「${r.name}」`);
+      await load();
+    } catch (e) {
+      setMsg(e instanceof ApiError ? errorText(e.body) : "删除失败");
+    } finally {
+      setDeleting("");
     }
   }
 
@@ -115,6 +140,9 @@ export default function RulesPage() {
       <main className="ml-56 p-6">
         <h1 className="mb-4 text-2xl font-bold">规则配置</h1>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
+        <div className="mb-3">
+          <PanelError errors={errs} />
+        </div>
 
         <Card className="mb-4">
           <CardHeader>
@@ -233,12 +261,32 @@ export default function RulesPage() {
                     <TableCell>{r.priority}</TableCell>
                     <TableCell>{r.enabled ? "启用" : "禁用"}</TableCell>
                     <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => toggle(r)}>
-                        {r.enabled ? "禁用" : "启用"}
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => toggle(r)}>
+                          {r.enabled ? "禁用" : "启用"}
+                        </Button>
+                        {r.source !== "builtin" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            disabled={deleting === r.id}
+                            onClick={() => void remove(r)}
+                          >
+                            {deleting === r.id ? "删除中…" : "删除"}
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
+                {rules.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      {emptyOrFailed(errs, SRC.list, "还没有规则（上面可以新建一条）")}
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </CardContent>

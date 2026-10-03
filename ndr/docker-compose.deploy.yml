@@ -9,7 +9,8 @@
 #   - ES 的日志索引（agent 经 NDR 的 MCP 服务 8090/mcp 取数，不直连）
 #
 # 采集链路（第 2 期起，归一化前置）：
-#   Zeek/Wazuh 的 Filebeat --LPUSH--> shentong:events:collect
+#   Zeek/Wazuh 的 Filebeat --RPUSH--> shentong:events:collect
+#     （Filebeat 的 redis output 在 data_type=list 下用 RPUSH，实测+官方文档；队列左旧右新）
 #     → normalizer 取出并拍平成统一结构
 #         ├ LPUSH --> shentong:events:raw（detector 实时消费）
 #         └ POST  --> logstash:8080（http 输入）→ ES 统一索引 shentong-events-<日期>
@@ -191,10 +192,13 @@ services:
       - NET_RAW
       - NET_ADMIN
     environment:
+      # 与其它服务一致的北京时间（容器内有 tzdata，实测 TZ=Asia/Shanghai 生效）：
+      # 轮转归档的日期戳、清理窗口与日志时间都按北京时区，不再比北京时间晚 8 小时换日。
+      TZ: Asia/Shanghai
       ZEEK_CONF_DIR: /config
-      ZEEK_IFACE_CONF: /config/interface.conf
-      ZEEK_INTERFACES_JSON: /config/interfaces.json
       ZEEK_LOG_DIR: /logs
+      # 缺省网卡必须与 ndr/zeek/entrypoint.sh 的 IFACE_DEFAULT 一致；
+      # 实际部署在 .env 里显式设置（本机 .env: ZEEK_IFACE=ens160）。
       ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
       # 采集侧发 Redis 采集队列（host 网络下用宿主地址）。
       # 必须与上面 redis 服务的 REDIS_BIND 指向同一个可访问地址：两者都留默认

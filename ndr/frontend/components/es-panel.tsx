@@ -13,33 +13,45 @@ import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = {
+  config: "ES 连接配置（/api/es/config）",
+  status: "ES 状态（/api/es/status）",
+} as const;
 
 /** ES 管理：连接配置 / 保留期（ILM）/ 状态。 */
 export function EsPanel() {
+  const errs = usePanelErrors();
   const [cfg, setCfg] = React.useState<EsConfigInfo | null>(null);
   const [status, setStatus] = React.useState<EsStatus | null>(null);
   const [url, setUrl] = React.useState("");
   const [user, setUser] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [clearPassword, setClearPassword] = React.useState(false);
   const [eventsIndex, setEventsIndex] = React.useState("");
   const [retention, setRetention] = React.useState("30");
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
   async function load() {
-    const d = await apiFetch<EsConfigInfo>("/api/es/config");
-    setCfg(d);
-    setUrl(d.url);
-    setUser(d.username || "");
-    setEventsIndex(d.events_index || "");
-    setRetention(String(d.retention_days));
-    apiFetch<EsStatus>("/api/es/status")
-      .then(setStatus)
-      .catch(() => setStatus(null));
+    errs.reset();
+    await Promise.all([
+      loadInto(errs, SRC.config, "/api/es/config", (d: EsConfigInfo) => {
+        setCfg(d);
+        setUrl(d.url);
+        setUser(d.username || "");
+        setEventsIndex(d.events_index || "");
+        setRetention(String(d.retention_days));
+      }),
+      loadInto(errs, SRC.status, "/api/es/status", setStatus),
+    ]);
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function save() {
@@ -51,15 +63,18 @@ export function EsPanel() {
         body: JSON.stringify({
           url,
           username: user,
-          // 留空表示不改密码
-          password: password || undefined,
+          // 不传（undefined）= 不改动；"" / clear_password = 清掉已保存的密码
+          // （后端会删掉库内覆盖值，于是回落到环境变量 ES_PASSWORD）
+          password: clearPassword ? "" : password || undefined,
+          clear_password: clearPassword,
           events_index: eventsIndex,
           retention_days: Number(retention) || undefined,
         }),
       });
       setPassword("");
+      setClearPassword(false);
       setMsg("已保存（分析链路即时生效）");
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
     } finally {
@@ -94,7 +109,7 @@ export function EsPanel() {
       setMsg(
         `已下发 ILM：策略 ${r.policy}，保留 ${r.retention_days} 天；模板 ${r.templates.join(", ")}`
       );
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "下发失败");
     } finally {
@@ -113,6 +128,7 @@ export function EsPanel() {
       </CardHeader>
       <CardContent className="space-y-3">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         <div className="grid grid-cols-3 gap-3">
           <div>
@@ -130,9 +146,26 @@ export function EsPanel() {
             <Input
               type="password"
               value={password}
+              disabled={clearPassword}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="留空则不修改"
+              placeholder={clearPassword ? "保存后密码被清空" : "留空则不修改"}
             />
+            {/* 后端约定：不传或者传 undefined = 不改动、传 "" = 清空。光留空没法表达「清空」。 */}
+            {cfg?.password_set && (
+              <span className="mt-1 flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={clearPassword}
+                  onChange={(e) => setClearPassword(e.target.checked)}
+                />
+                <span className="text-destructive">清除已保存的密码（保存后生效）</span>
+              </span>
+            )}
+            {clearPassword && (
+              <span className="mt-1 block text-xs text-muted-foreground">
+                注意：如果密码是环境变量（ES_PASSWORD）给的，清空数据库里的覆盖值后会回落到环境变量那个值。
+              </span>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
@@ -154,20 +187,31 @@ export function EsPanel() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={save} disabled={busy}>
+          {/* 配置没读到就禁止保存：空表单点保存会把地址/索引模式覆盖掉 */}
+          <Button onClick={save} disabled={busy || !cfg}>
             保存连接配置
           </Button>
-          <Button variant="outline" onClick={test} disabled={busy}>
+          <Button variant="outline" onClick={test} disabled={busy || !url}>
             测试连接
           </Button>
           <Button variant="secondary" onClick={applyRetention} disabled={busy}>
             下发保留策略（ILM）
           </Button>
-          <Button variant="outline" onClick={() => load()}>
+          <Button variant="outline" disabled={busy} onClick={() => void load()}>
             刷新状态
           </Button>
+          {!cfg && (
+            <span className="self-center text-xs text-destructive">
+              配置未读到，已禁用保存（避免空表单覆盖现有配置）
+            </span>
+          )}
         </div>
 
+        {!status && errs.isFailed(SRC.status) && (
+          <p className="text-xs text-muted-foreground">
+            下面的集群信息空着是因为状态没读到，不代表 ES 里没有数据。
+          </p>
+        )}
         {status && (
           <div className="space-y-2 rounded-md border p-3 text-xs">
             <p className="flex items-center gap-2">
@@ -213,7 +257,11 @@ export function EsPanel() {
                 {status.indices.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-muted-foreground">
-                      暂无匹配索引（检查索引模式或数据是否已入 ES）
+                      {emptyOrFailed(
+                        errs,
+                        SRC.status,
+                        "暂无匹配索引（检查索引模式或数据是否已入 ES）"
+                      )}
                     </TableCell>
                   </TableRow>
                 )}

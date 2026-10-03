@@ -25,6 +25,14 @@ import {
   type IngestFilterSample,
   type RuleConditions,
 } from "@/lib/api";
+import { emptyOrFailed, loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
+import { condValueLabel } from "@/lib/qtype";
+
+/** 读取失败的接口名（错误条与空态用）。 */
+const SRC = {
+  list: "降噪过滤列表（/api/ingest-filters）",
+  fields: "可选字段与示例（/api/ingest-filters/fields）",
+} as const;
 
 /** 条件摘要文本（嵌套条件组用文字标出，避免“看着像扁平条件”的误解）。 */
 function condSummary(c: RuleConditions | undefined): string {
@@ -34,8 +42,8 @@ function condSummary(c: RuleConditions | undefined): string {
   return rules
     .map((r) => {
       if (r.logic || r.rules) return "（嵌套条件组）";
-      const value = Array.isArray(r.value) ? r.value.join(",") : (r.value ?? "");
-      return `${r.field ?? "-"} ${r.op ?? "-"} ${String(value)}`.trim();
+      // qtype 落库是数字码，摘要里翻成人读（16 → TXT（16））
+      return `${r.field ?? "-"} ${r.op ?? "-"} ${condValueLabel(r.field, r.value)}`.trim();
     })
     .join(logic);
 }
@@ -79,25 +87,34 @@ export function IngestFiltersPanel() {
   const [limit, setLimit] = React.useState("200");
   const [dry, setDry] = React.useState<IngestDryRunResult | null>(null);
   const [dryBusy, setDryBusy] = React.useState(false);
+  const errs = usePanelErrors();
 
   async function load() {
-    const list = await apiFetch<{
-      items: IngestFilterItem[];
-      last_hit_at: string | null;
-    }>("/api/ingest-filters");
-    setItems(list.items);
-    setLastHitAt(list.last_hit_at);
+    await loadInto(
+      errs,
+      SRC.list,
+      "/api/ingest-filters",
+      (list: { items: IngestFilterItem[]; last_hit_at: string | null }) => {
+        setItems(list.items);
+        setLastHitAt(list.last_hit_at);
+      },
+    );
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
-    apiFetch<IngestFilterFields>("/api/ingest-filters/fields")
-      .then((f) => {
-        setFields(f.fields.length ? f.fields : RULE_FIELDS);
-        setExamples(f.examples || []);
-        setHint(f.hint || "");
-      })
-      .catch(() => {});
+    void (async () => {
+      errs.reset();
+      await Promise.all([
+        load(),
+        loadInto(errs, SRC.fields, "/api/ingest-filters/fields", (f: IngestFilterFields) => {
+          setFields(f.fields.length ? f.fields : RULE_FIELDS);
+          setExamples(f.examples || []);
+          setHint(f.hint || "");
+        }),
+      ]);
+    })();
+    // 只在挂载时读一次；load 内部自己收错误
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function reset() {
@@ -213,7 +230,7 @@ export function IngestFiltersPanel() {
         method: "PUT",
         body: JSON.stringify({ ...f, enabled: !f.enabled }),
       });
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "更新失败");
     }
@@ -223,7 +240,7 @@ export function IngestFiltersPanel() {
     try {
       await apiFetch(`/api/ingest-filters/${f.id}`, { method: "DELETE" });
       if (editId === f.id) reset();
-      load();
+      void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "删除失败");
     }
@@ -242,6 +259,7 @@ export function IngestFiltersPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
         {hint && !msg && <p className="text-xs text-muted-foreground">{hint}</p>}
 
         <div className="space-y-3 rounded-md border p-3">
@@ -411,7 +429,7 @@ export function IngestFiltersPanel() {
             {!items.length && (
               <TableRow>
                 <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                  暂无降噪过滤（检测器会看到全部事件）
+                  {emptyOrFailed(errs, SRC.list, "暂无降噪过滤（检测器会看到全部事件）")}
                 </TableCell>
               </TableRow>
             )}

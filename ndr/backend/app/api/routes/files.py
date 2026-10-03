@@ -68,28 +68,33 @@ def resolve_extract_path(extract_dir: str | os.PathLike[str], extracted: str) ->
     return path
 
 
-def _search_fuid(fuid: str, *, require_extracted: bool) -> dict[str, Any] | None:
-    """按 fuid 查一条最新的事件（``require_extracted`` 时只认有提取件的文档）。"""
+def _latest_docs(fuid: str, *, size: int = 5) -> list[dict[str, Any]]:
+    """按 fuid 查最新的若干条事件（``@timestamp`` 降序）。
+
+    **不在这里用 ES 的 `exists` 查 `extracted`**：归一化文档里所有字符串字段默认是空串
+    （不是缺字段），`exists` 因此几乎恒真 —— 实机量过：`exists ja4` 命中全量 5.7 万条，
+    而真正有值的只有 263 条。「有没有提取件」改成在取回的文档上判空串（见 `_has_extracted`），
+    与 mapping 无关、不会随字段类型漂移。
+    """
     from app.ingestion import es_config
     from app.ingestion.es_client import get_es
-
-    filters: list[dict[str, Any]] = [{"match": {"fuid": fuid}}]
-    if require_extracted:
-        filters.append({"exists": {"field": "extracted"}})
 
     cfg = es_config.current()
     pattern = str(cfg.get("es.events_index") or settings.es_events_index)
     resp = get_es().search(
         index=pattern,
-        query={"bool": {"filter": filters}},
+        query={"match": {"fuid": fuid}},
         sort=[{"@timestamp": {"order": "desc"}}],
-        size=1,
+        size=size,
         source_includes=list(_SOURCE_FIELDS),
     )
     hits = (resp.get("hits") or {}).get("hits") or []
-    if not hits:
-        return None
-    return hits[0].get("_source") or {}
+    return [hit.get("_source") or {} for hit in hits if isinstance(hit, dict)]
+
+
+def _has_extracted(doc: dict[str, Any]) -> bool:
+    """这条事件是不是真的有提取件（`extracted` 非空串）。"""
+    return bool(str(doc.get("extracted") or "").strip())
 
 
 @router.get("/{fuid}")
@@ -97,20 +102,24 @@ def download_extracted_file(
     fuid: str,
     _: Annotated[User, Depends(get_current_user)],
 ) -> FileResponse:
-    """下载某个 fuid 的提取件（需登录）。"""
+    """下载某个 fuid 的提取件（需登录）。
+
+    **这是给智能体取证用的下载入口**（第 12 期约定的对外能力）：智能体在分析事件时
+    拿到 fuid 就能取回文件本体，不要当死路由删掉。同时前端也能用同一个 URL。
+    """
     if not _FUID_RE.match(fuid):
         raise HTTPException(status_code=400, detail="fuid 格式不合法")
 
     try:
-        doc = _search_fuid(fuid, require_extracted=True)
-        if doc is None:
-            exists = _search_fuid(fuid, require_extracted=False) is not None
-            if exists:
-                raise HTTPException(
-                    status_code=404,
-                    detail="该文件没有提取件（来源不是 HTTP/FTP 明文，或未开启文件提取）",
-                )
+        docs = _latest_docs(fuid)
+        if not docs:
             raise HTTPException(status_code=404, detail="事件库里没有这个文件（fuid）")
+        doc = next((d for d in docs if _has_extracted(d)), None)
+        if doc is None:
+            raise HTTPException(
+                status_code=404,
+                detail="该文件没有提取件（来源不是 HTTP/FTP 明文，或未开启文件提取）",
+            )
     except HTTPException:
         raise
     except Exception as exc:  # ES 不可用 / 索引缺失等
@@ -119,7 +128,9 @@ def download_extracted_file(
     path = resolve_extract_path(settings.extract_dir, str(doc.get("extracted") or ""))
     if path is None:
         raise HTTPException(status_code=400, detail="提取件字段不合法（未通过路径校验）")
-    if path.is_symlink() or not path.is_file():
+    # 这里不用再判 is_symlink：resolve_extract_path() 已经 realpath 过，父目录不是提取根
+    # （含指向根外的符号链接）一律提前返回 None。
+    if not path.is_file():
         raise HTTPException(
             status_code=404,
             detail="提取件已被清理（非白名单类型或超出容量上限，见 ndr/zeek/extract_cleanup.py）",

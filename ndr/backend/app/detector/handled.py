@@ -11,8 +11,8 @@ TTL 永远被刷新 → 集合无上限增长。线上实测该键涨到 **1677 
 所以现在的设计是「三重有界」：
 1. 按 `bucket_seconds` 分桶，桶自身的 TTL 到期就整桶消失（不会互相续命）；
 2. 单桶成员硬上限 `max_members`，超限丢弃登记并计数/告警（**绝不静默**）；
-3. 判定只看覆盖 TTL 的那几个桶，语义不变（旧桶过期后会重复分析，由投递前去重与
-   摘要超龄两道闸门兜住，代价可接受）。
+3. 判定只看覆盖 TTL 的那几个桶，语义不变（旧桶过期后会重复分析；**投递前去重**已随第 5 期
+   退役，现在兜底的是「摘要超龄丢弃」与智能体侧按事件组指纹吸收重复，代价可接受）。
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class HandledRegistry:
                     self.skipped += dropped
                     log.warning(
                         "已处理登记单桶达上限 %d，丢弃 %d 条登记（这些文档兜底时会重复分析）——"
-                        "若频繁出现请下调流量或提高 detchandled 上限",
+                        "若频繁出现请下调流量或提高 detector_handled_max_members 上限",
                         self.max_members,
                         dropped,
                     )
@@ -131,20 +131,3 @@ class HandledRegistry:
         except Exception as exc:  # noqa: BLE001
             log.debug("查询已处理登记失败（按未处理转发）: %s", exc)
             return False
-
-    def filter_unhandled(self, hashes: list[str], now: float | None = None) -> list[bool]:
-        """批量判定：返回与输入等长的布尔表（True=未处理过，需要兜底分析）。"""
-        if not hashes:
-            return []
-        keys = self._keys(now)
-        pipe = self.r.pipeline()
-        for h in hashes:
-            for k in keys:
-                pipe.sismember(k, h)
-        values = pipe.execute()
-        span = len(keys)
-        out: list[bool] = []
-        for i in range(len(hashes)):
-            chunk = values[i * span : (i + 1) * span]
-            out.append(not any(bool(v) for v in chunk))
-        return out

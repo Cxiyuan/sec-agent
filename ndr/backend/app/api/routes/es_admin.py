@@ -21,19 +21,13 @@ from app.db.base import get_db
 from app.db.models import SystemConfig, User
 from app.ingestion import es_config
 from app.ingestion.es_client import get_es
-from app.ingestion.es_schema import clear_cache as clear_ip_field_cache
 
 router = APIRouter(prefix="/api/es", tags=["es"])
 
 logger = logging.getLogger(__name__)
 
-CONFIG_KEYS = (
-    "es.url",
-    "es.username",
-    "es.password",
-    "es.events_index",
-    "es.retention_days",
-)
+# 可被后台覆盖的键名单一来源 = `app.ingestion.es_config.RUNTIME_KEYS`
+# （这里原先有一份复制出来的 `CONFIG_KEYS`，谁都没读，已删；加键请改 es_config）。
 
 # 默认索引模板：模式 -> 模板名（归一化后只有一族索引）
 TEMPLATES = {
@@ -44,7 +38,11 @@ TEMPLATES = {
 class EsConfigIn(BaseModel):
     url: str | None = None
     username: str | None = None
+    #: 不传（null）= 保留原值；传空串 = **清空**（与 Wazuh 配置同一口径：空串在
+    #: `es_config` 里等于「没有覆盖」，所以清空必须表现为删掉那行覆盖值）。
     password: str | None = None
+    #: 与「传空串」等价，供明确表达意图用（界面上「清空密码」勾选它或发空串都行）
+    clear_password: bool = False
     events_index: str | None = None
     retention_days: int | None = None
 
@@ -69,6 +67,22 @@ def _mask(cfg: dict[str, str]) -> dict[str, Any]:
 @router.get("/config")
 def get_config(_: Annotated[User, Depends(get_current_user)]):
     return _mask(es_config.current())
+
+
+def _sync_logstash_es_host(db: Session, cfg: dict[str, str]) -> dict[str, Any]:
+    """把 ES 连接地址同步进 Logstash 管道参数（实现见 `logstash.sync_es_endpoint`）。
+
+    为什么要同步：写路径（Logstash 的 `elasticsearch { hosts => [...] }`）与读路径
+    （`es_config.current()`）各存一份地址，只改一边就会出现「采集有数但界面查不到」
+    或反过来的假故障。
+    """
+    from app.api.routes.logstash import sync_es_endpoint
+
+    try:
+        return sync_es_endpoint(db, str(cfg.get("es.url") or ""))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("同步 Logstash 管道的 ES 地址失败：%s", exc)
+        return {"action": "error", "detail": str(exc)[:200]}
 
 
 @router.put("/config")
@@ -105,19 +119,41 @@ def update_config(
             str(body.retention_days) if body.retention_days is not None else None
         ),
     }
+    changed: set[str] = set()
     for key, value in pairs.items():
         if value is None:
             continue
+        if key == "es.password" and value == "":
+            continue  # 空串=清空，交给下面的 clear_password 分支（避免写一行空值自相矛盾）
         row = db.get(SystemConfig, key)
         if row is None:
             row = SystemConfig(key=key, value={})
             db.add(row)
         row.value = {"value": value}
+        changed.add(key)
+    if body.clear_password or body.password == "":
+        # 删掉覆盖值 → 回落到环境变量默认。传空串做不到「保留」的语义：es_config 读的
+        # 时候把空值当作「没有覆盖」，所以「清空」必须表现为删行。
+        row = db.get(SystemConfig, "es.password")
+        if row is not None:
+            db.delete(row)
+        changed.add("es.password")
     db.commit()
     es_config.invalidate()
-    # 连接/索引变了，之前探测的 IP 字段类型（30 分钟缓存）可能指向旧集群，必须清掉
-    clear_ip_field_cache()
-    return _mask(es_config.current())
+    # 注：原先这里还清一次「IP 字段类型 30 分钟缓存」（es_schema.clear_cache），
+    # 但那条链（es_schema.get_ip_fields）全仓没有调用点，属死代码，一并删掉这次调用；
+    # 若将来恢复该缓存，改配置后必须重新在这里失效。
+    cfg_now = es_config.current()
+    out: dict[str, Any] = dict(_mask(cfg_now))
+    out["changed"] = sorted(changed)
+    if "es.url" in changed:
+        out["logstash"] = _sync_logstash_es_host(db, cfg_now)
+    if "es.events_index" in changed:
+        out["logstash_index_hint"] = (
+            "这里改的是**查询**索引模式（如 shentong-events-*）；写侧按天滚动的索引名"
+            "（shentong-events-%{+yyyy.MM.dd}）在「采集 → Logstash 管道」里配，不会自动跟着改。"
+        )
+    return out
 
 
 @router.post("/test")
@@ -130,7 +166,10 @@ def test_connection(
         if body and body.url:
             from elasticsearch import Elasticsearch
 
-            auth = (body.username, body.password or "") if body.username else None
+            # 界面拿不到已存密码（GET /config 只回 password_set），所以 body 里没带密码时
+            # 回落库里/env 的现值，否则「不改密码只点测试」会假报鉴权失败。
+            password = body.password or str(es_config.current().get("es.password") or "")
+            auth = (body.username, password) if body.username else None
             probe = Elasticsearch(
                 body.url,
                 basic_auth=auth,

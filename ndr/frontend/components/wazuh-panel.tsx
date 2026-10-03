@@ -14,6 +14,13 @@ import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { PanelError, loadInto, emptyOrFailed, usePanelErrors } from "@/components/panel-error";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = {
+  main: "Wazuh 配置与状态（/api/wazuh）",
+  rules: "自定义规则文件列表（/api/wazuh/rules）",
+} as const;
 
 const TEXTAREA_CLS =
   "h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs";
@@ -34,10 +41,12 @@ const RULE_TEMPLATE = `<!-- 深瞳：本地自定义告警规则（id 请用 100
  * 的告警与原始日志条数：两者都长期为 0 就说明 Filebeat 那一跳没配好。
  */
 export function WazuhPanel() {
+  const errs = usePanelErrors();
   const [data, setData] = React.useState<WazuhPayload | null>(null);
   const [url, setUrl] = React.useState("");
   const [user, setUser] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [clearPassword, setClearPassword] = React.useState(false);
   const [verifyTls, setVerifyTls] = React.useState(false);
   const [rules, setRules] = React.useState<WazuhRulesPayload | null>(null);
   const [ruleFile, setRuleFile] = React.useState("local_rules.xml");
@@ -51,26 +60,30 @@ export function WazuhPanel() {
     setUrl(d.config.url);
     setUser(d.config.user);
     setPassword("");
+    setClearPassword(false);
     setVerifyTls(d.config.verify_tls);
   }, []);
 
+  /** 后端约定：null = 不改动、"" = 清空。光靠输入框留空没法表达「清空」。 */
+  function passwordPayload(): string | null {
+    if (clearPassword) return "";
+    return password === "" ? null : password;
+  }
+
   async function load() {
-    const d = await apiFetch<WazuhPayload>("/api/wazuh");
-    apply(d);
+    await loadInto(errs, SRC.main, "/api/wazuh", apply);
   }
 
   async function loadRules() {
-    try {
-      setRules(await apiFetch<WazuhRulesPayload>("/api/wazuh/rules"));
-    } catch {
-      setRules(null);
-    }
+    await loadInto(errs, SRC.rules, "/api/wazuh/rules", setRules);
   }
 
   React.useEffect(() => {
-    load()
-      .then(() => loadRules())
-      .catch(() => setData(null));
+    void (async () => {
+      errs.reset();
+      await load();
+      await loadRules();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -83,8 +96,8 @@ export function WazuhPanel() {
         body: JSON.stringify({
           url,
           user,
-          // 空串 = 不改动已保存的密码（要换密码才填）
-          password: password === "" ? null : password,
+          // null = 不改动已保存的密码；"" = 清空（勾了「清除」开关才会发空串）
+          password: passwordPayload(),
           verify_tls: verifyTls,
         }),
       });
@@ -106,7 +119,7 @@ export function WazuhPanel() {
         body: JSON.stringify({
           url,
           user,
-          password: password === "" ? null : password,
+          password: passwordPayload(),
           verify_tls: verifyTls,
         }),
       });
@@ -159,6 +172,7 @@ export function WazuhPanel() {
       </CardHeader>
       <CardContent className="space-y-3">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         {cfg && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
@@ -192,9 +206,22 @@ export function WazuhPanel() {
             <Input
               value={password}
               type="password"
-              placeholder={cfg?.password_set ? "留空 = 保持不变" : "管理员密码"}
+              disabled={clearPassword}
+              placeholder={
+                clearPassword ? "保存后密码被清空" : cfg?.password_set ? "留空 = 保持不变" : "管理员密码"
+              }
               onChange={(e) => setPassword(e.target.value)}
             />
+            {cfg?.password_set && (
+              <span className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  checked={clearPassword}
+                  onChange={(e) => setClearPassword(e.target.checked)}
+                />
+                <span className="text-destructive">清除已保存的密码（保存后生效）</span>
+              </span>
+            )}
           </label>
           <label className="flex items-center gap-2 pt-5 text-xs">
             <input
@@ -207,7 +234,8 @@ export function WazuhPanel() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy} onClick={save}>
+          {/* 配置没读到就禁止保存：空表单点保存会把地址/开关覆盖掉 */}
+          <Button size="sm" disabled={busy || !data} onClick={save}>
             保存
           </Button>
           <Button size="sm" variant="outline" disabled={busy || !url} onClick={test}>
@@ -218,12 +246,20 @@ export function WazuhPanel() {
             variant="ghost"
             disabled={busy}
             onClick={() => {
-              load().catch(() => setData(null));
-              void loadRules();
+              void (async () => {
+                errs.reset();
+                await load();
+                await loadRules();
+              })();
             }}
           >
             刷新
           </Button>
+          {!data && (
+            <span className="self-center text-xs text-destructive">
+              配置未读到，已禁用保存（避免空表单覆盖现有配置）
+            </span>
+          )}
         </div>
 
         {st && (
@@ -235,8 +271,9 @@ export function WazuhPanel() {
               在线 {st.agents.active} / 断开 {st.agents.disconnected}
             </span>
             {st.agents.never_connected > 0 && <span>从未连接 {st.agents.never_connected}</span>}
-            <span>近 24h 入库：告警 {ing?.alerts ?? 0} 条</span>
-            <span>原始日志 {ing?.archives ?? 0} 条</span>
+            {/* 读 ES 失败时不能拿 0 冒充「一条都没有」 */}
+            <span>近 24h 入库：告警 {ing?.error ? "未读到" : (ing?.alerts ?? 0)} 条</span>
+            <span>原始日志 {ing?.error ? "未读到" : (ing?.archives ?? 0)} 条</span>
             <span className="text-muted-foreground">最近一条 {ing?.last_at || "—"}</span>
             {ing?.error ? <span className="text-destructive">读 ES 失败：{ing.error}</span> : null}
           </div>
@@ -280,6 +317,15 @@ export function WazuhPanel() {
           </div>
         )}
 
+        {data && data.agents.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            Agent 清单是空的：
+            {connected
+              ? "manager 上没有注册任何 Agent"
+              : "API 没连通时读不到清单（看上面状态行的 detail）"}
+          </p>
+        )}
+
         <div className="space-y-2 rounded-md border p-3">
           <p className="text-xs font-medium">下发自定义规则文件</p>
           <div className="grid gap-3 md:grid-cols-3">
@@ -310,8 +356,9 @@ export function WazuhPanel() {
           )}
           {rules && (
             <p className="text-xs text-muted-foreground">
-              自定义规则文件 {rules.local.length} 个
-              {rules.local.length > 0 ? `：${rules.local.map((f) => f.filename).join("、")}` : ""}
+              {rules.local.length === 0
+                ? emptyOrFailed(errs, SRC.rules, "还没有自定义规则文件（下发一个就会出现）")
+                : `自定义规则文件 ${rules.local.length} 个：${rules.local.map((f) => f.filename).join("、")}`}
             </p>
           )}
         </div>

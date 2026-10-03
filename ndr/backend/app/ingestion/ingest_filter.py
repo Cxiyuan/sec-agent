@@ -281,7 +281,11 @@ def get_samples() -> dict[str, list[dict[str, Any]]]:
 
 
 def _from_queue(client: Any, key: str, limit: int) -> list[tuple[dict[str, Any], str]]:
-    """从队列取样（左端最新）。检测器队列里已是归一化文档，采集队列里是原始文档。"""
+    """从队列取样（从左端取）。检测器队列里已是归一化文档，采集队列里是原始文档。
+
+    方向说明：检测器队列是我们自己 LPUSH 的（左端最新），采集队列是 Filebeat RPUSH 的
+    （左端最旧）。试运行只是取样，两种方向都只是「取到一批最近的样本」，不影响正确性。
+    """
     try:
         items = client.lrange(key, 0, max(0, limit - 1))
     except Exception as exc:  # noqa: BLE001
@@ -306,10 +310,14 @@ def _recent_docs(hours: int, limit: int) -> tuple[list[tuple[dict[str, Any], str
     """
     start = datetime.now(UTC) - timedelta(hours=max(1, hours))
     try:
+        from app.ingestion import es_config
         from app.ingestion.es_client import get_es
 
+        # 索引名走运行时配置（DB 覆盖 env），与 es_query/wazuh/ndr_tools 一致：
+        # 后台改了 es.events_index 后这里必须跟着变，否则会出现「采集有数但试运行查不到」。
+        cfg = es_config.current()
         resp = get_es().search(
-            index=settings.es_events_index,
+            index=str(cfg.get("es.events_index") or settings.es_events_index),
             query={"range": {"@timestamp": {"gte": start.isoformat()}}},
             sort=[{"@timestamp": "desc"}],
             size=limit,

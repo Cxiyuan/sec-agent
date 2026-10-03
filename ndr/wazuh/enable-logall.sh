@@ -12,6 +12,9 @@
 # 用法（在 ndr/ 目录下）：
 #   ./wazuh/enable-logall.sh                       # 用默认 compose 组合
 #   COMPOSE_FILES="-f docker-compose.deploy.yml -f docker-compose.wazuh.yml" ./wazuh/enable-logall.sh
+# 脚本只改 manager 侧的 ossec.conf。**采集侧还有第二个开关**：Filebeat 的
+# WAZUH_ARCHIVES_ENABLED（wazuh/filebeat.yml 的 `enabled: ${WAZUH_ARCHIVES_ENABLED:false}`），
+# 必须在 .env 里设成 true 并重启 wazuh-filebeat，archives.json 才会真的上报。
 # 改完重启 manager 才生效：
 #   docker compose -f docker-compose.yml -f docker-compose.wazuh.yml restart wazuh-manager
 #
@@ -47,5 +50,9 @@ fi
 
 mv "$conf.new" "$conf"
 echo "已写入 logall / logall_json，原文件备份为 $backup"
-echo "重启 manager 后生效：docker compose ... restart $SERVICE"
+echo "① 重启 manager 后生效：docker compose ... restart $SERVICE"
+echo "② 采集侧还要把 archives 输入打开（两处开关缺一不可，只做①不上报）："
+echo "     在 .env 里加或改 WAZUH_ARCHIVES_ENABLED=true，然后重启 Filebeat："
+echo "       docker compose ... up -d wazuh-filebeat"
+echo "   否则 archives.json 会被写出来，但永远不会进 Redis/ES。"
 EOS

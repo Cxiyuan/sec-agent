@@ -6,7 +6,7 @@
 2. **只读**：主动探测（port_scan/banner_grab）不进工具箱——取证阶段不该改变目标状态。
 
 证据引用在工具返回值里累积：任何 ``es:<index>/<id>`` 与 ``ev:<uuid>`` 都会登记到
-``ctx.valid_refs``，``record_finding`` 只接受登记过的引用（防模型编造）。
+``ctx.valid_refs``，``_raw_evidence`` 取原始证据时会核对引用（防模型编造不存在的引用）。
 
 与 agent 侧那版的差别：这里只留**走 ES 的 10 个工具**（取数层已搬到 NDR），
 依赖智能体自身数据（案件库/资产/情报/记忆）的工具留在 agent 侧；
@@ -32,15 +32,17 @@ RAW_EVIDENCE_MAX = 20
 
 @dataclass
 class ToolCtx:
-    """一次调查的运行时上下文（工具共享）。"""
+    """一次调查的运行时上下文（工具共享）。
+
+    只留**真的被读**的字段：``case``（describe_data 带上案件上下文）、``raw_evidence``
+    与 ``valid_refs``（原始证据与引用核对）。NDR 侧没有 agent 侧的
+    ``record_finding`` / ``note_gap``（那是智能体自己的调查流程），所以
+    ``scope_cidrs`` / ``findings`` / ``gaps`` / ``notes`` 在这里没有任何读写者，已删。
+    """
 
     case: dict[str, Any] = field(default_factory=dict)
-    scope_cidrs: list[str] = field(default_factory=list)
-    findings: list[dict[str, Any]] = field(default_factory=list)
-    gaps: list[dict[str, Any]] = field(default_factory=list)
     raw_evidence: list[dict[str, Any]] = field(default_factory=list)
     valid_refs: set[str] = field(default_factory=set)
-    notes: list[str] = field(default_factory=list)
 
     def register_refs(self, *payloads: Any) -> None:
         """登记本轮可引用的证据引用（递归找 ref 字段）。"""
@@ -155,19 +157,39 @@ def _search_multi(
         except es_query.QueryError as exc:
             notes.append(f"{source}: {exc}")
             continue
+        fetched = list(result.get("hits") or [])
         per_source[source] = {
-            "returned": result.get("returned"),
+            # returned 在合并截断之后按最终列表重算（见下）：以前这里是「本来源截断前
+            # 取回条数」，与真实返回不一致，模型会以为 Wazuh 的命中都在 hits 里。
+            "returned": 0,
+            "fetched": len(fetched),
             "truncated": result.get("truncated"),
             "index": result.get("index"),
         }
-        hits.extend(result.get("hits") or [])
-    if sort == "asc":
-        hits.sort(key=lambda h: str(h.get("ts") or ""))
+        hits.extend(fetched)
+
+    # 合并后统一按时间排序再截断。以前是「按来源 extend 完直接 hits[:limit]」：
+    # 默认 desc 下排在后面的来源（wazuh）会被整段丢掉，而 by_source 还报着 returned=N
+    # ——智能体因此永远看不到 Wazuh 证据（来源顺序 zeek→wazuh 是写死的）。
+    hits.sort(key=lambda h: str(h.get("ts") or ""), reverse=sort != "asc")
+    kept = hits[: max(1, limit)]
+    for row in kept:
+        name = str(row.get("source_system") or "")
+        if name in per_source:
+            per_source[name]["returned"] = int(per_source[name]["returned"]) + 1
+    dropped = len(hits) - len(kept)
+    if dropped > 0:
+        notes.append(
+            f"各来源合并后共 {len(hits)} 条，按时间保留 {len(kept)} 条（截掉 {dropped} 条）；"
+            "by_source.returned 是最终返回条数，fetched 是该来源实际取回条数。"
+        )
     return {
-        "returned": len(hits),
+        "returned": len(kept),
+        "fetched": len(hits),
+        "truncated": dropped > 0,
         "by_source": per_source,
         "notes": notes,
-        "hits": hits[: max(1, limit)],
+        "hits": kept,
     }
 
 
@@ -434,7 +456,8 @@ def _file_hashes(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     if ip:
         filters["src_ip"] = ip
     if hash_value:
-        # 哈希没有顶层统一字段，只留在原样保留的 raw 里（Zeek files → raw.sha256）。
+        # 哈希有顶层统一字段（files.log 的 md5/sha1/sha256 归一到 `sha256`，见 catalog.FIELDS），
+        # 所以这里按字段过滤；`raw` 里当然也留着一份原文，但取数不该依赖它。
         filters["sha256"] = hash_value
     if filename:
         filters["filename"] = {"contains": filename}
@@ -600,17 +623,6 @@ def tool_names() -> list[str]:
     return sorted(TOOLS)
 
 
-def tool_catalog_text(*, max_chars: int = 2600) -> str:
-    """给模型看的工具清单（紧凑文本）。"""
-    lines: list[str] = []
-    for name in sorted(TOOLS):
-        spec = TOOLS[name]
-        params = spec.get("params") or {}
-        arg_text = ", ".join(f"{k}: {v}" for k, v in params.items()) or "无参数"
-        lines.append(f"- {name}（{arg_text}）：{spec['desc']}")
-    return "\n".join(lines)[:max_chars]
-
-
 def execute(name: str, args: Any, ctx: ToolCtx) -> dict[str, Any]:
     """执行工具：参数/查询错误都转成结构化观察（不抛给循环，让模型自我纠正）。"""
     spec = TOOLS.get(name)
@@ -628,26 +640,3 @@ def execute(name: str, args: Any, ctx: ToolCtx) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.warning("调查工具 %s 执行失败: %s", name, exc)
         return {"error": f"工具执行失败：{exc}"}
-
-
-def spec_for_api() -> dict[str, Any]:
-    """给排错接口/后续挂 MCP 用的工具与字段元信息。
-
-    这里没有 agent 侧的 ``stages``：那是调查流程（记录攻击阶段）的概念，
-    属于智能体侧，不在本查询层里。
-    """
-    return {
-        "tools": {
-            name: {"desc": TOOLS[name]["desc"], "params": TOOLS[name]["params"]}
-            for name in tool_names()
-        },
-        "sources": [
-            {
-                "source": item["source"],
-                "index": item["index"],
-                "fields": item["fields"],
-                "agg_fields": item["agg_fields"],
-            }
-            for item in es_query.describe_sources()
-        ],
-    }

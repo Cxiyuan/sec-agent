@@ -82,3 +82,25 @@ def test_download_name_is_header_safe(files_route: ModuleType) -> None:
 )
 def test_fuid_pattern(files_route: ModuleType, fuid: str, ok: bool) -> None:
     assert bool(files_route._FUID_RE.match(fuid)) is ok
+
+
+@pytest.mark.parametrize(
+    ("extracted", "ok"),
+    [
+        ("Fx8HnP1AbCdEfGhIjK", True),
+        (" gotcha", True),
+        ("", False),
+        (None, False),
+        ("   ", False),
+    ],
+)
+def test_has_extracted_selects_by_non_empty_string(
+    files_route: ModuleType, extracted: object, ok: bool
+) -> None:
+    """「有提取件」按空串判，不用 ES 的 exists。
+
+    归一化文档里所有字符串字段默认是空串（不是缺字段），实测 ``exists extracted`` 几乎恒真
+    （``exists ja4`` 命中全量 57288 条，真正有值的只有 263 条），所以下载接口改成取回后判空。
+    这条测试钉住语义，防止有人改回 ``{"exists": {"field": "extracted"}}``。
+    """
+    assert files_route._has_extracted({"extracted": extracted}) is ok

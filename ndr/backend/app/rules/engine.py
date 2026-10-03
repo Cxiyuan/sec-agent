@@ -197,49 +197,6 @@ def count_key(log: UnifiedLog, fields: list[str]) -> str:
     return "|".join(str(getattr(log, f, "") or "") for f in fields)
 
 
-def match_count_rule(
-    rule: dict[str, Any], logs: list[UnifiedLog]
-) -> list[tuple[str, list[UnifiedLog]]]:
-    """频率规则：按 key 分组统计命中条数（可选 distinct 去重），返回达标分组。"""
-    conditions = rule.get("conditions") or {}
-    if not conditions.get("rules"):
-        return []
-
-    keys = conditions.get("key")
-    if not isinstance(keys, list) or not keys:
-        keys = ["src_ip"]
-    try:
-        min_count = int(conditions.get("min_count") or 1)
-    except (TypeError, ValueError):
-        min_count = 1
-
-    distinct_field = str(conditions.get("distinct") or "")
-    try:
-        min_distinct = int(conditions.get("min_distinct") or 0)
-    except (TypeError, ValueError):
-        min_distinct = 0
-
-    buckets: dict[str, list[UnifiedLog]] = {}
-    for log in logs:
-        if whitelisted(conditions, log):
-            continue
-        if not evaluate_conditions(conditions, log):
-            continue
-        buckets.setdefault(count_key(log, [str(k) for k in keys]), []).append(log)
-
-    hits: list[tuple[str, list[UnifiedLog]]] = []
-    for key, matched in buckets.items():
-        if len(matched) < min_count:
-            continue
-        if distinct_field and min_distinct > 0:
-            values = {str(getattr(m, distinct_field, "") or "") for m in matched}
-            values.discard("")
-            if len(values) < min_distinct:
-                continue
-        hits.append((key, matched))
-    return hits
-
-
 def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
     """校验规则里的 regex 是否可编译（含白名单）。
 
@@ -285,16 +242,19 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
 
 # 字段 → 日志类型 的归属表：规则引用了某类型的专有字段，就只挂到该类型。
 # 任何"归属不明 / 只引用通用字段"的规则一律进通配集合（每次都会跑）——fail-open，宁可多跑不漏。
+#
+# 注意：Wazuh 的告警也会填 uri_path / query_string / method / body / status_code / user_agent /
+# query（见 ingestion/normalizer.py 的 Wazuh 分支）——只写 ("http",) 会让这些 Web/URL 规则
+# 在 Wazuh 告警上永不求值，所以这些字段与 wazuh 并列。
 _FIELD_TYPES: dict[str, tuple[str, ...]] = {
-    # http
+    # http / wazuh 共有的 Web 字段
     "uri": ("http",),
-    "uri_path": ("http",),
-    "method": ("http",),
-    "status_code": ("http",),
-    "user_agent": ("http",),
-    "host": ("http",),
-    "referrer": ("http",),
-    "body": ("http",),
+    "uri_path": ("http", "wazuh"),
+    "query_string": ("http", "wazuh"),
+    "method": ("http", "wazuh"),
+    "status_code": ("http", "wazuh"),
+    "user_agent": ("http", "wazuh"),
+    "body": ("http", "wazuh"),
     "request_body_len": ("http",),
     "response_body_len": ("http",),
     "resp_body": ("http",),
@@ -302,8 +262,9 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "req_headers": ("http",),
     "resp_headers": ("http",),
     "real_client_ip": ("http",),
-    # dns
-    "query": ("dns",),
+    # dns：`query` 在 dns.log 里是域名，在 http / Wazuh 里是完整 URL，
+    # 所以只引用 query 的规则（开放重定向、URL 里的 token）要一并挂 http / wazuh。
+    "query": ("dns", "http", "wazuh"),
     "rcode": ("dns",),
     "qtype": ("dns",),
     "answers": ("dns",),

@@ -11,7 +11,7 @@ import pytest
 import samples
 from app.config import settings
 from app.ingestion import log_types
-from app.ingestion.normalizer import normalize_zeek
+from app.ingestion.normalizer import normalize_wazuh, normalize_zeek
 
 
 @pytest.mark.parametrize("name", sorted(samples.DOCS))
@@ -162,3 +162,70 @@ def test_unknown_type_keeps_name() -> None:
     assert entry.log_type == "ja3sfp"
     assert entry.log_type_known is False
     assert entry.raw["source_file"] == "ja3sfp.log"
+
+
+def test_flat_ja4_streams_are_split() -> None:
+    """平铺（没有 log_type）的 JA4+ 文档：ja4ssh 靠 kex 认、ja4d 靠 hash 认。
+
+    顺序敏感：ja4d 若排在前面会用通用的 hash 把 JA4SSH 抢走，所以这里把两种流都钉住。
+    """
+    ssh_entry = normalize_zeek(dict(samples.JA4SSH))
+    assert ssh_entry is not None
+    assert ssh_entry.log_type == "ja4ssh"
+
+    d_entry = normalize_zeek(dict(samples.JA4D))
+    assert d_entry is not None
+    assert d_entry.log_type == "ja4d"
+
+
+@pytest.mark.parametrize(
+    ("conn_state", "want"),
+    [
+        ("S0", "scan_attempt"),
+        ("S1", "conn_established"),
+        ("S2", "conn_established"),
+        ("S3", "conn_established"),
+        ("SF", "conn_established"),
+        ("REJ", "rejected_connection"),
+        ("SH", "connection_shutdown"),
+    ],
+)
+def test_conn_state_event_type(conn_state: str, want: str) -> None:
+    """conn_state → event_type：只有 S0（SYN 无回应）算扫描。
+
+    S1/S2/S3 是握手已建立，与 triage_policy.SUCCESS_CONN_STATES 口径一致；改造前它们
+    被判成 scan_attempt，导致带 ``event_type ne scan_attempt`` 的内置规则永不命中。
+    """
+    doc = samples.envelope({**samples.CONN, "conn_state": conn_state}, "conn", "/logs/conn.log")
+    entry = normalize_zeek(doc)
+    assert entry is not None
+    assert entry.event_type == want
+
+
+def test_dns_qtype_keeps_zeek_numeric_code() -> None:
+    """qtype 存 Zeek 原始数字码（1=A、28=AAAA、16=TXT）。
+
+    对外口径统一按数字码：C 组规则只用 "16"、D 组 catalog 与 G 组前端都按数字码，
+    所以这里钉住「不许悄悄改成人类可读名」。
+    """
+    entry = normalize_zeek(samples.DOCS["dns"])
+    assert entry is not None
+    assert entry.qtype == "1"
+
+
+def test_wazuh_raw_is_self_describing() -> None:
+    """Wazuh 侧 raw 与 Zeek 同口径：带 log_type/source_file。
+
+    告警（alerts.json）与归档（archives.json）共用同一张表，raw 自解释尤其重要。
+    """
+    doc = {
+        "@timestamp": "2026-10-02T08:39:33.000Z",
+        "rule": {"level": 10, "description": "sshd brute force"},
+        "data": {"srcip": "203.0.113.9", "dstip": "172.16.196.77"},
+        "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
+    }
+    entry = normalize_wazuh(doc)
+    assert entry is not None
+    assert entry.log_type == "wazuh"
+    assert entry.raw["log_type"] == "wazuh"
+    assert entry.raw["source_file"] == "alerts.json"

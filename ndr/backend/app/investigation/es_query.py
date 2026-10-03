@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import settings
+from app.ingestion import es_config
 from app.investigation import catalog
 from app.workers.log import get_logger
 
@@ -37,7 +38,6 @@ TIMEOUT_HINTS = (
     "timeout",
     "timed out",
     "circuit_breaking_exception",
-    "search_phase_execution_exception",
 )
 
 
@@ -57,6 +57,24 @@ _query_timeout = query_timeout
 def _is_timeout(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(hint in text for hint in TIMEOUT_HINTS)
+
+
+def _failure_message(action: str, exc: Exception) -> str:
+    """把 ES 异常翻成模型能照着改的话。
+
+    原来不分青红皂白都写「ES 查询超时…请缩小窗口」，可 ES 不可达 / 索引不存在 / 没权限
+    时缩小窗口一点用都没有——模型会一直缩到最小时间窗还是失败。按是否真的是超时分开说。
+    """
+    detail = str(exc).strip().splitlines()[0][:300] if str(exc).strip() else exc.__class__.__name__
+    if _is_timeout(exc):
+        return (
+            f"ES {action}超时：{detail}。已自动把时间窗对半重试仍失败，"
+            "请再缩小时间窗、加实体过滤（ip/host）或换一个更具体的实体。"
+        )
+    return (
+        f"ES {action}失败（不是超时，缩小时间窗没用）：{detail}。"
+        "多半是 ES 不可达、索引不存在或没权限——请把这条原始错误告诉研判人员，不要反复重试。"
+    )
 
 
 def _narrow(start: Any, end: Any) -> tuple[Any, Any]:
@@ -121,22 +139,28 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def index_pattern() -> str:
-    """统一的 ES 索引模式。
+    """统一的 ES 索引模式（取运行时配置，后台改过索引名不用重启）。
 
     只有一族索引（``shentong-events-*``）：Zeek 与 Wazuh 的文档结构在入库前已经统一，
     所以不存在「按来源选索引」的逻辑，也别再拼 ``zeek-*`` / ``wazuh-alerts-*``。
+
+    **必须读运行时配置**：后台「系统配置」能把 ``es.events_index`` 改掉
+    （`api/routes/es_admin.py` 写 SystemConfig，`es_config.current()` 才带 30s TTL 读它）。
+    只读静态 ``settings.es_events_index`` 会出现「采集写进了新索引族、工具还在查老的」。
     """
-    return settings.es_events_index
+    return str(es_config.current().get("es.events_index") or settings.es_events_index)
 
 
 def max_lookback_days() -> int:
     """能回溯多少天。
 
-    原来读 agent 侧的 ``investigation_max_lookback_days``（默认 30）。NDR 侧没有这个
-    配置项，但 ``es_retention_days``（默认 30，后台可改）就是**物理上限**：ES 里没留的
-    数据谁也查不出来，所以直接拿它当回溯封顶，量级与原来一致。
+    原来读 agent 侧的 ``investigation_max_lookback_days``（默认 30），后来改成本地
+    ``settings.es_retention_days``，但那个也是**静态**值。保留期是运行时口径
+    （``es_config.retention_days()`` 读后台 ``es.retention_days``）——ES 里没留的数据谁也
+    查不出来，所以回溯封顶必须跟着它走；否则后台把保留期从 30 改成 90 天，30 天前的
+    数据其实还在，查询却会静默返回空。
     """
-    return max(1, _safe_int(settings.es_retention_days, DEFAULT_LOOKBACK_DAYS))
+    return max(1, _safe_int(es_config.retention_days(), DEFAULT_LOOKBACK_DAYS))
 
 
 def _es() -> Any:
@@ -214,6 +238,46 @@ def _text_paths(path: str) -> list[str]:
     return [path, f"{path}.keyword"]
 
 
+def _nonempty_clause(index: str, name: str, path: str) -> dict[str, Any]:
+    """「这个字段真的有值」的正子句。
+
+    归一化时 `UnifiedLog` 把所有字符串字段默认成空串、且全量落库（``_payload`` 只剔 None），
+    所以 ES 里每条文档都**带着** ja3/ja4/account/extracted 这些键——原生 ``exists`` 因此
+    几乎恒真。实机量过：``{"exists":{"field":"ja4"}}`` 命中全量 52.9 万条，而真正有值的
+    只有 1252 条。所以字符串字段的「存在」必须是「键在 **且** 值不是空串」：
+
+    - ``text`` → 必须用 ``.keyword`` 子字段判空串（主路径是分词的，空串没有 token，判不出来）；
+    - ``keyword`` → 直接判空串；
+    - ``boolean`` / ``long`` / ``ip`` / ``date`` → 原生 exists（这些类型没有「空串」形态）。
+
+    实机校验：``exists ja4`` 529370 → 本口径 1252，与 ``must_not term ja4.keyword:""`` 一致。
+    """
+    kind = catalog.kind_of(name)
+    etype = catalog.es_type(index, path)
+    if etype in ("text", "keyword") or (etype is None and kind in ("text", "keyword")):
+        terms = catalog.term_paths(index, path)
+        if etype is None and kind == "text":
+            # 拿不到 mapping 时 term_paths 只会给出主路径（分词的，判不出空串），
+            # 把 .keyword 也带上；字段真没有子字段时那条 term 只是不匹配，不会报错。
+            terms = _text_paths(path)
+        if terms:
+            empty = {
+                "bool": {
+                    "should": [{"term": {p: ""}} for p in terms],
+                    "minimum_should_match": 1,
+                }
+            }
+            return {
+                "bool": {
+                    "filter": [
+                        {"exists": {"field": path}},
+                        {"bool": {"must_not": empty}},
+                    ]
+                }
+            }
+    return {"exists": {"field": path}}
+
+
 def build_clause(name: str, value: Any) -> dict[str, Any]:
     """单个字段条件 → ES 子句。未知字段/非法算子一律抛 QueryError。"""
     index = index_pattern()
@@ -254,11 +318,8 @@ def build_clause(name: str, value: Any) -> dict[str, Any]:
                 raise QueryError(f"字段 {name} 的 prefix 不能为空")
             return _dual(_text_paths(path), lambda p: {"prefix": {p: {"value": needle}}})
         if "exists" in ops:
-            return (
-                {"exists": {"field": path}}
-                if value.get("exists")
-                else {"bool": {"must_not": {"exists": {"field": path}}}}
-            )
+            positive = _nonempty_clause(index, name, path)
+            return positive if value.get("exists") else {"bool": {"must_not": positive}}
         if ops & {"gte", "lte", "gt", "lt"}:
             if fkind not in ("num", "date"):
                 raise QueryError(f"字段 {name}（{fkind}）不支持范围查询，请用精确值或 contains")
@@ -401,13 +462,12 @@ def search(
         return resp
 
     try:
-        resp, degraded = _with_degrade(_run, start, end)
+        # 必须把**算好的** start_iso/end_iso 传进去：_narrow(None, None) 只会原样返回，
+        # 降级重试就永远不发生（此前就是这个 bug：窗口是 None 时 _with_degrade 拿到
+        # (None, None)，narrowed == (start, end) → 直接 raise）。
+        resp, degraded = _with_degrade(_run, start_iso, end_iso)
     except Exception as exc:
-        raise QueryError(
-            "ES 查询超时：已自动把时间窗对半重试仍失败。建议缩小时间范围（用 start/end 指定具体时段）、"
-            "加实体过滤（ip / asset / event_type），或先 aggregate_events 看分布。"
-            f"原始错误：{str(exc)[:200]}"
-        ) from exc
+        raise QueryError(_failure_message("查询", exc)) from exc
 
     hits: list[dict[str, Any]] = []
     for hit in resp.get("hits", {}).get("hits", []):
@@ -474,12 +534,11 @@ def aggregate(
         return resp
 
     try:
-        resp, degraded = _with_degrade(_run_agg, start, end)
+        # 同 search()：传真窗口，否则对半降级永不触发；顺带修好 track_total_hits
+        # （s_iso == start_iso 现在首轮为真、降级轮为假，语义才正确）。
+        resp, degraded = _with_degrade(_run_agg, start_iso, end_iso)
     except Exception as exc:
-        raise QueryError(
-            "ES 聚合超时：已把时间窗对半重试仍失败。建议缩小时间范围、加实体过滤，或换更低基数的字段。"
-            f"原始错误：{str(exc)[:200]}"
-        ) from exc
+        raise QueryError(_failure_message("聚合", exc)) from exc
     buckets = (resp.get("aggregations") or {}).get(agg_name, {}).get("buckets", [])
     total = ((resp.get("hits") or {}).get("total") or {}).get("value")
     if isinstance(total, dict):
@@ -492,29 +551,6 @@ def aggregate(
         "degraded": degraded,
         "buckets": [{"value": b.get("key"), "count": b.get("doc_count")} for b in buckets],
     }
-
-
-def count(
-    source: str,
-    *,
-    filters: Any = None,
-    keyword: str | None = None,
-    start: Any = None,
-    end: Any = None,
-) -> int:
-    index = index_pattern()
-    time_clause, _, _ = _time_clause(start, end)
-    must: list[dict[str, Any]] = [time_clause, source_clause(source)]
-    must.extend(build_filters(filters))
-    if keyword:
-        must.append(keyword_clause(str(keyword)))
-    try:
-        resp = _es().count(
-            index=index, query={"bool": {"filter": must}}, request_timeout=_query_timeout()
-        )
-    except Exception as exc:
-        raise QueryError(f"ES 计数失败：{exc}") from exc
-    return _safe_int(resp.get("count"))
 
 
 def time_bounds(source: str) -> dict[str, Any]:

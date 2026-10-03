@@ -4,6 +4,7 @@ import * as React from "react";
 import { Button } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import type { RuleCondition, RuleConditions } from "@/lib/api";
+import { QTYPE_HINT, qtypeOptions } from "@/lib/qtype";
 
 /** 默认字段清单（规则页用；排除过滤页用后端 /api/exclusions/fields 返回的完整清单）。 */
 export const RULE_FIELDS = [
@@ -20,6 +21,7 @@ export const RULE_FIELDS = [
   "process",
   "command",
   "query",
+  "qtype",
   "user_agent",
   "status_code",
   "bytes_out",
@@ -94,6 +96,61 @@ export function conditionsToConds(conditions: RuleConditions | undefined): {
   return { logic, conds: conds.length ? conds : [EMPTY_COND], nested };
 }
 
+/**
+ * 条件值输入框（qtype 特殊处理）。
+ *
+ * 为什么只对 qtype 特殊：ES 里 qtype 落库的是 Zeek 给的**数字码**（1/28/16…），
+ * 手敲数字既难记又容易敲错，写名字（A/TXT）当条件又匹配不到。所以 eq/ne 直接给下拉，
+ * 值仍然是数字码（映射表在 lib/qtype.ts，真要改成存名字只改那一处）。
+ * 其它操作符（in/regex 等）保持文本框，用 QTYPE_HINT 提示。
+ */
+function QtypeAwareValue({
+  cond,
+  onChange,
+}: {
+  cond: Cond;
+  onChange: (patch: Partial<Cond>) => void;
+}) {
+  const options = React.useMemo(() => qtypeOptions(), []);
+  if (cond.field === "qtype" && (cond.op === "eq" || cond.op === "ne")) {
+    const known = options.some((o) => o.value === cond.value);
+    return (
+      <select
+        value={cond.value}
+        onChange={(e) => onChange({ value: e.target.value })}
+        className={`${SELECT_CLS} flex-1`}
+      >
+        <option value="">（选一个类型）</option>
+        {/* 老规则里可能有映射表外的值（比如 13），不能因为改前端就把已有条件弄丢 */}
+        {!known && cond.value !== "" && (
+          <option value={cond.value}>{cond.value}（当前值，不在映射表里）</option>
+        )}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <Input
+      value={cond.value}
+      disabled={cond.op === "exists"}
+      onChange={(e) => onChange({ value: e.target.value })}
+      placeholder={
+        cond.field === "qtype"
+          ? QTYPE_HINT
+          : cond.op === "in"
+            ? "逗号分隔，如 4444,5555"
+            : cond.op === "regex"
+              ? "(?i)(sqlmap|nikto)"
+              : "值"
+      }
+    />
+  );
+}
+
 export function ConditionEditor({
   fields,
   conds,
@@ -144,18 +201,7 @@ export function ConditionEditor({
               </option>
             ))}
           </select>
-          <Input
-            value={c.value}
-            disabled={c.op === "exists"}
-            onChange={(e) => onChange(i, { value: e.target.value })}
-            placeholder={
-              c.op === "in"
-                ? "逗号分隔，如 4444,5555"
-                : c.op === "regex"
-                  ? "(?i)(sqlmap|nikto)"
-                  : "值"
-            }
-          />
+          <QtypeAwareValue cond={c} onChange={(patch) => onChange(i, patch)} />
           <Button size="sm" variant="ghost" onClick={() => onRemove(i)}>
             删
           </Button>

@@ -142,8 +142,9 @@ def internal_routine_reason(
 ) -> str | None:
     """内网常规流量 → 返回可读理由（调用方据此打标跳过）；该分析则返回 None。
 
-    四个条件**全部满足**才跳过（任一不满足都照旧全量分析）：
-    内→内、规则严重度 < 门槛、单目标、没有任何成功连接。
+    默认（``policy_internal_routine_require_failed`` 为 true）四个条件**全部满足**才跳过
+    （任一不满足都照旧全量分析）：内→内、规则严重度 < 门槛、单目标、没有任何成功连接。
+    该开关显式关掉时，允许「带成功连接」也跳过 —— 此时理由文案会写明是放行而非「无成功连接」。
 
     另外还要求**规则在跳过白名单里**（``policy_skip_rules``）：名单外或拿不到规则名
     一律不跳（fail-open）——否则新规则会被静默跳过，就是漏报源。
@@ -161,144 +162,17 @@ def internal_routine_reason(
     dst_total = _int_of(dst_count, 0)
     if dst_total > _int_setting("policy_internal_routine_max_dst"):
         return None
-    if success and _flag("policy_internal_routine_require_failed"):
-        return None
+    if success:
+        if _flag("policy_internal_routine_require_failed"):
+            return None
+        # 显式关掉「必须无成功连接」：允许跳过，但理由必须如实说明，不能写“无成功连接”
+        success_note = "含成功连接（policy_internal_routine_require_failed=false 放行）"
+    else:
+        success_note = "无成功连接"
     return (
         f"内网常规流量（{direction}，规则「{name}」严重度 {rule_severity or 'info'}，"
-        f"{dst_total} 个目标，无成功连接）"
+        f"{dst_total} 个目标，{success_note}）"
     )
-
-
-# ---------- 证据阶梯（定级的唯一依据：只看结构化事件事实） ----------
-
-TIER_STRONG = "T2"  # 成功连接 / 大量外传 / 高危规则多次命中
-TIER_WEAK = "T1"  # 仅扫描/探测/半开/文件传输/HTTP 请求
-TIER_NONE = "T0"  # 无事件
-
-
-def evidence_tier(
-    *,
-    event_types: Any = None,
-    conn_states: Any = None,
-    bytes_out: Any = 0,
-    rule_severity: Any = None,
-    hits: Any = 0,
-) -> str:
-    """事件级证据阶梯。
-
-    为什么不能用“有没有攻击链”当证据：攻击链是模型写的，甚至会被案件叙事回写 ——
-    等于让模型自己给自己作证。线上实测因此出现“2 条 info 级文件传输判 critical”。
-    这里只看结构化事实：连接状态、事件类型、外传字节、规则严重度与命中次数。
-    """
-    types = {str(x).lower() for x in (event_types or []) if x}
-    states = {str(x).upper() for x in (conn_states or []) if x}
-    if types & SUCCESS_EVENT_TYPES or states & SUCCESS_CONN_STATES:
-        return TIER_STRONG
-    if _int_of(bytes_out, 0) >= _int_setting("evidence_bytes_out_strong"):
-        return TIER_STRONG
-    if _rank(rule_severity) >= SEVERITY_RANK["high"] and _int_of(hits, 0) >= 2:
-        return TIER_STRONG
-    if types or states:
-        return TIER_WEAK
-    return TIER_NONE
-
-
-_TIER_CAP: dict[str, str] = {TIER_NONE: "low", TIER_WEAK: "medium"}
-
-
-# ---------- 策略 2：定级约束 ----------
-
-
-def cap_severity(
-    *,
-    severity: Any,
-    direction: str,
-    has_evidence: bool,
-    tier: str = "",
-) -> tuple[str, str]:
-    """把模型定级约束到合理范围，返回 (最终级别, 降级原因)；未降级时原因为空串。
-
-    ``tier``（事件级证据阶梯）给出时，以它为主要依据：
-    - T0/T1 封顶，critical 必须 T2；
-    未给 ``tier`` 时回退到旧的 ``has_evidence``（兼容历史调用与桩测）：
-    只要求“有可验证证据链”，不再单独决定 high。
-    """
-    rank = _rank(severity)
-    original = _severity_of(rank)
-    reasons: list[str] = []
-
-    if tier:
-        cap_text = _TIER_CAP.get(tier, "")
-        if cap_text and rank > SEVERITY_RANK[cap_text]:
-            rank = SEVERITY_RANK[cap_text]
-            reasons.append(f"证据只有 {tier} 级（{cap_text} 上限）")
-    else:
-        above = _text("severity_require_evidence_above")
-        if not has_evidence and above in SEVERITY_RANK:
-            cap = SEVERITY_RANK[above] - 1
-            if rank > cap:
-                rank = cap
-                reasons.append("无可验证证据链")
-
-    cap_text = _text("severity_cap_internal")
-    if direction == DIR_IN_TO_IN and cap_text in SEVERITY_RANK:
-        cap = SEVERITY_RANK[cap_text]
-        if rank > cap:
-            rank = cap
-            reasons.append("内网方向封顶")
-
-    if (
-        _flag("severity_critical_requires_external")
-        and direction != DIR_OUT_TO_IN
-        and rank >= SEVERITY_RANK["critical"]
-    ):
-        rank = SEVERITY_RANK["high"]
-        reasons.append("critical 仅限外→内")
-
-    # critical 额外要求强证据（T2）：扫描/文件传输/HTTP 请求不能撑起“严重”
-    if tier and tier != TIER_STRONG and rank >= SEVERITY_RANK["critical"]:
-        rank = SEVERITY_RANK["high"]
-        reasons.append(f"critical 需要强证据（当前 {tier}）")
-
-    final = _severity_of(rank)
-    if not reasons:
-        return final, ""
-    return final, f"{'；'.join(reasons)}（{original} → {final}）"
-
-
-# ---------- 策略 3：升级闸门 ----------
-
-
-def should_escalate(
-    *,
-    triage_score: float,
-    rule_severity: Any,
-    direction: str,
-    threshold: float | None = None,
-) -> bool:
-    """是否进深度分析（回溯 + deep_analysis）。除分数外还要满足方向/规则门槛。
-
-    现状只看分数，而小模型的分数几乎都过线（实测大量 0.85+）→ 等于全部升级，
-    深度分析与案件随之爆量。这里加一道方向/严重度门槛。
-    """
-    if threshold is None:
-        limit = _num("escalate_score_threshold")
-    else:
-        try:
-            limit = float(threshold)
-        except (TypeError, ValueError):
-            limit = _num("escalate_score_threshold")
-    try:
-        if float(triage_score or 0.0) < limit:
-            return False
-    except (TypeError, ValueError):
-        return False
-    if direction == DIR_OUT_TO_IN and _flag("escalate_allow_external"):
-        return True
-    required = _text("escalate_require_rule_severity")
-    if required not in SEVERITY_RANK:
-        return True
-    return _rank(rule_severity) >= SEVERITY_RANK[required]
 
 
 # ---------- 计数（降噪绝不能是静默行为） ----------

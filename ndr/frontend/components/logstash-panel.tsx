@@ -6,9 +6,17 @@ import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { ApiError, apiFetch, errorText, type DetectorStats, type LogstashParams, type LogstashStatus } from "@/lib/api";
+import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
 const AREA_CLS =
   "w-full rounded-md border border-input bg-transparent px-3 py-2 text-xs font-mono leading-relaxed";
+
+/** 读取失败的接口名（错误条用）。 */
+const SRC = {
+  main: "Logstash 状态（/api/logstash）",
+  det: "检测器状态（/api/detector/stats）",
+  rate: "五段速率（/api/detector/rate）",
+} as const;
 
 /** 采集侧（Logstash）：参数表单 + 管道全文编辑。后端写共享卷，Logstash 自动重载（约 10s）。 */
 export function LogstashPanel() {
@@ -21,25 +29,33 @@ export function LogstashPanel() {
   const [busy, setBusy] = React.useState(false);
   // 五段速率（入队/扫描/命中/投递/分析）：哪个环节最窄一眼可见
   const [rate, setRate] = React.useState<Record<string, number | null | undefined> | null>(null);
+  const errs = usePanelErrors();
 
   async function load() {
-    const d = await apiFetch<LogstashStatus>("/api/logstash");
-    setData(d);
-    setParams(d.params);
-    setText(d.pipeline);
-    setPreview("");
-    // 旁路检测器状态（让「事件被丢弃」可见）
-    apiFetch<DetectorStats>("/api/detector/stats")
-      .then(setDet)
-      .catch(() => {});
-    // 五段速率（后端已有 /api/detector/rate）
-    apiFetch<Record<string, number | null | undefined>>("/api/detector/rate?minutes=10")
-      .then(setRate)
-      .catch(() => {});
+    errs.reset();
+    await Promise.all([
+      loadInto(errs, SRC.main, "/api/logstash", (d: LogstashStatus) => {
+        setData(d);
+        setParams(d.params);
+        setText(d.pipeline);
+        setPreview("");
+      }),
+      // 旁路检测器状态（让「事件被丢弃」可见）
+      loadInto(errs, SRC.det, "/api/detector/stats", (d: DetectorStats) => setDet(d)),
+      // 五段速率（后端已有 /api/detector/rate）
+      loadInto(
+        errs,
+        SRC.rate,
+        "/api/detector/rate?minutes=10",
+        (d: Record<string, number | null | undefined>) => setRate(d),
+      ),
+    ]);
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    void load();
+    // 只在挂载时读一次；load 内部自己收错误
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function set<K extends keyof LogstashParams>(key: K, value: LogstashParams[K]) {
@@ -73,7 +89,7 @@ export function LogstashPanel() {
       setText(r.pipeline);
       setPreview("");
       setMsg(r.note);
-      setTimeout(() => load().catch(() => {}), 12000);
+      setTimeout(() => void load(), 12000);
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
     } finally {
@@ -90,7 +106,7 @@ export function LogstashPanel() {
         body: JSON.stringify({ text }),
       });
       setMsg(r.note);
-      setTimeout(() => load().catch(() => {}), 12000);
+      setTimeout(() => void load(), 12000);
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
     } finally {
@@ -127,6 +143,7 @@ export function LogstashPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         {msg && <p className="text-sm text-primary">{msg}</p>}
+        <PanelError errors={errs} />
 
         {/* 状态区 */}
         {data && (

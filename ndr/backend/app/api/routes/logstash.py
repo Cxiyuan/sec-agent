@@ -136,8 +136,57 @@ def _looks_managed(text: str) -> bool:
     return _HEADER_MARK in text or "elasticsearch" in text
 
 
+def derived_from_generated_pipeline() -> bool:
+    """卷里的管道是不是**我们渲染出来的那份**（带模板头部标记）。
+
+    比 `_looks_managed` 严：手工「全文编辑」保存的版本也算「本系统的管道」，但它可能被人
+    改过，自动重渲染会把人的改动覆盖掉。只有带生成标记时才敢自动改写（写之前
+    `write_pipeline` 还会备份上一版，界面可一键回滚）。
+    """
+    return _HEADER_MARK in read_pipeline()
+
+
+def sync_es_endpoint(db: Session, es_url: str) -> dict[str, Any]:
+    """把 ES 面板的连接地址同步进管道参数；必要时重渲染管道。
+
+    返回 ``{"action": "none" | "updated" | "warning", ...}``：
+
+    - ``none``：地址没变（或为空），什么都没做；
+    - ``updated``：参数已更新且管道已重渲染下发（Logstash 约 10 秒自动重载）；
+    - ``warning``：参数已更新，但管道不是自动生成的（或写入失败），需要人工去
+      「采集 → Logstash 管道」确认写侧地址 —— 不静默覆盖人的编辑。
+    """
+    target = (es_url or "").strip()
+    if not target:
+        return {"action": "none", "detail": "ES 地址为空，未同步"}
+    params = {**_defaults(), **(_stored_params(db) or {})}
+    if str(params.get("es_host") or "") == target:
+        return {"action": "none", "es_host": target}
+    params["es_host"] = target
+    _save_params(db, params)
+    if not derived_from_generated_pipeline():
+        return {
+            "action": "warning",
+            "es_host": target,
+            "warning": (
+                "ES 地址已写入管道参数，但当前管道是手工编辑的版本，未自动重渲染；"
+                "请在「采集 → Logstash 管道」核对 elasticsearch 的 hosts。"
+            ),
+        }
+    err = write_pipeline(template.render(params, settings.logstash_http_port))
+    if err:
+        return {"action": "warning", "es_host": target, "warning": f"重渲染管道失败：{err}"}
+    return {"action": "updated", "es_host": target}
+
+
 def seed_if_missing() -> bool:
-    """首次部署时播种默认管道（卷内没有本系统的管道才写）。"""
+    """首次部署时播种默认管道（卷内没有本系统的管道才写）。
+
+    **开关语义**：`logstash_seed_on_startup=False` 只关掉「写默认管道」这一步；
+    `remove_foreign_configs()` 的无条件清理不受它影响 —— 那是管道目录的**不变式**
+    （目录里多一个文件，Logstash 就会把两份管道拼在一起，出现两个 beats 输入抢端口），
+    属保护动作而不是播种内容。要连清理一起关就只能改造这个模块，不建议。
+    """
     # 不管是否播种，先把多余文件清掉（否则会和我们的管道拼接生效）
     remove_foreign_configs()
     if not settings.logstash_seed_on_startup:

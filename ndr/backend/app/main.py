@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.api.deps import hash_password
+from app.api.deps import default_password_in_use, hash_password
 from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
@@ -21,8 +21,14 @@ from app.rules.builtin import BUILTIN_RULES
 
 logger = logging.getLogger(__name__)
 
-# NDR 侧无历史迁移（原 _MIGRATIONS 全是 agent 表）
-_MIGRATIONS: tuple[str, ...] = ()
+#: 建表补丁语句，**按顺序**执行，每条都必须可重复执行。
+#: 只用于 `Base.metadata.create_all()` 覆盖不到的「给已存在的表加列/改类型」——
+#: create_all 只建缺失的表，不会改已有表结构，所以新增列必须同时写在这里。
+#: 新装部署两处都会跑（create_all 先建好列，ALTER 变成 no-op），所以语句必须幂等。
+_MIGRATIONS: tuple[str, ...] = (
+    # MCP 令牌过期（到期判定在 mcp/auth.py）：可空 = 永不过期
+    "ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+)
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
@@ -134,6 +140,15 @@ def _seed() -> None:
                     # 依赖配置的规则，启用状态跟随配置
                     exists.enabled = rule_spec.get("enabled", exists.enabled)
         db.commit()
+        # 出厂默认口令仍在用就每次启动都提醒（实机验证过 admin/admin123 确实能登进来）。
+        # 不强制改密、不随机生成：那会把现网锁在门外。提示面还有 GET /api/auth/me 的
+        # default_password_in_use，供界面挂常驻横幅。
+        if default_password_in_use(db):
+            logger.warning(
+                "默认管理员 %s 仍在使用出厂口令（未用 ST_DEFAULT_ADMIN_PASSWORD 覆盖，"
+                "也还没在界面改密）：请尽快修改（POST /api/auth/change-password）。",
+                settings.default_admin_username,
+            )
 
     # 采集侧：首次部署播种默认 Logstash 管道（共享卷内无文件才写）
     from app.api.routes.logstash import seed_if_missing

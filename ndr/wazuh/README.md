@@ -8,7 +8,9 @@
 | `wazuh-manager` | `wazuh/wazuh-manager:4.14.8` | Wazuh 本体（**不含** indexer / dashboard） |
 | `wazuh-filebeat` | `docker.elastic.co/beats/filebeat:8.15.3` | 读 manager 日志卷，投进 Redis 采集队列 |
 
-链路与 Zeek 那条线一致：
+链路与 Zeek 那条线一致（同一套投递形状，2026-10 QA 后对齐：共用 `queue.disk` 落盘队列 +
+命名卷 `wazuh-filebeat:/usr/share/filebeat/data` 持久化读取注册表；`data_type=list` 下
+Filebeat 用 RPUSH 追加到队尾，消费端从右端取 ⇒ 最新优先）：
 
 ```text
 alerts.json / archives.json
@@ -50,7 +52,7 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
 | `WAZUH_IMAGE` | `wazuh/wazuh-manager:4.14.8` | manager 镜像（4.14.x） |
 | `WAZUH_FILEBEAT_IMAGE` | `docker.elastic.co/beats/filebeat:8.15.3` | Filebeat 镜像（与 ES/Zeek 一致） |
 | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh-wui` / 占位 | manager 的 API 用户，**生产必须改** |
-| `WAZUH_ARCHIVES_ENABLED` | `false` | 是否采集原始日志（需先开 logall_json，见第二节） |
+| `WAZUH_ARCHIVES_ENABLED` | `false` | 是否采集原始日志（**两处开关**：先 `enable-logall.sh` 开 manager 的 logall_json，再设这里为 `true`，见第二节） |
 
 > 只暴露了 `55000`（API，深瞳后台要用）与可选的 `1514`/`1515`（agent 上报/注册）。
 > 本编排**不带** Wazuh indexer / dashboard：manager 自带的 Filebeat 会因为找不到 indexer

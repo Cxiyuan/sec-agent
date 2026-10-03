@@ -77,12 +77,6 @@ export interface IngestFilterItem {
   updated_at: string | null;
 }
 
-export interface IngestFilterStats {
-  counts: Record<string, number>;
-  last_hit_at: string | null;
-  samples: Record<string, IngestFilterSample[]>;
-}
-
 export interface IngestFilterExample {
   name: string;
   description?: string;
@@ -195,24 +189,6 @@ export interface LogstashStatus {
   queue_depth: number | null;
 }
 
-/** 五段速率（入队/扫描/命中/投递/分析）——哪一段窄，一眼可见 */
-export interface DetectorRate {
-  window_seconds?: number | null;
-  ingest_per_sec_est?: number | null;
-  scanned_per_sec?: number | null;
-  hits_per_min?: number | null;
-  digests_per_min?: number | null;
-  delivered_per_min?: number | null;
-  analyzed_per_min?: number | null;
-  agent_capacity_per_min?: number | null;
-  queue_raw?: number | null;
-  queue_digest?: number | null;
-  raw_trimmed_total?: number | null;
-  limit_saturated?: number | null;
-  requeued_total?: number | null;
-  note?: string;
-}
-
 export interface DetectorStats {
   enabled: boolean;
   queue_raw: number | null;
@@ -246,6 +222,12 @@ export interface DetectorStats {
   handled_skipped?: number;
   /** 选主状态：谁在消费 */
   leader?: { holder: string | null; ttl_seconds: number } | null;
+  /** 隔离队列 shentong:detector:failed 的深度（处理失败被隔离的条数） */
+  queue_failed?: number | null;
+  /** 检测器被关掉（暂停消费）时为 true；界面上必须看得见，否则「没有告警」会被误读成「没攻击」 */
+  paused?: boolean;
+  /** 什么时候被关的（ISO 串） */
+  paused_since?: string | null;
   error?: string;
 }
 
@@ -275,7 +257,7 @@ export interface RuleItem {
 
 // ---------- MCP 接入（智能体取数入口） ----------
 
-/** MCP 令牌：明文只在创建时回一次，列表里只有前缀 */
+/** MCP 令牌：明文只在创建 / 轮换时回一次，列表里只有前缀 */
 export interface McpToken {
   id: string;
   name: string;
@@ -284,6 +266,10 @@ export interface McpToken {
   call_count: number;
   last_used_at: string;
   created_at: string;
+  /** 到期时间（ISO 串）；空串 = 永不过期 */
+  expires_at?: string;
+  /** 后端算好的「已过期」；过期令牌的调用会被直接拒绝 */
+  expired?: boolean;
 }
 
 /** MCP 调用记录（放 Redis 有界列表，重启即清；只作运维可见性） */
@@ -329,7 +315,7 @@ export interface McpStatus {
     error?: string;
   };
   token_prefix: string;
-  tokens: { total: number; enabled: number };
+  tokens: { total: number; enabled: number; expired?: number };
   calls: { kept: number; errors: number; last_at: string };
   conclusions: { total: number; purged_expired: number };
   tools: { count: number; names: string[] };
@@ -354,15 +340,27 @@ export interface AgentPushConfig {
 /** 推送状态（数字来自 Redis，检测器进程写、跨重启可查） */
 export interface AgentPushStatus {
   sent: number;
+  /**
+   * **累计**落过重发队列的批数（自 Redis 计数以来只增不减）。
+   * 它不是积压：界面上「失败待重发」要用 `retry_backlog_batches`。
+   */
   queued: number;
   retried: number;
   retry_failed: number;
+  /** 连试多次仍失败、已判死丢弃的批数（累计） */
+  retry_lost?: number;
+  /** 重试队列写入失败、当场丢掉的条数（累计） */
+  retry_dropped?: number;
+  /** 投递失败且没能进重试队列的条数（累计，真丢） */
+  undelivered?: number;
   last_success_at: string;
   last_error_at: string;
   last_error: string;
-  /** 还在等重发的批数 */
+  /** 还在等重发的批数（queue_depth + processing_depth = 真积压） */
   queue_depth: number;
   processing_depth: number;
+  /** 真积压批数（后端直接给的口径；老后端没有此字段时用上面两数之和） */
+  retry_backlog_batches?: number;
   error?: string;
 }
 
@@ -532,24 +530,23 @@ export interface BaselinePayload {
   note: string;
 }
 
-export interface BaselineStatItem {
-  key: string;
-  feature: string;
-  count: number;
-  mean: number;
-  m2: number;
-  std: number;
-  first_seen: string | null;
-  warmed: boolean;
+// ---------- 当前账号（默认口令提示 / 改密） ----------
+
+/** `GET /api/auth/me`：当前登录账号与口令状态 */
+export interface AuthMe {
+  username: string;
+  role: string;
+  /** true = 还在用出厂口令 admin123，界面上必须红字提示改密 */
+  default_password_in_use: boolean;
+  /** 新口令最短长度（后端规则，界面上按它校验） */
+  password_min_chars: number;
+  note: string;
 }
 
-export interface BaselineStatsLookup {
-  ip: string;
-  key: string;
-  total: number;
-  returned: number;
-  observe_days: number;
-  items: BaselineStatItem[];
-  note?: string;
-  error?: string;
+/** `POST /api/auth/change-password` 的结果 */
+export interface ChangePasswordResult {
+  ok: boolean;
+  default_password_in_use: boolean;
+  /** 后端说明（无状态 JWT 不做服务端吊销，旧令牌到期前仍有效） */
+  note: string;
 }

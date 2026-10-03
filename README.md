@@ -166,7 +166,12 @@ manager 的 API 地址与凭据。
 
 ## 四、部署后必做
 
-1. **登录改密**（admin/admin123）
+1. **登录后立刻改密**：首次登录是 `admin` / `admin123`。改密在左侧「系统配置 → 账户」（或调
+   `POST /api/auth/change-password`，新口令 8~128 位、不得与出厂口令相同）。只要还在用出厂口令，
+   后端启动日志会警告一次、`GET /api/auth/me` 的 `default_password_in_use` 也是 `true`。
+   首次部署想换掉建号口令就设环境变量 `ST_DEFAULT_ADMIN_PASSWORD`（只在**建号那一次**生效，
+   库已建好后再改这个变量不会覆盖既有口令——要用「账户」页的改密）
+
 2. **配置监控网段**（左侧「监控网段」页）——填要监控的网段/IP（每行一条，1~200 条）。
    保存后约 10 秒 Zeek 自动重载，`bpf_filter` / `local_nets` 由网段清单自动生成。
    复核一下真的吃到了：`docker exec <zeek> ps -o args= -C zeek` 里要出现 `-f net <你的网段>`
@@ -181,7 +186,9 @@ manager 的 API 地址与凭据。
 7. （NDR 线路）需要时在「过滤规则 → 降噪过滤」把日常噪声挡在检测器外（**先用试运行看命中样例**）、
    在「过滤规则 → 排除过滤」把某些规则的分析关掉（可选；详见下节）
 8. （NDR 线路）**生成 MCP 令牌**（智能体对接 → MCP 服务）：明文只显示一次，复制进智能体线路的 `NDR_MCP_TOKEN`；
-   该面板还能看令牌用量、最近调用、智能体写回的结论与全部工具清单
+   该面板还能看令牌用量、最近调用、智能体写回的结论与全部工具清单。令牌可以设有效天数
+   （`POST /api/mcp/tokens` 的 `expires_in_days`，不设 = 永不过期）、随时**轮换**（原地换新明文，
+   新的只显示一次）、单独**设到期**（`expires_at`）；过期令牌一律拒绝，列表里会标红
 9. （两条线路）**配好摘要推送**：先给智能体线路设 `PUSH_TOKEN`（或 `ST_PUSH_TOKEN`），
    再到 NDR「智能体对接 → 摘要推送」填地址（`http://<agent>:8000/api/push/digests`）与同一令牌，
    点「测试连接」应为连通；之后检测器命中就会直接推过去（面板可看送达与失败计数）
@@ -192,13 +199,22 @@ manager 的 API 地址与凭据。
 11. **日常盯「运行状态」页**（左侧导航最后一项，每 15 秒自刷新）：队列积压 / 本分钟投递 /
     推送待重发 / **Redis 内存用量** / Wazuh 近 24h 入库量 / **基线观测**（已学维度、过了观测期的维度数、
     在册画像、过阈值异常 TOP5）。历史上 Redis 写满（noeviction）会让
-    整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆
+    整条链路静默卡死 —— 这一页的 Redis 块一旦标红就是这个前兆。
+    失败**不再静默**，各有明确去处：投递失败看「摘要推送」页的 `undelivered` / `retry_lost` /
+    `retry_dropped`（重发队列有 2000 条上限、单批最多试 5 次），处理异常看 `/api/detector/stats`
+    的 `queue_failed`（隔离队列 `shentong:detector:failed`），归一化坏消息在 Redis
+    `shentong:events:dead`（上限 1 万条）与 `shentong:collector:stats` 的累计计数里，
+    采集队列被裁剪时也记计数
 12. **专门核对 Zeek 的日志生成与协议解析**（真实网卡上线后必做一遍）：实际产出了哪些
     `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
     `log_type`/`event_type` 与内置规则的命中情况；反向代理场景的原始客户端 IP 走 `http.log` 的
     `proxied` → 归一化字段 `real_client_ip`（无代理头时为 NULL，`src_ip` 仍是 TCP 对端），
     响应体也采集（`resp_body` + `resp_body_len`，后者是整条响应体的字节数）。逐条清单见
-    [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」
+    [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」。
+    **轮转与清理口径**：轮转文件名带时分秒（`conn.2026-10-01-08-00-00.log`），同一天多次重启
+    不再互相覆盖；清理按 `mtime` 保留 **3 天**（分钟级判定），且 **Filebeat 没在运行时跳过删除**
+    （先确保发运，再清归档）。zeek 容器现在有 `HEALTHCHECK`（只上报不重启，不和入口脚本的
+    自愈循环打架），底部状态：`docker inspect --format '{{.State.Health.Status}}' <zeek 容器>`
 13. （NDR 线路）**确认 ES 集群健康是 green**：事件索引模板在后端启动时自动下发，副本按
     `auto_expand_replicas: "0-1"`（单节点 = 0 副本，所以不会出现「副本分配不出去」的常驻 yellow）。
     后端比 ES 先起来也不会漏：后台线程前 2 分钟每 5 秒重试、之后每 5 分钟复查一次（幂等），
@@ -288,7 +304,8 @@ NDR 线路（采集与检测）：
 | --- | --- | --- |
 | `ST_ES_EVENTS_INDEX` | shentong-events-* | 统一事件索引（确认模板写入 `shentong-events-%{+yyyy.MM.dd}`） |
 | `ST_ES_RETENTION_DAYS` | 30 | ES 保留期（ILM 策略） |
-| `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度（智能体查询窗口的上限） |
+| `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度的**兜底**值；实际跟着运行时保留期走（后台改「保留期」不用重启，见 `investigation/es_query.py:154`） |
+| `ST_ZEEK_INTERFACE` | ens224 | Zeek 抓包网卡的兜底名（界面「Zeek 抓包」保存的值优先） |
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「Zeek 抓包」写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
@@ -297,17 +314,17 @@ NDR 线路（采集与检测）：
 | `ST_COLLECTOR_COLLECT_QUEUE` | shentong:events:collect | Filebeat 写入的**采集队列** |
 | `ST_COLLECTOR_CONSUME_BATCH` / `ST_COLLECTOR_POLL_TIMEOUT` | 500 / 5 | 归一化服务每轮取批与轮询超时 |
 | `ST_COLLECTOR_POST_RETRIES` / `ST_COLLECTOR_RETRY_BACKOFF_SECONDS` | 3 / 1.0 | 写 Logstash 失败的重试次数与退避 |
-| `ST_COLLECTOR_QUEUE_MAX` | 30000 | 采集队列封顶（超出裁掉最旧的，防 Redis 打满） |
+| `ST_COLLECTOR_QUEUE_MAX` | 30000 | 采集队列封顶（保最新、丢最旧；Filebeat 用 RPUSH 写右端） |
 | `ST_DETECTOR_ENABLED` | true | 关掉则只归一化入库、不做检测 |
 | `ST_DETECTOR_AGG_SECONDS` | 300 | 短窗聚合时长（源IP+规则） |
 | `ST_DETECTOR_BATCH_SECONDS` / `ST_DETECTOR_BATCH_MAX` | 20 / 5 | 攒批投递触发条件 |
 | `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE` | 24 | 投递速率上限（对齐模型容量） |
-| `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；空 = 回落旧队列 |
+| `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；**空 = 不投递**（不再进退役队列，会明确计 `undelivered`） |
 | `ST_AGENT_PUSH_TOKEN` | 空 | 推送令牌（与智能体 `ST_PUSH_TOKEN` 一致） |
-| `ST_AGENT_PUSH_ENABLED` | true | 推送开关（关掉回落旧队列） |
+| `ST_AGENT_PUSH_ENABLED` | true | 推送开关（关掉 = 不投递，同样计 `undelivered`） |
 | `ST_AGENT_PUSH_TIMEOUT_SECONDS` / `ST_AGENT_PUSH_MAX_PER_PUSH` | 10 / 200 | 单次请求超时与每批条数（超出分片） |
-| `ST_DETECTOR_PUSH_RETRY_QUEUE` / `..._PROCESSING_QUEUE` | shentong:events:pushretry / ...:processing | 推送失败的重发队列（ReliableQueue） |
-| `ST_DETECTOR_PUSH_RETRY_MAX_PER_ROUND` | 50 | 每轮最多重发多少批 |
+| `ST_DETECTOR_PUSH_RETRY_QUEUE` / `..._PROCESSING_QUEUE` | shentong:events:pushretry / ...:processing | 推送失败的重发队列（ReliableQueue；**上限 2000 批**，超出丢最旧并计 `retry_dropped`） |
+| `ST_DETECTOR_PUSH_RETRY_MAX_PER_ROUND` | 50 | 每轮最多重发多少批（单批最多试 5 次，超限丢并计 `retry_lost`） |
 | `ST_BASELINE_ENABLED` | true | 基线观测总开关（关掉则摘要不带 `baseline` 标签） |
 | `ST_BASELINE_OBSERVE_DAYS` | 7 | 观测期：不足这么多天只学习、不打标 |
 | `ST_BASELINE_ZSCORE` | 2.0 | 数值偏离阈值（当前值 > 均值 + N 个标准差） |
@@ -333,6 +350,7 @@ NDR 线路（采集与检测）：
 | `ST_MCP_PUBLIC_URL` | http://ndr-mcp:8090 | MCP 对外地址（面板显示与自检用） |
 | `ST_MCP_MAX_ROWS` | 500 | 单次查询返回条数上限 |
 | `ST_MCP_CONCLUSION_RETENTION_DAYS` | 7 | 智能体写回结论的保留期（与判重窗口对齐） |
+| `ST_DEFAULT_ADMIN_PASSWORD` | admin123 | **首次部署建号**用的管理员口令（只在建号那一次生效；已建库后改用「账户」页改密） |
 
 智能体线路（取数与分析）：
 

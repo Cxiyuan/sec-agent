@@ -50,6 +50,9 @@ class BaselineEngine:
         self._anomalies: dict[str, dict[str, Any]] = {}  # 最近判出的画像异常（按实体去重）
         self._last_flush = 0.0
         self._last_cleanup = 0.0
+        # 「距上次落库攒了多少条观测」——阈值必须看它，不能看累计值 stats["observed"]：
+        # 累计值一旦越过 baseline_max_observations，之后每条事件都会触发一次整批落库。
+        self._obs_since_flush = 0
         self.stats: Counter[str] = Counter()
 
     # ---------- 逐条：画像观测 ----------
@@ -61,8 +64,10 @@ class BaselineEngine:
         """
         if not settings.baseline_enabled or not settings.profile_enabled:
             return
-        self.stats["observed"] += profiles.observe_entry(self._obs, entry)
-        if self.stats["observed"] >= max(1000, int(settings.baseline_max_observations)):
+        added = profiles.observe_entry(self._obs, entry)
+        self.stats["observed"] += added
+        self._obs_since_flush += added
+        if self._obs_since_flush >= max(1000, int(settings.baseline_max_observations)):
             self.flush()
 
     # ---------- 摘要：打标 ----------
@@ -201,6 +206,7 @@ class BaselineEngine:
             return
         now = time.monotonic()
         self._last_flush = now
+        self._obs_since_flush = 0
         if self._pending or self._wanted:
             self._flush_stats()
         if self._obs:
@@ -235,6 +241,31 @@ class BaselineEngine:
                     },
                 )
         applied = apply_stats(pending)
+        if not applied and any(pending.values()):
+            # `baseline/stats.py` 写失败时只 log 警告并返回 {}（不抛异常）。这里必须把样本并回
+            # 待落库队列下一轮重试，否则「PG 抖一下」这批观测就永久丢失、而且任何指标都看不到。
+            cap = max(1000, int(settings.baseline_max_observations)) * 4
+            for key, values in pending.items():
+                if values:
+                    self._pending.setdefault(key, []).extend(values)
+            total = sum(len(v) for v in self._pending.values())
+            if total > cap:
+                # 极端情况（PG 长时间不可用）只做一次有界丢弃，避免内存无限增长，并留计数可查
+                self.stats["stats_write_dropped"] = (
+                    self.stats.get("stats_write_dropped", 0) + total
+                )
+                self._pending.clear()
+                log.error(
+                    "基线落库持续失败，待落库样本超过 %d 条，已丢弃 %d 条（PG 恢复后请核查）",
+                    cap,
+                    total,
+                )
+            self.stats["stats_write_failed"] = self.stats.get("stats_write_failed", 0) + 1
+            log.warning(
+                "基线落库未成功（原因见上一条 stats 警告），已保留样本待下一轮重试（累计失败 %d 次）",
+                self.stats["stats_write_failed"],
+            )
+            return
         for key, state in applied.items():
             self._base[key] = state
         self.stats["numeric_keys"] = len(applied)

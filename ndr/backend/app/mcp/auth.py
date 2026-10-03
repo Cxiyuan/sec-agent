@@ -58,6 +58,14 @@ def verify(token: str) -> TokenInfo | None:
         ).scalar_one_or_none()
         if row is None or not row.enabled:
             return None
+        # 到期即拒绝（`expires_at` 为空 = 永不过期，既有令牌语义不变）。
+        # 时间列在某些驱动下会以 naive datetime 返回，先补时区再比较，避免 TypeError。
+        expires_at = row.expires_at
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= datetime.now(UTC):
+                return None
         info = TokenInfo(id=str(row.id), name=row.name, prefix=row.prefix)
         row.call_count += 1
         row.last_used_at = datetime.now(UTC)
@@ -77,6 +85,7 @@ def list_tokens() -> list[dict[str, object]]:
                 "enabled": bool(r.enabled),
                 "call_count": int(r.call_count or 0),
                 "last_used_at": r.last_used_at.isoformat() if r.last_used_at else "",
+                "expires_at": r.expires_at.isoformat() if r.expires_at else "",
                 "created_at": r.created_at.isoformat() if r.created_at else "",
             }
             for r in rows

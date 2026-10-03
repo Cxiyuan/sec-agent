@@ -2,11 +2,15 @@
 
 界面在「系统配置」页：配好智能体的接收地址（``http://<agent>:8000/api/push/digests``）
 与令牌（与智能体侧 ``ST_PUSH_TOKEN`` 一致），点「测试连接」确认通，再打开开关。
-没配地址时检测器仍走旧的 Redis 队列交接（升级期不会两头都断）。
+**没配地址/关了开关时不会再走旧的 Redis 队列交接**（那条路已在第 5 期退役、没有消费者）：
+摘要计入 ``undelivered``（未投递）并告警，绝不算成 delivered。
 
 状态里的数字来自 Redis（检测器进程写、跨重启可查），不依赖检测器存活：
-``sent`` 推成功 / ``queued`` 推送失败已落重发队列 / ``retried`` 重发成功 /
-``retry_failed`` 重发失败 / ``queue_depth`` 还在等重发的批数。
+``sent`` 推成功 / ``queued`` **累计**落过重发队列的批数（**不是积压**）/
+``retried`` 重发成功 / ``retry_failed`` 重发失败（网络类，放回队尾下轮再来）/
+``retry_lost`` 连续永久失败（持续 4xx）判死的批 / ``retry_dropped`` 超上限被裁掉的批 /
+``undelivered`` 未投递的摘要数 / ``queue_depth`` 还在等重发的批数 /
+``processing_depth`` 正在重发的批数；**真正的积压看** ``retry_backlog_batches``。
 """
 
 from __future__ import annotations
@@ -30,7 +34,9 @@ router = APIRouter(prefix="/api/agent-push", tags=["agent-push"])
 
 HINT = (
     "推送成功与否由 HTTP 2xx 判定：失败的批落在 NDR 的持久重试队列里，检测循环每轮自动重发；"
-    "智能体侧按「事件组指纹 + 时间桶」判重，同一攻击重复推送只累加计数、不会出第二份报告"
+    "持续永久失败（如 4xx）的批重试若干次后判死并计入 retry_lost，不会永远堵住队列；"
+    "智能体侧按「事件组指纹 + 时间桶」判重，同一攻击重复推送只累加计数、不会出第二份报告。"
+    "没配地址时摘要不会被投递，会计入 undelivered（在状态里可查）。"
 )
 
 
@@ -152,9 +158,25 @@ def retry_agent_push(
     _: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """手动触发一次重发（界面上「立即重发」按钮）。"""
+    """手动触发一次重发（界面上「立即重发」按钮）。
+
+    与检测循环的自动重发共用同一把排空锁（``push.retry_pending`` 内部抢锁），
+    两边同时重发会互抢同一批 processing（重复推送 / 反复 requeue），所以抢不到锁时
+    直接告诉界面「正忙」而不是硬发（QA 必修 3 的收敛口径）。
+    """
     client = _client()
     if client is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Redis 不可用")
     result = push.retry_pending(client, {}, limit=20)
-    return {"result": result, **_payload(db)}
+    busy = bool(result.get("locked"))
+    return {
+        "result": result,
+        "busy": busy,
+        "detail": (
+            "另一次重发正在进行（检测循环或另一个页面），本次没有重复执行"
+            if busy
+            else f"本轮尝试 {result.get('tried', 0)} 批：成功 {result.get('sent', 0)} / "
+            f"失败 {result.get('failed', 0)} / 判死 {result.get('lost', 0)}"
+        ),
+        **_payload(db),
+    }

@@ -52,6 +52,19 @@ _THROTTLE_LOG_INTERVAL = 60  # 限流/丢弃告警最小间隔（秒），避免
 _last_throttle_log = 0.0
 _last_drop_log = 0.0
 
+# 处理失败的消息落到这个隔离队列（有上限，可人工捞回）。
+# 原来 except 之后无条件 ack：单条异常即永久丢，且不计任何错误计数（QA 必修 2）。
+# 为什么先放模块常量：``config.py`` 不在本轮修复的改动范围内；要做成配置项，
+# 就在 config.py 增 ``detector_failed_queue`` / ``detector_failed_max`` 再引用。
+FAILED_KEY = "shentong:detector:failed"
+_FAILED_MAX = 1000
+_FAILED_TTL = 7 * 24 * 3600
+
+# detector_enabled=false 时写这个键（带 TTL）：让「界面说检测已关闭」与
+# 「检测器真的没在消费」能在 Redis 里核对（QA 应修 5）。
+PAUSED_KEY = "shentong:detector:paused"
+_PAUSED_TTL = 300
+
 
 def _to_int(value: Any, default: int) -> int:
     try:
@@ -141,6 +154,9 @@ def run() -> None:
 
     signal.signal(signal.SIGTERM, _on_term)
     atexit.register(leader.release)
+    # 续约走独立线程、按墙上时钟：主循环一轮要消费上千条消息，单轮可能远超租约 TTL，
+    # 靠「回到循环顶部再续约」会在一轮超时后被别的实例抢主（QA 应修 7）。
+    leader.start_auto_renew()
 
     rules = _with_index(_load_rules())
     scopes = _load_scopes()
@@ -167,7 +183,27 @@ def run() -> None:
         settings.detector_agg_seconds,
     )
 
+    paused_logged = False
     while True:
+        if not settings.detector_enabled:
+            # 配置里关掉了：不消费 / 不聚合 / 不投递。原来只有 MCP 与状态端点读这个开关，
+            # 界面显示「检测关闭」但循环照常消费推送（QA 应修 5）。
+            if not paused_logged:
+                log.warning(
+                    "检测器已按配置关闭（detector_enabled=false）：不消费队列、不投递摘要；"
+                    "置回 true 自动恢复"
+                )
+                paused_logged = True
+            if leader.is_leader:
+                leader.release()  # 关闭期间不占租约，让别的实例（若启用）接手
+                elected = False
+            _mark_paused(client)
+            time.sleep(1.0)
+            continue
+        if paused_logged:
+            log.info("检测器已重新启用（detector_enabled=true），恢复消费")
+            paused_logged = False
+            _clear_paused(client)
         if not leader.try_acquire():
             # 非持锁实例：待命热备，不消费 / 不聚合 / 不投递
             if elected and not leader.is_leader:
@@ -180,6 +216,8 @@ def run() -> None:
             # 每次当选只做一次：回灌上次未确认的消息（避免反复回灌正在处理的项）
             raw_q.recover()
             digest_q.recover()
+            # 推送重试队列的回灌也只在当选时做一次（原来每轮都调，会和手动重发抢同一批）
+            push.recover_pending(client)
             backlog, _ = raw_q.depth()
             if backlog > _BACKLOG_WARN:
                 log.warning(
@@ -196,18 +234,18 @@ def run() -> None:
             last_scope_load = now
 
         # 批量消费：一次循环处理一批（固定开销只在每批一次），提升扫描吞吐
-        consumed_any = False
         for payload in raw_q.consume_many(
             settings.detector_consume_batch, settings.detector_poll_timeout
         ):
-            consumed_any = True
             try:
                 _handle(payload, rules, scopes, freq, agg, handled, stats, engine)
             except Exception:
-                log.exception("处理队列消息失败（已确认，避免卡死队列）")
+                # 原来这里 except 后无条件 ack：单条异常即永久丢且不计错误（QA 必修 2）。
+                # 现在转入隔离队列（有上限、可捞回）并计入 dropped.handle_failed。
+                log.exception("处理队列消息失败，转入失败队列 %s（不再静默确认丢弃）", FAILED_KEY)
+                _quarantine(client, payload, stats)
             finally:
                 raw_q.ack(payload)
-        _ = consumed_any
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
@@ -260,9 +298,10 @@ def run() -> None:
                     log.debug("登记丢弃计数写入失败: %s", exc)
             log.info(
                 "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
-                "/ 投递 %d / 限流 %d / 回队 %d / 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
+                "/ 投递 %d / 未投递 %d / 处理失败 %d / 聚合满丢弃 %d / 限流 %d / 回队 %d "
+                "/ 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
                 "/ 策略跳过(内网常规 %d) / 类型跳过(运维 %d / 未知 %d) / 登记丢弃 %d "
-                "| 队列 raw=%d processing=%d | 聚合中 %d | %s",
+                "| 队列 raw=%d processing=%d 失败=%d | 聚合中 %d | %s",
                 leader.me,
                 stats["scanned"],
                 stats["hit"],
@@ -271,6 +310,9 @@ def run() -> None:
                 stats["excluded"],
                 stats["digest"],
                 stats["delivered"],
+                stats["dropped_undelivered"],
+                stats["dropped_handle_failed"],
+                stats["dropped_agg_full"],
                 stats["throttled"],
                 stats["requeued"],
                 stats["dropped_expired"],
@@ -282,6 +324,7 @@ def run() -> None:
                 handled.skipped,
                 q_raw,
                 q_proc,
+                _failed_depth(client),
                 agg.pending(),
                 health.describe(mem),
             )
@@ -306,6 +349,9 @@ def run() -> None:
                         "freq_hit": str(stats["freq_hit"]),
                         "digest": str(stats["digest"]),
                         "delivered": str(stats["delivered"]),
+                        "undelivered": str(stats["dropped_undelivered"]),
+                        "failed": str(stats["dropped_handle_failed"]),
+                        "agg_full": str(stats["dropped_agg_full"]),
                         "raw_trimmed": str(stats["dropped_raw_trimmed"]),
                         "limit_saturated": str(stats["limit_saturated"]),
                         "requeued": str(stats["requeued"]),
@@ -353,7 +399,11 @@ def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[st
 
 
 def _sleep_to_next_minute(now: float | None = None) -> float:
-    """睡到下一个分钟桶边界（投递额度按分钟重置）；最多睡 5 秒保持响应。"""
+    """短睡一会儿再回来看投递额度（额度按分钟桶重置）。
+
+    只睡最多 5 秒：这是「等额度」而不是「睡到边界」——限流期间主循环还要保持可中断
+    （信号/退出、规则重载），下一轮回到这里继续等，直到跨过分钟边界。
+    """
     current = time.time() if now is None else now
     wait = 60.0 - (current % 60.0)
     wait = max(0.2, min(5.0, wait))
@@ -369,10 +419,52 @@ def _rate_remaining(client: Any) -> int:
     return max(0, cap - _to_int(client.get(rate_bucket()), 0))
 
 
+def _failed_depth(client: Any) -> int:
+    """隔离队列当前深度（统计日志用；取不到就报 0）。"""
+    try:
+        return int(client.llen(FAILED_KEY))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取失败队列深度失败: %s", exc)
+        return 0
+
+
+def _quarantine(client: Any, payload: str, stats: Counter[str]) -> None:
+    """把处理失败的消息挪进隔离队列（有上限、有 TTL、可人工捞回），并计入丢弃统计。
+
+    原来 except 之后无条件 ack = 单条异常永久丢、且没有任何计数（QA 必修 2）。
+    队列满时丢最老的：宁可留下最近的现场。
+    """
+    _drop(client, "handle_failed", 1, stats)
+    try:
+        client.lpush(FAILED_KEY, payload)
+        client.ltrim(FAILED_KEY, 0, _FAILED_MAX - 1)
+        client.expire(FAILED_KEY, _FAILED_TTL)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写入失败队列 %s 失败: %s", FAILED_KEY, exc)
+
+
+def _mark_paused(client: Any) -> None:
+    """打「检测器被配置关闭」的标记（带 TTL，反复续期直到重新启用）。"""
+    try:
+        client.set(PAUSED_KEY, datetime.now(UTC).isoformat(), ex=_PAUSED_TTL)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("写检测器暂停标记失败: %s", exc)
+
+
+def _clear_paused(client: Any) -> None:
+    """清「检测器被配置关闭」的标记。"""
+    try:
+        client.delete(PAUSED_KEY)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("清检测器暂停标记失败: %s", exc)
+
+
 def _drop(client: Any, reason: str, count: int, stats: Counter[str]) -> None:
     """记录被丢弃的摘要，避免「静默漏分析」。
 
-    原因：expired（超龄未及分析）/ trimmed（队列超上限裁掉最老的）。
+    原因：expired（超龄未及分析）/ trimmed（队列超上限裁掉最老的）/
+    raw_trimmed（raw 队列超上限）/ handle_failed（处理异常，已转隔离队列）/
+    undelivered（没配推送地址，摘要没投出去）/ agg_full（聚合态满，命中未聚合）。
     计数写 Redis（跨重启可查），并限频告警。
     """
     global _last_drop_log
@@ -468,23 +560,19 @@ def _flush(
         return
 
     # 交接契约（第 5 期）：优先 **HTTP 推**给智能体（2xx 即回执）；
-    # 没配地址/关了开关 → 回落旧的 LPUSH 队列；推送失败 → 落持久重试队列后台重发。
+    # 没配地址/关了开关 → 不再写已退役的 shentong:events:dispatch（全仓无消费者），
+    # 明确记为「未投递」；推送失败 → 落持久重试队列后台重发。
     # 三种情况下「批」的语义不变：一批 = 一次图运行 = 一次跨摘要关联归组。
     digests = [d for _, d in items]
     outcome, detail = push.deliver(client, digests, stats)
     if outcome == "off":
-        delivery_key = settings.detector_delivery_queue
-        try:
-            client.lpush(
-                delivery_key,
-                json.dumps(digests, ensure_ascii=False, default=str),
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("投递摘要到队列失败，摘要放回队尾待重试: %s", exc)
-            for payload, _ in items:
-                q.requeue(payload)
-            return
-        log.info("已投递 %d 条聚合摘要到队列 %s", len(items), delivery_key)
+        # 没有可投递的去处：摘要不会进入分析，必须让它可见（dropped.undelivered +
+        # /api/agent-push 的 undelivered 计数），绝不能计成 delivered（QA 必修 1）。
+        _drop(client, "undelivered", len(items), stats)
+        push.record(client, "undelivered", len(items), detail or "未配置推送地址或已关闭")
+        for payload, _ in items:
+            q.ack(payload)
+        return
     elif outcome == "lost":
         # 推送失败、重试队列也写不进去（Redis 挂了）：摘要放回检测队列，绝不静默丢
         log.warning("推送失败且无法落重试队列（%s），%d 条摘要放回队尾", detail, len(items))
@@ -511,7 +599,7 @@ def _trim_queue(
     limit: int | None = None,
     reason: str = "trimmed",
 ) -> None:
-    """队列超上限时裁掉最老的（LPUSH 新→旧，故裁尾部），保证积压有界。"""
+    """队列超上限时保最新、裁最旧（LPUSH 头部最新，故裁尾部），保证积压有界。"""
     cap = settings.detector_queue_max if limit is None else limit
     if cap <= 0:
         return
@@ -611,7 +699,9 @@ def _handle(
     hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:
         stats["hit"] += 1
-        _aggregate(agg, entry, hit, entry.raw, source, **_exclusion_of(entry, hit, stats))
+        _aggregate(
+            agg, entry, hit, entry.raw, source, stats=stats, **_exclusion_of(entry, hit, stats)
+        )
 
     # 注意：命中逐条规则后**必须继续**评估频率规则。
     # 若在此 return，内置逐条规则（如“扫描尝试连接”匹配所有 scan_attempt）会把
@@ -622,7 +712,9 @@ def _handle(
             continue
         if freq.observe(rule, entry):
             stats["freq_hit"] += 1
-            _aggregate(agg, entry, rule, entry.raw, source, **_exclusion_of(entry, rule, stats))
+            _aggregate(
+                agg, entry, rule, entry.raw, source, stats=stats, **_exclusion_of(entry, rule, stats)
+            )
 
 
 def _exclusion_of(entry: Any, rule: dict[str, Any], stats: Counter[str]) -> dict[str, Any]:
@@ -653,6 +745,7 @@ def _aggregate(
     raw_doc: dict[str, Any],
     source: str,
     *,
+    stats: Counter[str],
     excluded: bool = False,
     exclude_reason: str = "",
 ) -> None:
@@ -660,8 +753,9 @@ def _aggregate(
 
     `raw_doc` 必须是**原始文档**（`entry.raw`）而不是拍平后的字段：智能体侧会拿它
     再跑一次 `normalize()` 做证据展示（`agent/backend/app/agents/nodes.py`）。
+    `stats` 只用来统计「聚合态满导致本条命中没被聚合」——这属于静默降级，必须可见（QA 应修 6）。
     """
-    agg.add(
+    added = agg.add(
         # 源 IP 缺失时用 "-"（未知）归并；不能用 dst_ip 代替——那是目标，语义错位
         src_ip=str(entry.src_ip or "-"),
         rule=str(rule.get("name") or ""),
@@ -673,3 +767,6 @@ def _aggregate(
         excluded=excluded,
         exclude_reason=exclude_reason,
     )
+    if not added:
+        # 聚合态数量达上限，本条命中被直接丢弃（聚合器侧同时写 dropped.agg_full）
+        stats["dropped_agg_full"] += 1

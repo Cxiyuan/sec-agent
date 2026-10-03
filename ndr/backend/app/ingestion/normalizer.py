@@ -28,8 +28,11 @@ log = get_logger(__name__)
 # Zeek 日志类型判别：按「特征字段」识别（各日志类型字段集不同）。
 # 只在 Filebeat **没给出** log_type 时兜底（历史扁平文档 / 人工重放 / 旧队列积压）。
 # 顺序 = 特异性从高到低：判定用 any()，撞上一个字段就定案，所以专用流必须排在共用字段的流
-# 前面（如 ja4ssh 与 ssh.log 都有 client/server，ja4ssh 必须在 ssh 之前）。
-# ja4ssh/ja4d 的字段取自上游脚本，批 2 用真实样本校正。
+# 前面。ja4ssh 只认 `kex`（ssh.log 没有这个字段）；ja4d 先认 `ja4d`，退一步才认通用的
+# `hash`（老式扁平文档只有 hash）——但如果 ja4d 排在前面，JA4SSH 会被它用 hash 抢走，
+# 所以 ja4ssh 必须在 ja4d 之前。
+# ja4ssh/ja4d 的字段取自上游脚本，批 2 用真实样本校正；这两个日志因 FoxIO 许可证暂不进仓库，
+# 实际不会出现，这里只保证历史扁平文档不会串型。
 _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ("x509", ("certificate", "fingerprint", "basic_constraints", "host_cert", "client_cert")),
     ("notice", ("note", "msg", "sub")),
@@ -39,8 +42,8 @@ _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ("dns", ("query", "qtype", "rcode")),
     ("smtp", ("mailfrom", "rcptto", "subject", "helo")),
     ("dhcp", ("assigned_addr", "client_addr", "mac")),
-    ("ja4ssh", ("hash", "direction", "kex")),
-    ("ja4d", ("hash", "ja4d")),
+    ("ja4ssh", ("kex",)),
+    ("ja4d", ("ja4d", "hash")),
     ("ssh", ("auth_success", "auth_attempts", "client", "server")),
     ("stats", ("pkts_proc", "pkts_dropped", "events_proc", "pkt_lag")),
     ("ntp", ("stratum", "root_delay", "root_disp", "ref_id")),
@@ -164,6 +167,24 @@ def _raw_with_type(doc: dict[str, Any], log_type: str, source_file: str) -> dict
 
 # ---------- 基础转换 ----------
 
+#: 坏时间戳的可见化：解析失败以前是**静默**回退成 `now()`，坏时间戳会无声变成「现在」，
+#: 时间线与频率滑窗跟着一起错。前 `_MAX_TS_WARNINGS` 条打 warning（防刷屏），计数一直累加。
+_MAX_TS_WARNINGS = 5
+_bad_ts_count = 0
+
+
+def _note_bad_ts(value: Any) -> None:
+    """坏时间戳告警（限流）：原文照旧留在 raw 里，这里只补一条线索。"""
+    global _bad_ts_count
+    _bad_ts_count += 1
+    if _bad_ts_count <= _MAX_TS_WARNINGS:
+        detail = value if isinstance(value, str) else str(value)
+        log.warning(
+            "时间戳无法解析（第 %d 次，后续同类不再重复告警），已按当前时间入库：%s",
+            _bad_ts_count,
+            detail[:64],
+        )
+
 
 def _to_dt(v: Any) -> datetime:
     if isinstance(v, datetime):
@@ -175,7 +196,9 @@ def _to_dt(v: Any) -> datetime:
             # Python 3.11+ 的 fromisoformat 已直接支持结尾的 "Z"
             return datetime.fromisoformat(v)
         except ValueError:
+            _note_bad_ts(v)
             return datetime.now(UTC)
+    _note_bad_ts(v)
     return datetime.now(UTC)
 
 
@@ -262,9 +285,26 @@ def _split_uri(uri: str) -> tuple[str, str]:
     return raw, ""
 
 
+_AUTH_HEADER_RE = re.compile(r"(?im)^[ \t]*authorization[ \t]*:[ \t]*([^\r\n]+)")
+
+
+def _auth_from_headers(headers: Any) -> str:
+    """从 Zeek 收集的原始头文本里取 Authorization 值。
+
+    `zeek/site/shentong-httpheaders.zeek` 把请求头拼成 `Name: value\\n` 的多行字符串塞进
+    `req_headers`；Zeek 的 http.log **没有**顶层 authorization 字段，所以不解析这里的话
+    `auth_scheme` 永远是空的，内置「Token/JWT 异常使用」的第二条分支（auth_scheme in
+    [bearer, jwt]）永不命中。
+    """
+    match = _AUTH_HEADER_RE.search(str(headers or ""))
+    return match.group(1) if match else ""
+
+
 def _auth_scheme(doc: dict[str, Any]) -> str:
     """识别认证方式；**只保留 scheme，不保留凭证本体**。"""
     header = _first(doc, ("authorization", "Authorization", "http.authorization", "auth_header"))
+    if not header:
+        header = _auth_from_headers(doc.get("req_headers"))
     if header:
         return str(header).split(" ")[0].strip().lower()[:16]
     if doc.get("username") and doc.get("password") is not None:
@@ -406,6 +446,10 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "ja4": str(doc.get("ja4") or "")[:64],
         "tls_version": str(doc.get("version") or doc.get("tls_version") or "")[:32],
         "cert_issuer": str(doc.get("cert_issuer") or doc.get("issuer") or "")[:256],
+        # qtype 存的是 **Zeek 原始值**：dns.log 里 `qtype` 是数字码（1=A、28=AAAA、16=TXT…），
+        # `qtype_name` 才是人类可读名。对外口径（规则/检索/前端）统一按数字码：
+        # C 组规则只用 "16"、D 组 catalog 按数字码写描述、G 组前端按数字码显示；
+        # 只有上游**没给**数字码时才回落到 qtype_name。
         "qtype": str(doc.get("qtype") or doc.get("qtype_name") or "")[:16],
         "filename": str(doc.get("filename") or "")[:256],
         "mime_type": str(doc.get("mime_type") or "")[:128],
@@ -473,7 +517,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
         user_agent=str(doc.get("user_agent") or ""),
         status_code=status_code,
         bytes_out=_to_int(doc.get("orig_bytes")),
-        auth_scheme=_auth_scheme(doc),
+        auth_scheme=_auth_scheme({**doc, "req_headers": extra.get("req_headers")}),
         account=_extract_account(
             str(extra["uri_path"]),
             str(extra["body"]),
@@ -524,6 +568,7 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
     is_archive = not rule
     agent = doc.get("agent")
     hostname = agent.get("name") if isinstance(agent, dict) else doc.get("agent")
+    source_file = _source_file(doc)  # Filebeat 带来的原始文件（alerts.json / archives.json）
 
     url = str(data.get("url") or data.get("uri") or "")
     path, qs = _split_uri(url)
@@ -572,7 +617,10 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
         account=_extract_account(path, str(body_value or ""), qs, user_field),
         severity=severity,
         summary=summary,
-        raw=_sanitize_raw(doc),
+        # 与 Zeek 侧同一个口径（`normalize_zeek` 的 raw）：raw 里带 log_type/source_file，
+        # MCP 的 raw_evidence 拿到原文就知道是哪条流、哪个文件来的；Wazuh 的告警与归档
+        # （archives.json）共用这张表，更需要 raw 自解释。
+        raw=_raw_with_type(doc, log_type, source_file),
     )
 
 
@@ -612,14 +660,20 @@ def _zeek_event_type(log_type: str, note: str | None, conn_state: str | None) ->
         return "zeek_notice"
 
     if conn_state:
-        if conn_state in ("S0", "S1", "S2", "S3"):
+        # 只把 S0（只发了 SYN、没有任何回应）当扫描/探活；S1/S2/S3 是**握手已经建立**，
+        # 与 app/triage_policy.py 的 SUCCESS_CONN_STATES（SF/S1/S2/S3/RSTO/RSTR）口径一致，
+        # 归「连接已建立」。
+        # 改造前把这四个状态一股脑判成 scan_attempt：带 `event_type ne scan_attempt` 的内置
+        # 规则（横向移动管理端口、异常外联端口）在这些已建立会话上永不命中，反过来「扫描
+        # 尝试连接」规则被灌误报。
+        if conn_state == "S0":
             return "scan_attempt"
+        if conn_state in ("S1", "S2", "S3", "SF"):
+            return "conn_established"
         if conn_state == "REJ":
             return "rejected_connection"
         if conn_state == "SH":
             return "connection_shutdown"
-        if conn_state == "SF":
-            return "conn_established"
     return "generic"
 
 

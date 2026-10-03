@@ -29,6 +29,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.base import get_db
 from app.db.models import SystemConfig, User
+from app.ingestion import es_config
 from app.ingestion.es_client import get_es
 from app.workers.log import get_logger
 
@@ -286,10 +287,15 @@ def _ingest_stats() -> dict[str, Any]:
             ]
         }
     }
+    # 索引名走运行时配置（后台「系统配置 → Elasticsearch」能改），不能用静态
+    # settings.es_events_index —— 否则改了索引名这里还在查旧索引，界面显示「没有入库」
+    # 而实际数据在别的索引里（同类读路径见 app/ingestion/es_config.py）。
+    cfg = es_config.current()
+    index = str(cfg.get("es.events_index") or settings.es_events_index)
     try:
         es = get_es()
         resp = es.search(
-            index=settings.es_events_index,
+            index=index,
             query=query,
             size=0,
             aggs={
@@ -320,15 +326,22 @@ def _ingest_stats() -> dict[str, Any]:
 
 
 def _agents_summary(agents: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"total": len(agents), "active": 0, "disconnected": 0, "never_connected": 0}
+    """按状态分桶计数：每个 agent 只落一个桶，`total` = 各桶之和。
+
+    原来的实现把 `pending` / `never_connected` 也算进 `disconnected`，而
+    `never_connected` 又另计一次 → 三个桶加起来大于 `total`（界面上的分项与总数对不上）。
+    """
+    summary = {
+        "total": len(agents),
+        "active": 0,
+        "disconnected": 0,
+        "never_connected": 0,
+        "pending": 0,
+    }
     for item in agents:
         status = str(item.get("status") or "").lower()
-        if status in ("active", "disconnected", "never_connected", "pending"):
-            summary["active" if status == "active" else "disconnected"] += (
-                1 if status in ("active", "disconnected") else 0
-            )
-        if status == "never_connected":
-            summary["never_connected"] += 1
+        if status in summary and status != "total":
+            summary[status] += 1
     return summary
 
 
@@ -450,6 +463,11 @@ def test_wazuh(
 def get_status(
     db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(get_current_user)]
 ):
+    """Wazuh 探活 + 近 24h 入库量。
+
+    与 `GET /api/wazuh`（`_payload`）内容重叠、界面没调它；保留为对外只读能力
+    （复刻 Wazuh API 的 status 资源，脚本/智能体可直接取）。
+    """
     cfg = _merge(_stored(db))
     probe = _probe(cfg)
     return {**probe, "ingest": _ingest_stats()}
@@ -462,6 +480,10 @@ def list_agents(
     status: str = "",
     limit: int = 500,
 ):
+    """Wazuh Agent 清单（可按状态过滤）+ 分桶统计。
+
+    同上：界面通过 `GET /api/wazuh` 拿同样的清单，这个独立入口保留给外部只读使用。
+    """
     cfg = _merge(_stored(db))
     params: dict[str, Any] = {
         "limit": max(1, min(int(limit or 500), 1000)),

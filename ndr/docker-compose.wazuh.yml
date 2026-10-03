@@ -9,8 +9,10 @@
 #   wazuh-filebeat —— 官方 Filebeat 镜像，只读挂载 manager 的日志卷，
 #                     把 alerts.json / archives.json 投进 Redis 采集队列
 #
-# 采集链路与 Zeek 那条线一致：
+# 采集链路与 Zeek 那条线一致（同一套投递形状，2026-10 QA 后对齐）：
 #   wazuh-filebeat → Redis(shentong:events:collect) → normalizer → 检测器 + Logstash → ES
+#   共用同一份 queue.disk 落盘队列 + 命名卷持久化读取注册表（见 wazuh-filebeat.volumes）：
+#   不持久化的话每次重建都会从头重读全部 alerts.json → 重复入库 + Redis 队列洪水。
 #
 # 为什么不复用 manager 自带的 Filebeat：它是为「发往 Wazuh indexer」预设的，而
 # 「4.14 自带的 Filebeat 能不能配 output.redis」没有实机验证过（README §三 的老问题）。
@@ -71,16 +73,25 @@ services:
       REDIS_PORT: "6379"
       REDIS_DB: "0"
       REDIS_KEY: shentong:events:collect
-      # 默认只收告警；原始日志（logall_json）量级大得多，要用再打开
+      # 默认只收告警；原始日志（logall_json）量级大得多，要用再打开。
+      # ⚠ 打开需要两步：manager 侧跑 wazuh/enable-logall.sh，且这里（.env）设
+      #   WAZUH_ARCHIVES_ENABLED=true 后重启 wazuh-filebeat；只做前者则 archives.json
+      #   被写出来也不会上报。
       WAZUH_ARCHIVES_ENABLED: ${WAZUH_ARCHIVES_ENABLED:-false}
     volumes:
       - ./wazuh/filebeat.yml:/usr/share/filebeat/wazuh.yml:ro
       - wazuh-logs:/var/ossec/logs:ro
+      # Filebeat 读取注册表 + queue.disk 落盘队列（path.data 默认 /usr/share/filebeat/data）。
+      # 与 Zeek 线的 zeek-filebeat 卷同理：不持久化 → 容器每次重建都从头重读全量日志，
+      # 重复投递 + Redis 队列洪水（生产上已踩到）。
+      - wazuh-filebeat:/usr/share/filebeat/data
     depends_on:
       - wazuh-manager
       - redis
 
 volumes:
+  # Filebeat 读取注册表 / 落盘队列（wazuh-filebeat 服务用）
+  wazuh-filebeat:
   wazuh-etc:
   wazuh-logs:
   wazuh-queue:

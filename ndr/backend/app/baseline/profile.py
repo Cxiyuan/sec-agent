@@ -163,14 +163,6 @@ def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
     return added
 
 
-def window_observations(logs: list[UnifiedLog]) -> dict[str, dict[str, Any]]:
-    """按实体聚合一批日志，key = f"{kind}|{entity_key}"（测试与回溯用）。"""
-    out: dict[str, dict[str, Any]] = {}
-    for entry in logs:
-        observe_entry(out, entry)
-    return out
-
-
 # ---------- 读画像 ----------
 
 

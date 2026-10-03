@@ -60,18 +60,22 @@ export function StatusPanel() {
   }, []);
 
   React.useEffect(() => {
-    load().catch(() => {});
+    void load();
   }, [load]);
 
   React.useEffect(() => {
     if (!auto) return;
-    const t = setInterval(() => load().catch(() => {}), 15000);
+    const t = setInterval(() => void load(), 15000);
     return () => clearInterval(t);
   }, [auto, load]);
 
   const redis = stats?.redis;
   const pushActive = push?.config.active ?? false;
-  const pending = (push?.status.queue_depth ?? 0) + (push?.status.processing_depth ?? 0);
+  // 真积压 = 后端给的 retry_backlog_batches（= queue_depth + processing_depth）。
+  // push.status.queued 是「累计入过重发队列」的只增不减计数，拿它当积压会越显示越大。
+  const pending =
+    push?.status.retry_backlog_batches ??
+    (push?.status.queue_depth ?? 0) + (push?.status.processing_depth ?? 0);
 
   return (
     <Card>
@@ -84,7 +88,7 @@ export function StatusPanel() {
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-3">
-          <Button onClick={() => load()} disabled={busy}>
+          <Button onClick={() => void load()} disabled={busy}>
             {busy ? "读取中…" : "刷新"}
           </Button>
           <Button variant="outline" onClick={() => setAuto((v) => !v)}>
@@ -101,6 +105,15 @@ export function StatusPanel() {
             <Badge variant={stats?.enabled ? "info" : "outline"}>
               {stats?.enabled ? "检测开启" : "检测关闭（只归一化入库）"}
             </Badge>
+            {/* 被暂停消费时「没有告警」跟「没有攻击」是两回事，必须显式标出来 */}
+            {stats?.paused && (
+              <Badge variant="critical">
+                检测器已暂停消费
+                {stats.paused_since
+                  ? `（自 ${stats.paused_since.replace("T", " ").slice(0, 19)}）`
+                  : ""}
+              </Badge>
+            )}
             {stats?.leader?.holder ? (
               <Badge variant="secondary">消费者 {stats.leader.holder}</Badge>
             ) : (
@@ -121,6 +134,12 @@ export function StatusPanel() {
             <span>
               本分钟投递 <b>{stats?.delivered_this_minute ?? "—"}</b>
               {stats?.rate_limit_per_minute ? ` / ${stats.rate_limit_per_minute}` : ""}
+            </span>
+            <span
+              className={stats?.queue_failed ? "text-destructive" : undefined}
+              title="处理失败被隔离到 shentong:detector:failed 的条数（不会自动重来，需要人工看）"
+            >
+              隔离队列 <b>{stats?.queue_failed ?? "—"}</b>
             </span>
           </div>
           {stats?.last_dropped_at && (
@@ -171,7 +190,9 @@ export function StatusPanel() {
           <p className="mb-2 flex items-center gap-2 text-muted-foreground">
             摘要推送
             <Badge variant={pushActive ? "info" : "outline"}>
-              {pushActive ? "HTTP 推送已启用" : "未启用（回落旧队列交接）"}
+              {pushActive
+                ? "HTTP 推送已启用"
+                : "未启用（会落回已退役的旧 Redis 队列，不再有人消费）"}
             </Badge>
             {pending > 0 ? <Badge variant="high">待重发 {pending} 批</Badge> : null}
           </p>
@@ -179,8 +200,17 @@ export function StatusPanel() {
             <span>
               已送达 <b>{push?.status.sent ?? "—"}</b>
             </span>
-            <span>
-              失败待重发 <b>{push?.status.queued ?? "—"}</b>
+            <span
+              className={pending ? "text-destructive" : undefined}
+              title="当前真的压在重发队列里没发出去的批数"
+            >
+              待重发（真积压） <b>{push ? pending : "—"}</b>
+            </span>
+            <span
+              className="text-muted-foreground"
+              title="累计值（自 Redis 计数以来落过重发队列的批数），不是当前积压"
+            >
+              累计入队 <b>{push?.status.queued ?? "—"}</b>
             </span>
             <span>
               重发成功 <b>{push?.status.retried ?? "—"}</b>
