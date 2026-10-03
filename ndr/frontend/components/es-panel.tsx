@@ -17,19 +17,21 @@ import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/component
 
 /** 读取失败的接口名（错误条用）。 */
 const SRC = {
-  config: "ES 连接配置（/api/es/config）",
+  config: "ES 接入配置（/api/es/config）",
   status: "ES 状态（/api/es/status）",
 } as const;
 
-/** ES 管理：连接配置 / 保留期（ILM）/ 状态。 */
+/**
+ * ES 管理：接入状态 / 索引族与保留期（ILM）/ 集群状态。
+ *
+ * **没有连接配置表单**：Elasticsearch 随 NDR 一起部署，地址与凭据由部署环境固定
+ * （`.env` 的 `ES_*` → 后台的 `ST_ES_*`），用户不需要配、也无处可配。这里只把「现在连的是
+ * 哪台」显示出来，能改的只有「日志落哪族索引、留多久」这类策略项。
+ */
 export function EsPanel() {
   const errs = usePanelErrors();
   const [cfg, setCfg] = React.useState<EsConfigInfo | null>(null);
   const [status, setStatus] = React.useState<EsStatus | null>(null);
-  const [url, setUrl] = React.useState("");
-  const [user, setUser] = React.useState("");
-  const [password, setPassword] = React.useState("");
-  const [clearPassword, setClearPassword] = React.useState(false);
   const [eventsIndex, setEventsIndex] = React.useState("");
   const [retention, setRetention] = React.useState("30");
   const [msg, setMsg] = React.useState("");
@@ -40,8 +42,6 @@ export function EsPanel() {
     await Promise.all([
       loadInto(errs, SRC.config, "/api/es/config", (d: EsConfigInfo) => {
         setCfg(d);
-        setUrl(d.url);
-        setUser(d.username || "");
         setEventsIndex(d.events_index || "");
         setRetention(String(d.retention_days));
       }),
@@ -61,38 +61,14 @@ export function EsPanel() {
       await apiFetch<EsConfigInfo>("/api/es/config", {
         method: "PUT",
         body: JSON.stringify({
-          url,
-          username: user,
-          // 不传（undefined）= 不改动；"" / clear_password = 清掉已保存的密码
-          // （后端会删掉库内覆盖值，于是回落到环境变量 ES_PASSWORD）
-          password: clearPassword ? "" : password || undefined,
-          clear_password: clearPassword,
           events_index: eventsIndex,
           retention_days: Number(retention) || undefined,
         }),
       });
-      setPassword("");
-      setClearPassword(false);
       setMsg("已保存（分析链路即时生效）");
       void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function test() {
-    setBusy(true);
-    setMsg("");
-    try {
-      const r = await apiFetch<{ cluster_name?: string; version?: string }>("/api/es/test", {
-        method: "POST",
-        body: JSON.stringify({ url, username: user, password: password || undefined }),
-      });
-      setMsg(`连接成功：${r.cluster_name ?? "-"}（v${r.version ?? "-"}）`);
-    } catch (e) {
-      setMsg(e instanceof ApiError ? errorText(e.body) : "连接失败");
     } finally {
       setBusy(false);
     }
@@ -120,8 +96,12 @@ export function EsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Elasticsearch（连接 / 保留 / 状态）</CardTitle>
+        <CardTitle className="text-sm">Elasticsearch（接入 / 保留 / 状态）</CardTitle>
         <p className="text-xs text-muted-foreground">
+          Elasticsearch 随本项目一起部署，<b>连接信息由部署环境固定</b>
+          （`.env` 的 `ES_URL` / `ES_USER` / `ES_PASSWORD` → 后台的 `ST_ES_*`），
+          这里只显示现在连的是哪台、没有填写入口；要换 ES 就改 `.env` 再
+          `docker compose up -d backend` 重建容器。
           保留期通过 ILM 策略自动下发给 ES，让索引自动 rollover 与删除；
           <b>不得小于回溯封顶（{cfg?.retention_min_days ?? 7} 天）</b>，否则回溯会查不到日志。
         </p>
@@ -130,43 +110,18 @@ export function EsPanel() {
         {msg && <p className="text-sm text-primary">{msg}</p>}
         <PanelError errors={errs} />
 
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border p-3 text-xs">
+          <span className="text-muted-foreground">部署环境给定的连接：</span>
+          <span>
+            地址 <span className="font-mono">{cfg?.url || "-"}</span>
+          </span>
+          <span>
+            用户名 <span className="font-mono">{cfg?.username || "（免认证）"}</span>
+          </span>
+          <span>密码 {cfg?.password_set ? "已设置" : "未设置"}</span>
+        </div>
+
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">ES 地址</label>
-            <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://es:9200" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">用户名</label>
-            <Input value={user} onChange={(e) => setUser(e.target.value)} placeholder="留空=免认证" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              密码（{cfg?.password_set ? "已设置，留空不改" : "未设置"}）
-            </label>
-            <Input
-              type="password"
-              value={password}
-              disabled={clearPassword}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={clearPassword ? "保存后密码被清空" : "留空则不修改"}
-            />
-            {/* 后端约定：不传或者传 undefined = 不改动、传 "" = 清空。光留空没法表达「清空」。 */}
-            {cfg?.password_set && (
-              <span className="mt-1 flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={clearPassword}
-                  onChange={(e) => setClearPassword(e.target.checked)}
-                />
-                <span className="text-destructive">清除已保存的密码（保存后生效）</span>
-              </span>
-            )}
-            {clearPassword && (
-              <span className="mt-1 block text-xs text-muted-foreground">
-                注意：如果密码是环境变量（ES_PASSWORD）给的，清空数据库里的覆盖值后会回落到环境变量那个值。
-              </span>
-            )}
-          </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
               索引模式（Zeek 与 Wazuh 统一落这一族）
@@ -187,12 +142,9 @@ export function EsPanel() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {/* 配置没读到就禁止保存：空表单点保存会把地址/索引模式覆盖掉 */}
+          {/* 配置没读到就禁止保存：空表单点保存会把索引模式/保留期覆盖掉 */}
           <Button onClick={save} disabled={busy || !cfg}>
-            保存连接配置
-          </Button>
-          <Button variant="outline" onClick={test} disabled={busy || !url}>
-            测试连接
+            保存索引模式与保留期
           </Button>
           <Button variant="secondary" onClick={applyRetention} disabled={busy}>
             下发保留策略（ILM）

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -21,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.collector import template
 from app.config import settings
-from app.db.base import get_db
+from app.db.base import SessionLocal, get_db
 from app.db.models import SystemConfig, User
 from app.workers.log import get_logger
 
@@ -31,12 +32,15 @@ router = APIRouter(prefix="/api/logstash", tags=["logstash"])
 
 PARAMS_KEY = "logstash.params"
 
+# 生成管道里 ES 地址那一行（对齐部署环境时用来读当前值；只认双引号写法，
+# 与 `template.render()` 输出一致）。
+_HOSTS_RE = re.compile(r'hosts\s*=>\s*\["([^"]*)"\]')
+
 
 class ParamsIn(BaseModel):
-    """常用参数（表单）。"""
+    """常用参数（表单）。**ES 地址不在这里** —— 连接信息由部署环境固定（`ST_ES_URL`）。"""
 
     es_enabled: bool = True
-    es_host: str = template.DEFAULT_ES_HOST
     events_index: str = template.DEFAULT_EVENTS_INDEX
 
 
@@ -146,37 +150,51 @@ def derived_from_generated_pipeline() -> bool:
     return _HEADER_MARK in read_pipeline()
 
 
-def sync_es_endpoint(db: Session, es_url: str) -> dict[str, Any]:
-    """把 ES 面板的连接地址同步进管道参数；必要时重渲染管道。
+def _resync_es_host(db: Session) -> str | None:
+    """把**生成管道**里的 ES 地址对齐到部署环境，返回动作说明（None = 没动）。
 
-    返回 ``{"action": "none" | "updated" | "warning", ...}``：
+    为什么需要它：读路径（`es_config`）永远取部署环境的 `ST_ES_URL`，写路径的地址却烧在
+    管道文件的 `elasticsearch { hosts => [...] }` 里。改过 `.env` 再重启后，两边不一致就会
+    出现「采集有数但界面查不到」的假故障。连接信息既然不再由界面配置，这里就必须跟部署
+    环境自动对齐（第 6 期是「界面改地址 → 同步管道」，那条链已随配置 UI 一起删除）。
 
-    - ``none``：地址没变（或为空），什么都没做；
-    - ``updated``：参数已更新且管道已重渲染下发（Logstash 约 10 秒自动重载）；
-    - ``warning``：参数已更新，但管道不是自动生成的（或写入失败），需要人工去
-      「采集 → Logstash 管道」确认写侧地址 —— 不静默覆盖人的编辑。
+    只在**能确认文件就是我们渲染出来的那一份**时才改写：从文件里取出当前的 hosts，用它
+    重渲染一遍；与文件逐字相同说明除地址外没有别的编辑 → 安全改写。否则只告警不动手
+    （人手工编辑过的管道不能被自动流程覆盖）。地址本来就一致时什么都不做。
     """
-    target = (es_url or "").strip()
-    if not target:
-        return {"action": "none", "detail": "ES 地址为空，未同步"}
-    params = {**_defaults(), **(_stored_params(db) or {})}
-    if str(params.get("es_host") or "") == target:
-        return {"action": "none", "es_host": target}
-    params["es_host"] = target
-    _save_params(db, params)
     if not derived_from_generated_pipeline():
-        return {
-            "action": "warning",
-            "es_host": target,
-            "warning": (
-                "ES 地址已写入管道参数，但当前管道是手工编辑的版本，未自动重渲染；"
-                "请在「采集 → Logstash 管道」核对 elasticsearch 的 hosts。"
-            ),
-        }
+        return None
+    text = read_pipeline()
+    match = _HOSTS_RE.search(text)
+    if match is None:
+        log.warning("生成管道里找不到 elasticsearch hosts 行，跳过 ES 地址对齐")
+        return "no-hosts"
+    current_host = match.group(1)
+    target_host = settings.es_url
+    if current_host == target_host:
+        return None
+    params = _effective_params(_stored_params(db))
+    if template.render({**params, "es_host": current_host}, settings.logstash_http_port).strip() != (
+        text.strip()
+    ):
+        log.warning(
+            "生成管道里除 ES 地址外还有人工编辑（文件 %s 用 %s，部署环境是 %s），"
+            "不自动改写；要跟随部署环境请在「采集 → Logstash 管道」保存一次参数",
+            settings.logstash_pipeline_conf,
+            current_host,
+            target_host,
+        )
+        return "manual-edit"
     err = write_pipeline(template.render(params, settings.logstash_http_port))
     if err:
-        return {"action": "warning", "es_host": target, "warning": f"重渲染管道失败：{err}"}
-    return {"action": "updated", "es_host": target}
+        log.warning("对齐管道 ES 地址失败：%s", err)
+        return "write-failed"
+    log.info(
+        "已把 Logstash 管道的 ES 地址对齐到部署环境：%s → %s（约 10 秒自动重载）",
+        current_host,
+        target_host,
+    )
+    return "updated"
 
 
 def seed_if_missing() -> bool:
@@ -186,6 +204,7 @@ def seed_if_missing() -> bool:
     `remove_foreign_configs()` 的无条件清理不受它影响 —— 那是管道目录的**不变式**
     （目录里多一个文件，Logstash 就会把两份管道拼在一起，出现两个 beats 输入抢端口），
     属保护动作而不是播种内容。要连清理一起关就只能改造这个模块，不建议。
+    关掉它同时也关掉 ES 地址对齐（那也是一次自动写入）。
     """
     # 不管是否播种，先把多余文件清掉（否则会和我们的管道拼接生效）
     remove_foreign_configs()
@@ -193,6 +212,9 @@ def seed_if_missing() -> bool:
         return False
     current = read_pipeline()
     if current.strip() and _looks_managed(current):
+        # 已经是我们下发的管道：只做地址对齐（改过 .env 后不用人工去界面重存一次）
+        with SessionLocal() as db:
+            _resync_es_host(db)
         return False
     if current.strip():
         # 2026-10 实机部署踩到：不覆盖它就永远跑镜像示例管道（8080 没有 http 输入、
@@ -223,12 +245,23 @@ def _stored_params(db: Session) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _effective_params(stored: dict[str, Any] | None) -> dict[str, Any]:
+    """合并「库里的参数」与部署环境；**ES 地址永远由部署环境最后拍定**。
+
+    库里可能留着历史的 `es_host`（第 6 期界面可改地址时写下的），这里一律忽略：连接信息
+    只有一个来源（`.env` 的 `ST_ES_URL`），否则会出现「界面写了一个地址、实际连的是另一个」。
+    """
+    return {**_defaults(), **(stored or {}), "es_host": settings.es_url}
+
+
 def _save_params(db: Session, params: dict[str, Any]) -> None:
+    """只落可改的两项；ES 地址是部署环境派生的，不进库（读了也会被覆盖）。"""
+    stored = {k: v for k, v in params.items() if k != "es_host"}
     row = db.get(SystemConfig, PARAMS_KEY)
     if row is None:
         row = SystemConfig(key=PARAMS_KEY, value={})
         db.add(row)
-    row.value = {"value": params}
+    row.value = {"value": stored}
     db.commit()
 
 
@@ -292,7 +325,7 @@ def get_logstash(
 ):
     text = read_pipeline()
     stored = _stored_params(db)
-    params = {**_defaults(), **(stored or {})}
+    params = _effective_params(stored)
     rendered = template.render(params, settings.logstash_http_port)
     return {
         "params": params,
@@ -319,8 +352,9 @@ def preview(
     body: ParamsIn,
     _: Annotated[User, Depends(get_current_user)],
 ):
-    """按参数渲染管道全文（不落盘，供界面确认后再保存）。"""
-    return {"pipeline": template.render(body.model_dump(), settings.logstash_http_port)}
+    """按参数渲染管道全文（不落盘，供界面确认后再保存）。ES 地址取部署环境。"""
+    params = _effective_params(body.model_dump())
+    return {"pipeline": template.render(params, settings.logstash_http_port)}
 
 
 @router.put("/params")
@@ -329,8 +363,11 @@ def save_params(
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
 ):
-    """保存表单参数：渲染全文并下发（会覆盖「全文编辑」的内容）。"""
-    params = body.model_dump()
+    """保存表单参数：渲染全文并下发（会覆盖「全文编辑」的内容）。
+
+    ES 地址不在表单里 —— 它由 `_effective_params()` 用部署环境拍定。
+    """
+    params = _effective_params(body.model_dump())
     if not params["es_enabled"]:
         return JSONResponse(
             status_code=400,

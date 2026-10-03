@@ -90,7 +90,11 @@ services:
     environment: &ndr-env
       # 统一北京时间：容器日志与界面时间口径一致（数据仍按 UTC 存储）
       TZ: Asia/Shanghai
-      ST_ES_URL: http://elasticsearch:9200
+      # ES 连接信息唯一来源（面板只读、没有填写入口）：上线换 ES 就改 .env 的 ES_*，
+      # 然后 `docker compose up -d backend` 重建容器；默认值就是随本项目部署的那台。
+      ST_ES_URL: ${ES_URL:-http://elasticsearch:9200}
+      ST_ES_USER: ${ES_USER:-}
+      ST_ES_PASSWORD: ${ES_PASSWORD:-}
       ST_PG_URL: postgresql+psycopg://shentong:shentong@postgres:5432/shentong
       ST_REDIS_URL: redis://redis:6379/0
       # 管道文件名必须叫 logstash.conf（与镜像自带示例同名，才能把它覆盖掉）

@@ -136,7 +136,10 @@ export interface ZeekStatus {
   retention_days_local: number;
 }
 
-/** ES 连接与保留配置 */
+/**
+ * ES 接入配置：`url` / `username` / `password_set` 是**只读展示**（连接信息由部署环境
+ * 固定，见 `.env` 的 `ES_*`）；可写的只有 `events_index` 与 `retention_days`。
+ */
 export interface EsConfigInfo {
   url: string;
   username: string;
@@ -160,7 +163,10 @@ export interface EsStatus {
   ilm: { policy: string; retention_days: number; exists?: boolean; version?: number };
 }
 
-/** Logstash 采集：常用参数 */
+/**
+ * Logstash 采集：常用参数。`es_host` 是**只读展示**（后端按部署环境的 `ST_ES_URL` 拍定，
+ * 提交时不必也不该带）；可改的是 `events_index`。
+ */
 export interface LogstashParams {
   es_enabled: boolean;
   es_host: string;

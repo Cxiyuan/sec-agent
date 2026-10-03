@@ -605,7 +605,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 - **`auth_scheme` 取自请求头**：Zeek http.log 没有顶层 `authorization`（头在 `req_headers`，由 `ndr/zeek/site/shentong-httpheaders.zeek` 拼好），原实现恒空 → `normalizer.py` 回落用 `_AUTH_HEADER_RE` 从头文本解析，内置「Token/JWT 异常使用」的 bearer/jwt 分支才真正生效。
 - **qtype 口径统一为 Zeek 数字码**：内置 DNS 隧道规则 `["16","TXT"]` → `["16"]`；前端 `ndr/frontend/lib/qtype.ts` 给出数字码 → 名字的提示。
 - **检测器口径**：`/api/detector/coverage` 分子改用「窗口内投递量」（原来拿单调累计的 `delivered` 比窗口内文档数，比值只增不减 → `warn` 永不触发，且快照过期时报 `stale`）；`detector_enabled=false` 现在真的停消费/停投递/释放租约并在 `/stats` 暴露 `paused`；聚合 key 到上限不再静默丢弃（计 `agg_full`）；leader 续约改独立线程 + 墙上时钟（原来绑主循环，单轮超时就丢租约）。
-- **其余口径修正**：`ingest_filter.py` / `wazuh.py` / `mcp/ndr_tools.py` 改读运行时 ES 索引名；`_with_degrade` 传真时间窗并区分「超时」与「ES 不可用」（原来一切异常都写成「已把时间窗对半重试仍失败」）；`fetch_window` 的网段条件下推 ES（不能下推的本地过滤并说明）；`record_conclusion` 的 status/severity 加枚举校验；`es_admin` 改 ES 地址会同步重渲染 Logstash 管道、ES 密码支持显式清空（`""` / `clear_password`）回落环境变量；`files.py` 的 `exists extracted` 过滤改本地判非空串；`wazuh.py` 的 pending 统计与 total 对齐；`triage_policy.py` 的开关文案不再谎称「无成功连接」；配了 `Site::local_nets` 时关掉 `private_address_space_is_local`（原来私网地址被判成"外部"）；前端八个面板不再把接口报错吞成空态、令牌/密码可清空、积压显示改真实队列深度、规则页补删除入口（仅非内置规则）。
+- **其余口径修正**：`ingest_filter.py` / `wazuh.py` / `mcp/ndr_tools.py` 改读运行时 ES 索引名；`_with_degrade` 传真时间窗并区分「超时」与「ES 不可用」（原来一切异常都写成「已把时间窗对半重试仍失败」）；`fetch_window` 的网段条件下推 ES（不能下推的本地过滤并说明）；`record_conclusion` 的 status/severity 加枚举校验；`es_admin` 改 ES 地址会同步重渲染 Logstash 管道、ES 密码支持显式清空（`""` / `clear_password`）回落环境变量（**2026-10-03 作废**：连接信息整体不再可配，见「连接信息收口」一节）；`files.py` 的 `exists extracted` 过滤改本地判非空串；`wazuh.py` 的 pending 统计与 total 对齐；`triage_policy.py` 的开关文案不再谎称「无成功连接」；配了 `Site::local_nets` 时关掉 `private_address_space_is_local`（原来私网地址被判成"外部"）；前端八个面板不再把接口报错吞成空态、令牌/密码可清空、积压显示改真实队列深度、规则页补删除入口（仅非内置规则）。
 
 **清理（死代码 / 死配置 / 注释）**
 
@@ -642,6 +642,20 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 **新增守卫**：`tests/py/test_conn_states.py`（49 条，两栈各跑一遍）——官方状态全集覆盖（Zeek 新增状态时 CI 先炸，而不是线上静默按 `generic` 处理）、逐状态 `(标签, 是否已建立)` 与文档口径一致、`normalizer` 产出标签 == 表、`has_success` 跟随表、SH 回归、未知状态限流告警一次、内置规则与智能体技能引用的 event_type 都有生产者（词表守卫，防引用一个永不产出的标签）；`tests/py/test_stack_consistency.py` 另加两侧 `conn_states.py` 逐字一致的字节比对。
 
 **门禁（2026-10-03，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **330 passed, 1 skipped**；`--stack=agent -q` **245 passed, 86 skipped**。
+
+### 2026-10-03 连接信息收口：Wazuh 与 Elasticsearch 都不再由界面配置
+
+Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up -d` 一起起），所以「连哪台、用什么凭据」在部署时就已经确定，属于部署事实、不是用户偏好。但第 6 期把两者都做成了「存 `SystemConfig` + 界面填写 + 测试连接」：同一个事实有**两份来源**（`.env` 一份、库里一份），界面写一个地址、实际连另一个也不会报错，换人接手时还要重新问一遍口令。用户先后两次要求去掉，现已全部收口：
+
+- **Wazuh**：`_cfg()` 只读环境变量（`ST_WAZUH_API_*`）—— `PUT /api/wazuh` 与 `POST /api/wazuh/test` 删除、密码不再打码回显、`SystemConfig.wazuh.params` 的历史行不再被读；「采集接入 → Wazuh」只剩状态 + Agent 清单 + 近 24h 入库量 + 规则下发（下发要真生效，见 :416 的 `overwrite=true` + 轮询校验）。**依据**：`ndr/backend/app/api/routes/wazuh.py` 的模块 docstring 与 `tests/py/test_wazuh_config.py`（钉住「旧入口不许回来」）。
+- **Elasticsearch**：`es_config.RUNTIME_KEYS` 只剩**策略项** `es.events_index` / `es.retention_days`；连接三项（`es.url` / `es.username` / `es.password`）永远取 `settings.es_*`（部署时由 `.env` 的 `ES_*` → `ST_ES_*`，默认 `http://elasticsearch:9200`），库里的历史行不再被读；`PUT /api/es/config` 只收两个策略字段、`POST /api/es/test` 删除、`_mask()` 改名 `_public()` 且密码永不下发明文（只回 `password_set`）。前端「数据存储」去掉地址/用户名/密码/测试连接，「Logstash 管道」的 ES 地址改成只读展示。
+- **写侧一并对齐**：Logstash 管道的 `elasticsearch { hosts => [...] }` 也是部署事实。原先 `PUT /api/logstash/params` 收 `es_host` 并落库（`logstash.params` 的第三份来源），现在 `ParamsIn` 只剩 `es_enabled` / `events_index`，`_effective_params()` 一律把 `es_host` 覆盖成 `settings.es_url`、`_save_params()` 落库前剥掉它；新增 `_resync_es_host()` 在后端启动播种时把**已生成**管道里的旧地址对齐到当前 `ST_ES_URL`（管道被人手工改过就只告警、不覆盖，返回 `manual-edit`）。**依据**：`tests/py/test_es_config.py` 九条（含三条 `_resync_es_host` 行为用例）。
+
+**为什么策略项留在界面上**：`events_index`（日志落哪族索引）与 `retention_days`（留多久）改的是**数据策略**、不是「连到哪台机器」，且 30 秒 TTL 缓存内即生效、写侧 `invalidate()` 立即失效，属于管理员在运行期就该能调的东西 —— 与「连接信息」是两类，故意不一起收。Logstash 的**管道全文编辑器**同样保留（高级出口：临时加 filter 用），但它不再能改 ES 地址。
+
+**丢卷重建的后果变了**：这两组连接信息不在库里，`docker compose down -v` 不会丢，也不需要重新填（改过 `.env` 才要 `up -d backend` 重建容器）。
+
+**门禁（2026-10-03，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **369 passed, 1 skipped**；`--stack=agent -q` **251 passed, 119 skipped**；`ndr/frontend` 与 `agent/frontend` 的 `npx tsc --noEmit` 均无输出。
 
 ### 每期收尾门禁
 

@@ -176,6 +176,18 @@ API 地址与凭据写进后台的 `ST_WAZUH_API_*`（`GET /api/wazuh` 只读，
 的 `agent.name`，主机名就丢了）与 **不设 ndjson `target`**（归一化服务直接从根读
 `rule`/`data`/`agent`/`full_log`）。
 
+### 3.3 Elasticsearch 也是内置的，连接信息同样不在界面上配
+
+`up -d` 会一起起 `elasticsearch`。**地址与凭据只有部署环境一个来源**（`.env` 的
+`ES_URL`/`ES_USER`/`ES_PASSWORD` → 后台 `ST_ES_*`，默认就是 `http://elasticsearch:9200`）：
+「数据存储」页只把「现在连的是哪台」显示出来，没有地址输入框、密码框，也没有「测试连接」
+（读路径的连通性看同页的集群状态与索引列表）；`GET /api/es/config` 只读，
+`PUT /api/es/config` 只收**索引族与保留期**这两项策略，`POST /api/es/test` 已删除。
+
+要换一台 ES：改 `.env` 再 `docker compose -f docker-compose.deploy.yml up -d backend` 重建容器。
+Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_URL` 生成 —— 容器重启时
+会自动把已生成管道里的旧地址对齐（管道若被人手工改过就只告警、不覆盖，见「数据存储 → Logstash 管道」）。
+
 ---
 
 ## 四、部署后必做
@@ -194,7 +206,9 @@ API 地址与凭据写进后台的 `ST_WAZUH_API_*`（`GET /api/wazuh` 只读，
 3. （智能体线路）**填云端模型 API Key**（系统配置 → 云端模型）
 4. （智能体线路）边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
 5. （智能体线路）建议点「边缘模型 → 测试连接」确认可达
-6. （NDR 线路）需要时在「数据存储 → Logstash 管道」调整入库管道
+6. （NDR 线路）到「数据存储」确认集群状态与索引族：ES 是内置部署的，**地址与凭据由部署环境
+   固定、界面上没有填写入口**（要换 ES 就改 `.env` 再重建 backend，见 §3.3）；
+   页面上能改的是索引族与保留期。需要时在「数据存储 → Logstash 管道」调整入库管道
    （参数表单或管道全文；保存后 Logstash 约 10 秒自动重载，无需重启容器；
    每次保存自动备份上一版，界面可一键回滚）
 7. （NDR 线路）需要时在「过滤规则 → 降噪过滤」把日常噪声挡在检测器外（**先用试运行看命中样例**）、
@@ -247,7 +261,8 @@ API 地址与凭据写进后台的 `ST_WAZUH_API_*`（`GET /api/wazuh` 只读，
     Postgres（规则/用户/系统配置）、Redis 队列、Zeek 配置与日志、提取件；重新 `up -d` 后**建表、
     默认管理员 `admin`/`admin123`、内置规则、ES 模板与 ILM、Logstash 管道都会自动回来**，但
     **监控网段与两个正文上限必须重新下发**（左侧「监控网段」页，或 `PUT /api/zeek/interface`），
-    MCP 令牌、摘要推送地址与令牌、Wazuh API 凭据、云端模型 Key 也都要重填。脚本里调登录接口注意
+    MCP 令牌、摘要推送地址与令牌、云端模型 Key 也都要重填
+    （**ES 与 Wazuh 的连接信息不用管**：它们在 `.env` 里，不在库里，删卷不影响）。脚本里调登录接口注意
     它是 **OAuth2 表单编码**（`-d 'username=admin&password=admin123'`），发 JSON 会 422 返回空 token
 
 ---
@@ -319,6 +334,7 @@ NDR 线路（采集与检测）：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
+| `ST_ES_URL` / `ST_ES_USER` / `ST_ES_PASSWORD` | `http://elasticsearch:9200` / 空 / 空 | ES 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `ES_*` 传入 |
 | `ST_ES_EVENTS_INDEX` | shentong-events-* | 统一事件索引（确认模板写入 `shentong-events-%{+yyyy.MM.dd}`） |
 | `ST_ES_RETENTION_DAYS` | 30 | ES 保留期（ILM 策略） |
 | `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度的**兜底**值；实际跟着运行时保留期走（后台改「保留期」不用重启，见 `investigation/es_query.py:154`） |

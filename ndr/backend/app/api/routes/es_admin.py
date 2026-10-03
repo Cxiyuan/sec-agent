@@ -1,6 +1,11 @@
-"""ES 管理：连接配置 / 保留期（ILM）/ 状态展示。
+"""ES 管理：接入状态 / 索引族与保留期（ILM）/ 集群状态展示。
 
-- 连接与保留期存 `system_config`（DB 覆盖 env），改动即时生效（缓存失效）
+- **连接信息（地址/用户名/密码）不可由用户配置**：Elasticsearch 随 NDR 一起部署，连接信息
+  由部署环境固定（`.env` 的 `ES_*` → 后台的 `ST_ES_*`，见 `app/config.py`）。本模块只读它，
+  不写库、也没有保存接口 —— 同一事实两份来源会出现「界面写了一个地址、实际连的是另一个」。
+  库里的历史 `es.url` / `es.username` / `es.password` 行不再被读（可以安全删除）。
+- 只有**策略项**（索引族 `es.events_index`、保留天数 `es.retention_days`）可改，存
+  `system_config`（DB 覆盖 env），改动即时生效（缓存失效）
 - 保留期通过 ILM 策略 + 索引模板下发（幂等），让 ES 自动 rollover 与删除
 - 保留期硬下限 = 管线回溯封顶（`ST_LOOKBACK_MAX_DAYS`），否则回溯会无数据
 """
@@ -37,13 +42,8 @@ TEMPLATES = {
 
 
 class EsConfigIn(BaseModel):
-    url: str | None = None
-    username: str | None = None
-    #: 不传（null）= 保留原值；传空串 = **清空**（与 Wazuh 配置同一口径：空串在
-    #: `es_config` 里等于「没有覆盖」，所以清空必须表现为删掉那行覆盖值）。
-    password: str | None = None
-    #: 与「传空串」等价，供明确表达意图用（界面上「清空密码」勾选它或发空串都行）
-    clear_password: bool = False
+    """可改的只有**策略项**；连接信息由部署环境固定，这里没有对应字段。"""
+
     events_index: str | None = None
     retention_days: int | None = None
 
@@ -52,8 +52,12 @@ class RetentionIn(BaseModel):
     retention_days: int
 
 
-def _mask(cfg: dict[str, str]) -> dict[str, Any]:
-    """返回给前端时对密码脱敏。"""
+def _public(cfg: dict[str, str]) -> dict[str, Any]:
+    """返回给前端的只读视图：连接信息用于**显示**（确认连的是哪台），不可写。
+
+    密码只回 `password_set` 布尔（永不下发明文）；连接值来自部署环境，所以「打码」这件事
+    本身就失去了意义 —— 没有用户填进来的值需要遮。
+    """
     return {
         "url": cfg.get("es.url", ""),
         "username": cfg.get("es.username", ""),
@@ -67,23 +71,7 @@ def _mask(cfg: dict[str, str]) -> dict[str, Any]:
 
 @router.get("/config")
 def get_config(_: Annotated[User, Depends(get_current_user)]):
-    return _mask(es_config.current())
-
-
-def _sync_logstash_es_host(db: Session, cfg: dict[str, str]) -> dict[str, Any]:
-    """把 ES 连接地址同步进 Logstash 管道参数（实现见 `logstash.sync_es_endpoint`）。
-
-    为什么要同步：写路径（Logstash 的 `elasticsearch { hosts => [...] }`）与读路径
-    （`es_config.current()`）各存一份地址，只改一边就会出现「采集有数但界面查不到」
-    或反过来的假故障。
-    """
-    from app.api.routes.logstash import sync_es_endpoint
-
-    try:
-        return sync_es_endpoint(db, str(cfg.get("es.url") or ""))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("同步 Logstash 管道的 ES 地址失败：%s", exc)
-        return {"action": "error", "detail": str(exc)[:200]}
+    return _public(es_config.current())
 
 
 @router.put("/config")
@@ -92,6 +80,7 @@ def update_config(
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
 ):
+    """改索引族 / 保留天数。连接信息不在 body 里 —— 想改连接只能改部署环境再重启后端。"""
     # 保留期校验：不得小于回溯封顶
     if body.retention_days is not None:
         if body.retention_days < settings.lookback_max_days:
@@ -112,9 +101,6 @@ def update_config(
             )
 
     pairs = {
-        "es.url": body.url,
-        "es.username": body.username,
-        "es.password": body.password,
         "es.events_index": body.events_index,
         "es.retention_days": (
             str(body.retention_days) if body.retention_days is not None else None
@@ -124,77 +110,30 @@ def update_config(
     for key, value in pairs.items():
         if value is None:
             continue
-        if key == "es.password" and value == "":
-            continue  # 空串=清空，交给下面的 clear_password 分支（避免写一行空值自相矛盾）
         row = db.get(SystemConfig, key)
         if row is None:
             row = SystemConfig(key=key, value={})
             db.add(row)
         row.value = {"value": value}
         changed.add(key)
-    if body.clear_password or body.password == "":
-        # 删掉覆盖值 → 回落到环境变量默认。传空串做不到「保留」的语义：es_config 读的
-        # 时候把空值当作「没有覆盖」，所以「清空」必须表现为删行。
-        row = db.get(SystemConfig, "es.password")
-        if row is not None:
-            db.delete(row)
-        changed.add("es.password")
     db.commit()
     es_config.invalidate()
     # 注：原先这里还清一次「IP 字段类型 30 分钟缓存」（es_schema.clear_cache），
     # 但那条链（es_schema.get_ip_fields）全仓没有调用点，属死代码，一并删掉这次调用；
     # 若将来恢复该缓存，改配置后必须重新在这里失效。
-    cfg_now = es_config.current()
-    out: dict[str, Any] = dict(_mask(cfg_now))
+    out: dict[str, Any] = dict(_public(es_config.current()))
     out["changed"] = sorted(changed)
-    if "es.url" in changed:
-        out["logstash"] = _sync_logstash_es_host(db, cfg_now)
     if "es.events_index" in changed:
         out["logstash_index_hint"] = (
             "这里改的是**查询**索引模式（如 shentong-events-*）；写侧按天滚动的索引名"
-            "（shentong-events-%{+yyyy.MM.dd}）在「采集 → Logstash 管道」里配，不会自动跟着改。"
+            "（shentong-events-%{+yyyy.MM.dd}）由后端按部署环境生成，不跟着查询模式变。"
         )
     return out
 
 
-@router.post("/test")
-def test_connection(
-    _: Annotated[User, Depends(get_current_user)],
-    body: EsConfigIn | None = None,
-):
-    """连通性测试；传 body 时先测传入的连接（不落库）。"""
-    try:
-        if body and body.url:
-            from elasticsearch import Elasticsearch
-
-            # 界面拿不到已存密码（GET /config 只回 password_set），所以 body 里没带密码时
-            # 回落库里/env 的现值，否则「不改密码只点测试」会假报鉴权失败。
-            password = body.password or str(es_config.current().get("es.password") or "")
-            auth = (body.username, password) if body.username else None
-            probe = Elasticsearch(
-                body.url,
-                basic_auth=auth,
-                verify_certs=settings.es_verify_certs,
-                request_timeout=10,
-            )
-        else:
-            probe = get_es()
-        info = probe.info()
-        return {
-            "ok": True,
-            "cluster_name": info.get("cluster_name"),
-            "version": (info.get("version") or {}).get("number"),
-        }
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(
-            status_code=400,
-            content={"conflict": "es_unreachable", "detail": f"连接 ES 失败：{exc}"},
-        )
-
-
 @router.get("/status")
 def status(_: Annotated[User, Depends(get_current_user)]):
-    """集群健康 + 索引列表 + ILM 策略状态。"""
+    """集群健康 + 索引列表 + ILM 策略状态（读路径的连通性就体现在这里）。"""
     try:
         es = get_es()
         health = es.cluster.health()

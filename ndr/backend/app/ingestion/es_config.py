@@ -1,6 +1,12 @@
-"""ES 运行时配置：默认取环境变量，后台「系统配置」可覆盖（30 秒 TTL 缓存）。
+"""ES 运行时配置：连接信息只来自部署环境，策略项默认环境变量、后台可覆盖（30 秒 TTL 缓存）。
 
-配套 `get_es()` 使用，使后台改 ES 地址/认证后无需重启后端。
+**连接信息（`es.url` / `es.username` / `es.password`）不可由用户配置**：Elasticsearch 随
+NDR 一起部署，地址与凭据由部署环境给定（`.env` 的 `ES_*` → 后台的 `ST_ES_*`）。这几项永远
+取 `settings.es_*`，本模块不读库、也没有写入口 —— 同一事实只允许一个来源，否则会出现
+「界面写了一个地址、实际连的是另一个」而看不出来。
+
+只有**策略项**（`es.events_index` / `es.retention_days`）允许在后台改：它们是「日志存哪族
+索引、留多久」，不是「连到哪台机器」，改完 30 秒内生效（写侧会 `invalidate()` 立即失效）。
 """
 
 from __future__ import annotations
@@ -22,16 +28,18 @@ _cache_at: float = 0.0
 
 # 可被后台覆盖的键：这里是**唯一来源**，`api/routes/es_admin.py` 直接读它（那里原先复制
 # 的一份 CONFIG_KEYS 已删）。加键只改这里。
+#
+# 注意：**连接信息不在这个名单里**。`es.url` / `es.username` / `es.password` 曾经可覆盖
+# （库里存 `SystemConfig` 行），现在只认部署环境；库里的历史行仍在，但不再被读，属遗留垃圾，
+# 可以安全删除（服务器实测本来就没有这些行）。
 RUNTIME_KEYS = (
-    "es.url",
-    "es.username",
-    "es.password",
     "es.events_index",
     "es.retention_days",
 )
 
 
 def defaults() -> dict[str, str]:
+    """全部键的部署环境默认值（含不可覆盖的连接信息，供 `current()` 组装）。"""
     return {
         "es.url": settings.es_url,
         "es.username": settings.es_user,
@@ -44,15 +52,17 @@ def defaults() -> dict[str, str]:
 def _load() -> dict[str, str]:
     """读库里的覆盖值；没有覆盖的键用环境变量默认值。
 
+    只有 `RUNTIME_KEYS`（索引族 + 保留天数）会被覆盖；连接信息三项永远来自环境变量。
+
     「DB 里没有这一行」与「DB 里显式置空」是两回事，这里靠存储形态区分：
       - 没有这一行        → 用环境变量默认值；
       - `{"value": "x"}`  → 覆盖成 x；
       - `{"value": null}` → **显式清空**（写侧用 JSON null 表示「用户就是要它为空」），
-        此时**不**回落环境变量 —— 否则界面点了「清空密码」，`ES_PASSWORD` 又把它填回来，
+        此时**不**回落环境变量 —— 否则界面点了「清空」，环境变量又把它填回来，
         看起来像清空没生效（G 组报的就是这个）；
       - `{"value": ""}`   → 当作「没填」，回落环境变量（历史行为，库里可能还留着这种老行）。
 
-    写侧约定（E 组 `api/routes/es_admin.py` 的 PUT）：清空某个键时写 `{"value": None}`，
+    写侧约定（`api/routes/es_admin.py` 的 PUT）：清空某个键时写 `{"value": None}`，
     既不删行也不写空串。若写侧判断代价大于收益，就保持现状并记为已知限制。
     """
     values = defaults()

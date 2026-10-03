@@ -67,7 +67,7 @@ export function LogstashPanel() {
     try {
       const r = await apiFetch<{ pipeline: string }>("/api/logstash/preview", {
         method: "POST",
-        body: JSON.stringify(params),
+        body: JSON.stringify({ es_enabled: params.es_enabled, events_index: params.events_index }),
       });
       setPreview(r.pipeline);
       setMsg("已按参数生成管道预览（未保存）");
@@ -84,7 +84,7 @@ export function LogstashPanel() {
     try {
       const r = await apiFetch<{ pipeline: string; note: string }>("/api/logstash/params", {
         method: "PUT",
-        body: JSON.stringify(params),
+        body: JSON.stringify({ es_enabled: params.es_enabled, events_index: params.events_index }),
       });
       setText(r.pipeline);
       setPreview("");
@@ -275,12 +275,12 @@ export function LogstashPanel() {
                 </p>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">ES 地址</label>
-                <Input
-                  value={params.es_host}
-                  onChange={(e) => set("es_host", e.target.value)}
-                  className="h-9"
-                />
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  ES 地址（由部署环境固定）
+                </label>
+                <p className="flex h-9 items-center rounded-md border px-3 font-mono text-xs">
+                  {params.es_host}
+                </p>
               </div>
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">
