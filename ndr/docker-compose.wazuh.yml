@@ -42,8 +42,9 @@ services:
         hard: 655360
     environment:
       TZ: Asia/Shanghai
-      # 深瞳后台「系统配置 → Wazuh 接入」填同一组（默认管理员 wazuh / wazuh，
-      # 这里是 API 用户，注意别把默认口令带到生产）
+      # 这一组就是深瞳后台连 API 用的凭据（`docker-compose.deploy.yml` 把它映射成
+      # 后台的 ST_WAZUH_API_USER / ST_WAZUH_API_PASSWORD）：同一份 .env 同时喂 manager
+      # 与后台，**没有第二处要填**，界面只显示状态。注意别把默认口令带到生产。
       API_USERNAME: ${WAZUH_API_USER:-wazuh-wui}
       API_PASSWORD: ${WAZUH_API_PASSWORD:-change-me-wazuh-api}
       # 本叠加编排不带 Wazuh indexer / dashboard：manager 自带的 Filebeat 会因为
