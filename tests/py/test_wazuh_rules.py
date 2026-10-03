@@ -228,6 +228,10 @@ def test_upload_rule_file_verifies_after_poll(
     raw_calls = [s for s in seen if s[0] == "GET" and s[2].get("raw")]
     assert raw_calls, "回读原文必须显式带 raw=True"
     assert raw_calls[0][2]["params"] == {"raw": "true"}
+    # `overwrite=true` 不能省：Wazuh 的 PUT 默认不覆盖同名文件（见下一组用例）
+    put_calls = [s for s in seen if s[0] == "PUT"]
+    assert put_calls, "必须真的发过 PUT"
+    assert put_calls[0][2]["params"] == {"overwrite": "true"}
 
 
 def test_upload_rule_file_flags_content_mismatch(
@@ -247,6 +251,62 @@ def test_upload_rule_file_flags_content_mismatch(
     assert out["verified"] is False
     assert out["applied_rules"] == 1
     assert "不一致" in out["detail"]
+    # 只说「内容不一致」时运维看不出差在哪（实测真因是「规则压根没写进去」）
+    assert "第 1 行" in out["detail"]
+    assert "manager「" in out["detail"]
+
+
+def test_upload_rule_file_reports_body_level_failure(
+    wazuh: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wazuh 用 HTTP 200 + body `error=1` 报「文件已存在、没覆盖」时必须判成下发失败。
+
+    实测：不带 `overwrite` 的 PUT 回 200 但规则一条都没更新；只看状态码就会报「已上传」，
+    再拿旧文件的回读结果比对，就变成看不懂的「内容不一致」。
+    """
+    monkeypatch.setattr(wazuh, "_stored", lambda _db: {})
+    monkeypatch.setattr(wazuh, "_merge", lambda _stored: _CFG)
+    _stub_httpx(
+        wazuh,
+        monkeypatch,
+        [
+            (
+                "/rules/files/probe.xml",
+                _FakeResp(
+                    payload={
+                        "error": 1,
+                        "message": "Could not upload rule",
+                        "data": {
+                            "total_affected_items": 0,
+                            "total_failed_items": 1,
+                            "failed_items": [
+                                {
+                                    "error": {
+                                        "code": 1905,
+                                        "message": "File could not be updated, it already exists",
+                                        "remediation": "Please, provide a different file or set "
+                                        "overwrite=True to overwrite actual file",
+                                    },
+                                    "id": ["etc/rules/probe.xml"],
+                                }
+                            ],
+                        },
+                    }
+                ),
+            )
+        ],
+    )
+    wazuh._token_cache.clear()
+
+    out = wazuh.upload_rule_file(
+        body=wazuh.WazuhRuleIn(filename="probe.xml", text=_RULE_TEXT, verify=True), db=None, _=None
+    )
+
+    assert out.status_code == 400
+    payload = json.loads(bytes(out.body))
+    assert payload["conflict"] == "wazuh_api"
+    assert "already exists" in payload["detail"]
+    assert "overwrite=True" in payload["detail"]
 
 
 def test_upload_rule_file_survives_raw_read_failure(

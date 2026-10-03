@@ -192,6 +192,7 @@ def _api(
     content: bytes | None = None,
     headers: dict[str, str] | None = None,
     raw: bool = False,
+    strict: bool = False,
 ) -> tuple[Any | None, str]:
     """带鉴权的 Wazuh API 请求；返回 (响应内容, 错误说明)。
 
@@ -199,6 +200,10 @@ def _api(
     `GET /rules/files/<name>?raw=true` 回 `application/xml`）。不区分就会在
     `resp.json()` 上炸掉、判成「Wazuh API 响应不是 JSON」——实机踩到：后果是
     「下发规则文件」的回读原文那一步永远失败、`verified` 永远 false。
+
+    `strict=True` 表示**连 body 里的失败也算失败**（见 `_body_error`）。Wazuh 有些
+    写操作失败时回的是 HTTP 200 + body 里 `error=1`/`total_failed_items>0`，只看状态码
+    会把「没写进去」当成功——实机踩到：后果是下发规则悄悄没生效却报「已上传」。
     """
     token, err = _login(cfg)
     if not token:
@@ -236,9 +241,44 @@ def _api(
     if raw:
         return resp.text, ""
     try:
-        return resp.json(), ""
+        data = resp.json()
     except ValueError:
         return None, "Wazuh API 响应不是 JSON"
+    if strict:
+        body_err = _body_error(data)
+        if body_err:
+            return None, body_err
+    return data, ""
+
+
+def _body_error(data: Any) -> str:
+    """把 Wazuh 回在 **HTTP 200 body 里**的失败翻译成人话（没有失败就回空串）。
+
+    实机踩到：`PUT /rules/files/<name>` 覆盖一个已存在的文件时回的是 HTTP 200
+    + body `{"error": 1, "message": "Could not upload rule", "data":
+    {"total_failed_items": 1, "failed_items": [{"error": {"code": 1905,
+    "message": "File could not be updated, it already exists", "remediation":
+    "... set overwrite=True to overwrite actual file"}}]}}`。只看 HTTP 状态码就会
+    判成「上传成功」，再拿旧文件的回读结果去比对，得到「已上传但内容不一致」这种
+    查不出原因的告警（规则其实一条都没更新）。
+    """
+    body = _as_dict(data)
+    if not body:
+        return ""
+    inner = _as_dict(body.get("data"))
+    failed = int(inner.get("total_failed_items") or 0)
+    code = body.get("error")
+    if not failed and not (isinstance(code, int) and code != 0):
+        return ""
+    parts = [str(body.get("message") or "Wazuh API 报错")]
+    items = inner.get("failed_items")
+    for item in items[:3] if isinstance(items, list) else []:
+        info = _as_dict(_as_dict(item).get("error"))
+        detail = str(info.get("message") or "")
+        fix = str(info.get("remediation") or "")
+        if detail:
+            parts.append(f"{detail}（{fix}）" if fix else detail)
+    return "；".join(parts)
 
 
 def _count_rules(
@@ -608,8 +648,14 @@ def upload_rule_file(
         cfg,
         "PUT",
         f"/rules/files/{filename}",
+        # `overwrite=true` 不能省：Wazuh 4.14 的 PUT 默认**不覆盖**已存在的文件，
+        # 同名文件会回 HTTP 200 + body `error=1`/code 1905「File could not be
+        # updated, it already exists」。实机踩到：不带它时规则一条都没更新，却因为
+        # 只看状态码而报「已上传」，再拿旧文件的回读去比对就变成「内容不一致」。
+        params={"overwrite": "true"},
         content=text.encode("utf-8"),
         headers={"Content-Type": "application/octet-stream"},
+        strict=True,
     )
     if err:
         return JSONResponse(status_code=400, content={"conflict": "wazuh_api", "detail": err})
@@ -647,16 +693,41 @@ def upload_rule_file(
         landed = raw if isinstance(raw, str) else str(raw)
         same = _strip_lines(landed) == _strip_lines(text)
         result["verified"] = same and result["applied_rules"] >= len(rule_ids)
-        result["detail"] = (
-            f"已下发并校验通过：生效 {result['applied_rules']} 条规则"
-            if result["verified"]
-            else (
-                f"已上传，但校验不一致（生效 {result['applied_rules']} 条 / 发出 {len(rule_ids)} 条，"
-                f"内容{'一致' if same else '不一致'}）—— 请到 manager 上核对"
-            )
+        head = (
+            f"生效 {result['applied_rules']} 条 / 发出 {len(rule_ids)} 条，内容"
+            f"{'一致' if same else '不一致'}"
         )
+        if result["verified"]:
+            result["detail"] = f"已下发并校验通过：生效 {result['applied_rules']} 条规则"
+        elif same:
+            # 条数够了但内容一致 ⇒ 通常是 manager 侧还没把新文件扫进规则集
+            result["detail"] = f"已上传，但校验不一致（{head}）—— 请到 manager 上核对"
+        else:
+            # 只报「内容不一致」时运维看不出差在哪（实测就是「规则压根没写进去」），
+            # 所以顺带指出首个不同的行
+            result["detail"] = f"已上传，但校验不一致（{head}）：{_first_diff(text, landed)}"
     return result
 
 
 def _strip_lines(text: str) -> str:
     return "\n".join(line.rstrip() for line in (text or "").strip().splitlines())
+
+
+def _first_diff(sent: str, landed: str) -> str:
+    """给「回读内容与发出内容不一致」一句能直接定位的说明。
+
+    实测这条告警只说了「内容不一致」，看不出是差在行尾还是**根本没写进去**
+    （后者才是真因：Wazuh 的 PUT 默认不覆盖同名文件）。这里指出首个不同的行号与
+    两侧原文（截断），让运维一眼能判断。
+    """
+    want = _strip_lines(sent).splitlines()
+    got = _strip_lines(landed).splitlines()
+    for i in range(max(len(want), len(got))):
+        left = want[i] if i < len(want) else "（没有这一行）"
+        right = got[i] if i < len(got) else "（没有这一行）"
+        if left != right:
+            return (
+                f"首个不同的行是第 {i + 1} 行"
+                f"（manager「{right.strip()[:60]}」/ 发出「{left.strip()[:60]}」）"
+            )
+    return "内容相同（差异只在行尾空白）"
