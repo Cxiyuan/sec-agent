@@ -1,8 +1,11 @@
-# 深瞳 · NDR —— Wazuh 4.14 接入叠加编排（opt-in，不写进默认 compose）
+# 深瞳 · NDR —— Wazuh 4.14 接入编排（内置服务：**部署编排默认包含本文件**）
 #
-# 用法（在 ndr/ 下，与默认编排叠加启动）：
-#   docker compose -f docker-compose.yml        -f docker-compose.wazuh.yml up -d
-#   docker compose -f docker-compose.deploy.yml -f docker-compose.wazuh.yml up -d
+# 用法：
+#   # 部署（NDR 服务器）：deploy 编排已 include 本文件，一条命令就带起来
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+#   # 本地开发：默认编排不含 Wazuh，要接就显式叠加
+#   docker compose -f docker-compose.yml -f docker-compose.wazuh.yml up -d
 #
 # 这个文件只加两个服务：
 #   wazuh-manager  —— 官方 Wazuh manager 镜像（**不含** indexer 与 dashboard）
@@ -18,10 +21,12 @@
 # 「4.14 自带的 Filebeat 能不能配 output.redis」没有实机验证过（README §三 的老问题）。
 # 单独起一个 Filebeat 用我们自己的 wazuh/filebeat.yml，行为可控、与 Zeek 线一致。
 #
-# ── 待实机验证（没有真实 Wazuh 环境，以下都只在纸面成立）────────────────────
-#   · 镜像 tag 与启动参数（API_USERNAME/API_PASSWORD、卷路径、ulimits）
-#   · manager 自带的 Filebeat 在缺 indexer 时的行为（预期只是报错重试，不影响采集）
-#   · 1514/1515 是否需要对外暴露（按 agent 上报方式决定）
+# ── 实测记录（2026-10-03，172.16.196.77）──────────────────────────────────
+#   · 卷清单已按官方 4.14.8 single-node 编排对齐：agentless / wodles 两个目录必须
+#     各自挂卷，`etc/shared` **不能**单独挂（它就在 etc 卷里，嵌套挂载会遮蔽 etc 卷）
+#   · API_USERNAME / API_PASSWORD 在 manager 镜像上确实生效（官方编排同样只靠这两个
+#     环境变量建 API 用户）；口令必须满足 Wazuh 复杂度要求，否则首次启动 API 起不来
+#   · manager 自带的 Filebeat 在缺 indexer 时只是报错重试，不影响 manager 与采集线
 # ──────────────────────────────────────────────────────────────────────────
 services:
   wazuh-manager:
@@ -59,7 +64,9 @@ services:
       - wazuh-var-multigroups:/var/ossec/var/multigroups
       - wazuh-integrations:/var/ossec/integrations
       - wazuh-active-response:/var/ossec/active-response/bin
-      - wazuh-agent-config:/var/ossec/etc/shared
+      # 下面两个目录官方编排也各自挂卷：wodles 放解码器脚本、agentless 放免 agent 采集脚本
+      - wazuh-wodles:/var/ossec/wodles
+      - wazuh-agentless:/var/ossec/agentless
 
   wazuh-filebeat:
     # 与 ES / Zeek 侧一致的 8.15.3
@@ -99,4 +106,5 @@ volumes:
   wazuh-var-multigroups:
   wazuh-integrations:
   wazuh-active-response:
-  wazuh-agent-config:
+  wazuh-wodles:
+  wazuh-agentless:

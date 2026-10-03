@@ -23,6 +23,13 @@
 #
 # 用法（在 ndr/ 下）：
 #   docker compose -f docker-compose.deploy.yml up -d
+#
+# Wazuh 4.14 是本线路的**内置服务**（wazuh-manager + wazuh-filebeat）：部署环境默认带上，
+# 由下面的 include 引入 docker-compose.wazuh.yml（单一定义，避免两份编排各自漂移）。
+# 想临时跳过 Wazuh 就按服务名起（例：docker compose -f docker-compose.deploy.yml up -d backend normalizer detector ndr-mcp）。
+# 注意：include 指向的文件必须与本体放在同一目录（部署时要一起拷到 /opt/shentong-ndr）。
+include:
+  - docker-compose.wazuh.yml
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3

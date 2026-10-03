@@ -163,3 +163,68 @@ def test_wazuh_redis_output() -> None:
     out = wazuh_cfg()["output.redis"]
     assert out["data_type"] == "list"
     assert out["key"] == "${REDIS_KEY:shentong:events:collect}"
+
+
+# ---------- Wazuh 是内置服务：部署编排必须默认带上它 ----------
+
+DEPLOY_COMPOSE_PATH = ROOT / "ndr" / "docker-compose.deploy.yml"
+
+
+def wazuh_compose() -> dict[str, Any]:
+    return yaml.safe_load(WAZUH_COMPOSE_PATH.read_text(encoding="utf-8"))
+
+
+def _container_paths(svc: dict[str, Any]) -> list[str]:
+    paths = []
+    for item in svc.get("volumes", []):
+        parts = str(item).split(":")
+        if len(parts) >= 2 and parts[1].startswith("/"):
+            paths.append(parts[1])
+    return paths
+
+
+def test_deploy_compose_includes_wazuh() -> None:
+    """部署编排必须 include Wazuh 叠加件：它得随项目一起发布，不是可选外接。"""
+    deploy = yaml.safe_load(DEPLOY_COMPOSE_PATH.read_text(encoding="utf-8"))
+    include = deploy.get("include") or []
+    assert "docker-compose.wazuh.yml" in include, f"deploy 编排没有 include Wazuh：{include}"
+    # include 指向的文件必须真有这两个服务，否则部署时才炸
+    services = wazuh_compose()["services"]
+    assert {"wazuh-manager", "wazuh-filebeat"} <= set(services)
+
+
+def test_wazuh_manager_volumes_match_official_4_14() -> None:
+    """manager 的卷清单按官方 4.14.8 single-node 编排对齐。
+
+    官方把 wodles / agentless 各自挂卷；`etc/shared` 不能单独挂——它就在 etc 卷里，
+    对同一容器挂 `/var/ossec/etc` 和 `/var/ossec/etc/shared` 会遮蔽 etc 卷。"""
+    svc = wazuh_compose()["services"]["wazuh-manager"]
+    paths = set(_container_paths(svc))
+    for expected in (
+        "/var/ossec/etc",
+        "/var/ossec/logs",
+        "/var/ossec/queue",
+        "/var/ossec/api/configuration",
+        "/var/ossec/var/multigroups",
+        "/var/ossec/integrations",
+        "/var/ossec/active-response/bin",
+        "/var/ossec/wodles",
+        "/var/ossec/agentless",
+    ):
+        assert expected in paths, f"manager 少了卷挂载点 {expected}：{sorted(paths)}"
+    # 卷路径不许互相嵌套（一个挂载点盖住另一个）
+    for outer in paths:
+        for inner in paths:
+            assert not inner.startswith(outer + "/"), f"挂载点嵌套了：{outer} 盖住 {inner}"
+
+
+def test_wazuh_manager_api_env_and_ulimits() -> None:
+    """API 用户名/口令与 ulimits 必须显式给出（官方编排也只靠这几个环境变量）。"""
+    svc = wazuh_compose()["services"]["wazuh-manager"]
+    env = svc["environment"]
+    assert env["API_USERNAME"] == "${WAZUH_API_USER:-wazuh-wui}"
+    assert "API_PASSWORD" in env
+    # 默认口令必须是个明显要改的占位，别把弱口令带到生产
+    assert "change-me" in env["API_PASSWORD"], env["API_PASSWORD"]
+    assert svc["ulimits"]["memlock"]["soft"] == -1
+    assert svc["ulimits"]["nofile"]["hard"] == 655360
