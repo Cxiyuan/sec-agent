@@ -107,6 +107,12 @@ services:
       # 第 5 期：检测器命中后经 HTTP 推给智能体（地址形如 http://<agent-host>:8000/api/push/digests）
       ST_AGENT_PUSH_URL: ${NDR_AGENT_PUSH_URL:-}
       ST_AGENT_PUSH_TOKEN: ${NDR_AGENT_PUSH_TOKEN:-}
+      # Wazuh 是内置服务（见下面 include），后台「系统配置 → Wazuh 接入」的默认值就取这里，
+      # 容器间走服务名直连；凭据与 wazuh-manager 共用同一组 .env 变量，两边不会各写一份。
+      # 界面里保存过的值优先（存库），这三个只是默认值。
+      ST_WAZUH_API_URL: ${WAZUH_API_URL:-https://wazuh-manager:55000}
+      ST_WAZUH_API_USER: ${WAZUH_API_USER:-wazuh-wui}
+      ST_WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-}
     ports:
       - "8000:8000"
     volumes:

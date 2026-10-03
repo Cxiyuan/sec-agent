@@ -228,3 +228,13 @@ def test_wazuh_manager_api_env_and_ulimits() -> None:
     assert "change-me" in env["API_PASSWORD"], env["API_PASSWORD"]
     assert svc["ulimits"]["memlock"]["soft"] == -1
     assert svc["ulimits"]["nofile"]["hard"] == 655360
+
+
+def test_deploy_backend_points_at_builtin_wazuh() -> None:
+    """内置 Wazuh 得让后台知道去哪找：部署编排要给 backend 默认 API 地址与凭据。"""
+    deploy = yaml.safe_load(DEPLOY_COMPOSE_PATH.read_text(encoding="utf-8"))
+    env = deploy["services"]["backend"]["environment"]
+    assert env["ST_WAZUH_API_URL"] == "${WAZUH_API_URL:-https://wazuh-manager:55000}"
+    assert env["ST_WAZUH_API_USER"] == "${WAZUH_API_USER:-wazuh-wui}"
+    # 口令只从 .env 取（不给弱默认值：没配就让界面显式报"未配置"）
+    assert env["ST_WAZUH_API_PASSWORD"] == "${WAZUH_API_PASSWORD:-}"
