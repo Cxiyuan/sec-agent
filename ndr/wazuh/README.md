@@ -81,15 +81,17 @@ WAZUH_ARCHIVES_ENABLED=true docker compose -f docker-compose.yml -f docker-compo
 原始日志量级比告警大得多，所以归一化侧默认**只入库、不喂检测器**
 （`ST_WAZUH_ARCHIVE_TO_DETECTOR=false`）；确实要让检测规则也看原始日志再打开它。
 
-## 三、在界面里接上 API
+## 三、在界面里看接入状态（不需要配置）
 
-「系统配置 → Wazuh 接入」填地址（`https://<manager>:55000`）、用户名、密码，保存后点
-**测试连接**；连通后会显示 API 版本、集群/单机、Agent 在线情况，以及**近 24 小时入库的
+Wazuh 是**随本项目一起部署**的内置服务，连接信息在部署时就固定了，所以「采集接入 → Wazuh」
+这一页**只显示状态**：API 版本、集群/单机、Agent 在线情况，以及**近 24 小时入库的
 告警 / 原始日志条数** —— 后者就是这条链路真正通了的证据（它查的是 ES 里的
 `source_system=wazuh`）。同一个面板还能下发本地规则文件并回读校验。
 
-凭据默认来自环境变量 `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD`，
-界面上保存的值存在库里、优先级更高（密码只写不回显，留空表示不改）。
+连接信息的唯一来源是环境变量 `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` /
+`ST_WAZUH_API_PASSWORD`（部署时由 `.env` 的 `WAZUH_API_*` 传入，与 manager 自己用的是同一组值）。
+界面上没有填写入口、也没有「测试连接」按钮：地址与密码多一处来源，就会出现「界面写了一个
+地址、实际连的是另一个」而看不出来的情况。
 
 ## 四、接外部已有的 Wazuh
 
@@ -97,7 +99,8 @@ WAZUH_ARCHIVES_ENABLED=true docker compose -f docker-compose.yml -f docker-compo
 
 1. 把 `wazuh/filebeat.yml` 拷到能读到 `alerts.json`（与可选的 `archives.json`）的机器上；
 2. 改 `WAZUH_LOG_DIR`、`REDIS_HOST`/`REDIS_PORT`/`REDIS_KEY`（或直接改 `paths`/`output.redis`）；
-3. 起 Filebeat 后，到深瞳「系统配置 → Wazuh 接入」填那台 manager 的 API 地址与凭据。
+3. 起 Filebeat 后，把**那台 manager 的** API 地址与凭据写进后台的 `ST_WAZUH_API_URL` /
+   `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD`（界面只读，没有填写入口）。
 
 `filebeat.yml` 里两个字段是必须的，改配置时别丢：`overwrite_keys: true`
 （否则 Filebeat 自己的 ECS 顶层 `agent` 会盖掉 Wazuh 的 `agent.name`，主机名就丢了）与

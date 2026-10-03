@@ -12,7 +12,7 @@ const entries = [
   {
     href: "/admin/collect",
     title: "采集接入",
-    desc: "Zeek 监听网卡、Wazuh 主机日志接入（API 凭据、下发规则、入库量）。",
+    desc: "Zeek 监听网卡；Wazuh 随系统部署，这里看接入状态、下发规则、入库量。",
   },
   {
     href: "/admin/networks",

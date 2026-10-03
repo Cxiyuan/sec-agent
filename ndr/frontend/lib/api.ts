@@ -379,14 +379,13 @@ export interface AgentPushTestResult {
 
 // ---------- Wazuh 4.14 接入（第 6 期：API 管理面 + 归一化入库量） ----------
 
-/** Wazuh API 凭据（密码只回显打码后的形态） */
+/** Wazuh API 连接信息：由部署环境固定（`ST_WAZUH_API_*`），界面只读、不可配置 */
 export interface WazuhConfig {
   url: string;
   user: string;
   password_set: boolean;
-  password_masked: string;
   verify_tls: boolean;
-  /** 地址 + 用户名 + 密码齐全才算已配置 */
+  /** 地址 + 用户名 + 密码齐全才算已配置（缺什么由部署环境补） */
   configured: boolean;
 }
 
@@ -431,16 +430,7 @@ export interface WazuhPayload {
   status: WazuhStatus;
   agents: WazuhAgent[];
   ingest: WazuhIngest;
-  env: { url: string; user: string; password_set: boolean };
   hint: string;
-}
-
-export interface WazuhTestResult {
-  ok: boolean;
-  url: string;
-  version: string;
-  cluster_enabled: boolean;
-  detail: string;
 }
 
 export interface WazuhRuleFile {

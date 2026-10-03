@@ -1,9 +1,13 @@
-"""Wazuh 4.14 接入管理（第 6 期）：连接凭据、接入状态、Agent 清单、规则文件下发与生效校验。
+"""Wazuh 4.14 接入管理（第 6 期）：接入状态、Agent 清单、规则文件下发与生效校验。
 
 设计要点：
 
-- **凭据**（地址 / 用户名 / 密码 / 是否校验 TLS）存 `SystemConfig` 的 `wazuh.params`，
-  环境变量只作默认值；界面回显一律打码，密码传 `None` = 不改动、传 `""` = 清空。
+- **连接信息不可由用户配置**：Wazuh 是随本项目一起部署的内置服务（见
+  `docker-compose.wazuh.yml`），地址 / 用户名 / 密码 / 是否校验 TLS 全部由部署环境
+  给定（`ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` /
+  `ST_WAZUH_API_VERIFY_TLS`），本模块只**读**环境变量，不写库、也没有保存接口 ——
+  界面上不再出现「填地址 + 填密码 + 保存」这一步。第 6 期把凭据存进
+  `SystemConfig.wazuh.params` 的写法已废弃，遗留的该行**不再被读取**。
 - **Wazuh API 用 Basic 换 JWT**：`POST /security/user/authenticate` 拿 token，
   token 有过期（默认 900s），故进程内按 `(url, user)` 缓存并在过期前重新登录；
   登录失败不抛 500，而是回结构化错误（界面能显示原因）。
@@ -23,12 +27,10 @@ import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.config import settings
-from app.db.base import get_db
-from app.db.models import SystemConfig, User
+from app.db.models import User
 from app.ingestion import es_config
 from app.ingestion.es_client import get_es
 from app.investigation import catalog
@@ -38,7 +40,6 @@ log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/wazuh", tags=["wazuh"])
 
-CONFIG_KEY = "wazuh.params"
 DEFAULT_PORT = 55000
 #: token 提前这么久重新登录（Wazuh 默认有效期 900s）
 TOKEN_SAFETY_SECONDS = 60.0
@@ -47,7 +48,8 @@ RULE_FILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}\.xml$")
 RULE_ID_RE = re.compile(r"<rule\s[^>]*id\s*=\s*\"(\d+)\"")
 
 HINT = (
-    "先填 Wazuh manager 的 API 地址（https://<manager>:55000）与凭据，点「测试连接」；"
+    "Wazuh 随本项目一起部署，连接信息由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台的 "
+    "`ST_WAZUH_API_*`），不需要在这里配置；本页只显示接入状态。"
     "「接入状态」会分别显示 API 是否可达、以及最近 24 小时 Wazuh 告警/原始日志各入库多少条。"
     "注意：Wazuh 采的是主机日志，与「监控网段」无关 —— 那份清单只约束 Zeek 抓包。"
 )
@@ -56,44 +58,29 @@ HINT = (
 _token_cache: dict[str, tuple[float, float, str]] = {}
 
 
-class WazuhConfigIn(BaseModel):
-    url: str = ""
-    user: str | None = None
-    password: str | None = None  # None = 不改动；"" = 清空
-    verify_tls: bool = False
-
-
 class WazuhRuleIn(BaseModel):
     filename: str = "local_rules.xml"
     text: str
     verify: bool = True
 
 
-# ---------- 配置存取与脱敏 ----------
+# ---------- 连接配置（只来自部署环境） ----------
 
 
-def _stored(db: Session) -> dict[str, Any]:
-    row = db.get(SystemConfig, CONFIG_KEY)
-    value = row.value if row is not None else None
-    return dict(value) if isinstance(value, dict) else {}
+def _cfg() -> dict[str, Any]:
+    """当前生效的连接信息：**只有环境变量这一个来源**。
 
-
-def _env_defaults() -> dict[str, Any]:
+    以前这里会先读 `SystemConfig.wazuh.params` 再让界面保存的值覆盖环境默认值；
+    现在 Wazuh 是内置服务，连接信息在部署时就固定了，所以库里的那份配置
+    （如果之前存过）被彻底忽略 —— 留着一个能改地址/密码的入口只会造成
+    「界面写了一个地址、实际连的是另一个」这类问题。
+    """
     return {
-        "url": settings.wazuh_api_url,
+        "url": _normalize_url(settings.wazuh_api_url),
         "user": settings.wazuh_api_user,
         "password": settings.wazuh_api_password,
         "verify_tls": settings.wazuh_api_verify_tls,
     }
-
-
-def _merge(stored: dict[str, Any]) -> dict[str, Any]:
-    cfg = _env_defaults()
-    for key in ("url", "user", "password", "verify_tls"):
-        if key in stored and stored[key] not in (None, ""):
-            cfg[key] = stored[key]
-    cfg["url"] = _normalize_url(str(cfg.get("url") or ""))
-    return cfg
 
 
 def _normalize_url(url: str) -> str:
@@ -106,25 +93,14 @@ def _normalize_url(url: str) -> str:
     return raw
 
 
-def mask(value: str) -> str:
-    """脱敏：只留头 2 尾 2，中间固定 6 个星号。"""
-    raw = str(value or "")
-    if not raw:
-        return ""
-    if len(raw) <= 4:
-        return "*" * 6
-    return f"{raw[:2]}{'*' * 6}{raw[-2:]}"
-
-
 def _public(cfg: dict[str, Any]) -> dict[str, Any]:
     password = str(cfg.get("password") or "")
     return {
         "url": str(cfg.get("url") or ""),
         "user": str(cfg.get("user") or ""),
         "password_set": bool(password),
-        "password_masked": mask(password),
         "verify_tls": bool(cfg.get("verify_tls")),
-        # 地址 + 凭据齐全才算「已配置」
+        # 地址 + 凭据齐全才算「已配置」（缺什么由部署环境补，界面改不了）
         "configured": bool(cfg.get("url") and cfg.get("user") and password),
     }
 
@@ -149,7 +125,7 @@ def _login(cfg: dict[str, Any]) -> tuple[str | None, str]:
     user = str(cfg.get("user") or "")
     password = str(cfg.get("password") or "")
     if not (url and user and password):
-        return None, "还没填全 Wazuh API 地址 / 用户名 / 密码"
+        return None, "部署环境没有配全 Wazuh API 地址 / 用户名 / 密码（ST_WAZUH_API_*）"
     cache_key = f"{url}|{user}"
     now = time.monotonic()
     cached = _token_cache.get(cache_key)
@@ -432,8 +408,8 @@ def _agents_summary(agents: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
-def _payload(db: Session) -> dict[str, Any]:
-    cfg = _merge(_stored(db))
+def _payload() -> dict[str, Any]:
+    cfg = _cfg()
     public = _public(cfg)
     status = (
         _probe(cfg)
@@ -443,7 +419,7 @@ def _payload(db: Session) -> dict[str, Any]:
             "url": public["url"],
             "version": "",
             "cluster_enabled": False,
-            "detail": "还没填全 Wazuh API 地址 / 用户名 / 密码",
+            "detail": "部署环境没有配全 Wazuh API 地址 / 用户名 / 密码（ST_WAZUH_API_*）",
         }
     )
     agents: list[dict[str, Any]] = []
@@ -471,11 +447,6 @@ def _payload(db: Session) -> dict[str, Any]:
         "status": {**status, "agents": _agents_summary(agents)},
         "agents": agents,
         "ingest": _ingest_stats(),
-        "env": {
-            "url": settings.wazuh_api_url,
-            "user": settings.wazuh_api_user,
-            "password_set": bool(settings.wazuh_api_password),
-        },
         "hint": HINT,
     }
 
@@ -484,85 +455,27 @@ def _payload(db: Session) -> dict[str, Any]:
 
 
 @router.get("")
-def get_wazuh(
-    db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(get_current_user)]
-):
-    return _payload(db)
+def get_wazuh(_: Annotated[User, Depends(get_current_user)]):
+    """接入状态（只读）。
 
-
-@router.put("")
-def save_wazuh(
-    body: WazuhConfigIn,
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
-):
-    stored = _stored(db)
-    stored["url"] = _normalize_url(body.url)
-    if body.user is not None:
-        stored["user"] = body.user
-    if body.password is not None:
-        stored["password"] = body.password  # "" = 显式清空
-    stored["verify_tls"] = body.verify_tls
-
-    row = db.get(SystemConfig, CONFIG_KEY)
-    if row is None:
-        row = SystemConfig(key=CONFIG_KEY, value={})
-        db.add(row)
-    row.value = stored
-    db.commit()
-    log.info(
-        "Wazuh API 配置已更新（地址=%s，密码=%s）",
-        stored.get("url"),
-        "已设置" if stored.get("password") else "未设置",
-    )
-    return _payload(db)
-
-
-@router.post("/test")
-def test_wazuh(
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
-    body: WazuhConfigIn | None = None,
-):
-    """测试连接：可以带一份临时配置（界面还没保存时先试）。"""
-    cfg = _merge(_stored(db))
-    if body is not None:
-        if body.url:
-            cfg["url"] = _normalize_url(body.url)
-        if body.user is not None:
-            cfg["user"] = body.user
-        if body.password is not None:
-            cfg["password"] = body.password
-        cfg["verify_tls"] = body.verify_tls
-    # 测试用的一定是「刚填的」凭据，不能复用旧 token 缓存
-    _token_cache.pop(f"{cfg.get('url')}|{cfg.get('user')}", None)
-    probe = _probe(cfg)
-    return {
-        "ok": bool(probe["reachable"]),
-        "url": probe["url"],
-        "version": probe["version"],
-        "cluster_enabled": probe["cluster_enabled"],
-        "detail": probe["detail"],
-    }
+    Wazuh 随项目一起部署，连接信息由部署环境固定，所以这里**没有** `PUT` 保存配置、
+    也没有「测试连接」入口 —— 页面只显示状态与入库量。
+    """
+    return _payload()
 
 
 @router.get("/status")
-def get_status(
-    db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(get_current_user)]
-):
+def get_status(_: Annotated[User, Depends(get_current_user)]):
     """Wazuh 探活 + 近 24h 入库量。
 
     与 `GET /api/wazuh`（`_payload`）内容重叠、界面没调它；保留为对外只读能力
     （复刻 Wazuh API 的 status 资源，脚本/智能体可直接取）。
     """
-    cfg = _merge(_stored(db))
-    probe = _probe(cfg)
-    return {**probe, "ingest": _ingest_stats()}
+    return {**_probe(_cfg()), "ingest": _ingest_stats()}
 
 
 @router.get("/agents")
 def list_agents(
-    db: Annotated[Session, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
     status: str = "",
     limit: int = 500,
@@ -571,7 +484,7 @@ def list_agents(
 
     同上：界面通过 `GET /api/wazuh` 拿同样的清单，这个独立入口保留给外部只读使用。
     """
-    cfg = _merge(_stored(db))
+    cfg = _cfg()
     params: dict[str, Any] = {
         "limit": max(1, min(int(limit or 500), 1000)),
         "select": "id,name,ip,status,version,lastKeepAlive,os.name",
@@ -591,12 +504,8 @@ def list_agents(
 
 
 @router.get("/rules")
-def list_rule_files(
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
-    limit: int = 200,
-):
-    cfg = _merge(_stored(db))
+def list_rule_files(_: Annotated[User, Depends(get_current_user)], limit: int = 200):
+    cfg = _cfg()
     data, err = _api(
         cfg,
         "GET",
@@ -617,7 +526,6 @@ def list_rule_files(
 @router.post("/rules")
 def upload_rule_file(
     body: WazuhRuleIn,
-    db: Annotated[Session, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
 ):
     """下发一个自定义规则文件并（默认）回读校验是否真的生效。"""
@@ -643,7 +551,7 @@ def upload_rule_file(
                 "detail": "内容看起来不是 Wazuh 规则文件（需要 <group> 与 <rule>）",
             },
         )
-    cfg = _merge(_stored(db))
+    cfg = _cfg()
     _sent, err = _api(
         cfg,
         "PUT",

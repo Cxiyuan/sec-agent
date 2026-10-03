@@ -161,16 +161,16 @@ docker compose -f docker-compose.yml -f docker-compose.wazuh.yml up -d
   再把 `WAZUH_ARCHIVES_ENABLED=true` 传给 `wazuh-filebeat`。原始日志默认**只入库、不喂检测器**
   （`ST_WAZUH_ARCHIVE_TO_DETECTOR=false`）—— 量级比告警大得多，容量估算见
   [`docs/ndr-redesign.md`](docs/ndr-redesign.md) 第 6 期。
-- 界面上接 API：「采集接入 → Wazuh」填地址 `https://<manager>:55000` 与凭据、点测试连接，
+- 管理面「采集接入 → Wazuh」**只显示状态、不需要配置**：Wazuh 随项目一起部署，
+  地址与凭据由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台 `ST_WAZUH_API_*`）；
   面板显示 API 版本 / Agent 在线情况 / **近 24h 入库的告警与原始日志条数**（后者是链路真通了的证据），
-  并可下发本地规则文件（下发后回读校验）。凭据存库，`ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` /
-  `ST_WAZUH_API_PASSWORD` / `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` 只是默认值。
+  并可下发本地规则文件（下发后回读校验）。
 
 ### 3.2 接外部已有的 Wazuh
 
 不要起本仓库的 `wazuh-manager`，把 `ndr/wazuh/filebeat.yml` 拷到能读到 `alerts.json` 的机器上，
-改 `WAZUH_LOG_DIR` 与 `REDIS_HOST`/`REDIS_PORT`/`REDIS_KEY`，起 Filebeat 即可；再到 NDR 界面填那台
-manager 的 API 地址与凭据。
+改 `WAZUH_LOG_DIR` 与 `REDIS_HOST`/`REDIS_PORT`/`REDIS_KEY`，起 Filebeat 即可；再把那台 manager 的
+API 地址与凭据写进后台的 `ST_WAZUH_API_*`（`GET /api/wazuh` 只读，界面没有填写入口）。
 
 两个字段改配置时别丢：`overwrite_keys: true`（否则 Filebeat 自己的 ECS 顶层 `agent` 会盖掉 Wazuh
 的 `agent.name`，主机名就丢了）与 **不设 ndjson `target`**（归一化服务直接从根读
@@ -208,8 +208,9 @@ manager 的 API 地址与凭据。
    点「测试连接」应为连通；之后检测器命中就会直接推过去（面板可看送达与失败计数）
 10. （NDR 线路）**Wazuh 已内置，部署即已接入**：`up -d` 会一起起 `wazuh-manager` 与
    `wazuh-filebeat`；只需确认 `.env` 里的 `WAZUH_API_USER`/`WAZUH_API_PASSWORD` 是强口令
-   （与 manager 共用同一组变量，后台的 `ST_WAZUH_API_*` 默认值也取它），
-   再到「采集接入 → Wazuh」点测试连接即可（地址默认已是 `https://wazuh-manager:55000`）；
+   （与 manager 共用同一组变量，后台直接取它，没有第二处要填），
+   到「采集接入 → Wazuh」应直接看到「API 已连通」与 Agent 在线情况（这一页只显示状态，
+   地址固定是 `https://wazuh-manager:55000`，没有保存/测试连接的入口）；
    要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`。
    只有接**外部已有**的 Wazuh 时才需要看 §3.2
 11. **日常盯「运行状态」页**（左侧导航最后一项，每 15 秒自刷新）：队列积压 / 本分钟投递 /
@@ -325,7 +326,7 @@ NDR 线路（采集与检测）：
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「Zeek 抓包」写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
-| `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 默认凭据（界面「Wazuh 接入」保存的值优先，密码只写不回显） |
+| `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `WAZUH_API_*` 传入 |
 | `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |
 | `ST_COLLECTOR_COLLECT_QUEUE` | shentong:events:collect | Filebeat 写入的**采集队列** |
 | `ST_COLLECTOR_CONSUME_BATCH` / `ST_COLLECTOR_POLL_TIMEOUT` | 500 / 5 | 归一化服务每轮取批与轮询超时 |

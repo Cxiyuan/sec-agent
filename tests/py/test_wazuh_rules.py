@@ -192,10 +192,10 @@ def test_count_rules_gives_up_at_deadline(
 def _upload(
     wazuh: ModuleType, monkeypatch: pytest.MonkeyPatch, api: Any, **kwargs: Any
 ) -> dict[str, Any]:
-    monkeypatch.setattr(wazuh, "_stored", lambda _db: {})
+    monkeypatch.setattr(wazuh, "_cfg", lambda: _CFG)
     monkeypatch.setattr(wazuh, "_api", api)
     body = wazuh.WazuhRuleIn(filename="probe.xml", text=_RULE_TEXT, **kwargs)
-    out = wazuh.upload_rule_file(body=body, db=None, _=None)
+    out = wazuh.upload_rule_file(body=body, _=None)
     assert not hasattr(out, "status_code"), f"不该回错误响应：{getattr(out, 'body', out)}"
     assert isinstance(out, dict)
     return out
@@ -264,8 +264,7 @@ def test_upload_rule_file_reports_body_level_failure(
     实测：不带 `overwrite` 的 PUT 回 200 但规则一条都没更新；只看状态码就会报「已上传」，
     再拿旧文件的回读结果比对，就变成看不懂的「内容不一致」。
     """
-    monkeypatch.setattr(wazuh, "_stored", lambda _db: {})
-    monkeypatch.setattr(wazuh, "_merge", lambda _stored: _CFG)
+    monkeypatch.setattr(wazuh, "_cfg", lambda: _CFG)
     _stub_httpx(
         wazuh,
         monkeypatch,
@@ -299,7 +298,7 @@ def test_upload_rule_file_reports_body_level_failure(
     wazuh._token_cache.clear()
 
     out = wazuh.upload_rule_file(
-        body=wazuh.WazuhRuleIn(filename="probe.xml", text=_RULE_TEXT, verify=True), db=None, _=None
+        body=wazuh.WazuhRuleIn(filename="probe.xml", text=_RULE_TEXT, verify=True), _=None
     )
 
     assert out.status_code == 400
@@ -331,13 +330,12 @@ def test_upload_rule_file_survives_raw_read_failure(
 
 def test_upload_rejects_bad_filename(wazuh: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """文件名只允许一层 .xml：目录穿越与嵌套路径必须在进 API 之前挡下。"""
-    monkeypatch.setattr(wazuh, "_stored", lambda _db: {})
     called: list[str] = []
     monkeypatch.setattr(wazuh, "_api", lambda *a, **k: called.append(a[2]) or (None, ""))
 
     for bad in ("../evil.xml", "sub/dir.xml", "nope.txt", ""):
         body = wazuh.WazuhRuleIn(filename=bad, text=_RULE_TEXT, verify=True)
-        out = wazuh.upload_rule_file(body=body, db=None, _=None)
+        out = wazuh.upload_rule_file(body=body, _=None)
         assert out.status_code == 400, bad
         assert json.loads(bytes(out.body))["conflict"] == "field_error"
     assert called == []

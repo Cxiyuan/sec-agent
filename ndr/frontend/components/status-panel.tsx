@@ -17,7 +17,7 @@ import {
  * 数据都来自既有接口，不新增后端：
  * - `/api/detector/stats`：检测队列深度、投递速率、丢弃计数、选主、Redis 内存体检
  * - `/api/agent-push`：摘要推送的送达 / 待重发 / 最近失败原因
- * - `/api/wazuh`：Wazuh API 可达性与近 24h 入库量（没接 Wazuh 时显示未配置）
+ * - `/api/wazuh`：Wazuh API 可达性与近 24h 入库量（连接信息由部署环境固定，界面只读）
  * - `/api/baseline`：基线学习进度与过阈值画像（第 8 期从智能体侧迁来）
  *
  * 队列长度与内存吃满是最真实的故障前兆（历史上 Redis 写满导致整链静默卡死），
@@ -238,7 +238,7 @@ export function StatusPanel() {
                   : "已配置但连不上"}
               </Badge>
             ) : (
-              <Badge variant="outline">未配置（没接 Wazuh 就不用管）</Badge>
+              <Badge variant="outline">未配置（部署环境没给 ST_WAZUH_API_*）</Badge>
             )}
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-4">
