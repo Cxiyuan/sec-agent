@@ -31,6 +31,7 @@ from app.db.base import get_db
 from app.db.models import SystemConfig, User
 from app.ingestion import es_config
 from app.ingestion.es_client import get_es
+from app.investigation import catalog
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -279,27 +280,35 @@ def _ingest_stats() -> dict[str, Any]:
         "last_at": None,
         "error": "",
     }
-    query = {
-        "bool": {
-            "filter": [
-                {"term": {"source_system": "wazuh"}},
-                {"range": {"@timestamp": {"gte": "now-24h"}}},
-            ]
-        }
-    }
     # 索引名走运行时配置（后台「系统配置 → Elasticsearch」能改），不能用静态
     # settings.es_events_index —— 否则改了索引名这里还在查旧索引，界面显示「没有入库」
     # 而实际数据在别的索引里（同类读路径见 app/ingestion/es_config.py）。
     cfg = es_config.current()
     index = str(cfg.get("es.events_index") or settings.es_events_index)
+    # 精确匹配与聚合都必须走 keyword 路径：`log_type`/`source_system` 实机是 text
+    # （动态映射另给一个 `.keyword` 副本），对 text 主路径做 terms 聚合会被 ES 直接拒
+    # （`Fielddata is disabled on [log_type]`）—— 后果是「接入状态」永远显示「读 ES 失败」，
+    # 这正是 `ndr/wazuh/README.md` 里「界面近 24h 入库条数」那条待验项。
+    log_type_path = catalog.agg_path(index, "log_type")
+    source_path = catalog.agg_path(index, "source_system")
+    query = {
+        "bool": {
+            "filter": [
+                {"term": {source_path: "wazuh"}},
+                {"range": {"@timestamp": {"gte": "now-24h"}}},
+            ]
+        }
+    }
     try:
         es = get_es()
         resp = es.search(
             index=index,
             query=query,
             size=0,
+            # 默认 hits.total 超过 1 万就只给下界（"gte"），界面会把它当精确值显示
+            track_total_hits=True,
             aggs={
-                "by_type": {"terms": {"field": "log_type", "size": 10}},
+                "by_type": {"terms": {"field": log_type_path, "size": 10}},
                 "last": {"max": {"field": "@timestamp"}},
             },
         )
