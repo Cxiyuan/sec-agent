@@ -583,7 +583,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 - **坏消息不再静默丢**：`ndr/backend/app/collector/normalizer_service.py` 归一化异常的原始消息进死信 `shentong:events:dead`（LPUSH + LTRIM 保最新 1 万）、`shentong:collector:stats` HINCRBY 持久计数、按积压量告警；仍 ack 不卡链路。
 - **队列裁剪方向纠错**：原 `ltrim(key, 0, limit-1)` 丢的其实是**最新**（Filebeat 用 `RPUSH` 写右端），改为 `ltrim(key, -limit, -1)` 保最新、丢最旧。
-- **`conn_state` 语义纠错**：只有 `S0`（只发 SYN、无任何回应）算 `scan_attempt`，`S1/S2/S3/SF` 归 `conn_established`。原实现把已建立的连接也判成扫描 → 「内置-横向移动管理端口」「内置-异常外联端口」里的 `event_type ne scan_attempt` 永不命中，而「内置-扫描尝试连接」被灌误报。
+- **`conn_state` 语义纠错**：只有 `S0`（只发 SYN、无任何回应）算 `scan_attempt`，`S1/S2/S3/SF/RSTO/RSTR` 归 `conn_established`。原实现把已建立的连接也判成扫描 → 「内置-横向移动管理端口」「内置-异常外联端口」里的 `event_type ne scan_attempt` 永不命中，而「内置-扫描尝试连接」被灌误报。（2026-10-03 进一步把这套语义收进唯一事实来源，见下节「连接状态语义收口」。）
 - **检测器投递不再谎报成功**：`ndr/backend/app/detector/runner.py` 在 `push.deliver()` 返回 `off`（未配推送地址）时改记 `undelivered` + ack，不再把摘要写进无人消费的退役队列 `shentong:events:dispatch` 并计 `delivered`。
 - **异常消息不再无条件丢弃**：`runner.py` 处理失败的消息进隔离队列 `shentong:detector:failed`（1 千上限 + 7 天 TTL）并计数，取代 `log.exception` + `finally ack`。
 - **推送重试队列有界**：`ndr/backend/app/detector/push.py` 给 `shentong:events:pushretry` 加 `_RETRY_QUEUE_MAX = 2000`（LTRIM 保最新，丢弃计 `retry_dropped`）；区分可重试（网络/超时/5xx/408/429 → 放回队尾、结束本轮，与 `docs` 第 5 期"停止本轮"的设计意图一致）与永久失败（持续 4xx → 记 5 次后判 `retry_lost`）；`recover_pending()` 加 SET NX 锁并与 `/api/agent-push/retry` 收敛，避免两个写者互抢 processing 批造成重复推送。
@@ -610,7 +610,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 - 删：`ingestion/dedup.py`（两侧）、`ingestion/es_schema.py` 整条链、`rules/engine.py::match_count_rule`、`baseline/profile.py::window_observations`、`triage_policy.py` 的 `evidence_tier`/`cap_severity`/`should_escalate`（真源在智能体侧 `agent/backend/app/agents/triage_policy.py`）、`detector/handled.py::filter_unhandled`、`investigation/es_query.py::count`、六个「目录生成」函数、`ndr/frontend/lib/api.ts` 的三个零引用类型。
 - 死配置：`es_events_src_fields` / `es_events_dst_fields`、`max_logs_per_window`、`digest_suppress_hours`、`digest_merge_family`、`CONFIG_KEYS`、compose 里两组 `ZEEK_*` 旋钮；`policy_skip_rules` 里的规则名不存在 → 改成真实名字（`内置-扫描尝试连接`、`内置-恶意文件传输`）。
 - 注释与实现对齐：`ingestion/es_config.py`、`mcp/__init__.py` 的模块名、`agent-push-panel` 的 `queued` 语义、`push.py` 的 `recover()` docstring、`runner.py` 的「睡到分钟桶边界」、Zeek 保留策略与 `ZEEK_LOG_DIR` 等。
-- **只报告未改**（口径未定，等用户拍板）：`triage_policy.py::SUCCESS_CONN_STATES` 含 `RSTO`/`RSTR`（连接被重置，实际未成功），而 `_zeek_event_type` 把它们映射成 `generic`，两处对"成功连接"的定义不一致 —— 本轮不动，避免改告警口径。
+- ~~**只报告未改**（口径未定，等用户拍板）：`triage_policy.py::SUCCESS_CONN_STATES` 含 `RSTO`/`RSTR`（连接被重置，实际未成功），而 `_zeek_event_type` 把它们映射成 `generic`，两处对"成功连接"的定义不一致~~ → **已于 2026-10-03 彻底解决**：`RSTO`/`RSTR` 是「握手已建立、随后一方 RST 断开」，算握手完成；`SH`/`SHR` 从未完成握手，不算。语义收进 `conn_states.py` 一张表，三处调用点共用，见下节。
 - **已知未动**：`investigation/tools.py` 的 `_timeline` / `_net_flows` 有与已修多来源截断同型的 `hits[:limit]`（风险更低）；`shentong:events:dispatch` 退役队列里积压的约 400 条（推送线路未部署，部署后 `DEL`）。
 
 **门禁与验收**（2026-10-02，仓库根）
@@ -618,6 +618,28 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 `.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **281 passed**；`--stack=agent -q` **195 passed, 86 skipped**；`ndr/frontend` 与 `agent/frontend` 的 `npx tsc --noEmit` 均 exit 0；`sh tests/zeek/run.sh` **ALL PASS**；`docker compose config -q` 对 `docker-compose.yml`、`docker-compose.deploy.yml` 及两份 +`docker-compose.wazuh.yml` 组合均通过。新增测试：`tests/py/test_detector_runner.py`、`test_detector_push.py`、`test_detector_coverage.py`、`test_investigation_query.py`、`test_mcp_tokens.py`、`test_rules_routing.py`。
 
 **实机验收（2026-10-03，172.16.196.77，镜像 `d873953`）**：备份并覆盖 `docker-compose.deploy.yml` → `pull` + `up -d`，十个容器全 Up（`ndr-mcp` 与 `zeek` healthy）；镜像内新代码标记逐项命中；`/api/auth/me` 报 `default_password_in_use: true`、`/api/detector/coverage` 已是窗口口径（`delivered_interval`/`stale`/`delivered_window_est`）、`/api/agent-push` 有 `undelivered`/`retry_lost`/`retry_dropped` 与真实 `queue_depth`、`/api/detector/stats` 有 `paused`/`queue_failed`；ES 集群 green/unassigned 0、模板 200；Logstash 管道卷内 `ecs_compatibility => "disabled"`、近 5 分钟 0 条 WARN/ERROR、入库 4555 条/5 分钟；`exists ja4` 走查询层 = 2265（与 `must_not term ja4.keyword:""` 一致），原生 `exists` 仍 101 万；`account` 存在判定 = 0。`shentong:events:dispatch` 已无写入方（旧代码遗留约 400 条）。
+
+### 2026-10-03 连接状态语义收口（`conn_state` 唯一事实来源）
+
+起因是深度 QA 报告里留的一条「待拍板」：`triage_policy.SUCCESS_CONN_STATES` 含 `RSTO`/`RSTR`，而 `normalizer._zeek_event_type` 把它们标成 `generic`，两处对"成功连接"的定义不一致。用户追问「如何彻底解决这个问题」，复查后确认根因**不是那两个状态**，而是同一份 `conn_state` 语义被**手写三遍**（三份只要错一处，结果就静默翻转）：
+
+1. `ndr/backend/app/ingestion/normalizer.py::_zeek_event_type` —— 翻事件类型标签；
+2. `ndr/backend/app/triage_policy.py` —— `SUCCESS_EVENT_TYPES` / `SUCCESS_CONN_STATES` 判「有没有成功连接」（`has_success()`）；
+3. `agent/backend/app/agents/prefilter.py::_looks_established` —— 兜底预筛分，第三次手写同一份白名单。
+
+复查同时抓到**第二个更实的静默失效**（比 RSTO/RSTR 严重）：Zeek 的 `SH` = 「发了 SYN 又发 FIN、从没收到 SYN-ACK」= **没建立**，代码却因标签是 `connection_shutdown` 而把它算进"成功连接"（`has_success` 判 True、`evidence_tier` 判 T2、`_looks_established` 走成功分支）—— 方向是**该分析的被降噪**。
+
+修法：新增 `ndr/backend/app/ingestion/conn_states.py` 与 `agent/backend/app/ingestion/conn_states.py`（**两侧逐字一致**，由 `tests/py/test_stack_consistency.py` 的字节比对守住），作为唯一事实来源：
+
+- `CONN_STATES: dict[str, ConnStateInfo]`（`ConnStateInfo = (event_type, established)`）覆盖 Zeek 官方 13 个状态：`S0→scan_attempt/否`、`S1/SF/S2/S3/RSTO/RSTR→conn_established/是`、`REJ→rejected_connection/否`、`SH/SHR→connection_shutdown/否`、`RSTOS0/RSTRH→rejected_connection/否`、`OTH→generic/否`；
+- `ESTABLISHED_CONN_STATES` 由表推导；`event_type_of()` / `is_established()` / `is_known()` / `produced_event_types()` 是唯一入口；**表外状态不静默**（每个未知状态进程内喊一次 warning，提示补表）；
+- `normalizer` 只查表，不再写 if 链；`triage_policy.SUCCESS_CONN_STATES = ESTABLISHED_CONN_STATES`、`SUCCESS_EVENT_TYPES = {"conn_established", "conn_http"}`（**删掉 `connection_shutdown`** —— 这一刀修的就是 SH 坑）；`prefilter._looks_established` 改用 `is_established()`。
+
+**行为变化（会影响告警口径，须记住）**：`SH`/`SHR` 不再算"成功连接"（`has_success` 判 False、`evidence_tier` 从 T2 降到 T1、内网常规流量预筛不再把它们当正常会话跳过）；`RSTOS0`/`RSTRH` 的标签由 `generic` 变成 `rejected_connection`（当前无规则引用该标签）；`RSTO`/`RSTR` 的标签由 `generic` 变成 `conn_established`（与分诊口径对齐，将来写 `event_type = conn_established` 的规则不会再漏掉它们）；`SH`/`SHR` 标签仍是 `connection_shutdown`。
+
+**新增守卫**：`tests/py/test_conn_states.py`（49 条，两栈各跑一遍）——官方状态全集覆盖（Zeek 新增状态时 CI 先炸，而不是线上静默按 `generic` 处理）、逐状态 `(标签, 是否已建立)` 与文档口径一致、`normalizer` 产出标签 == 表、`has_success` 跟随表、SH 回归、未知状态限流告警一次、内置规则与智能体技能引用的 event_type 都有生产者（词表守卫，防引用一个永不产出的标签）；`tests/py/test_stack_consistency.py` 另加两侧 `conn_states.py` 逐字一致的字节比对。
+
+**门禁（2026-10-03，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **330 passed, 1 skipped**；`--stack=agent -q` **245 passed, 86 skipped**。
 
 ### 每期收尾门禁
 

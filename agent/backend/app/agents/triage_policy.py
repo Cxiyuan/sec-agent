@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import settings
+from app.ingestion.conn_states import ESTABLISHED_CONN_STATES
 from app.runtime_config import get as runtime_get
 from app.tools.context import is_public_ip
 from app.workers.log import get_logger
@@ -40,9 +41,14 @@ DIR_UNKNOWN = "unknown"  # 缺地址信息，不做方向判定（只保留证�
 SEVERITY_RANK: dict[str, int] = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _RANK_TO_SEVERITY = {v: k for k, v in SEVERITY_RANK.items()}
 
-# 视为"连接成功"的事件类型与 Zeek conn_state
-SUCCESS_EVENT_TYPES = {"conn_established", "conn_http", "connection_shutdown"}
-SUCCESS_CONN_STATES = {"SF", "S1", "S2", "S3", "RSTO", "RSTR"}
+# 视为"连接成功"的事件类型：只放**非 conn_state 来源**的标签（conn_http 来自 HTTP 日志），
+# 以及作为兜底保留的 conn_established（摘要里 conn_states 被截断时还能判出来）。
+# conn_state 来源的语义一律以 app/ingestion/conn_states.py 的表为准，**不许用标签反推
+# "握手完成没完成"** —— 历史 bug：SH（发了 SYN 又 FIN、从未收到 SYN-ACK，没建立）被标成
+# connection_shutdown，而这个标签在成功集合里，于是没建立的连接被当成"已建立"。
+SUCCESS_EVENT_TYPES = {"conn_established", "conn_http"}
+# Zeek conn_state 里算"握手真的完成过"的集合：**由表生成**，不要再手写第二份。
+SUCCESS_CONN_STATES = ESTABLISHED_CONN_STATES
 
 
 def _is_internal(ip: Any) -> bool:

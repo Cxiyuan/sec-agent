@@ -67,3 +67,21 @@ def test_values_match(name: str, dumps: dict) -> None:
         assert ndr.get(key) == agent.get(key), (
             f"{name}.{key} 两侧不一致：ndr={ndr.get(key)!r} agent={agent.get(key)!r}"
         )
+
+
+# 必须**逐字一致**的整份文件：两侧各持一份、靠人工同步的纯逻辑模块。
+# conn_state 语义表就属于这类——只要两侧表不同，同一个 conn.log 在两条栈上会被标成
+# 不同的事件类型/是否已建立（2026-10-03 的 RSTO/RSTR 与 SH 两个静默失效就是这么来的）。
+IDENTICAL_FILES = ("app/ingestion/conn_states.py",)
+
+
+@pytest.mark.parametrize("rel", IDENTICAL_FILES)
+def test_shared_module_is_byte_identical(rel: str) -> None:
+    ndr_path = ROOT / "ndr" / "backend" / rel
+    agent_path = ROOT / "agent" / "backend" / rel
+    assert ndr_path.is_file(), f"缺文件：{ndr_path}"
+    assert agent_path.is_file(), f"缺文件：{agent_path}"
+    assert ndr_path.read_bytes() == agent_path.read_bytes(), (
+        f"{rel} 两侧内容不一致：这份模块必须逐字相同（改一侧就在另一侧同步，"
+        "否则两条栈对同一份日志给出不同判定）"
+    )

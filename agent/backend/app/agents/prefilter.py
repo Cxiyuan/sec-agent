@@ -16,6 +16,7 @@ from typing import Any
 
 from app.agents import triage_policy
 from app.config import settings
+from app.ingestion.conn_states import is_established
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -154,13 +155,12 @@ def _looks_established(entry: UnifiedLog) -> bool:
 
     为什么要单独判它：未建立/半开连接（S0/REJ）是扫描/探活的典型特征，而双向有字节
     的已建立会话基本是正常业务（内网尤其如此）—— 后者正是兜底预筛噪声的主来源。
+
+    "握手完成过"只认 app/ingestion/conn_states.py 那张表（``is_established``），
+    事件类型只是标签兜底：以前这里手写了第三份 conn_state 白名单，与 normalizer /
+    triage_policy 各说各话（SH 明明没建立却被当成已建立），故统一收回表里。
     """
-    success = str(
-        entry.conn_state or ""
-    ).upper() in triage_policy.SUCCESS_CONN_STATES or entry.event_type in (
-        "conn_established",
-        "connection_shutdown",
-    )
+    success = is_established(entry.conn_state) or entry.event_type in triage_policy.SUCCESS_EVENT_TYPES
     return success and bool(entry.bytes_out) and bool(entry.bytes_in)
 
 

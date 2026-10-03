@@ -18,7 +18,7 @@ from functools import lru_cache
 from typing import Any
 
 from app.config import settings
-from app.ingestion import log_types
+from app.ingestion import conn_states, log_types
 from app.runtime_config import get as runtime_get
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
@@ -660,21 +660,15 @@ def _zeek_event_type(log_type: str, note: str | None, conn_state: str | None) ->
         return "zeek_notice"
 
     if conn_state:
-        # 只把 S0（只发了 SYN、没有任何回应）当扫描/探活；S1/S2/S3 是**握手已经建立**，
-        # 与 app/triage_policy.py 的 SUCCESS_CONN_STATES（SF/S1/S2/S3/RSTO/RSTR）口径一致，
-        # 归「连接已建立」。
-        # 改造前把这四个状态一股脑判成 scan_attempt：带 `event_type ne scan_attempt` 的内置
-        # 规则（横向移动管理端口、异常外联端口）在这些已建立会话上永不命中，反过来「扫描
-        # 尝试连接」规则被灌误报。
-        if conn_state == "S0":
-            return "scan_attempt"
-        if conn_state in ("S1", "S2", "S3", "SF"):
-            return "conn_established"
-        if conn_state == "REJ":
-            return "rejected_connection"
-        if conn_state == "SH":
-            return "connection_shutdown"
-    return "generic"
+        # conn_state 的语义（标签 + 是否算「握手真的完成过」）统一维护在
+        # app/ingestion/conn_states.py 的一张表里，这里只查表、不再手写 if 链：
+        # 以前手写导致 RSTO/RSTR 被兜底成 generic、SH（没建立）被当成「已建立」，
+        # 事件类型与分诊口径静默打架（那两个坑见该模块 docstring）。
+        # 表外状态由 conn_states 记一次限流警告，不静默吞掉。
+        mapped = conn_states.event_type_of(conn_state)
+        if mapped:
+            return mapped
+    return conn_states.GENERIC_EVENT_TYPE
 
 
 def _wazuh_event_type(level: Any, rule_groups: str, description: Any) -> str:
