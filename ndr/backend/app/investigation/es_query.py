@@ -41,13 +41,19 @@ TIMEOUT_HINTS = (
 )
 
 
-def query_timeout() -> str:
-    """ES 单次查询超时。
+def query_timeout() -> float:
+    """ES 单次查询超时（秒，**必须是数字**）。
 
     原来写死 20s，线上实测聚合/时间线经常超时，而失败只把裸异常丢给模型（它只会原地重试），
     所以这里给到 45s；仍是模块常量，不要在调用点另写超时值。
+
+    ⚠ 不能返回 ``"45s"`` 这类字符串：elasticsearch-py 把 ``request_timeout`` 原样交给
+    urllib3 的 ``Timeout(connect=…)``，字符串立刻抛
+    ``ValueError: Timeout value connect was 45s, but it must be an int, float or None.``
+    ——2026-10-03 实机复现：这一行让**每一次** ES 查询都在建连接前失败，MCP 取证工具
+    全部返回「ES 查询超时…请缩小时间窗」，把「根本没发出去的查询」说成数据量问题。
     """
-    return f"{max(5, QUERY_TIMEOUT_SECONDS)}s"
+    return float(max(5, QUERY_TIMEOUT_SECONDS))
 
 
 # 模块内多处沿用短名（对 export/tools 等外部调用点暴露公开名 query_timeout）
@@ -55,6 +61,11 @@ _query_timeout = query_timeout
 
 
 def _is_timeout(exc: Exception) -> bool:
+    # 参数/编程类错误不是超时，哪怕消息里恰好带 "timeout" 也不能当真：
+    # ``ValueError: Timeout value connect was 45s, but it must be an int, float or None.``
+    # 就是被这条子串匹配误判成超时的，于是「查询根本没发出去」被报成「请缩小时间窗」。
+    if isinstance(exc, (ValueError, TypeError, KeyError, AttributeError)):
+        return False
     text = str(exc).lower()
     return any(hint in text for hint in TIMEOUT_HINTS)
 

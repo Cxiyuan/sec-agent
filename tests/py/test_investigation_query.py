@@ -179,6 +179,66 @@ def test_failure_message_splits_timeout_from_hard_failure(mods: dict[str, Module
     assert "不是超时" in hard and "缩小时间窗没用" in hard
 
 
+# ---------- 必修（2026-10-03 实机发现）：request_timeout 必须是数字 ----------
+# 实机现象：MCP 取证工具（search_events / aggregate_events / get_event）全部返回
+# 「ES 查询超时…请缩小时间窗」，实际是 `request_timeout="45s"` 让 urllib3 抛
+# ValueError（Timeout value connect was 45s…），查询根本没发出去。
+
+
+def test_query_timeout_is_numeric(mods: dict[str, ModuleType]) -> None:
+    es_query = mods["es_query"]
+    value = es_query.query_timeout()
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    assert value >= 5
+
+
+def test_search_passes_numeric_request_timeout(
+    monkeypatch: pytest.MonkeyPatch, fake_mapping: None, mods: dict[str, ModuleType]
+) -> None:
+    es_query = mods["es_query"]
+    seen: dict[str, Any] = {}
+
+    class FakeEs:
+        def search(self, **kwargs: Any) -> dict[str, Any]:
+            seen.update(kwargs)
+            return {"hits": {"hits": [], "total": {"value": 0}}}
+
+    monkeypatch.setattr(es_query, "_es", lambda: FakeEs())
+    out = es_query.search(
+        "zeek", start="2026-01-01T00:00:00+00:00", end="2026-01-01T01:00:00+00:00"
+    )
+    assert out["hits"] == []
+    assert isinstance(seen["request_timeout"], (int, float))
+    assert not isinstance(seen["request_timeout"], bool)
+
+
+def test_aggregate_passes_numeric_request_timeout(
+    monkeypatch: pytest.MonkeyPatch, fake_mapping: None, mods: dict[str, ModuleType]
+) -> None:
+    es_query = mods["es_query"]
+    seen: dict[str, Any] = {}
+
+    class FakeEs:
+        def search(self, **kwargs: Any) -> dict[str, Any]:
+            seen.update(kwargs)
+            return {"hits": {"hits": []}, "aggregations": {"buckets": {"buckets": []}}}
+
+    monkeypatch.setattr(es_query, "_es", lambda: FakeEs())
+    es_query.aggregate(
+        "zeek", "src_ip", start="2026-01-01T00:00:00+00:00", end="2026-01-01T01:00:00+00:00"
+    )
+    assert isinstance(seen["request_timeout"], (int, float))
+
+
+def test_is_timeout_ignores_parameter_errors(mods: dict[str, ModuleType]) -> None:
+    es_query = mods["es_query"]
+    bad = ValueError("Timeout value connect was 45s, but it must be an int, float or None.")
+    assert es_query._is_timeout(bad) is False
+    # 这条文案必须落到「不是超时」那一支，否则模型会一直原地缩小时间窗
+    assert "不是超时" in es_query._failure_message("查询", bad)
+    assert es_query._is_timeout(RuntimeError("search_phase_execution_exception: timed out")) is True
+
+
 # ---------- 必修2：跨来源取证不丢 Wazuh ----------
 
 
