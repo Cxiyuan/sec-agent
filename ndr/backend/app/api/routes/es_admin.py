@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.collector.es_mapping import EVENT_INDEX_MAPPINGS, is_safe_raw_mapping
 from app.config import settings
 from app.db.base import get_db
 from app.db.models import SystemConfig, User
@@ -258,6 +259,29 @@ def _ilm_policy(days: int) -> dict[str, Any]:
     }
 
 
+def _warn_legacy_raw_mapping(es: Any, pattern: str) -> None:
+    """老索引的 ``raw`` 还不是安全映射时报警（索引模板只管之后新建的索引）。
+
+    这类索引里 ``raw.id`` 已被动态映射定成 object，之后凡是「``raw.id`` 是字符串」的文档
+    （Wazuh 告警、Zeek ocsp）都会被 ES 判 ``document_parsing_exception`` 整条 400 丢弃
+    （见 `app/collector/es_mapping.py` 的事故说明）。``flattened`` 也不安全：单值超过
+    32,766 字节仍会整条丢弃。**字段类型不能原地改**——8.15.3 实测三条路都不通：
+    ``dynamic: false`` 只对未映射字段生效（``raw.id`` 已映射，照样 400）、``enabled`` 不允许
+    改已存在的 object、``ignore_malformed`` 在 object 上不支持。所以这里只报警，不动数据；
+    要修只能 reindex 到新映射（模板里的 ``raw: {type: object, enabled: false}``）。
+    """
+    mapping = es.indices.get_mapping(index=pattern)
+    for index, body in (mapping or {}).items():
+        props = (body.get("mappings") or {}).get("properties") or {}
+        if not is_safe_raw_mapping(props.get("raw")):
+            logger.warning(
+                "索引 %s 的 raw 仍是动态/flattened 映射（raw.id 已被定成 object）：raw.id 为字符串"
+                "的文档（Wazuh 告警、Zeek ocsp）与单值超过 32766 字节的文档会被 ES 丢弃；"
+                "需 reindex 到新模板的映射",
+                index,
+            )
+
+
 def ensure_retention(days: int | None = None) -> None:
     """幂等下发 ILM 策略与事件索引模板（启动时调用；失败由调用方决定是否吞掉）。
 
@@ -284,7 +308,13 @@ def ensure_retention(days: int | None = None) -> None:
                     "index.lifecycle.name": settings.es_ilm_policy,
                     "number_of_replicas": 0,
                     "auto_expand_replicas": "0-1",
-                }
+                },
+                # `raw` 声明成 {type: object, enabled: false}：它是各来源原文，形状不统一
+                # （`raw.id` 在 Zeek conn 是对象、在 Zeek ocsp 与 Wazuh 告警是字符串），动态映射
+                # 会把先到的形状定死、之后整条文档被 ES 判 400 丢弃（2026-10 实机：全部 Wazuh
+                # 告警 + 2024 条 ocsp 静默丢失）；`flattened` 也躲不掉（单值 > 32766 字节仍整条丢）。
+                # 理由与实测见 `app/collector/es_mapping.py`。
+                "mappings": EVENT_INDEX_MAPPINGS,
             },
             priority=500,
         )
@@ -303,6 +333,10 @@ def ensure_retention(days: int | None = None) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("回正已存在索引的副本设置失败（%s）：%s", pattern, exc)
+        try:
+            _warn_legacy_raw_mapping(es, pattern)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("检查已存在索引的 raw 映射失败（%s）：%s", pattern, exc)
 
 
 @router.post("/apply-retention")
