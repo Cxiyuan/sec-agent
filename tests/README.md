@@ -25,6 +25,7 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_handled_registry.py` | 已处理登记单桶上限与**告警限频**（计数不丢、窗口过后重新告警） |
 | `test_main_retention.py` | 启动下发 ES 模板的日志口径（稳态不记 info、失败后成功记一条、连续失败只一条 warning） |
 | `test_mcp_coverage.py` | **MCP 覆盖与失效逻辑**：注册表↔调度表一致、签名↔参数表不漂移、ToolCtx 按令牌会话复用（ref 白名单与证据上限真正生效）、`raw_evidence` 索引白名单、`file_content` 正反例、智能体 `get_rule`/`list_filters`/`file_content` 转发、结论回写判定矩阵与逐指纹写入、字段目录覆盖 `UnifiedLog`、技能工具名认两套注册表 |
+| `test_zeek_interfaces.py` | 监听网卡下拉只留**物理网卡**：`physical` 标志过滤、旧格式名字模式兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记 |
 
 样本在 `samples.py`（字段名取自实机 `/logs/*.log`），含"没有 `log_type` 的旧文档"
 这条只能靠猜的路径。

@@ -77,8 +77,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh恶意软件告警",
-        "description": "Wazuh 恶意软件/勒索/病毒/木马类规则组",
+        "name": "内置-主机恶意软件告警",
+        "description": "主机监控：恶意软件/勒索/病毒/木马类规则组",
         "source": "builtin",
         "priority": 5,
         "severity": "critical",
@@ -274,11 +274,7 @@ BUILTIN_RULES: list[dict] = [
                 },
                 {"field": "user_agent", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "referer", "op": "regex", "value": "(?i)\\$\\{jndi:"},
-                {
-                    "field": "query",
-                    "op": "regex",
-                    "value": "(?i)(\\bognl\\b|\\bspel\\b|%24%7bjndi)",
-                },
+                {"field": "query", "op": "regex", "value": "(?i)(\\bognl\\b|\\bspel\\b|%24%7bjndi)"},
                 # CVE-2021-44228 的头注入向量：Zeek 的头值只在 req_headers/resp_headers 里
                 {"field": "req_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "resp_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
@@ -381,11 +377,7 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {
-                    "field": "query",
-                    "op": "regex",
-                    "value": "(?i)(%0d%0a|%0a|\\r\\n)(set-cookie|location|content-length|refresh|http/1\\.)",
-                },
+                {"field": "query", "op": "regex", "value": "(?i)(%0d%0a|%0a|\\r\\n)(set-cookie|location|content-length|refresh|http/1\\.)"},
                 {
                     "field": "body",
                     "op": "regex",
@@ -408,11 +400,7 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()",
                 },
-                {
-                    "field": "body",
-                    "op": "regex",
-                    "value": "(?i)(\\)\\(\\||\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()",
-                },
+                {"field": "body", "op": "regex", "value": "(?i)(\\)\\(\\||\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()"},
             ],
         },
     },
@@ -516,7 +504,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": '(?i)filename\\s*=\\s*"[^"]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)"',
+                    "value": "(?i)filename\\s*=\\s*\"[^\"]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)\"",
                 },
                 {"field": "status_code", "op": "in", "value": [200, 201, 202, 204]},
             ],
@@ -544,7 +532,7 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-恶意文件传输",
-        "description": "Zeek files 中出现可执行/脚本类文件",
+        "description": "网络采集器：files 日志中出现可执行/脚本类文件",
         "source": "builtin",
         "priority": 12,
         "severity": "medium",
@@ -608,8 +596,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Web攻击（Wazuh规则组）",
-        "description": "Wazuh web/attack 规则组或描述里带 SQL 注入特征（web_attack / wazuh_web_attack）",
+        "name": "内置-Web攻击（主机监控）",
+        "description": "主机监控 web/attack 规则组或描述里带 SQL 注入特征（web_attack / wazuh_web_attack）",
         "source": "builtin",
         "priority": 10,
         "severity": "high",
@@ -741,17 +729,9 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 # `.do$` / `.action$` 是遗留 Java 应用的**正常**请求后缀（评审 P1）；
                 # rememberMe= 与 内置-反序列化特征 重复且优先级更低（p10 vs p8），只留前者。
-                {
-                    "field": "uri_path",
-                    "op": "regex",
-                    "value": "(?i)(/struts/|/weaver/|/e-mobile/|/mobile/plugin/)",
-                },
+                {"field": "uri_path", "op": "regex", "value": "(?i)(/struts/|/weaver/|/e-mobile/|/mobile/plugin/)"},
                 # ThinkPHP 的 `?s=index/...`：uri_path 已去查询串，必须走 query_string
-                {
-                    "field": "query_string",
-                    "op": "regex",
-                    "value": "(?i)(^|&)s=/?(index|home|user|api)/",
-                },
+                {"field": "query_string", "op": "regex", "value": "(?i)(^|&)s=/?(index|home|user|api)/"},
                 {"field": "body", "op": "regex", "value": "(?i)(@type.*com\\.sun|fastjson|jndi:)"},
                 {"field": "uri_path", "op": "regex", "value": "(?i)(/seeyon/|/shiro/)"},
             ],
@@ -864,11 +844,7 @@ BUILTIN_RULES: list[dict] = [
             # `src_ip exists` 是恒真条件（评审 P0-3）：那等于「无条件按源计数」，
             # 监控/备份/代理/NAT 全部命中。改为只统计「未建立的连接」。
             "rules": [
-                {
-                    "field": "event_type",
-                    "op": "in",
-                    "value": ["scan_attempt", "rejected_connection"],
-                },
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
             ],
         },
     },
@@ -899,17 +875,13 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             # 只认 S0 会漏掉 REJ/RSTOS0/RSTRH 型扫描（conn_states 表）
             "rules": [
-                {
-                    "field": "event_type",
-                    "op": "in",
-                    "value": ["scan_attempt", "rejected_connection", "port_scan"],
-                },
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection", "port_scan"]},
             ],
         },
     },
     {
         "name": "内置-扫描尝试连接",
-        "description": "Zeek 记录的扫描尝试（conn_state = S0：只发 SYN、没有任何回应）",
+        "description": "网络采集器记录的扫描尝试（conn_state = S0：只发 SYN、没有任何回应）",
         "source": "builtin",
         "priority": 30,
         "severity": "low",
@@ -931,8 +903,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh登录失败",
-        "description": "Wazuh 认证失败规则组",
+        "name": "内置-主机登录失败",
+        "description": "主机监控：认证失败规则组",
         "source": "builtin",
         "priority": 20,
         "severity": "medium",
@@ -1094,7 +1066,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": '(?i)"(pass(word|wd)?|pwd)"\\s*:\\s*"(admin|123456|root|test|guest|admin123)"',
+                    "value": "(?i)\"(pass(word|wd)?|pwd)\"\\s*:\\s*\"(admin|123456|root|test|guest|admin123)\"",
                 },
             ],
         },
@@ -1158,8 +1130,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh账号锁定",
-        "description": "Wazuh 账号锁定/多次失败后锁定类规则",
+        "name": "内置-主机账号锁定",
+        "description": "主机监控：账号锁定/多次失败后锁定类规则",
         "source": "builtin",
         "priority": 9,
         "severity": "high",
@@ -1186,8 +1158,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh提权告警",
-        "description": "Wazuh 提权/特权操作类规则",
+        "name": "内置-主机提权告警",
+        "description": "主机监控：提权/特权操作类规则",
         "source": "builtin",
         "priority": 10,
         "severity": "high",
@@ -1409,10 +1381,10 @@ BUILTIN_RULES: list[dict] = [
             ],
         },
     },
-    # ================= H. Wazuh 其他语义 =================
+    # ================= H. 主机监控其他语义 =================
     {
-        "name": "内置-Wazuh高危告警",
-        "description": "Wazuh 归一级别为 high/critical 的主机告警（含被分组规则归类的 syscheck/audit）",
+        "name": "内置-主机高危告警",
+        "description": "主机监控：归一级别为 high/critical 的主机告警（含被分组规则归类的 syscheck/audit）",
         "source": "builtin",
         "priority": 10,
         "severity": "high",
@@ -1428,8 +1400,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh文件完整性变更",
-        "description": "Wazuh syscheck/系统变更类规则组",
+        "name": "内置-主机文件完整性变更",
+        "description": "主机监控：syscheck/系统变更类规则组",
         "source": "builtin",
         "priority": 30,
         "severity": "medium",
@@ -1438,14 +1410,14 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "wazuh"},
                 {"field": "event_type", "op": "eq", "value": "wazuh_system_change"},
-                # 高等级变更已由 内置-Wazuh高危告警 覆盖，这里只留低等级，避免重复与埋没
+                # 高等级变更已由 内置-主机高危告警 覆盖，这里只留低等级，避免重复与埋没
                 {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
             ],
         },
     },
     {
-        "name": "内置-Wazuh漏洞告警",
-        "description": "Wazuh 漏洞/CVE 类规则组",
+        "name": "内置-主机漏洞告警",
+        "description": "主机监控：漏洞/CVE 类规则组",
         "source": "builtin",
         "priority": 36,
         "severity": "low",
@@ -1458,8 +1430,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh网络告警",
-        "description": "Wazuh 防火墙/IDS 类规则组",
+        "name": "内置-主机网络告警",
+        "description": "主机监控：防火墙/IDS 类规则组",
         "source": "builtin",
         "priority": 28,
         "severity": "medium",
@@ -1472,8 +1444,8 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-Wazuh MITRE映射命中",
-        "description": "Wazuh 规则带 MITRE ATT&CK 映射",
+        "name": "内置-主机MITRE映射命中",
+        "description": "主机监控：规则带 MITRE ATT&CK 映射",
         "source": "builtin",
         "priority": 36,
         "severity": "low",
@@ -1483,14 +1455,14 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "log_type", "op": "eq", "value": "wazuh"},
                 {"field": "source_system", "op": "eq", "value": "wazuh"},
                 {"field": "mitre", "op": "exists"},
-                # 高等级告警已由 内置-Wazuh高危告警 报出，本条降为「MITRE 标注」
+                # 高等级告警已由 内置-主机高危告警 报出，本条降为「MITRE 标注」
                 {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
             ],
         },
     },
     {
-        "name": "内置-Wazuh策略违规",
-        "description": "Wazuh audit/policy 类规则组",
+        "name": "内置-主机策略违规",
+        "description": "主机监控：audit/policy 类规则组",
         "source": "builtin",
         "priority": 34,
         "severity": "low",
@@ -1594,7 +1566,7 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-协议异常",
-        "description": "Zeek weird/协议异常",
+        "description": "网络采集器：weird/协议异常",
         "source": "builtin",
         "priority": 30,
         "severity": "medium",
@@ -1668,11 +1640,7 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
                 # 服务器回包/正常会话也会计入（评审 P1）：只看未建立的连接
-                {
-                    "field": "conn_state",
-                    "op": "in",
-                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"],
-                },
+                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
             ],
         },
     },
@@ -1694,11 +1662,7 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "log_type", "op": "eq", "value": "conn"},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
-                {
-                    "field": "conn_state",
-                    "op": "in",
-                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"],
-                },
+                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
             ],
         },
     },
@@ -1733,11 +1697,7 @@ BUILTIN_RULES: list[dict] = [
             "min_distinct": 20,
             "logic": "and",
             "rules": [
-                {
-                    "field": "event_type",
-                    "op": "in",
-                    "value": ["scan_attempt", "rejected_connection"],
-                },
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
             ],
         },
     },

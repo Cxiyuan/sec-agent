@@ -48,7 +48,7 @@ export function StatusPanel() {
     try {
       setWazuh(await apiFetch<WazuhPayload>("/api/wazuh"));
     } catch {
-      next.push("Wazuh 接入（/api/wazuh）");
+      next.push("主机监控接入");
     }
     try {
       setBaseline(await apiFetch<BaselinePayload>("/api/baseline"));
@@ -227,10 +227,10 @@ export function StatusPanel() {
           {push?.status.error && <p className="text-destructive">读推送状态失败：{push.status.error}</p>}
         </div>
 
-        {/* Wazuh 入库量 */}
+        {/* 主机监控入库量 */}
         <div className="rounded-md border p-3 text-xs">
           <p className="mb-2 flex items-center gap-2 text-muted-foreground">
-            Wazuh 接入
+            主机监控接入
             {wazuh?.config.configured ? (
               <Badge variant={wazuh.status.reachable ? "info" : "high"}>
                 {wazuh.status.reachable

@@ -274,8 +274,39 @@ def test_wazuh_rules_are_routed_to_wazuh(mods: dict[str, Any]) -> None:
         [r for r in mods["builtin"].BUILTIN_RULES if (r["conditions"] or {}).get("mode") != "count"]
     )
     wild = {r["name"] for r in index["wild"]}
-    for name in ("内置-Wazuh高危告警", "内置-Wazuh文件完整性变更", "内置-Wazuh策略违规"):
+    for name in ("内置-主机高危告警", "内置-主机文件完整性变更", "内置-主机策略违规"):
         assert name not in wild, f"{name} 还在通配集合里"
+
+
+# ---------- 界面文案：规则名/描述不得出现厂商字样 ----------
+
+
+def test_builtin_rule_text_has_no_vendor_words(mods: dict[str, Any]) -> None:
+    """规则名与描述都会显示在管理界面上，不得出现 Zeek / Wazuh 字样（2026-10 界面口径）。
+
+    只查**显示的散文**（name/description）；条件里的 `log_type eq wazuh`、
+    `event_type eq wazuh_high_alert` 是内部枚举值（已落 1200 万+ 文档），不在此列。
+    """
+    bad: list[str] = []
+    for rule in mods["builtin"].BUILTIN_RULES:
+        text = f"{rule['name']} {rule.get('description') or ''}"
+        if "Zeek" in text or "Wazuh" in text:
+            bad.append(rule["name"])
+    assert bad == []
+
+
+def test_renamed_builtins_mapping_matches_rules(mods: dict[str, Any]) -> None:
+    """改名映射必须「旧名已不在、新名确实在」：否则旧库改名会白跑或改到不存在的规则。
+
+    规则名是 upsert 的键，改名不迁移就会新旧两行并存（旧行还带着用户的启用状态）。
+    """
+    main = importlib.import_module("app.main")
+    names = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
+    mapping = main._RENAMED_BUILTINS
+    assert mapping, "改名映射不该为空（界面口径已改成网络采集器 / 主机监控）"
+    for old, new in mapping.items():
+        assert old not in names, f"旧名 {old} 还在内置规则里（没改干净）"
+        assert new in names, f"新名 {new} 不在内置规则里（映射写错）"
 
 
 # ---------- 交付侧：单规则限速 + 严重度优先（仅 NDR） ----------

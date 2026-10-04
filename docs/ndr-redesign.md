@@ -734,6 +734,24 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors`；`pytest tests/py --stack=ndr -q` **431 passed, 14 skipped**；`--stack=agent -q` **300 passed, 145 skipped**；`sh tests/zeek/run.sh` 全 `PASS`。
 
 
+### 2026-10 界面口径：网卡下拉只留物理网卡 + 界面不再出现 Zeek/Wazuh 字样
+
+用户要求：「① 监听网卡下拉只显示物理网卡，过滤掉虚拟网卡与环回接口；② 界面不体现 Zeek/Wazuh 文字，一律叫网络采集器 / 主机监控」。
+
+- **网卡下拉只留物理网卡**：采集器容器的 `write_interfaces()`（`ndr/zeek/entrypoint.sh`）逐张网卡写 `physical` 字段，判定依据是 sysfs 的 `/sys/class/net/<n>/device` 链接是否存在 —— **只有它是 host 网络**，能看到宿主全部网卡的 sysfs（后端容器只能看到自己的 eth0，所以判定不能放后端）。后端 `_read_interfaces()`（`api/routes/zeek.py`）只返回 `physical=true` 的项，并用名字模式（`lo|docker*|br-*|veth*|virbr*|vmnet*|vboxnet*|tun*|tap*|wg*|tailscale*|zt*|dummy*|ifb*|nflog|kube*|cni*|cali*|…`，忽略大小写）兜底——旧镜像的 `interfaces.json` 没有 `physical` 字段时也不会把 docker0/veth 塞进下拉。实机核对：16 张网卡里只剩 `ens160`/`ens192` 两张（`/sys/class/net/*/device` 与名字过滤结果一致）。
+- **界面文案去掉厂商字样**（用户可读处一律「网络采集器 / 主机监控」）：
+  - NDR 前端：采集/网段/总览/首次向导/运行状态/ES 与 Logstash 面板/错误条标签，共 8 个文件；
+  - 后端**返回给界面**的消息：`/api/zeek/interface` 的 `note`、`/api/wazuh` 的 HINT 与全部 API 报错文案；
+  - **内置规则名与描述**：11 条规则改名（`内置-Wazuh高危告警` → `内置-主机高危告警` …、`内置-Web攻击（Wazuh规则组）` → `内置-Web攻击（主机监控）`），描述里的「Wazuh/Zeek …」改成「主机监控：… / 网络采集器：…」。规则名是 upsert 的键，所以 `main._seed` 新增 `_RENAMED_BUILTINS` **就地改名迁移**（每次启动幂等；新名已存在才删旧行）——不迁移会新旧两行并存，而旧行还带着用户设过的启用状态。
+- **明确不动的边界**（改了要付数据迁移代价，且不是界面散文）：API 路径（`/api/zeek/*`、`/api/wazuh/*`）、配置键与环境变量（`ST_ZEEK_*`、`ST_WAZUH_*`、`zeek.*`）、`source_system`/`log_type`/`event_type` 的**内部枚举值**（`wazuh`、`wazuh_high_alert`、`wazuh_web_attack`…，已落在 1200 万+ 存量文档里）、代码注释与文档。这些只出现在技术下拉/条件编辑器与运维文档中。
+
+**顺手修的既存 lint**（都在本次改动的同一行附近，oxlint 直接拦）：ES 面板的嵌套三元提成 `healthVariant()`；ES/Logstash/首次向导里 5 个 `<label>` 补 `htmlFor`+`id`，3 个只是小标题的 `<label>`（下面不是表单控件）改成 `<p>`。
+
+**测试**：新增 `tests/py/test_zeek_interfaces.py`（6 例：physical 过滤、旧格式名字兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记）；`test_rules_quality.py` 新增「规则名与描述不得出现 Zeek/Wazuh」与「改名映射必须旧名已不在、新名确实在」两条护栏；原引用旧规则名的两处测试同步更新。
+
+**门禁（2026-10，仓库根）**：ruff `All checks passed!`；pyright `0 errors`；`pytest tests/py --stack=ndr -q` **438 passed, 14 skipped**；`--stack=agent -q` **303 passed, 149 skipped**；`sh tests/zeek/run.sh` 全 `PASS`；两侧 `npx tsc --noEmit` 无输出。
+
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

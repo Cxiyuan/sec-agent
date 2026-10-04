@@ -119,7 +119,11 @@ zeek/
   `local_nets` 收窄不掉 —— Zeek 的 `update_local_nets_table()` 会把内置的私有地址段（RFC1918 等
   42 条）并进来（2026-10 实测：配 1 条网段后 `|Site::local_nets|=43`），关掉它才与后台清单一致；
   `local_nets` 留空时不写这一行，沿用 Zeek 默认判定
-- 容器入口把网卡清单写入 `/config/interfaces.json`（供后台下拉选择）
+- 容器入口把网卡清单写入 `/config/interfaces.json`（供后台下拉选择）。每条带 `physical`：
+  按 sysfs 的 `/sys/class/net/<n>/device` 是否存在判定（物理网卡有 device 链接，docker0 / veth* /
+  br-* / tun* / lo 都没有）—— 这个判定**必须在采集器容器里做**，只有它是 host 网络、
+  能看到宿主全部网卡的 sysfs。后台 `_read_interfaces()` 只把 `physical=true` 的返回给下拉，
+  并用名字模式兜底（`/api/zeek/status` 的 `detected` 里不会出现虚拟网卡）。
 - **看门狗**每 10 秒比对配置哈希，变化则渲染网段脚本并在**容器内重载 Zeek**（不重启容器、
   不需要 docker socket；重载期间约 1~2 秒短暂中断抓包）
 

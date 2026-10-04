@@ -21,6 +21,13 @@ const SRC = {
   status: "ES 状态（/api/es/status）",
 } as const;
 
+/** ES 集群健康 → Badge 变体（写成嵌套三元太难读，lint 也直接报 no-nested-ternary）。 */
+function healthVariant(health: string | undefined): "low" | "medium" | "high" {
+  if (health === "green") return "low";
+  if (health === "yellow") return "medium";
+  return "high";
+}
+
 /**
  * ES 管理：接入状态 / 索引族与保留期（ILM）/ 集群状态。
  *
@@ -123,16 +130,27 @@ export function EsPanel() {
 
         <div className="grid grid-cols-3 gap-3">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              索引模式（Zeek 与 Wazuh 统一落这一族）
+            <label
+              htmlFor="es-events-index"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
+              索引模式（两类采集统一落这一族）
             </label>
-            <Input value={eventsIndex} onChange={(e) => setEventsIndex(e.target.value)} />
+            <Input
+              id="es-events-index"
+              value={eventsIndex}
+              onChange={(e) => setEventsIndex(e.target.value)}
+            />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
+            <label
+              htmlFor="es-retention"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
               保留天数（≥{cfg?.retention_min_days ?? 7}）
             </label>
             <Input
+              id="es-retention"
               type="number"
               value={retention}
               onChange={(e) => setRetention(e.target.value)}
@@ -169,15 +187,7 @@ export function EsPanel() {
             <p className="flex items-center gap-2">
               <span className="text-muted-foreground">集群：</span>
               <span className="font-mono">{status.health.cluster_name ?? "-"}</span>
-              <Badge
-                variant={
-                  status.health.status === "green"
-                    ? "low"
-                    : status.health.status === "yellow"
-                      ? "medium"
-                      : "high"
-                }
-              >
+              <Badge variant={healthVariant(status.health.status)}>
                 {status.health.status ?? "unknown"}
               </Badge>
               <span className="text-muted-foreground">节点 {status.health.nodes ?? "-"}</span>

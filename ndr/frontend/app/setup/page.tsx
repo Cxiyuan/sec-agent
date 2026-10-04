@@ -59,16 +59,20 @@ export default function SetupPage() {
           <Shield className="mb-2 h-10 w-10 text-primary" />
           <CardTitle>首次设置 · 监控网段</CardTitle>
           <p className="mt-1 text-center text-xs text-muted-foreground">
-            Zeek 只抓取「源或目的 IP 落在这些网段内」的流量，检测器也只分析这些流量。
+            网络采集器只抓取「源或目的 IP 落在这些网段内」的流量，检测器也只分析这些流量。
             不配置则什么都抓不到、也什么都分析不了，因此此项为强制必填。
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
+            <label
+              htmlFor="setup-nets"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
               网段或 IP *（一行一条，支持 CIDR 与单个 IP，也可用逗号分隔）
             </label>
             <textarea
+              id="setup-nets"
               value={netsText}
               onChange={(e) => setNetsText(e.target.value)}
               className="h-32 w-full rounded-md border border-input bg-transparent p-2 font-mono text-sm"
@@ -84,7 +88,7 @@ export default function SetupPage() {
             {saving ? "保存中…" : "保存并开始分析"}
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            Zeek 的 BPF 抓包范围与本地网段都由这份清单生成；保存后可在左侧「监控网段」页继续调整。
+            网络采集器的抓包范围与本地网段都由这份清单生成；保存后可在左侧「监控网段」页继续调整。
           </p>
         </CardContent>
       </Card>

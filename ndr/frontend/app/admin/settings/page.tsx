@@ -12,7 +12,7 @@ const entries = [
   {
     href: "/admin/collect",
     title: "采集接入",
-    desc: "Zeek 监听网卡；Wazuh 随系统部署，这里看接入状态、下发规则、入库量。",
+    desc: "网络采集器监听网卡；主机监控随系统部署，这里看接入状态、下发规则、入库量。",
   },
   {
     href: "/admin/networks",
@@ -37,7 +37,7 @@ const entries = [
   {
     href: "/admin/status",
     title: "运行状态",
-    desc: "队列积压、投递速率、推送重发、Redis 内存与 Wazuh 入库量。",
+    desc: "队列积压、投递速率、推送重发、Redis 内存与主机监控入库量。",
   },
   {
     href: "/admin/account",

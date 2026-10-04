@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -115,7 +116,7 @@ def _write_conf(values: dict[str, str]) -> str | None:
     dirname = os.path.dirname(path) or "."
     tmp = f"{path}.tmp"
     lines = [
-        "# 由深瞳 Web 后台维护；本文件变化会被看门狗检测并重载 Zeek",
+        "# 由深瞳 Web 后台维护；本文件变化会被看门狗检测并重载采集器",
         f"# updated_at={datetime.now(UTC).isoformat()}",
     ]
     lines += [f"{key}={values.get(key, '')}" for key in CONF_KEYS]
@@ -143,8 +144,24 @@ def _put_config(db: Session, key: str, value: str) -> None:
     row.value = {"value": value}
 
 
+#: 虚拟/环回网卡的名字模式（下拉里不该出现这些）。
+#: 主判定是采集器容器写在 interfaces.json 里的 `physical`（sysfs 的
+#: `/sys/class/net/<n>/device` 是否存在，只有 host 网络的采集器容器看得到宿主全部网卡）；
+#: 这里做两道兑底：旧镜像还没写 `physical` 字段时，以及名字一看就是虚拟的口子。
+_VIRTUAL_IFACE = re.compile(
+    r"^(lo|docker\d*|br-[0-9a-f]+|veth\w+|virbr\d*|vmnet\d*|vboxnet\d*|tun\d*|tap\d*|"
+    r"wg\d*|tailscale\d*|zt\w+|dummy\d*|ifb\d*|nflog|sit\d*|ip6tnl\d*|gre\d*|erspan\d*|"
+    r"kube\w*|cni\d*|flannel\w*|cali\w*|cbr\d*|lxc\w*)$",
+    re.IGNORECASE,
+)
+
+
 def _read_interfaces() -> list[dict[str, Any]]:
-    """读 Zeek 容器写入的宿主网卡清单。"""
+    """读采集器容器写入的宿主网卡清单，**只保留物理网卡**。
+
+    界面上的「监听网卡」下拉由它渲染：docker0 / veth* / br-* / tun* 这类虚拟网卡
+    不是抓包目标，列出来只会让人选错。
+    """
     path = settings.zeek_interfaces_json
     if not os.path.exists(path):
         return []
@@ -153,7 +170,19 @@ def _read_interfaces() -> list[dict[str, Any]]:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return []
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not name or _VIRTUAL_IFACE.match(name):
+            continue
+        if "physical" in item and not item.get("physical"):
+            continue
+        out.append(item)
+    return out
 
 
 def _read_last_reload() -> str | None:
@@ -267,7 +296,7 @@ def set_interface(
             content={
                 "conflict": "write_failed",
                 "detail": (
-                    f"写入网卡配置失败：{write_error}（请确认 /config 共享卷已挂载给后端与 Zeek）"
+                    f"写入网卡配置失败：{write_error}（请确认 /config 共享卷已挂载给后端与采集器）"
                 ),
             },
         )
@@ -297,5 +326,5 @@ def set_interface(
         "local_nets": nets_csv,
         "body_max_bytes": body_bytes,
         "resp_body_max_bytes": resp_bytes,
-        "note": "已下发；Zeek 看门狗将在约 10 秒内重载（期间约 1~2 秒中断抓包）",
+        "note": "已下发；采集器看门狗将在约 10 秒内自动重载（期间约 1~2 秒中断抓包）",
     }

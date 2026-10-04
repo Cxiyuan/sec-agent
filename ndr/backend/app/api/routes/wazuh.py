@@ -48,10 +48,10 @@ RULE_FILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}\.xml$")
 RULE_ID_RE = re.compile(r"<rule\s[^>]*id\s*=\s*\"(\d+)\"")
 
 HINT = (
-    "Wazuh 随本项目一起部署，连接信息由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台的 "
+    "主机监控随本项目一起部署，连接信息由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台的 "
     "`ST_WAZUH_API_*`），不需要在这里配置；本页只显示接入状态。"
-    "「接入状态」会分别显示 API 是否可达、以及最近 24 小时 Wazuh 告警/原始日志各入库多少条。"
-    "注意：Wazuh 采的是主机日志，与「监控网段」无关 —— 那份清单只约束 Zeek 抓包。"
+    "「接入状态」会分别显示 API 是否可达、以及最近 24 小时告警/原始日志各入库多少条。"
+    "注意：主机监控采的是主机日志，与「监控网段」无关 —— 那份清单只约束网络采集器抓包。"
 )
 
 #: (url|user) -> (写入时刻, 过期时刻, token)
@@ -125,7 +125,7 @@ def _login(cfg: dict[str, Any]) -> tuple[str | None, str]:
     user = str(cfg.get("user") or "")
     password = str(cfg.get("password") or "")
     if not (url and user and password):
-        return None, "部署环境没有配全 Wazuh API 地址 / 用户名 / 密码（ST_WAZUH_API_*）"
+        return None, "部署环境没有配全主机监控 API 地址 / 用户名 / 密码（ST_WAZUH_API_*）"
     cache_key = f"{url}|{user}"
     now = time.monotonic()
     cached = _token_cache.get(cache_key)
@@ -136,17 +136,17 @@ def _login(cfg: dict[str, Any]) -> tuple[str | None, str]:
         with httpx.Client(timeout=_timeout(), verify=_verify(cfg)) as client:
             resp = client.post(f"{url}/security/user/authenticate", auth=(user, password))
     except Exception as exc:  # noqa: BLE001
-        return None, f"连接 Wazuh API 失败：{exc}"
+        return None, f"连接主机监控 API 失败：{exc}"
     if resp.status_code == 401:
-        return None, "Wazuh API 认证失败（用户名或密码不正确）"
+        return None, "主机监控 API 认证失败（用户名或密码不正确）"
     if resp.status_code >= 400:
-        return None, f"Wazuh API 登录失败：HTTP {resp.status_code} {resp.text[:200]}"
+        return None, f"主机监控 API 登录失败：HTTP {resp.status_code} {resp.text[:200]}"
     try:
         token = str(resp.json().get("data", {}).get("token") or "")
     except ValueError:
-        return None, "Wazuh API 登录响应不是 JSON"
+        return None, "主机监控 API 登录响应不是 JSON"
     if not token:
-        return None, "Wazuh API 没有返回 token"
+        return None, "主机监控 API 没有返回 token"
     # 有效期取响应里的 expires_at（秒级字符串），缺省按 900s 兜底
     ttl = 900.0
     try:
@@ -193,7 +193,7 @@ def _api(
                 method, f"{url}{path}", params=params, content=content, headers=merged_headers
             )
     except Exception as exc:  # noqa: BLE001
-        return None, f"请求 Wazuh API 失败：{exc}"
+        return None, f"请求主机监控 API 失败：{exc}"
     if resp.status_code == 401:
         # token 可能刚好过期：清缓存后重试一次
         _token_cache.pop(f"{url}|{cfg.get('user')}", None)
@@ -211,15 +211,15 @@ def _api(
                     headers=merged_headers,
                 )
         except Exception as exc:  # noqa: BLE001
-            return None, f"请求 Wazuh API 失败：{exc}"
+            return None, f"请求主机监控 API 失败：{exc}"
     if resp.status_code >= 400:
-        return None, f"Wazuh API 返回 HTTP {resp.status_code}：{resp.text[:200]}"
+        return None, f"主机监控 API 返回 HTTP {resp.status_code}：{resp.text[:200]}"
     if raw:
         return resp.text, ""
     try:
         data = resp.json()
     except ValueError:
-        return None, "Wazuh API 响应不是 JSON"
+        return None, "主机监控 API 响应不是 JSON"
     if strict:
         body_err = _body_error(data)
         if body_err:
@@ -246,7 +246,7 @@ def _body_error(data: Any) -> str:
     code = body.get("error")
     if not failed and not (isinstance(code, int) and code != 0):
         return ""
-    parts = [str(body.get("message") or "Wazuh API 报错")]
+    parts = [str(body.get("message") or "主机监控 API 报错")]
     items = inner.get("failed_items")
     for item in items[:3] if isinstance(items, list) else []:
         info = _as_dict(_as_dict(item).get("error"))
@@ -296,7 +296,7 @@ def _probe(cfg: dict[str, Any]) -> dict[str, Any]:
         "detail": "",
     }
     if not cfg.get("url"):
-        out["detail"] = "还没填 Wazuh API 地址"
+        out["detail"] = "还没填主机监控 API 地址"
         return out
     data, err = _api(cfg, "GET", "/manager/info")
     if err:
@@ -419,7 +419,7 @@ def _payload() -> dict[str, Any]:
             "url": public["url"],
             "version": "",
             "cluster_enabled": False,
-            "detail": "部署环境没有配全 Wazuh API 地址 / 用户名 / 密码（ST_WAZUH_API_*）",
+            "detail": "部署环境没有配全主机监控 API 地址 / 用户名 / 密码（ST_WAZUH_API_*）",
         }
     )
     agents: list[dict[str, Any]] = []
@@ -548,7 +548,7 @@ def upload_rule_file(
             status_code=400,
             content={
                 "conflict": "field_error",
-                "detail": "内容看起来不是 Wazuh 规则文件（需要 <group> 与 <rule>）",
+                "detail": "内容看起来不是主机监控规则文件（需要 <group> 与 <rule>）",
             },
         )
     cfg = _cfg()

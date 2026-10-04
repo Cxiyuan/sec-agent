@@ -47,6 +47,42 @@ _MIGRATIONS = (
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
 
+#: 内置规则改名映射（旧名 → 新名）。
+#: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
+#: 启用状态 / 阈值改动。2026-10：界面不再出现 Zeek/Wazuh 字样，规则名同步改用「网络采集器 /
+#: 主机监控」，旧库靠这张表就地改名。
+_RENAMED_BUILTINS: dict[str, str] = {
+    "内置-Wazuh恶意软件告警": "内置-主机恶意软件告警",
+    "内置-Web攻击（Wazuh规则组）": "内置-Web攻击（主机监控）",
+    "内置-Wazuh登录失败": "内置-主机登录失败",
+    "内置-Wazuh账号锁定": "内置-主机账号锁定",
+    "内置-Wazuh提权告警": "内置-主机提权告警",
+    "内置-Wazuh高危告警": "内置-主机高危告警",
+    "内置-Wazuh文件完整性变更": "内置-主机文件完整性变更",
+    "内置-Wazuh漏洞告警": "内置-主机漏洞告警",
+    "内置-Wazuh网络告警": "内置-主机网络告警",
+    "内置-Wazuh MITRE映射命中": "内置-主机MITRE映射命中",
+    "内置-Wazuh策略违规": "内置-主机策略违规",
+}
+
+
+def _rename_builtin_rules(db: Any) -> None:
+    """把旧名的内置规则**就地改名**（幂等，每次启动都跑）。
+
+    就地改（而不是删旧建新）是为了保留用户在这条规则上做过的启用/停用与改动。
+    新名已经存在时（例如重复播种过）旧行就是残留，删掉。
+    """
+    for old, new in _RENAMED_BUILTINS.items():
+        row = db.execute(select(Rule).where(Rule.name == old)).scalar_one_or_none()
+        if row is None:
+            continue
+        taken = db.execute(select(Rule).where(Rule.name == new)).scalar_one_or_none()
+        if taken is not None and taken is not row:
+            db.delete(row)
+        else:
+            row.name = new
+        db.flush()
+
 
 def _dynamic_rule_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """把依赖系统配置的内置规则按当前配置实例化，避免出现「空实现」规则。
@@ -97,6 +133,7 @@ def _seed() -> None:
                     role="admin",
                 )
             )
+        _rename_builtin_rules(db)
         for spec in BUILTIN_RULES:
             rule_spec = _dynamic_rule_spec(spec)
             exists = db.execute(

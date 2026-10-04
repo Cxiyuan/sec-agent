@@ -9,7 +9,7 @@ export default function CollectPage() {
   return (
     <PageShell
       title="采集接入"
-      desc="数据从哪来：Zeek 抓包（网卡）与 Wazuh 主机日志。抓包范围在「监控网段」页单独配置。"
+      desc="数据从哪来：网络采集器抓包（网卡）与主机监控日志。抓包范围在「监控网段」页单独配置。"
     >
       <ZeekPanel section="iface" />
       <WazuhPanel />

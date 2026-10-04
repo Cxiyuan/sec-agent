@@ -53,13 +53,17 @@ write_interfaces() {
   echo "[" > "$tmp"
   for dev in /sys/class/net/*; do
     [ -e "$dev" ] || continue
-    local name state mtu
+    local name state mtu physical
     name="$(basename "$dev")"
     [ "$name" = "lo" ] && continue
     state="$(cat "$dev/operstate" 2>/dev/null || echo unknown)"
     mtu="$(cat "$dev/mtu" 2>/dev/null || echo 0)"
+    # 物理网卡在 sysfs 里有 `device` 链接；docker0 / veth / br-* / tun / dummy 这类虚拟网卡没有。
+    # 为什么必须在这里判：只有本容器是 host 网络，能看到宿主机**全部**网卡的 sysfs；
+    # 后端容器只能看到自己的 eth0。界面上的「监听网卡」下拉只显示 physical=true 的。
+    if [ -e "$dev/device" ]; then physical=true; else physical=false; fi
     if [ "$first" -eq 1 ]; then first=0; else echo "," >> "$tmp"; fi
-    printf '{"name":"%s","state":"%s","mtu":%s}' "$name" "$state" "$mtu" >> "$tmp"
+    printf '{"name":"%s","state":"%s","mtu":%s,"physical":%s}' "$name" "$state" "$mtu" "$physical" >> "$tmp"
   done
   echo "]" >> "$tmp"
   mv "$tmp" "$INTERFACES_JSON"

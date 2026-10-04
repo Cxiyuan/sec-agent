@@ -267,26 +267,30 @@ export function LogstashPanel() {
             <p className="text-xs font-medium text-muted-foreground">常用参数</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <p className="mb-1 block text-xs text-muted-foreground">
                   Elasticsearch 输出（历史归档）
-                </label>
+                </p>
                 <p className="text-xs text-muted-foreground">
                   归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
                 </p>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <p className="mb-1 block text-xs text-muted-foreground">
                   ES 地址（由部署环境固定）
-                </label>
+                </p>
                 <p className="flex h-9 items-center rounded-md border px-3 font-mono text-xs">
                   {params.es_host}
                 </p>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  索引名（Zeek 与 Wazuh 统一落这一族，支持 %&#123;...&#125; 占位）
+                <label
+                  htmlFor="ls-events-index"
+                  className="mb-1 block text-xs text-muted-foreground"
+                >
+                  索引名（两类采集统一落这一族，支持 %&#123;...&#125; 占位）
                 </label>
                 <Input
+                  id="ls-events-index"
                   value={params.events_index}
                   onChange={(e) => set("events_index", e.target.value)}
                   className="h-9"
@@ -313,10 +317,14 @@ export function LogstashPanel() {
 
         {/* 全文编辑 */}
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label
+            htmlFor="ls-pipeline-text"
+            className="mb-1 block text-xs font-medium text-muted-foreground"
+          >
             高级：管道全文（保存前会做静态校验：非空 / 含 input 与 output / 括号配平 / 至少一个输出）
           </label>
           <textarea
+            id="ls-pipeline-text"
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={14}

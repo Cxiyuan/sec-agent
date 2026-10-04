@@ -13,7 +13,7 @@ const TEXTAREA_CLS =
   "h-28 w-full rounded-md border border-input bg-transparent p-2 font-mono text-sm";
 
 /** 读取失败的接口名（错误条用）。 */
-const SRC = { status: "Zeek 状态（/api/zeek/status）" } as const;
+const SRC = { status: "采集器状态" } as const;
 
 /** 与后端 parse_nets 同规则：换行/逗号分隔，忽略空行与 # 注释，去重保序。 */
 function parseNets(text: string): string[] {
@@ -101,18 +101,19 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
     <Card>
       <CardHeader>
         <CardTitle className="text-sm">
-          {section === "networks" ? "监控网段（Zeek 抓包范围）" : "Zeek 采集（监听网卡）"}
+          {section === "networks" ? "监控网段（抓包范围）" : "网络采集器（监听网卡）"}
         </CardTitle>
         <p className="text-xs text-muted-foreground">
           {showNets && (
             <>
-              Zeek 只抓「监控网段」内的流量，其余不抓；抓到的数据才会进 Logstash 与 Elasticsearch。
+              采集器只抓「监控网段」内的流量，其余不抓；抓到的数据才会进 Logstash 与
+              Elasticsearch。
             </>
           )}
           {section === "all" && " "}
           {showIface && (
             <>
-              改完点保存，Zeek 容器内的看门狗会在约 10 秒内自动重载（无需重启容器）。
+              改完点保存，采集器容器内的看门狗会在约 10 秒内自动重载（无需重启容器）。
               镜像内硬编码：日志每 <b>24 小时</b> 轮转、本地只保留 <b>3 天</b>。
             </>
           )}
@@ -208,10 +209,10 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               />
             </div>
             <p className="col-span-2 text-xs text-muted-foreground">
-              Zeek 侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
+              采集器侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
               <span className="font-mono">resp_body_len</span> /{" "}
               <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
-              约 10 秒内重载 Zeek。
+              约 10 秒内重载采集器。
             </p>
           </div>
         )}
@@ -264,9 +265,9 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               )}
             </p>
             <p>
-              本地网段 Site::local_nets：
+              本地网段：
               <span className="font-mono">
-                {status.local_nets || "（空，用 Zeek 默认判定）"}
+                {status.local_nets || "（空，用采集器默认判定）"}
               </span>
             </p>
             <p className="mt-1 flex items-center gap-2">

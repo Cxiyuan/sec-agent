@@ -161,7 +161,7 @@ docker compose -f docker-compose.yml -f docker-compose.wazuh.yml up -d
   再把 `WAZUH_ARCHIVES_ENABLED=true` 传给 `wazuh-filebeat`。原始日志默认**只入库、不喂检测器**
   （`ST_WAZUH_ARCHIVE_TO_DETECTOR=false`）—— 量级比告警大得多，容量估算见
   [`docs/ndr-redesign.md`](docs/ndr-redesign.md) 第 6 期。
-- 管理面「采集接入 → Wazuh」**只显示状态、不需要配置**：Wazuh 随项目一起部署，
+- 管理面「采集接入 → 主机监控」**只显示状态、不需要配置**：主机监控随项目一起部署，
   地址与凭据由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台 `ST_WAZUH_API_*`）；
   面板显示 API 版本 / Agent 在线情况 / **近 24h 入库的告警与原始日志条数**（后者是链路真通了的证据），
   并可下发本地规则文件（下发后回读校验）。
@@ -223,7 +223,7 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
 10. （NDR 线路）**Wazuh 已内置，部署即已接入**：`up -d` 会一起起 `wazuh-manager` 与
    `wazuh-filebeat`；只需确认 `.env` 里的 `WAZUH_API_USER`/`WAZUH_API_PASSWORD` 是强口令
    （与 manager 共用同一组变量，后台直接取它，没有第二处要填），
-   到「采集接入 → Wazuh」应直接看到「API 已连通」与 Agent 在线情况（这一页只显示状态，
+   到「采集接入 → 主机监控」应直接看到「API 已连通」与 Agent 在线情况（这一页只显示状态，
    地址固定是 `https://wazuh-manager:55000`，没有保存/测试连接的入口）；
    要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`。
    只有接**外部已有**的 Wazuh 时才需要看 §3.2
@@ -345,8 +345,8 @@ NDR 线路（采集与检测）：
 | `ST_ES_EVENTS_INDEX` | shentong-events-* | 统一事件索引（确认模板写入 `shentong-events-%{+yyyy.MM.dd}`） |
 | `ST_ES_RETENTION_DAYS` | 30 | ES 保留期（ILM 策略） |
 | `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度的**兜底**值；实际跟着运行时保留期走（后台改「保留期」不用重启，见 `investigation/es_query.py:154`） |
-| `ST_ZEEK_INTERFACE` | ens224 | Zeek 抓包网卡的兜底名（界面「Zeek 抓包」保存的值优先） |
-| `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「Zeek 抓包」写入的值优先） |
+| `ST_ZEEK_INTERFACE` | ens224 | 抓包网卡的兜底名（界面「监控网段」页保存的值优先；下拉里只列**物理网卡**） |
+| `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「监控网段」页写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
 | `ST_ZEEK_TRUSTED_PROXIES` | 空 | **可信代理白名单**（逗号分隔的 IP/CIDR）：只有直连对端在清单里，才承认 `X-Forwarded-For` / `X-Real-IP` 里的客户端地址（`real_client_ip`）；**留空 = 不认任何代理头**（fail-closed）。安全锚点，只从部署环境给（`.env` 的 `ZEEK_TRUSTED_PROXIES`），界面无入口 |
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |

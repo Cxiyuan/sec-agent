@@ -17,8 +17,8 @@ import { PanelError, loadInto, emptyOrFailed, usePanelErrors } from "@/component
 
 /** 读取失败的接口名（错误条用）。 */
 const SRC = {
-  main: "Wazuh 接入状态（/api/wazuh）",
-  rules: "自定义规则文件列表（/api/wazuh/rules）",
+  main: "主机监控接入状态",
+  rules: "主机监控规则文件列表",
 } as const;
 
 const TEXTAREA_CLS =
@@ -97,9 +97,9 @@ export function WazuhPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Wazuh 接入（4.14）</CardTitle>
+        <CardTitle className="text-sm">主机监控接入</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Wazuh 随本项目一起部署，连接信息由部署环境固定（<span className="font-mono">.env</span>{" "}
+          主机监控随本项目一起部署，连接信息由部署环境固定（<span className="font-mono">.env</span>{" "}
           的 <span className="font-mono">WAZUH_API_*</span>），这里只显示状态，不需要配置。 本页看
           Agent 在线情况与自定义规则下发；日志本身走另外一跳（Filebeat 读{" "}
           <span className="font-mono">alerts.json</span> /{" "}

@@ -93,7 +93,7 @@ def test_dead_field_names_no_longer_fake_http_ownership() -> None:
 def test_wazuh_web_attack_rule_covers_both_event_types() -> None:
     """Wazuh 的 Web 事件有两个值：`wazuh_web_attack`（规则组命中）与 `web_attack`
     （描述里带 sql/injection，见 `normalize_wazuh` 的 `_wazuh_event_type`）——规则要都覆盖。"""
-    rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-Web攻击（Wazuh规则组）")
+    rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-Web攻击（主机监控）")
     cond = rule["conditions"]["rules"][0]
     assert cond["op"] == "in"
     assert set(cond["value"]) == {"wazuh_web_attack", "web_attack"}
