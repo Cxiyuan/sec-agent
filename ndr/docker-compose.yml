@@ -144,9 +144,9 @@ services:
       TZ: Asia/Shanghai
       ZEEK_CONF_DIR: /config
       ZEEK_LOG_DIR: /logs
-      # 缺省网卡必须与 ndr/zeek/entrypoint.sh 的 IFACE_DEFAULT 一致；
-      # 实际部署请在 .env 里按宿主网卡显式设置（实机为 ZEEK_IFACE=ens160）。
-      ZEEK_IFACE: ${ZEEK_IFACE:-ens224}
+      # 缺省网卡留空 = 采集器自动取第一块物理网卡（见 ndr/zeek/entrypoint.sh 的 auto_iface）；
+      # 要指定就在 .env 里设 ZEEK_IFACE=<宿主网卡名>。
+      ZEEK_IFACE: ${ZEEK_IFACE:-}
       # 采集侧发 Redis 采集队列（host 网络下用宿主地址）
       REDIS_HOST: ${REDIS_HOST:-localhost}
       REDIS_PORT: ${REDIS_PORT:-6379}

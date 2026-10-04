@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     zeek_conf_dir: str = "/config"
     zeek_iface_conf: str = "/config/interface.conf"
     zeek_interfaces_json: str = "/config/interfaces.json"
-    zeek_interface: str = "ens224"
+    zeek_interface: str = ""  # 空 = 由采集器自动取第一块物理网卡（网卡名是环境相关的，不写死）
     # 监控网段清单（一行一条 CIDR/IP，也可逗号分隔）：由它生成 bpf_filter 与 local_nets
     zeek_monitored_nets: str = ""
     # 追加到 BPF 末尾的附加条件（可选，如 not port 22）
@@ -252,6 +252,17 @@ class Settings(BaseSettings):
     # （实测 risk>0 的 54 条里 40 条是这个原因，10~15 时每档 3~9 个，明显整点批量）。
     profile_hour_min_coverage: int = 8  # 至少见过这么多个不同时段才判时段异常
     profile_hour_min_age_hours: int = 24  # 画像建立不足这么久不判时段（第一天必然全是「新时段」）
+    # ---- 路径判据（「新接口路径」）----
+    # 只记录与判定 **API 形态**的路径：前端 js/css/图片/字体访问次数天然最多，
+    # 会把 30 条上限占满（2026-10 实机：会话画像的 paths 里全是前端 js 与字体，如
+    # /static/app.js、/assets/font.woff2），有价值的接口路径反而被挤出去 —— 这份数据就废了。
+    # 两个正则都可改：include 为空 = 不过滤（保留全部路径），exclude 为空 = 不排静态资源。
+    profile_path_include_regex: str = r"(?i)/api/"  # 只留这类接口路径（空 = 全留）
+    profile_path_exclude_regex: str = (
+        r"(?i)\.(js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|bmp|avif|woff2?|ttf|eot|otf|"
+        r"mp[34]|avi|mov|zip|gz|tgz|tar|rar|7z|pdf|docx?|xlsx?|pptx?|html?)(\?|$|#)"
+    )
+    profile_path_min_known: int = 3  # 至少已知这么多条接口路径才判「新路径」
     session_cookie_names: str = (
         "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
     )

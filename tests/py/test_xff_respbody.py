@@ -1,6 +1,6 @@
 """XFF（真实客户端 IP）与响应体的归一化回归测试。
 
-来源：实机探针 —— 服务器 172.16.196.77 向 172.16.196.80:8081 发 ``POST /__xffprobe``，
+来源：实机探针 —— 服务器 192.0.2.77 向 192.0.2.80:8081 发 ``POST /__xffprobe``，
 带 ``X-Forwarded-For: 198.51.100.77, 203.0.113.9``，Zeek 把代理头记进 ``HTTP::Info$proxied``。
 这条数据以前只活在 raw 里，现在进 ``real_client_ip`` 参与画像/规则/检索；2026-10 起这只在
 **直连对端本身是可信代理**时成立（``ST_ZEEK_TRUSTED_PROXIES``，见
@@ -17,17 +17,17 @@ from app.config import settings
 from app.ingestion import normalizer
 from app.rules import engine
 
-# 实机探针原文（服务器 172.16.196.77 发向 172.16.196.80:8081 的那条）
+# 实机探针原文（服务器 192.0.2.77 发向 192.0.2.80:8081 的那条）
 PROBE = {
     "ts": 1790912698.490834,
     "uid": "Cy2rDP36QlAdi9ru79",
-    "id.orig_h": "172.16.196.77",
+    "id.orig_h": "192.0.2.77",
     "id.orig_p": 37358,
-    "id.resp_h": "172.16.196.80",
+    "id.resp_h": "192.0.2.80",
     "id.resp_p": 8081,
     "trans_depth": 1,
     "method": "POST",
-    "host": "172.16.196.80:8081",
+    "host": "192.0.2.80:8081",
     "uri": "/__xffprobe",
     "version": "1.1",
     "user_agent": "curl/8.5.0",
@@ -41,13 +41,13 @@ PROBE = {
 }
 
 #: 探针的直连对端 —— 真实部署里这个地址就是反向代理自己
-TRUSTED_PEER = "172.16.196.77"
+TRUSTED_PEER = "192.0.2.77"
 
 
 @pytest.fixture(autouse=True)
 def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
     """本文件测的是「直连对端是可信代理」时的解析口径（不可信的情形单独测）。"""
-    monkeypatch.setattr(settings, "zeek_trusted_proxies", "172.16.196.0/24")
+    monkeypatch.setattr(settings, "zeek_trusted_proxies", "192.0.2.0/24")
 
 
 PROXY_CASES: list[tuple[str, dict, str | None]] = [
@@ -87,13 +87,13 @@ def test_untrusted_peer_drops_proxy_headers(monkeypatch: pytest.MonkeyPatch) -> 
 def test_trusted_proxies_accepts_host_cidr_and_list(monkeypatch: pytest.MonkeyPatch) -> None:
     doc = {"proxied": PROBE["proxied"]}
     for cfg, peer, want in (
-        ("172.16.196.77", "172.16.196.77", "198.51.100.77"),  # 单个代理写自己的 IP
-        ("172.16.196.77/32", "172.16.196.77", "198.51.100.77"),
-        ("172.16.196.0/24", "172.16.196.77", "198.51.100.77"),  # 代理是一个网段
-        ("10.0.0.0/8, 172.16.196.77", "172.16.196.77", "198.51.100.77"),  # 多项/逗号分隔
-        ("# 注释行\n172.16.196.77", "172.16.196.77", "198.51.100.77"),
-        ("172.16.196.0/24", "172.16.197.77", None),
-        ("not-a-cidr", "172.16.196.77", None),  # 非法项被忽略 ⇒ 等于没配
+        ("192.0.2.77", "192.0.2.77", "198.51.100.77"),  # 单个代理写自己的 IP
+        ("192.0.2.77/32", "192.0.2.77", "198.51.100.77"),
+        ("192.0.2.0/24", "192.0.2.77", "198.51.100.77"),  # 代理是一个网段
+        ("10.0.0.0/8, 192.0.2.77", "192.0.2.77", "198.51.100.77"),  # 多项/逗号分隔
+        ("# 注释行\n192.0.2.77", "192.0.2.77", "198.51.100.77"),
+        ("192.0.2.0/24", "172.16.197.77", None),
+        ("not-a-cidr", "192.0.2.77", None),  # 非法项被忽略 ⇒ 等于没配
     ):
         monkeypatch.setattr(settings, "zeek_trusted_proxies", cfg)
         assert normalizer._real_client_ip(doc, peer) == want, (cfg, peer)
@@ -104,7 +104,7 @@ def test_probe_end_to_end() -> None:
     assert log is not None
     assert log.log_type == "http"
     assert log.real_client_ip == "198.51.100.77"
-    assert log.src_ip == "172.16.196.77"  # TCP 对端不被覆盖
+    assert log.src_ip == "192.0.2.77"  # TCP 对端不被覆盖
     assert log.resp_body == '{"detail":"unauthorized"}'
     assert log.resp_body_len == 80
     assert log.bytes_in == 80
@@ -165,7 +165,7 @@ def test_profile_uses_real_client_ip(stack: str) -> None:
         ts=PROBE["ts"],
         log_type="http",
         event_type="http_request",
-        src_ip="172.16.196.77",
+        src_ip="192.0.2.77",
         real_client_ip="198.51.100.77",
         user="alice",
     )
@@ -173,7 +173,7 @@ def test_profile_uses_real_client_ip(stack: str) -> None:
     profile.observe_entry(buckets, entry)
     src_ips = buckets[f"{profile.ACCOUNT}|alice"]["src_ips"]
     assert "198.51.100.77" in src_ips
-    assert "172.16.196.77" not in src_ips
+    assert "192.0.2.77" not in src_ips
 
     buckets2: dict = {}
     entry2 = schemas.UnifiedLog(
@@ -181,9 +181,9 @@ def test_profile_uses_real_client_ip(stack: str) -> None:
         ts=PROBE["ts"],
         log_type="http",
         event_type="http_request",
-        src_ip="172.16.196.77",
+        src_ip="192.0.2.77",
         real_client_ip=None,
         user="bob",
     )
     profile.observe_entry(buckets2, entry2)
-    assert "172.16.196.77" in buckets2[f"{profile.ACCOUNT}|bob"]["src_ips"]  # 无代理头回落 src_ip
+    assert "192.0.2.77" in buckets2[f"{profile.ACCOUNT}|bob"]["src_ips"]  # 无代理头回落 src_ip

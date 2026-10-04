@@ -483,6 +483,8 @@ export interface BaselineProfile {
   risk_score?: number;
   /** 风险分的**判定时间**（本轮落库时间）。本轮无异常时 risk_score 归零、这里为 null */
   risk_at?: string | null;
+  /** 服务端 IP（被访问的监控资产）：界面展示「账号 · 服务端IP」靠它 */
+  dst_ips?: Record<string, number>;
   anomalies?: string[];
   src_ips?: Record<string, number>;
   user_agents?: Record<string, number>;

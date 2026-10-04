@@ -16,9 +16,9 @@ TS = 1790912698.490834
 CONN = {
     "ts": TS,
     "uid": "C1a2b3c4d5e6f7g8h9",
-    "id.orig_h": "172.16.196.77",
+    "id.orig_h": "192.0.2.77",
     "id.orig_p": 37358,
-    "id.resp_h": "172.16.196.80",
+    "id.resp_h": "192.0.2.80",
     "id.resp_p": 443,
     "proto": "tcp",
     "service": "ssl",
@@ -34,9 +34,9 @@ CONN = {
 DNS = {
     "ts": TS,
     "uid": "Cdns0001",
-    "id.orig_h": "172.16.196.77",
+    "id.orig_h": "192.0.2.77",
     "id.orig_p": 51000,
-    "id.resp_h": "172.16.196.1",
+    "id.resp_h": "192.0.2.1",
     "id.resp_p": 53,
     "proto": "udp",
     "trans_id": 4242,
@@ -54,13 +54,13 @@ DNS = {
 HTTP = {
     "ts": TS,
     "uid": "Chttp0001",
-    "id.orig_h": "172.16.196.77",
+    "id.orig_h": "192.0.2.77",
     "id.orig_p": 37358,
-    "id.resp_h": "172.16.196.80",
+    "id.resp_h": "192.0.2.80",
     "id.resp_p": 8081,
     "trans_depth": 1,
     "method": "POST",
-    "host": "172.16.196.80:8081",
+    "host": "192.0.2.80:8081",
     "uri": "/__xffprobe?q=1",
     "version": "1.1",
     "user_agent": "curl/8.5.0",
@@ -74,7 +74,7 @@ HTTP = {
     "resp_body": '{"detail":"unauthorized"}',
     # 头全量文本（shentong-httpheaders.zeek 产出）：单头截 256、同向总量 4KB
     "req_headers": (
-        "HOST: 172.16.196.80:8081\n"
+        "HOST: 192.0.2.80:8081\n"
         "AUTHORIZATION: Basic cHJvYmU6WnE3UHJvYmVQd2Q5\n"
         "X-LONG: " + "A" * 256 + "\n"
     ),
@@ -84,9 +84,9 @@ HTTP = {
 SSL = {
     "ts": TS,
     "uid": "Cssl0001",
-    "id.orig_h": "172.16.196.77",
+    "id.orig_h": "192.0.2.77",
     "id.orig_p": 37360,
-    "id.resp_h": "172.16.196.80",
+    "id.resp_h": "192.0.2.80",
     "id.resp_p": 443,
     "version": "TLSv12",
     "cipher": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
@@ -105,8 +105,8 @@ FILES = {
     "ts": TS,
     "fuid": "Fabc123",
     "uid": "Chttp0001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "source": "HTTP",
     "depth": 0,
     "analyzers": ["MD5", "SHA1", "SHA256"],
@@ -124,9 +124,9 @@ DHCP = {
     "ts": TS,
     "uids": ["Cdhcp0001"],
     "client_addr": "0.0.0.0",
-    "server_addr": "172.16.196.1",
+    "server_addr": "192.0.2.1",
     "mac": "00:11:22:33:44:55",
-    "assigned_addr": "172.16.196.90",
+    "assigned_addr": "192.0.2.90",
     "lease_time": 3600.0,
     "msg_types": ["REQUEST", "ACK"],
     "host_name": "workstation-01",
@@ -153,8 +153,8 @@ X509 = {
 WEIRD = {
     "ts": TS,
     "uid": "Cweird001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "name": "line_terminated_with_single_CR",
     "notice": False,
     "peer": "originator",
@@ -165,8 +165,8 @@ WEIRD = {
 NTP = {
     "ts": TS,
     "uid": "Cntp0001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.1",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.1",
     "version": 4,
     "mode": 3,
     "stratum": 2,
@@ -181,7 +181,7 @@ NTP = {
 PACKET_FILTER = {
     "ts": TS,
     "node": "ndr-sensor",
-    "filter": "net 172.16.196.0/24",
+    "filter": "net 192.0.2.0/24",
     "init": True,
     "success": True,
 }
@@ -213,8 +213,8 @@ STATS = {
 SMTP = {
     "ts": TS,
     "uid": "Csmtp0001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "helo": "workstation-01",
     "mailfrom": "a@example.internal",
     "rcptto": ["b@example.internal"],
@@ -226,8 +226,8 @@ SMTP = {
 SSH = {
     "ts": TS,
     "uid": "Cssh0001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "auth_success": False,
     "auth_attempts": 3,
     "direction": "INBOUND",
@@ -239,8 +239,8 @@ SSH = {
 JA4SSH = {
     "ts": TS,
     "uid": "Cja4sh001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "direction": "C",
     "hash": "c1a2b3c4d5e6_c1a2b3c4d5e6",
     "kex": "curve25519-sha256",
@@ -249,8 +249,8 @@ JA4SSH = {
 JA4D = {
     "ts": TS,
     "uid": "Cja4d001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "hash": "q13d0312h3_55b375c5d22d_9c4f8cad6b31",
 }
 
@@ -258,8 +258,8 @@ JA4D = {
 UNKNOWN_STREAM = {
     "ts": TS,
     "uid": "Cja3fp001",
-    "id.orig_h": "172.16.196.77",
-    "id.resp_h": "172.16.196.80",
+    "id.orig_h": "192.0.2.77",
+    "id.resp_h": "192.0.2.80",
     "ja3": "10894b8a9d67451b0cf4b49f237ba189",
     "ja3s": "a0e9f5d64349fb13191bc781f81f42e1",
     "dummy_field_only_this_stream_has": 1,

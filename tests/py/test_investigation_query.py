@@ -302,15 +302,15 @@ def test_net_clauses_uses_cidr_terms_when_field_is_ip(
 ) -> None:
     monkeypatch.setattr(mods["catalog"], "es_type", lambda index, path: "ip")
     clauses, local = mods["ndr_tools"]._net_clauses(
-        "idx", [ip_network("10.0.0.0/8"), ip_network("172.16.196.0/24")], ("src_ip", "dst_ip")
+        "idx", [ip_network("10.0.0.0/8"), ip_network("192.0.2.0/24")], ("src_ip", "dst_ip")
     )
     assert local == []
     assert clauses == [
         {
             "bool": {
                 "should": [
-                    {"terms": {"src_ip": ["10.0.0.0/8", "172.16.196.0/24"]}},
-                    {"terms": {"dst_ip": ["10.0.0.0/8", "172.16.196.0/24"]}},
+                    {"terms": {"src_ip": ["10.0.0.0/8", "192.0.2.0/24"]}},
+                    {"terms": {"dst_ip": ["10.0.0.0/8", "192.0.2.0/24"]}},
                 ],
                 "minimum_should_match": 1,
             }
@@ -323,15 +323,15 @@ def test_net_clauses_prefix_for_aligned_text_field(
 ) -> None:
     monkeypatch.setattr(mods["catalog"], "es_type", lambda index, path: "text")
     clauses, local = mods["ndr_tools"]._net_clauses(
-        "idx", [ip_network("172.16.196.0/24")], ("src_ip.keyword", "dst_ip.keyword")
+        "idx", [ip_network("192.0.2.0/24")], ("src_ip.keyword", "dst_ip.keyword")
     )
     assert local == []
     assert clauses == [
         {
             "bool": {
                 "should": [
-                    {"prefix": {"src_ip.keyword": "172.16.196."}},
-                    {"prefix": {"dst_ip.keyword": "172.16.196."}},
+                    {"prefix": {"src_ip.keyword": "192.0.2."}},
+                    {"prefix": {"dst_ip.keyword": "192.0.2."}},
                 ],
                 "minimum_should_match": 1,
             }
@@ -344,15 +344,15 @@ def test_net_clauses_single_host_uses_exact_term(
 ) -> None:
     monkeypatch.setattr(mods["catalog"], "es_type", lambda index, path: "keyword")
     clauses, local = mods["ndr_tools"]._net_clauses(
-        "idx", [ip_network("172.16.196.5/32")], ("src_ip.keyword", "dst_ip.keyword")
+        "idx", [ip_network("192.0.2.5/32")], ("src_ip.keyword", "dst_ip.keyword")
     )
     assert local == []
     assert clauses == [
         {
             "bool": {
                 "should": [
-                    {"term": {"src_ip.keyword": "172.16.196.5"}},
-                    {"term": {"dst_ip.keyword": "172.16.196.5"}},
+                    {"term": {"src_ip.keyword": "192.0.2.5"}},
+                    {"term": {"dst_ip.keyword": "192.0.2.5"}},
                 ],
                 "minimum_should_match": 1,
             }
@@ -424,15 +424,15 @@ def test_fetch_window_pushes_nets_and_ips_down(
     monkeypatch.setattr(mods["catalog"], "mapping_types", lambda index: dict(_MAPPING))
     monkeypatch.setattr(mods["catalog"], "es_type", lambda index, path: "text")
     monkeypatch.setattr(es_config, "current", lambda: {"es.events_index": "shentong-events-2026.*"})
-    fake = _FakeEs([{"ts": "2026-01-01T00:00:01+00:00", "src_ip": "172.16.196.5"}])
+    fake = _FakeEs([{"ts": "2026-01-01T00:00:01+00:00", "src_ip": "192.0.2.5"}])
     monkeypatch.setattr(es_client, "get_es", lambda: fake)
 
     out = mods["ndr_tools"]._fetch_window(
         {
             "start": "2026-01-01T00:00:00Z",
             "end": "2026-01-02T00:00:00Z",
-            "nets": "172.16.196.0/24",
-            "ips": "172.16.196.5",
+            "nets": "192.0.2.0/24",
+            "ips": "192.0.2.5",
             "limit": 5,
         }
     )
@@ -441,7 +441,7 @@ def test_fetch_window_pushes_nets_and_ips_down(
     assert out["returned"] == 1
     # 网段与 IP 都进了 ES 查询（而不是取回后本地过滤），路径是 keyword 路径
     filters = fake.queries[0]["bool"]["filter"]
-    assert str({"prefix": {"src_ip.keyword": "172.16.196."}}) in str(filters)
+    assert str({"prefix": {"src_ip.keyword": "192.0.2."}}) in str(filters)
     assert "src_ip.keyword" in str(filters)
 
 

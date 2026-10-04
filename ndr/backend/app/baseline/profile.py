@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import re
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, delete, func, or_, select
@@ -33,11 +35,18 @@ ACCOUNT = "account"
 SESSION = "session"
 
 # 基线分布各字段保留的条目上限（避免 JSON 无限膨胀）
-_LIMITS: dict[str, int] = {"src_ips": 50, "user_agents": 20, "paths": 30, "hour_hist": 24}
+_LIMITS: dict[str, int] = {
+    "src_ips": 50,
+    "dst_ips": 30,
+    "user_agents": 20,
+    "paths": 30,
+    "hour_hist": 24,
+}
 # `_LIMITS` 的键是**落库列名**（`hour_hist` 列对的是观测桶里的 `hours`），
 # 这里给出列名 -> 观测桶字段的映射，剪枝与落库共用同一份上限。
 _BUCKET_FIELDS: dict[str, str] = {
     "src_ips": "src_ips",
+    "dst_ips": "dst_ips",
     "user_agents": "user_agents",
     "paths": "paths",
     "hour_hist": "hours",
@@ -77,6 +86,39 @@ def _families(ips: Iterable[str]) -> tuple[set[str], set[str]]:
         text = str(ip)
         (v6 if ":" in text else v4).add(text)
     return v4, v6
+
+
+@lru_cache
+def _path_regexes() -> tuple[re.Pattern[str] | None, re.Pattern[str] | None]:
+    """（include, exclude）两个路径正则；空字符串 = 那一步不过滤。"""
+
+    def build(pattern: str) -> re.Pattern[str] | None:
+        text = (pattern or "").strip()
+        if not text:
+            return None
+        try:
+            return re.compile(text)
+        except re.error:
+            log.warning("路径正则写错了，已忽略：%r", text)
+            return None
+
+    return build(settings.profile_path_include_regex), build(settings.profile_path_exclude_regex)
+
+
+def api_path(path: str) -> bool:
+    """这条路径要不要计进画像（只留接口、排掉静态资源）。
+
+    为什么要排：前端 js/css/图片/字体访问次数天然最多，会把 30 条上限占满
+    （2026-10 实机：会话画像的 paths 里全是前端 js 与字体，如 /static/app.js、
+    /assets/font.woff2），有价值的接口路径反而被挤出去。两个正则都能在配置里改。
+    """
+    text = (path or "").strip()
+    if not text:
+        return False
+    include, exclude = _path_regexes()
+    if include is not None and not include.search(text):
+        return False
+    return not (exclude is not None and exclude.search(text))
 
 
 def _old_enough(profile: EntityProfile) -> bool:
@@ -140,6 +182,7 @@ def _new_bucket(kind: str, key: str, display: str) -> dict[str, Any]:
         "key": key,
         "display": display,
         "src_ips": Counter(),
+        "dst_ips": Counter(),
         "user_agents": Counter(),
         "paths": Counter(),
         "hours": Counter(),
@@ -156,9 +199,14 @@ def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
     client_ip = entry.real_client_ip or entry.src_ip
     if client_ip:
         bucket["src_ips"][str(client_ip)] += 1
+    # 服务端 IP（被访问的监控资产）：界面要展示「账号 + 关联服务端 IP」，
+    # 让运维能直接看出「哪个账号在哪台服务器上活动」。
+    if entry.dst_ip:
+        bucket["dst_ips"][str(entry.dst_ip)] += 1
     if entry.user_agent:
         bucket["user_agents"][entry.user_agent[:128]] += 1
-    if entry.uri_path:
+    # 路径只收接口形态（静态资源会让 30 条上限满掉，见 api_path 的说明）
+    if entry.uri_path and api_path(entry.uri_path):
         bucket["paths"][entry.uri_path[:128]] += 1
     bucket["hours"][str(entry.ts.hour)] += 1
     if entry.status_code:
@@ -259,6 +307,14 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
         risk += 0.2
 
+    # 新接口路径：只算接口形态（静态资源已在采集时排掉），且要求画像已认识若干条路径，
+    # 否则刚建的画像「第一条路径就是新的」等于白报。
+    known_paths = set((profile.paths or {}).keys())
+    new_paths = sorted(p for p in obs["paths"] if p not in known_paths)
+    if new_paths and len(known_paths) >= max(0, int(settings.profile_path_min_known)):
+        reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
+        risk += 0.25
+
     # 非常用时段：三个条件都要满足才判（否则就是整点批量误报，见 config 里那两个门槛）
     hist = profile.hour_hist or {}
     total_hours = sum(_safe_int(v) for v in hist.values())
@@ -313,6 +369,7 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
                 "reasons": detection["reasons"],
                 "obs_count": _safe_int(profile.obs_count) if profile else 0,
                 "src_ips": sorted(obs["src_ips"].keys())[:5],
+                "dst_ips": sorted(obs["dst_ips"].keys())[:5],
                 "count": obs["count"],
             }
         )
@@ -372,6 +429,7 @@ def update_profiles(
                 row.obs_count = (row.obs_count or 0) + _safe_int(obs["count"])
                 row.last_seen = now
                 row.src_ips = _merge(row.src_ips, obs["src_ips"], _LIMITS["src_ips"])
+                row.dst_ips = _merge(row.dst_ips, obs["dst_ips"], _LIMITS["dst_ips"])
                 row.user_agents = _merge(
                     row.user_agents, obs["user_agents"], _LIMITS["user_agents"]
                 )
@@ -432,6 +490,8 @@ def _profile_dict(p: EntityProfile) -> dict[str, Any]:
         "first_seen": p.first_seen.isoformat() if p.first_seen else None,
         "last_seen": p.last_seen.isoformat() if p.last_seen else None,
         "src_ips": p.src_ips or {},
+        # 服务端 IP（被访问的监控资产）：界面展示「账号 + 关联服务端 IP」靠它
+        "dst_ips": p.dst_ips or {},
         "user_agents": p.user_agents or {},
         "paths": p.paths or {},
         "hour_hist": p.hour_hist or {},
@@ -472,14 +532,19 @@ def list_profiles(
     return {"total": total, "items": [_profile_dict(r) for r in rows]}
 
 
-def top_anomalies(limit: int = 10) -> dict[str, Any]:
+def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]:
     """按风险分取 TOP（运行状态页用）。
 
     只取``risk_at`` 在有效期（`profile_risk_ttl_minutes`）内的：本函数是「**当前**风险」，
     不是历史榜单 —— 实测旧实现会把 2~4 小时前判过、之后再没出现过的实体一直列出来。
+
+    `kind`：界面只传 `"account"`（会话的展示名是 cookie 哈希前 8 位，运维看不懂；
+    会话画像本身仍在算，摘要标签与 MCP 调查还看得到）。
     """
     ttl = max(0, int(settings.profile_risk_ttl_minutes))
     stmt = select(EntityProfile).where(EntityProfile.risk_score >= settings.profile_risk_threshold)
+    if kind:
+        stmt = stmt.where(EntityProfile.kind == kind)
     if ttl > 0:
         cutoff = datetime.now(UTC) - timedelta(minutes=ttl)
         stmt = stmt.where(EntityProfile.risk_at.is_not(None), EntityProfile.risk_at >= cutoff)

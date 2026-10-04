@@ -31,6 +31,8 @@ _MIGRATIONS: tuple[str, ...] = (
     # 画像风险分的判定时间（2026-10 实机 QA）：只有它有「当前风险」的时间语义，
     # updated_at 每轮观测都刷新，不能当风险时间用
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS risk_at TIMESTAMPTZ",
+    # 服务端 IP（被访问的监控资产）：界面展示「账号 + 关联服务端 IP」靠它
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS dst_ips JSONB NOT NULL DEFAULT '{}'::jsonb",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",

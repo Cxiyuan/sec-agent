@@ -39,6 +39,7 @@ def _profile(
     src_ips: dict[str, int] | None = None,
     user_agents: dict[str, int] | None = None,
     hour_hist: dict[str, int] | None = None,
+    paths: dict[str, int] | None = None,
     age_hours: float = 72.0,
     **extra: Any,
 ) -> Any:
@@ -50,7 +51,7 @@ def _profile(
         obs_count=obs_count,
         src_ips=src_ips if src_ips is not None else {"10.0.0.1": 100},
         user_agents=user_agents if user_agents is not None else {"UA/1.0": 100},
-        paths={},
+        paths=paths if paths is not None else {},
         hour_hist=hour_hist if hour_hist is not None else {str(h): 20 for h in range(12)},
         success_count=100,
         fail_count=0,
@@ -65,6 +66,8 @@ def _obs(
     *,
     kind: str = "session",
     src_ips: list[str] | None = None,
+    dst_ips: list[str] | None = None,
+    paths: list[str] | None = None,
     hours: list[int] | None = None,
     fail: int = 0,
     success: int = 1,
@@ -74,8 +77,9 @@ def _obs(
         "key": "k",
         "display": "disp",
         "src_ips": Counter(src_ips or []),
+        "dst_ips": Counter(dst_ips or []),
         "user_agents": Counter(["UA/1.0"]),
-        "paths": Counter(),
+        "paths": Counter(paths or []),
         "hours": Counter(str(h) for h in (hours if hours is not None else [3])),
         "success": success,
         "fail": fail,
@@ -188,6 +192,105 @@ def test_cold_start_never_reports(profiles: ModuleType) -> None:
 def test_missing_profile_is_cold_start(profiles: ModuleType) -> None:
     out = profiles.detect("session", _obs(src_ips=["10.9.9.9"]), None)
     assert out["cold_start"] is True
+
+
+# ---------─ 接口路径：静态资源不计、新路径计分 ----------
+
+
+def test_api_path_keeps_interfaces_drops_static(profiles: ModuleType) -> None:
+    """只留接口、排静态资源（实机 paths 里全是 js/woff2，把 30 条上限占满了）。"""
+    keep = ["/portal/PortalApi/api/Account/Login", "/api/v2/users", "/api/v2/users?page=2"]
+    drop = [
+        "/static/js/app.60735aa5.js",
+        "/assets/fonts/iconfont.e2dfd4b7.woff2",
+        "/portal/index.html",
+        "/portal/Account/ToLogin",  # 页面，不是接口
+        "/static/logo.png?hash=1",
+        "",
+    ]
+    for path in keep:
+        assert profiles.api_path(path) is True, path
+    for path in drop:
+        assert profiles.api_path(path) is False, path
+
+
+def test_observe_records_only_api_paths(profiles: ModuleType) -> None:
+    """采集侧就过滤：静态资源不占 30 条上限。"""
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        account="zhangsan",
+        user="",
+        cookie="",
+        real_client_ip="",
+        src_ip="10.0.0.9",
+        dst_ip="10.0.0.80",
+        user_agent="UA/1.0",
+        uri_path="/static/js/app.js",
+        ts=datetime(2026, 10, 4, 15, 0, tzinfo=UTC),
+        status_code=200,
+    )
+    buckets: dict[str, Any] = {}
+    profiles.observe_entry(buckets, entry)
+    bucket = buckets["account|zhangsan"]
+    assert dict(bucket["paths"]) == {}
+    # 服务端 IP 记上了（界面要展示「账号 + 关联服务端 IP」）
+    assert dict(bucket["dst_ips"]) == {"10.0.0.80": 1}
+
+    entry.uri_path = "/api/v2/orders"
+    profiles.observe_entry(buckets, entry)
+    assert dict(buckets["account|zhangsan"]["paths"]) == {"/api/v2/orders": 1}
+
+
+def test_new_api_path_reason(profiles: ModuleType) -> None:
+    prof = _profile(profiles, paths={"/api/a": 10, "/api/b": 10, "/api/c": 10})
+    out = profiles.detect("account", _obs(kind="account", paths=["/api/a", "/api/new"]), prof)
+    assert "新接口路径" in _reasons(out)
+    assert out["risk"] == pytest.approx(0.25)
+
+
+def test_new_api_path_needs_known_baseline(profiles: ModuleType) -> None:
+    """刚建的画像「第一条路径就是新的」不该报。"""
+    prof = _profile(profiles, paths={"/api/a": 10})
+    out = profiles.detect("account", _obs(kind="account", paths=["/api/brand-new"]), prof)
+    assert "新接口路径" not in _reasons(out)
+
+
+def test_known_api_path_is_not_reported(profiles: ModuleType) -> None:
+    prof = _profile(profiles, paths={"/api/a": 10, "/api/b": 10, "/api/c": 10})
+    out = profiles.detect("account", _obs(kind="account", paths=["/api/a"]), prof)
+    assert "新接口路径" not in _reasons(out)
+
+
+def test_update_profiles_merges_dst_ips(
+    profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = _profile(profiles)
+    row.dst_ips = {"10.0.0.80": 5}
+    monkeypatch.setattr(profiles, "SessionLocal", lambda: _FakeSession(row))
+    profiles.update_profiles({"session|k": _obs(dst_ips=["10.0.0.81", "10.0.0.80"])}, {})
+    assert row.dst_ips == {"10.0.0.80": 6, "10.0.0.81": 1}
+
+
+def test_top_anomalies_kind_filter(
+    profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """界面只取账号画像（会话展示名是哈希，看不懂）—— SQL 里必须有 kind 过滤。"""
+    session = _FakeSession(row=None, rows=[])
+    monkeypatch.setattr(profiles, "SessionLocal", lambda: session)
+    profiles.top_anomalies(5, kind=profiles.ACCOUNT)
+    assert "kind" in _where_of(session.statements[0])
+
+
+def test_recall_exposes_server_ips(profiles: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """摘要标签里也要带上服务端 IP（智能体靠它判断「这台服务上是谁在动」）。"""
+    profile = _profile(profiles, src_ips={}, user_agents={"UA/1.0": 1}, obs_count=500)
+    monkeypatch.setattr(profiles, "load_profiles", lambda _keys: {"session|k": profile})
+    out = profiles.recall_from_observations(
+        {"session|k": _obs(src_ips=["10.0.0.9"], dst_ips=["10.0.0.80"], hours=[3])}
+    )
+    assert out["entities"], out
+    assert out["entities"][0]["dst_ips"] == ["10.0.0.80"]
 
 
 # ---------- 风险写回：按当前窗口，无理由就归零 ----------

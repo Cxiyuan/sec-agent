@@ -515,13 +515,20 @@ export function baselineOption(baseline: BaselinePayload | null): EChartsOption 
 export function anomalyOption(baseline: BaselinePayload | null, top = 8): EChartsOption {
   const rows = (baseline?.anomalies.items || [])
     .slice(0, top)
-    .map((p) => ({
-      name: String(p.entity_display || p.entity_key || "?"),
-      kind: p.kind === "account" ? "账号" : "会话",
-      risk: Number(p.risk_score || 0),
-      at: stampOf(p.risk_at),
-      reasons: p.anomalies || [],
-    }))
+    .map((p) => {
+      const servers = Object.keys(p.dst_ips || {}).slice(0, 5);
+      const name = String(p.entity_display || p.entity_key || "?");
+      return {
+        // 标签直接带服务端 IP：运维看的不是哈希，而是「哪个账号在哪台上活动」
+        name: servers.length ? `${name} · ${servers.slice(0, 2).join("/")}` : name,
+        kind: p.kind === "account" ? "账号" : "会话",
+        risk: Number(p.risk_score || 0),
+        at: stampOf(p.risk_at),
+        reasons: p.anomalies || [],
+        servers,
+        clients: Object.keys(p.src_ips || {}).slice(0, 5),
+      };
+    })
     .reverse();
   const threshold = baseline?.risk_threshold ?? 0.6;
   return {
@@ -534,7 +541,17 @@ export function anomalyOption(baseline: BaselinePayload | null, top = 8): EChart
         const row = rows[first?.dataIndex ?? 0];
         if (!row) return "";
         const why = row.reasons.length ? `<br/>${row.reasons.slice(0, 3).join("；")}` : "";
-        return `${row.kind} ${row.name}<br/>风险 ${row.risk.toFixed(2)}（判定 ${row.at}）${why}`;
+        const where = [
+          row.servers.length ? `服务端 ${row.servers.join(", ")}` : "",
+          row.clients.length ? `来源 ${row.clients.join(", ")}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          `${row.kind} ${row.name}<br/>风险 ${row.risk.toFixed(2)}（判定 ${row.at}）` +
+          (where ? `<br/>${where}` : "") +
+          why
+        );
       },
     },
     grid: { left: 8, right: 30, top: 8, bottom: 8, containLabel: true },

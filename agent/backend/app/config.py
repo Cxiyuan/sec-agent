@@ -143,6 +143,14 @@ class Settings(BaseSettings):
 
     # 模型（统一 OpenAI 兼容接口）：本地 edge → 云端 flash → 云端 deep
     edge_model_timeout: int = 300
+    # 边缘模型（本地 llama-server）连接信息：**全部由部署环境给**（ST_EDGE_*）。
+    # 代码里不放任何客户环境的值（密钥 / 模型文件路径 / 内网 IP）——这是通用产品，
+    # 客户环境的东西属于部署配置（2026-10 硬编码审计）。默认值均与环境无关。
+    edge_api_key: str = ""
+    edge_model_name: str = ""
+    edge_port: int = 8080
+    edge_base_path: str = "/v1"
+    edge_default_ip: str = "127.0.0.1"
     edge_review_concurrency: int = 8
     edge_max_tokens: int = 512
     edge_max_tokens_thinking: int = 4096

@@ -204,7 +204,8 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
    （少了 `-f` 会被 Zeek 当成脚本名、启动即 fatal 重启循环——上线时踩过，见 docs 部署记录第 6 条）。
    网段在 **Zeek 抓包层**生效：没抓到的流量后面谁也看不到，这一步必须先做对
 3. （智能体线路）**填云端模型 API Key**（系统配置 → 云端模型）
-4. （智能体线路）边缘模型 IP（系统配置 → 边缘模型；默认已指向内网推理服务器）
+4. （智能体线路）边缘模型：`ST_EDGE_API_KEY` / `ST_EDGE_MODEL_NAME` 由部署环境给（代码里不放客户环境的值），
+   地址在「系统配置 → 边缘模型」填（默认回环）
 5. （智能体线路）建议点「边缘模型 → 测试连接」确认可达
 6. （NDR 线路）到「数据存储」确认集群状态与索引族：ES 是内置部署的，**地址与凭据由部署环境
    固定、界面上没有填写入口**（要换 ES 就改 `.env` 再重建 backend，见 §3.3）；
@@ -327,15 +328,20 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
 - **数值 2σ 基线**：按源 IP 记三个维度（连接数 / 目的端口数 / 目的 IP 数），Welford 在线均值方差；
   当前值 > 均值 + `ST_BASELINE_ZSCORE` 个标准差就算偏离。**观测期内（默认 7 天）不打标**，
   标签里的 `warmed` 为 0 就代表「没报偏离 ≠ 正常」
-- **账号/会话画像**：按账号（`account` 再退 `user`）与会话 cookie 累计源 IP / UA / 路径 / 时段分布，
-  加权打分（新源 IP、新 UA、非常用时段、同族跨 ≥2 个 IP、失败多于成功），过 `ST_PROFILE_RISK_THRESHOLD` 才进异常。
-  判据上的三个防误报口径（2026-10 实机 QA 修）：
+- **账号/会话画像**：按账号（`account` 再退 `user`）与会话 cookie 累计源 IP / 服务端 IP / UA / 接口路径 / 时段分布，
+  加权打分（新源 IP、新 UA、新接口路径、非常用时段、同族跨 ≥2 个 IP、失败多于成功），过 `ST_PROFILE_RISK_THRESHOLD` 才进异常。
+  判据上的防误报口径（2026-10 实机 QA 修）：
   - **v4/v6 分开看**：「会话跨 IP」只在**同族内** ≥2 个时成立；v4+v6 各一个是同一客户端的双栈，不算劫持。
     新源 IP 对 v6 只看 **/64 前缀**（RFC 4941 隐私地址在同一 /64 里轮换，不算换客户端）
   - **非常用时段要看门槛**：见过 ≥`ST_PROFILE_HOUR_MIN_COVERAGE` 个不同时段、且画像建立满
     `ST_PROFILE_HOUR_MIN_AGE_HOURS` 小时才判（否则每个整点、每个活跃实体各报一次）
+  - **只收接口路径**：`paths` 只记命中 `ST_PROFILE_PATH_INCLUDE_REGEX`（默认 `/api/`）且不在
+    `ST_PROFILE_PATH_EXCLUDE_REGEX`（静态资源后缀）里的路径，已知 ≥`ST_PROFILE_PATH_MIN_KNOWN` 条才判「新接口路径」。
+    不收的话前端 js/字体（次数最多）会把 30 条上限占满，有价值的接口路径反而进不来
   - **风险分按当前窗口**：本轮没理由就归零 + 清空理由，判定时间落 `risk_at`（`updated_at` 每轮观测都刷新，
-    不能当风险时间用）；界面的 TOP 图 tooltip 会显示判定时间
+    不能当风险时间用）；「画像风险 TOP」只列 `risk_at` 在 `ST_PROFILE_RISK_TTL_MINUTES` 内的
+  - **界面只展示账号画像**（标签带关联服务端 IP）：会话展示名是 cookie 哈希前 8 位，运维看不懂；
+    会话画像本身仍在算，摘要标签与 MCP `entity_profile` 都看得到
 - **会话 cookie 先哈希再落库**（sha256，展示只用前 8 位），事件正文里只留截断值
 - **交付**：① 摘要字段 `baseline`（`{checked, warmed, numeric[], profiles[]}`）——
   数值偏离会被智能体当作「异常确认」的候选，**定性仍由云端模型做**（NDR 只打标）；
@@ -358,7 +364,7 @@ NDR 线路（采集与检测）：
 | `ST_ES_EVENTS_INDEX` | shentong-events-* | 统一事件索引（确认模板写入 `shentong-events-%{+yyyy.MM.dd}`） |
 | `ST_ES_RETENTION_DAYS` | 30 | ES 保留期（ILM 策略） |
 | `ST_LOOKBACK_MAX_DAYS` | 7 | 回溯最大跨度的**兜底**值；实际跟着运行时保留期走（后台改「保留期」不用重启，见 `investigation/es_query.py:154`） |
-| `ST_ZEEK_INTERFACE` | ens224 | 抓包网卡的兜底名（界面「监控网段」页保存的值优先；下拉里只列**物理网卡**） |
+| `ST_ZEEK_INTERFACE` | 空 | 抓包网卡的兜底名。**留空 = 采集器自动取第一块物理网卡**（界面「监控网段」页保存的值优先；下拉里只列**物理网卡**）。网卡名是客户环境的东西（ens192/ens224/eth0…每家不同），所以产品不写死默认值 |
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「监控网段」页写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
 | `ST_ZEEK_TRUSTED_PROXIES` | 空 | **可信代理白名单**（逗号分隔的 IP/CIDR）：只有直连对端在清单里，才承认 `X-Forwarded-For` / `X-Real-IP` 里的客户端地址（`real_client_ip`）；**留空 = 不认任何代理头**（fail-closed）。安全锚点，只从部署环境给（`.env` 的 `ZEEK_TRUSTED_PROXIES`），界面无入口 |
@@ -399,6 +405,8 @@ NDR 线路（采集与检测）：
 | `ST_PROFILE_HOUR_MIN_COVERAGE` | 8 | 「非常用时段」判据的门槛之一：至少要见过这么多个**不同**时段才判。不加门槛就是整点批量误报 —— 分母只算历史出现过的时段，新时段恒为 0% < 1% |
 | `ST_PROFILE_HOUR_MIN_AGE_HOURS` | 24 | 「非常用时段」判据的门槛之二：画像建立不足这么久不判（否则上线第一天每个整点都是「新时段」） |
 | `ST_PROFILE_RISK_THRESHOLD` | 0.6 | 画像异常风险分阈值（达到才报） |
+| `ST_PROFILE_PATH_INCLUDE_REGEX` / `_EXCLUDE_REGEX` | `(?i)/api/` / 静态资源后缀 | **接口路径过滤**：`paths` 只记命中 include 且不在 exclude 里的路径（include 空 = 全留）。不收静态资源，否则前端 js/字体把 30 条上限占满 |
+| `ST_PROFILE_PATH_MIN_KNOWN` | 3 | 已知接口路径 ≥ 这么多条才判「新接口路径」（刚建的画像第一条不算异常） |
 | `ST_PROFILE_RETENTION_DAYS` | 180 | 画像保留期（到期清理） |
 | `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,… | 会话 cookie 名单（命中才按会话建画像；**先哈希再落库**） |
 | `ST_EXCLUSION_CACHE_SECONDS` | 30 | 排除过滤配置缓存（跨进程生效延迟上限） |
@@ -429,7 +437,9 @@ NDR 线路（采集与检测）：
 | `ST_LOOKBACK_MAX_LOGS` / `ST_LOOKBACK_MAX_EVENTS` | 5000 / 200 | 回溯取原始日志与落地窗口事件的条数上限 |
 
 模型与凭据：
-- 边缘模型：连接信息固化在 `agent/backend/app/edge_config.py`（仅 IP 可在界面改）
+- 边缘模型：**连接信息全部由部署环境给**（`ST_EDGE_API_KEY` / `ST_EDGE_MODEL_NAME` / `ST_EDGE_PORT` / `ST_EDGE_BASE_PATH`，默认与环境无关：空 / 8080 / `/v1`），
+  地址在界面「边缘模型」填（默认回环）。**代码里不放客户环境的密钥、模型文件路径、内网 IP** —— 这是通用产品，
+  客户网络环境产生的内容属于部署配置/用户数据（2026-10 硬编码审计）
 - 云端模型：模型名固化（`agent/backend/app/models/registry.py`），API Key 在界面录入、存数据库
 
 ---

@@ -149,7 +149,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                 <Input
                   value={iface}
                   onChange={(e) => setIface(e.target.value)}
-                  placeholder="ens224（未探测到清单，可手填）"
+                  placeholder="eth0（未探测到清单，可手填）"
                 />
               )}
             </div>

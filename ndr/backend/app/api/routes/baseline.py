@@ -84,7 +84,9 @@ def baseline_overview(
 def _build_overview(top: int) -> dict[str, Any]:
     """真去读库/Redis（不缓存）。"""
     snap = stats_mod.snapshot()
-    anomalies = profiles.top_anomalies(top)
+    # 界面只展示**账号**画像（会话的展示名是 cookie 哈希前 8 位，运维看不懂）。
+    # 会话画像本身仍在算，摘要标签与 MCP `entity_profile` 都还看得到。
+    anomalies = profiles.top_anomalies(top, kind=profiles.ACCOUNT)
     return {
         "enabled": bool(settings.baseline_enabled),
         "profile_enabled": bool(settings.profile_enabled),
@@ -98,7 +100,8 @@ def _build_overview(top: int) -> dict[str, Any]:
         "note": (
             "观测期内的维度不参与判定；「没报偏离」不等于正常。"
             "判据 当前值 > mean + zσ，NDR 只在摘要里打标，定性由智能体做。"
-            "画像风险分按「当前窗口」算：本轮无异常就归零并清空，risk_at 是判定时间。"
+            "画像风险分按「当前窗口」算：本轮无异常就归零并清空，risk_at 是判定时间；"
+            "这里只列账号画像（会话展示名是哈希，用 MCP entity_profile 查）。"
         ),
     }
 

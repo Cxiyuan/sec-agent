@@ -208,6 +208,9 @@ class EntityProfile(Base):
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 行为基线（频次分布）
     src_ips: Mapped[dict] = mapped_column(JSONB, default=dict)
+    #: 服务端 IP（被访问的监控资产）。为什么要单独记：界面展示的是「账号 + 关联服务端 IP」
+    #: （会话展示名是 cookie 哈希，运维看不懂），原来只记了客户端源 IP。
+    dst_ips: Mapped[dict] = mapped_column(JSONB, default=dict)
     user_agents: Mapped[dict] = mapped_column(JSONB, default=dict)
     paths: Mapped[dict] = mapped_column(JSONB, default=dict)
     hour_hist: Mapped[dict] = mapped_column(JSONB, default=dict)

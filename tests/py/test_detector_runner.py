@@ -45,7 +45,7 @@ def _payload(rule: str = "scan_attempt") -> str:
             "severity": "medium",
             "count": 1,
             "last_seen": datetime.now(UTC).isoformat(),
-            "src_ip": "172.16.196.10",
+            "src_ip": "192.0.2.10",
         }
     )
 
@@ -124,7 +124,7 @@ def test_paused_marker_roundtrip(runner: Any, fakes: Any) -> None:
 
 
 class _EntryStub:
-    src_ip = "172.16.196.10"
+    src_ip = "192.0.2.10"
 
 
 class _FullAgg:

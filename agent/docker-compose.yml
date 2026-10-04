@@ -38,6 +38,12 @@ services:
       ST_CELERY_RESULT_BACKEND: ${NDR_CELERY_RESULT_BACKEND:-redis://localhost:6379/2}
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
+      # 边缘模型（本地 llama-server）连接信息：**由部署环境给**（代码里不再写死客户环境的
+      # 密钥与模型文件路径 —— 2026-10 硬编码审计）；IP 在界面「边缘模型」填。
+      ST_EDGE_API_KEY: ${EDGE_API_KEY:-}
+      ST_EDGE_MODEL_NAME: ${EDGE_MODEL_NAME:-}
+      ST_EDGE_PORT: ${EDGE_PORT:-8080}
+      ST_EDGE_BASE_PATH: ${EDGE_BASE_PATH:-/v1}
     ports:
       - "8001:8000"
     depends_on:

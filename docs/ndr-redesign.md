@@ -828,6 +828,48 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 **未改的两处（记下口径）**：`paths` 采集了但判据里没用（detect 只看新 IP/新 UA/时段/跨 IP/失败激增），属死数据、还被静态资源挤占 30 条上限；会话画像的展示名是 cookie 哈希前 8 位，运维看不懂 —— 两者都是隐私/展示取舍，要动得先定口径。
 
+### 2026-10 画像展示与路径判据 + 硬编码审计（通用产品化）
+
+用户定了两个口径，并加一项全局要求：
+
+**一、界面只展示账号画像 + 关联服务端 IP**（会话展示名是哈希，看不懂。早就该改）。
+
+- **新增服务端 IP 字段**：`EntityProfile.dst_ips`（JSONB，`{被访问的资产 IP: 次数}`）+ 启动迁移 ALTER；
+  `_accumulate` 记 `entry.dst_ip`。为什么要新字段：原来只记客户端源 IP，界面无法回答「这个账号在哪几台服务器上活动」。
+- **展示层只取账号**：`top_anomalies(..., kind=ACCOUNT)`，接口 `/api/baseline` 传账号过滤；
+  前端标签变成 `账号名 · 服务端IP`（tooltip 给服务端 IP 全量 + 来源 IP + 理由 + 判定时间）。
+- **会话画像仍在算**：摘要标签（`baseline.profiles`）与 MCP `entity_profile` 都还看得到会话异常 ——
+  只改「展示」，不动检测能力，包括 MCP 的 `anomalies_only`。
+
+**二、增加拿路径判异常，只留 `/api/` 这类接口、过滤静态资源**。
+
+- 实机证据：会话画像的 `paths` 里全是前端 js 与字体（次数最多，把 30 条上限占满了），有价值的接口路径反而进不来。
+- 采集侧就过滤：`api_path()` 按 `ST_PROFILE_PATH_INCLUDE_REGEX`（默认 `(?i)/api/`）+ `ST_PROFILE_PATH_EXCLUDE_REGEX`
+  （静态资源后缀）决定要不要记；两个正则都能改，任一为空 = 那一步不过滤。
+- 新增判据「新接口路径」+0.25，且要求画像已认识 ≥`ST_PROFILE_PATH_MIN_KNOWN`（默认 3）条，
+  否则刚建的画像「第一条路径就是新的」等于白报。MCP 的权重说明同步。
+
+**三、硬编码审计（通用产品发布）**：把「服务器网络环境产生的内容」从产品代码里清出去 ——
+用户的说法很准：这些属于**部署配置/用户数据**，不是代码。审计结果与整改：
+
+| 位置 | 原值（客户环境） | 整改 |
+| --- | --- | --- |
+| `agent/edge_config.py` | `EDGE_API_KEY="qaz@7410"`、`EDGE_MODEL_NAME="/opt/models/Qwen3.8-2B-Q8_0.gguf"` | 改为 `ST_EDGE_API_KEY` / `ST_EDGE_MODEL_NAME` / `ST_EDGE_PORT` / `ST_EDGE_BASE_PATH`（默认空 / 空 / 8080 / `/v1`，与环境无关）|
+| `ndr/config.py` + `compose`×2 + `entrypoint.sh` | 网卡默认值 `ens224`（三处写死） | 默认留空；`entrypoint.sh` 新增 `auto_iface()` 按 sysfs 自动取第一块**物理**网卡（优先 `operstate=up`），挑不到就显式报「没有可用监听网卡」+ 哨兵 unhealthy + sleep，不拿空名字去启动 Zeek（避免又一个重启循环）|
+| 前端网卡输入框 | placeholder `ens224` | 改 `eth0`（中性示例）|
+| `entrypoint.sh` / `compose` 注释 | `172.16.196.0/24`、`ZEEK_IFACE=ens160`、`10.255.12.4` | 改成通用描述（或在 .env 里给）|
+| `config.py` / `profile.py` 注释 | 客户应用路径 `/Phone/js/*.js` | 换成通用示例 `/static/app.js` |
+| `tests/py/*`（7 个文件） | 实机 IP `172.16.196.77/80/1/10/90` | 换成 RFC 5737 文档保留段 `192.0.2.x` |
+| `docs/**` 的部署记录 | 172.16.196.77 等 | **保留**：那是「实际发生过的验收记录」，属于文档历史；产品代码里不留 |
+
+- 加了守卫测试：`test_zeek_interfaces.py::test_no_hardcoded_nic_name_in_product_code` ——
+  产品代码里不得出现 `${ZEEK_IFACE:-<非空>}`（否则红），且必须存在 `auto_iface()` 与空默认值。
+- **部署侧对应动作**：服务器 `.env` 需补 `ZEEK_IFACE`（保持显式指定）与 `ST_EDGE_API_KEY` / `ST_EDGE_MODEL_NAME`
+  （原来靠代码里的字面量，现在必须由部署环境给）。
+
+**测试**：`test_baseline_profile.py` 19 → 27 例（路径判据 5 例、服务端 IP 2 例、kind 过滤与摘要标签 2 例）；
+`test_zeek_interfaces.py` 加硬编码守卫；`test_zeek_limits.py` 的网卡断言改为「留空」。
+
 
 ### 每期收尾门禁
 

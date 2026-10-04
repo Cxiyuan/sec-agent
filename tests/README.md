@@ -25,12 +25,12 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_handled_registry.py` | 已处理登记单桶上限与**告警限频**（计数不丢、窗口过后重新告警） |
 | `test_main_retention.py` | 启动下发 ES 模板的日志口径（稳态不记 info、失败后成功记一条、连续失败只一条 warning） |
 | `test_mcp_coverage.py` | **MCP 覆盖与失效逻辑**：注册表↔调度表一致、签名↔参数表不漂移、ToolCtx 按令牌会话复用（ref 白名单与证据上限真正生效）、`raw_evidence` 索引白名单、`file_content` 正反例、智能体 `get_rule`/`list_filters`/`file_content` 转发、结论回写判定矩阵与逐指纹写入、字段目录覆盖 `UnifiedLog`、技能工具名认两套注册表 |
-| `test_zeek_interfaces.py` | 监听网卡下拉只留**物理网卡**：`physical` 标志过滤、旧格式名字模式兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记 |
+| `test_zeek_interfaces.py` | 监听网卡下拉只留**物理网卡**：`physical` 标志过滤、旧格式名字模式兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记；另加**硬编码审计**守卫：产品代码里不得给网卡名写死默认值（`${ZEEK_IFACE:-<非空>}` 一律红），必须留空 + `auto_iface` 自动探测物理网卡 |
 | `test_detector_history.py` | 总览页 24h 趋势的采样底座：写入有界（LPUSH+LTRIM+TTL）、读取时间正序与坏行容错、「按规则」计数用后即清、严重度区间增量不为负、统计块确实调了采样 |
 | `test_system_metrics.py` | 服务器圆环：`/proc/stat`（含 idle+iowait、计数器回退不算负载）与 `/proc/meminfo`（用 MemAvailable）解析、缺指标不 500 而是 null+notes |
 | `test_health_components.py` | 组件呼吸灯：判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置≠坏了）、七盏灯齐全、**单个探测抛异常只影响它自己**、30 秒缓存 |
 | `test_stats_overview.py` | 24h 流量与协议：查询结构必须**只在流量侧过滤 `log_type=conn`**、**协议侧只算协议识别类日志**（白名单 `include` + 非协议日志单列 `excluded` 计数，conn/weird/files/syslog 不得入白名单）、逐小时字节/秒与百分比（协议类 top N + 其他为分母，**不含非协议日志**）换算、缓存命中、失败不缓存、ES 异常降级为空 |
-| `test_baseline_profile.py` | 画像判据与风险写回（2026-10 实机 QA 的产物）：非常用时段的三个门槛（覆盖时段数 / 画像年龄 / 占比）、**双栈 v4+v6 不算会话劫持**而同族 ≥2 个算、新源 IP 对 v6 只看 /64 前缀、冷启动不打分、**本轮无理由则风险归零 + 理由清空 + risk_at 置空** |
+| `test_baseline_profile.py` | 画像判据与风险写回（2026-10 实机 QA 的产物）：非常用时段的三个门槛（覆盖时段数 / 画像年龄 / 占比）、**双栈 v4+v6 不算会话劫持**而同族 ≥2 个算、新源 IP 对 v6 只看 /64 前缀、**接口路径判据**（静态资源与 `.html` 不记、`/api/` 才记、新路径需已认识 ≥N 条）、服务端 IP 落库与合并（界面展示「账号 · 服务端IP」）、冷启动不打分、**本轮无理由则风险归零 + 理由清空 + risk_at 置空**、TOP 只取当前风险且只取账号 |
 | `test_baseline_stats.py` | 数值基线存取：`snapshot()` **只能一条 SQL**（回归：以前两条 `COUNT(*)` 被 15s 轮询）、warmed>total 不为负、PG 异常降级；保留期 `cleanup()` 只删过期键、0 = 不清理、失败不抛；Welford 增量（10/20 → mean 15、样本标准差 √50） |
 | `test_baseline_engine.py` | 基线心跳与清理接线：`*_last_round` 与累计量**分名**（回归：`anomalies` 被当累计读，而实机 0 vs 库里 54 条风险>0）、`anomalies_total`/`anomaly_rounds` 累加、心跳有 TTL、`flush()` 的清理段**确实调了数值基线清理**且不依赖画像开关 |
 

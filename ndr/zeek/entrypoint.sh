@@ -21,9 +21,31 @@ PID_FILE="/tmp/zeek.pid"
 FILEBEAT_PID_FILE="/tmp/filebeat.pid"
 HEALTH_FILE="${ZEEK_HEALTH_FILE:-/tmp/zeek-health}"
 ZEEK_RESTART_LOG="/tmp/zeek-restarts"
-# 网卡默认值：与 compose（ZEEK_IFACE 的默认）以及后端 settings.zeek_interface 保持一致。
-# 实机部署在 .env 里显式设 ZEEK_IFACE=ens160，不受这里影响。
-IFACE_DEFAULT="${ZEEK_IFACE:-ens224}"
+# 监听网卡：优先 .env 的 ZEEK_IFACE；没给就自动取**第一块物理网卡**（见 auto_iface）。
+# 为什么不写死一个网卡名：网卡名属于「客户环境」的东西（ens192 / ens224 / eth0 … 每家不一样），
+# 产品代码里放一个具体名字，换台机器就是错的（2026-10 硬编码审计）。
+IFACE_ENV="${ZEEK_IFACE:-}"
+
+# 自动挑网卡：只认物理网卡（sysfs 有 device 链接，docker0/veth/br-* 没有），
+# 优先 operstate=up 的第一块；都不 up 就回第一块物理网卡；一块都没有则回空串，
+# 由 start_zeek 显式报「没有可用网卡」（而不是拿空名字去启动 Zeek）。
+auto_iface() {
+  local dev name state fallback=""
+  for dev in /sys/class/net/*; do
+    [ -e "$dev/device" ] || continue
+    name="$(basename "$dev")"
+    [ "$name" = "lo" ] && continue
+    state="$(cat "$dev/operstate" 2>/dev/null || echo unknown)"
+    if [ "$state" = "up" ]; then
+      echo "$name"
+      return 0
+    fi
+    [ -n "$fallback" ] || fallback="$name"
+  done
+  echo "$fallback"
+}
+
+IFACE_DEFAULT="${IFACE_ENV:-$(auto_iface)}"
 RETENTION_DAYS="${ZEEK_RETENTION_DAYS:-3}"
 WATCH_INTERVAL="${ZEEK_WATCH_INTERVAL:-10}"
 CLEAN_INTERVAL="${ZEEK_CLEAN_INTERVAL:-3600}"
@@ -162,6 +184,14 @@ record_zeek_start() {
 start_zeek() {
   local iface bpf
   iface="$(conf_get interface)"; iface="${iface:-$IFACE_DEFAULT}"
+  if [ -z "$iface" ]; then
+    # 没网卡可用：显式报错 + 哨兵 unhealthy，不拿空名字去启动 Zeek（那会变成无限重启刷日志，
+    # 与之前 BPF 被当脚本名导致的重启循环是同一类坑）。上层会 sleep 后重试。
+    log "✗ 没有可用的监听网卡：ZEEK_IFACE 未设置，且未探测到任何物理网卡。"
+    log "  请在 .env 里设 ZEEK_IFACE=<网卡名>，或到后台「监控网段」选择一块物理网卡。"
+    printf 'unhealthy %s 未找到可用网卡（ZEEK_IFACE 未设置）\n' "$(date -u +%FT%TZ)" > "$HEALTH_FILE" 2>/dev/null || true
+    return 1
+  fi
   bpf="$(conf_get bpf_filter)"
 
   mkdir -p "$LOG_DIR"
@@ -169,7 +199,7 @@ start_zeek() {
   if [ -n "${bpf// /}" ]; then
     log "启动 Zeek：iface=${iface} bpf='${bpf}'"
     # 过滤器必须用 -f 传给 Zeek：直接当位置参数写会被当成脚本文件名，
-    # Zeek 启动即报 `fatal error: can't find net 172.16.196.0/24` 并无限重启。
+    # Zeek 启动即报 `fatal error: can't find net <你配的网段>` 并无限重启。
     zeek -C -i "$iface" -f "$bpf" "${SITE_DIR}/local.zeek" &
   else
     # 没有网段 = 按镜像口**全量抓包**（packet_filter.log 记 "ip or not ip"）。这是上线前
@@ -381,7 +411,10 @@ main() {
   # 保持 Zeek 存活；配置变化时看门狗会杀进程，这里自动拉起。
   # Zeek 一退出就把哨兵写成 unhealthy，健康检查不用等循环下一拍。
   while true; do
-    start_zeek
+    if ! start_zeek; then
+      sleep 30
+      continue
+    fi
     wait "$ZEEK_PID" 2>/dev/null || true
     printf 'unhealthy %s zeek 已退出，等待重拉\n' "$(date -u +%FT%TZ)" > "$HEALTH_FILE" 2>/dev/null || true
     log "Zeek 已退出，2 秒后重新拉起"

@@ -21,7 +21,7 @@ def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
     2026-10 起代理头只在**直连对端可信**时才算 ``real_client_ip``（见 normalizer）；
     本文件其余样本不带 ``proxied``，不受影响。
     """
-    monkeypatch.setattr(settings, "zeek_trusted_proxies", "172.16.196.0/24")
+    monkeypatch.setattr(settings, "zeek_trusted_proxies", "192.0.2.0/24")
 
 
 @pytest.mark.parametrize("name", sorted(samples.DOCS))
@@ -79,7 +79,7 @@ def test_http_xff_and_resp_body() -> None:
     assert entry is not None
     # 代理头最左地址进 real_client_ip；src_ip 仍是 TCP 对端
     assert entry.real_client_ip == "198.51.100.77"
-    assert entry.src_ip == "172.16.196.77"
+    assert entry.src_ip == "192.0.2.77"
     assert entry.resp_body == '{"detail":"unauthorized"}'
     assert entry.resp_body_len == 80
     assert entry.bytes_in == 80
@@ -231,7 +231,7 @@ def test_wazuh_raw_is_self_describing() -> None:
     doc = {
         "@timestamp": "2026-10-02T08:39:33.000Z",
         "rule": {"level": 10, "description": "sshd brute force"},
-        "data": {"srcip": "203.0.113.9", "dstip": "172.16.196.77"},
+        "data": {"srcip": "203.0.113.9", "dstip": "192.0.2.77"},
         "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
     }
     entry = normalize_wazuh(doc)

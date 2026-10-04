@@ -1,11 +1,13 @@
-"""边缘模型（本地 llama-server）连接信息：固化常量 + IP 运行时拼接 + 思考模式开关。
+"""边缘模型（本地 llama-server）连接信息 + 思考模式开关。
 
-按对接文档固化（写死，环境变量不可覆盖）：
-- api_key / 模型名（真实路径）/ 端口 / 路径 均在此固化
-- 唯一可变的是 IP：后台「边缘模型」面板输入，存 SystemConfig「edge.model.ip」
+连接信息**全部来自部署环境**（`ST_EDGE_*`，见 `agent/backend/app/config.py`）：
+- api_key / 模型名 / 端口 / 路径 都是可配置项，默认值与环境无关（空 / 8080 / /v1）
+- IP：后台「边缘模型」面板输入，存 SystemConfig「edge.model.ip」；默认回环地址
 - 模型名对外统一映射为「edge」，不暴露真实路径字符串
-- **默认 IP 用回环地址**（环境无关）：产品不能把某个客户环境的推理服务器 IP 写进代码，
-  部署时在后台填自己的地址即可。
+
+为什么不再写死（2026-10 硬编码审计）：原来 api_key 与模型文件路径是代码里的字面量
+（某个客户环境的密钥与 `/opt/models/xxx.gguf`）—— 通用产品发布不能带这些，
+客户网络环境产生的内容属于**部署配置/用户数据**，不是代码。
 
 思考模式（reasoning）：服务端默认关闭，请求级按需开启（chat_template_kwargs.enable_thinking）。
 启用场景规则（后台可配，见 edge_thinking_*）：
@@ -16,14 +18,15 @@
 
 from __future__ import annotations
 
+from app.config import settings
 from app.runtime_config import get as runtime_get
 
-# ---------- 固化连接信息（环境变量不可覆盖） ----------
-EDGE_API_KEY = "qaz@7410"
-EDGE_MODEL_NAME = "/opt/models/Qwen3.8-2B-Q8_0.gguf"
-EDGE_PORT = 8080
-EDGE_BASE_PATH = "/v1"
-EDGE_DEFAULT_IP = "127.0.0.1"  # 环境无关的回环默认值；部署时在后台填真实地址
+# ---------- 连接信息（由部署环境给，见模块说明） ----------
+EDGE_API_KEY = settings.edge_api_key
+EDGE_MODEL_NAME = settings.edge_model_name
+EDGE_PORT = settings.edge_port
+EDGE_BASE_PATH = settings.edge_base_path
+EDGE_DEFAULT_IP = settings.edge_default_ip  # 环境无关的回环默认值；部署时在后台填真实地址
 EDGE_MODEL_LABEL = "edge"  # 对外展示名（不暴露真实路径）
 
 # 复杂研判事件类型：triage 里这些类型值得开思考（payload 语义复杂，需多步推理判真伪）

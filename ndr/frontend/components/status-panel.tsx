@@ -519,10 +519,10 @@ export function StatusPanel() {
             <ChartCard
               title="画像风险 TOP"
               extra={
-                /* 口径：风险分是「当前窗口」的值（本轮无异常就归零），所以卡上必须说明，
-                   免得把 tooltip 里的判定时间当成多余信息。 */
+                /* 口径：只列账号画像（会话展示名是 cookie 哈希，运维看不懂），
+                   标签带服务端 IP；风险分是「当前窗口」的值（本轮无理由就归零）。 */
                 <span className="text-xs font-normal text-muted-foreground">
-                  风险分按当前窗口算，本轮无理由即归零（判定时间见 tooltip）
+                  只列账号画像（标签带服务端 IP）；风险分按当前窗口算，本轮无理由即归零
                 </span>
               }
               option={charts.anomalies}

@@ -113,7 +113,7 @@ def test_render_nets_narrows_zeek_private_space(tmp_path: Path) -> None:
     2026-10 实测：只 redef Site::local_nets 时 |Site::local_nets| = 自定 + 内置 RFC1918 共 43 条。
     """
     (tmp_path / "site").mkdir()
-    (tmp_path / "interface.conf").write_text("local_nets=172.16.196.0/24\n", encoding="utf-8")
+    (tmp_path / "interface.conf").write_text("local_nets=192.0.2.0/24\n", encoding="utf-8")
     _run_entrypoint(
         ["conf_get", "render_nets"],
         [f'IFACE_CONF="{tmp_path}/interface.conf"', f'SITE_DIR="{tmp_path}/site"'],
@@ -122,7 +122,7 @@ def test_render_nets_narrows_zeek_private_space(tmp_path: Path) -> None:
     )
     rendered = (tmp_path / "site" / "shentong-nets.zeek").read_text(encoding="utf-8")
     assert "redef Site::private_address_space_is_local = F;" in rendered
-    assert "172.16.196.0/24," in rendered
+    assert "192.0.2.0/24," in rendered
 
 
 def test_render_nets_empty_keeps_zeek_defaults(tmp_path: Path) -> None:
@@ -226,9 +226,11 @@ def test_zeek_service_tz_and_dead_env_removed(path: Path) -> None:
     # 这两个 env 入口脚本从来没读过（路径由 ZEEK_CONF_DIR 推导），2026-10 QA 删除
     assert "ZEEK_IFACE_CONF" not in env
     assert "ZEEK_INTERFACES_JSON" not in env
-    # 缺省网卡要与 entrypoint.sh 的 IFACE_DEFAULT 一致
-    assert env["ZEEK_IFACE"] == "${ZEEK_IFACE:-ens224}"
-    assert 'IFACE_DEFAULT="${ZEEK_IFACE:-ens224}"' in ENTRYPOINT.read_text(encoding="utf-8")
+    # 缺省网卡必须**留空**：网卡名是客户环境的东西（ens192/ens224/eth0…每家不同），
+    # 不写死在产品里（2026-10 硬编码审计）。留空时由 entrypoint.sh 的 auto_iface 自动取
+    # 第一块物理网卡。
+    assert env["ZEEK_IFACE"] == "${ZEEK_IFACE:-}"
+    assert 'IFACE_DEFAULT="${IFACE_ENV:-$(auto_iface)}"' in ENTRYPOINT.read_text(encoding="utf-8")
 
 
 def test_zeek_image_has_healthcheck() -> None:

@@ -40,6 +40,30 @@ def _names(zeek_route: ModuleType) -> list[str]:
     return [str(item["name"]) for item in zeek_route._read_interfaces()]
 
 
+def test_no_hardcoded_nic_name_in_product_code() -> None:
+    """产品代码里不得给网卡名写死默认值（2026-10 硬编码审计）。
+
+    网卡名是**客户环境**的东西（ens192 / ens224 / eth0 … 每家不一样）：写死一个名字，
+    换台机器就是错的。正确做法是留空 + 采集器自动探测第一块物理网卡（`auto_iface`）。
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[2]
+    entrypoint = (root / "ndr/zeek/entrypoint.sh").read_text(encoding="utf-8")
+    # 自动探测必须在，且默认值来自探测结果
+    assert "auto_iface()" in entrypoint
+    assert 'IFACE_DEFAULT="${IFACE_ENV:-$(auto_iface)}"' in entrypoint
+    # 任何地方都不允许出现「ZEEK_IFACE 的非空兜底值」
+    for name in ("ndr/zeek/entrypoint.sh", "ndr/docker-compose.yml", "ndr/docker-compose.deploy.yml"):
+        text = (root / name).read_text(encoding="utf-8")
+        bad = re.findall(r"\$\{ZEEK_IFACE:-[^}]+\}", text)
+        assert bad == [], f"{name} 里还有写死的网卡默认值：{bad}"
+    # 后端配置同样不能写死（空 = 由采集器自动探测）
+    assert 'zeek_interface: str = ""' in (root / "ndr/backend/app/config.py").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_keeps_only_physical_when_flag_present(
     zeek_route: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
