@@ -10,15 +10,14 @@ import {
   Filter,
   Network,
   Radio,
-  Settings,
-  Shield,
   SlidersHorizontal,
   UserRound,
 } from "lucide-react";
-import { cn, Button } from "@shentong/ui";
-import { apiFetch, clearToken, type AuthMe, type NetworksStatus } from "@/lib/api";
+import { cn } from "@shentong/ui";
+import { apiFetch, type AuthMe, type NetworksStatus } from "@/lib/api";
 
-// 第 7 期拆页：左侧导航按链路分段，配置总览（/admin/settings）挂在左上角标题上。
+// 第 7 期拆页：左侧导航按链路分段。
+// logo、当前用户、退出登录、告警铃铛都在全局页头（components/topbar.tsx）。
 const items = [
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
@@ -63,58 +62,38 @@ export function Nav() {
   }, [pathname]);
 
   return (
-    <>
-      <aside className="fixed left-0 top-0 flex h-screen w-56 flex-col border-r bg-card">
-        <Link
-          href="/admin/settings"
-          title="系统配置总览"
-          className="flex items-center gap-2 border-b p-4 hover:bg-accent"
-        >
-          <Shield className="h-6 w-6 text-primary" />
-          <span className="text-lg font-bold">深瞳 · NDR</span>
-          <Settings className="ml-auto h-4 w-4 text-muted-foreground" />
-        </Link>        <nav className="flex-1 space-y-1 overflow-auto p-3">
-          {items.map((it) => {
-            const active =
-              pathname === it.href || pathname.startsWith(it.href + "/");
-            return (
-              <Link
-                key={it.href}
-                href={it.href}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-                  active
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                )}
-              >
-                <it.icon className="h-4 w-4" />
-                {it.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="border-t p-3">
-          {me?.default_password_in_use && (
+    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-56 flex-col border-r bg-card">
+      <nav className="flex-1 space-y-1 overflow-auto p-3">
+        {items.map((it) => {
+          const active =
+            pathname === it.href || pathname.startsWith(it.href + "/");
+          return (
             <Link
-              href="/admin/account"
-              className="mb-2 block rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
+              key={it.href}
+              href={it.href}
+              className={cn(
+                "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              )}
             >
-              仍在使用出厂口令 admin123 —— 点这里去改
+              <it.icon className="h-4 w-4" />
+              {it.label}
             </Link>
-          )}
-          <Button
-            variant="ghost"
-            className="w-full justify-start"
-            onClick={() => {
-              clearToken();
-              router.push("/login");
-            }}
+          );
+        })}
+      </nav>
+      {me?.default_password_in_use && (
+        <div className="border-t p-3">
+          <Link
+            href="/admin/account"
+            className="block rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
           >
-            退出登录
-          </Button>
+            仍在使用出厂口令 admin123 —— 点这里去改
+          </Link>
         </div>
-      </aside>
-    </>
+      )}
+    </aside>
   );
 }

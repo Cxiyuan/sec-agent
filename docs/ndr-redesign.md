@@ -439,7 +439,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    - `status/page.tsx`「运行状态」= `<StatusPanel/>`（新增，见下）
 3. **`ndr/frontend/components/zeek-panel.tsx` 按 section 复用**：签名改为 `ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "networks" })`，标题/说明/可见块随 section 切；`save()` 仍一次性 PUT `{interface, networks, bpf_extra}`，**没显示的那部分原样回传**，因此「采集接入」与「监控网段」两页互不覆盖。旧的 `section="all"` 形态保留。
 4. **`ndr/frontend/components/status-panel.tsx`（新增，运行状态页主体）**：只读既有接口、不新增后端 —— `/api/detector/stats`（队列深度 / 投递速率 / 丢弃 / 选主 / Redis 体检）、`/api/agent-push`（送达与重发）、`/api/wazuh`（API 可达性 + 近 24h 入库量）。四个块 + **每 15 秒自刷新**（可关）；Redis 用量超过告警线时显式标红「内存接近上限，整链路会卡死」—— 历史上出过 noeviction 卡死事故，这是最该被看见的前兆。
-5. **`ndr/frontend/components/nav.tsx` 七项导航**：规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；**配置总览（`/admin/settings`）挂在左上角标题**上（标题可点，带齿轮图标），不占导航行。
+5. **`ndr/frontend/components/nav.tsx` 七项导航**：规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；**配置总览（`/admin/settings`）挂在全局页头的 logo 上**（可点，带齿轮图标），不占导航行。
 6. **顺手修掉两处死跳转**：`ndr/frontend/app/setup/page.tsx`（首次向导保存后）与 `ndr/frontend/app/login/page.tsx`（登录后）原本都 `router.replace("/dashboard")`，而本前端没有 `/dashboard`（首页 `app/page.tsx` 即 `/`，它再 redirect 到 `/admin/rules`）→ 都改为 `"/"`。原先这两处会跳到 404。
 7. **第 6 期那条说明在拆页后保留**：`networks/page.tsx` 的页面说明里写明「这份清单只约束 Zeek 抓包，不影响 Wazuh 采到的主机日志」，`wazuh.py` 的 `HINT` 里也有一句同样的话。
 
@@ -754,6 +754,9 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 以及连接信息行（`API 已连通 / https://wazuh-manager:55000 / 用户 wazuh-wui / 密码 已设置 / 连通`）。
 保留：刷新按钮、`API 版本 / 集群模式 / Agent 在线 / 近 24h 入库量` 汇总行、Agent 列表、自定义规则下发。
 连接是否可达与入库量在「运行状态」页仍有（那里是运维看板，不在采集配置页）。
+
+**后续（同日）**：用户要求把侧边栏顶部的 logo 搬到**全局页头**，并补上告警铃铛 / 当前用户 / 退出。已新增 `components/topbar.tsx`：`fixed inset-x-0 top-0 h-14 z-40`，宽度铺满、滚动不动；左侧是 logo（`深瞳 · NDR` + 齿轮，仍链到 `/admin/settings`），右侧依次是告警铃铛（带计数徽标 + 下拉面板）、当前用户名、退出登录（文字版）。为此：侧边栏改为 `top-14` + `h-[calc(100vh-3.5rem)]`，正文改 `ml-56 px-6 pb-6 pt-20`（页头 `h-14` 对就的是 `top-14` / `pt-20`，改高度时三处一起改）；侧边栏不再放 logo 与退出按钮，只留导航与「仍在用出厂口令」提醒。
+铃铛的语义（本页自己聚合，**不新增后端接口**）：把需要动作的运行事实折成一个数，点开每条可跳到对应页 —— 检测器暂停、隔离队列非空、Redis 内存告警、归一化队列 >80% 上限、摘要推送未启用、推送待重发 N 批；数据源是既有的 `/api/detector/stats`、`/api/agent-push`、`/api/auth/me`，取不到就当没有（不报错、不挡页），30 秒一轮。登录页与首次向导页没有页头（那两页不属于后台外壳）。
 
 **门禁（2026-10，仓库根）**：ruff `All checks passed!`；pyright `0 errors`；`pytest tests/py --stack=ndr -q` **438 passed, 14 skipped**；`--stack=agent -q` **303 passed, 149 skipped**；`sh tests/zeek/run.sh` 全 `PASS`；两侧 `npx tsc --noEmit` 无输出。
 

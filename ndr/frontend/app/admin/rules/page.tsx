@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
+import { TopBar } from "@/components/topbar";
 import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
@@ -136,8 +137,9 @@ export default function RulesPage() {
 
   return (
     <div className="min-h-screen">
+      <TopBar />
       <Nav />
-      <main className="ml-56 p-6">
+      <main className="ml-56 px-6 pb-6 pt-20">
         <h1 className="mb-4 text-2xl font-bold">规则配置</h1>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
         <div className="mb-3">
