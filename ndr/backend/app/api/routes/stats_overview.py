@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -97,7 +96,7 @@ def _float_of(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def shape_traffic(resp: Mapping[str, Any], *, hours: int) -> dict[str, Any]:
+def shape_traffic(resp: Any, *, hours: int) -> dict[str, Any]:
     """ES 响应 → 逐小时点（含字节/秒）与合计。"""
     buckets = (
         (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_hour") or {}).get("buckets")
@@ -134,7 +133,7 @@ def shape_traffic(resp: Mapping[str, Any], *, hours: int) -> dict[str, Any]:
     }
 
 
-def shape_protocols(resp: Mapping[str, Any]) -> dict[str, Any]:
+def shape_protocols(resp: Any) -> dict[str, Any]:
     """ES 响应 → 协议占比（前 N + 其他）与「白名单外类型」占比。"""
     aggs = resp.get("aggregations") or {}
     buckets = (aggs.get("protocols") or {}).get("buckets") or []
@@ -209,14 +208,17 @@ def _fetch(hours: int) -> dict[str, Any]:
         log.warning("24h 流量/协议聚合失败: %s", exc)
         payload["error"] = str(exc)[:200]
         return payload
-    if not isinstance(resp, Mapping):
-        # 注意：elasticsearch-py 8.x 返回的是 `ObjectApiResponse`（**Mapping，不是 dict**）。
-        # 这里曾经写 `isinstance(resp, dict)`，实机上把正常响应当成坏响应、
-        # 报「ES 返回了非预期结构」而整张图空白（本地测试用 dict 桩所以没抓到）。
-        payload["error"] = "ES 返回了非预期结构"
-        return payload
-    payload["traffic"] = shape_traffic(resp, hours=hours)
-    payload["protocols"] = shape_protocols(resp)
+    # ⚠️ 不要对 ES 的响应做类型判定：elastic_transport.ObjectApiResponse 的 MRO 是
+    # `[ObjectApiResponse, ApiResponse, Generic, object]` —— **既不是 dict，也不是 Mapping**，
+    # 只是鸭子类型地实现了 `.get` / `__getitem__`。这里曾经写 `isinstance(resp, dict)` 又改成
+    # `isinstance(resp, Mapping)`，两次都把正常响应当成坏响应（实机报「ES 返回了非预期结构」、
+    # 整张图空白）。正确做法：直接按鸭子类型用，把解析包进 try，异常才当错误。
+    try:
+        payload["traffic"] = shape_traffic(resp, hours=hours)
+        payload["protocols"] = shape_protocols(resp)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("解析 24h 流量/协议聚合结果失败: %s", exc)
+        payload["error"] = f"解析 ES 聚合结果失败：{str(exc)[:160]}"
     return payload
 
 

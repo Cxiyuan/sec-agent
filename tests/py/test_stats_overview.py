@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator, Mapping
 from types import ModuleType
 from typing import Any
 
@@ -207,11 +206,12 @@ def test_fetch_returns_error_payload_when_es_fails(
     assert out["protocols"]["items"] == []
 
 
-class _EsObjectResponse(Mapping[str, Any]):
-    """模拟 elasticsearch-py 8.x 的 `ObjectApiResponse`：**是 Mapping，但不是 dict**。
+class _EsObjectResponse:
+    """模拟 elasticsearch-py 8.x 的 `elastic_transport.ObjectApiResponse`。
 
-    实机曾因此整张图空白：`_fetch` 用 `isinstance(resp, dict)` 判，把正常响应当成坏响应
-    报「ES 返回了非预期结构」；而本地测试用的是 dict 桩，所以完全没抓到。
+    真实类的 MRO 是 `[ObjectApiResponse, ApiResponse, Generic, object]` —— **既不是 dict，
+    也不是 Mapping**，只是鸭子类型地实现了 `.get` / `__getitem__`。所以这里刻意不继承
+    Mapping：只要代码里再出现 `isinstance(resp, dict/Mapping)` 之类的类型判定，本用例就会红。
     """
 
     def __init__(self, data: dict[str, Any]) -> None:
@@ -220,11 +220,14 @@ class _EsObjectResponse(Mapping[str, Any]):
     def __getitem__(self, key: str) -> Any:
         return self._data[key]
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Any:
         return iter(self._data)
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
 
 
 def test_fetch_accepts_mapping_response_from_es_client(
