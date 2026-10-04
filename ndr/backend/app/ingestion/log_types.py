@@ -63,6 +63,18 @@ def is_known(log_type: str) -> bool:
     return canonical_log_type(log_type) in known_log_types()
 
 
+@lru_cache
+def stats_protocol_log_types() -> frozenset[str]:
+    """总览页「协议分析占比」用到的**协议识别类**日志类型白名单。
+
+    与 ``event`` / ``ops`` **不是同一回事**：那两个决定「谁进检测」，这里只决定
+    「谁算协议」。所以 ``ntp`` / ``dhcp`` 属 ops（不进检测）但仍是协议，会出现在图上；
+    而 ``conn``（流记录）、``weird``（异常）、``files``（文件产物）、``syslog``（主机日志）
+    虽然属 event / 名单外，却**不是**协议，不进这张图。
+    """
+    return _names(settings.stats_protocol_log_types)
+
+
 def classify(log_type: str) -> str:
     """类型 → event / ops / unknown。"""
     name = canonical_log_type(log_type)

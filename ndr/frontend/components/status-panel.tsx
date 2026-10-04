@@ -415,9 +415,12 @@ export function StatusPanel() {
             <ChartCard
               title="24h 协议分析占比"
               extra={
-                overview && overview.protocols.unclassified_percent > 0 ? (
+                overview && overview.protocols.excluded_percent > 0 ? (
+                  /* 口径说明：这张图只算「协议识别」类日志，另有 conn 流记录/异常/主机
+                     日志等非协议日志没算进来——不写明会被当成「漏了」。 */
                   <span className="text-xs font-normal text-muted-foreground">
-                    白名单外 {overview.protocols.unclassified_percent}% 只入库不进检测
+                    仅协议识别类；另有 {overview.protocols.excluded_percent}%
+                    为 conn 流记录/异常/主机日志等非协议日志，未计入
                   </span>
                 ) : null
               }

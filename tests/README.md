@@ -29,7 +29,7 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_detector_history.py` | 总览页 24h 趋势的采样底座：写入有界（LPUSH+LTRIM+TTL）、读取时间正序与坏行容错、「按规则」计数用后即清、严重度区间增量不为负、统计块确实调了采样 |
 | `test_system_metrics.py` | 服务器圆环：`/proc/stat`（含 idle+iowait、计数器回退不算负载）与 `/proc/meminfo`（用 MemAvailable）解析、缺指标不 500 而是 null+notes |
 | `test_health_components.py` | 组件呼吸灯：判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置≠坏了）、七盏灯齐全、**单个探测抛异常只影响它自己**、30 秒缓存 |
-| `test_stats_overview.py` | 24h 流量与协议：查询结构必须**只在流量侧过滤 `log_type=conn`**、逐小时字节/秒与百分比（top N + 其他为分母）换算、缓存命中、失败不缓存、ES 异常降级为空 |
+| `test_stats_overview.py` | 24h 流量与协议：查询结构必须**只在流量侧过滤 `log_type=conn`**、**协议侧只算协议识别类日志**（白名单 `include` + 非协议日志单列 `excluded` 计数，conn/weird/files/syslog 不得入白名单）、逐小时字节/秒与百分比（协议类 top N + 其他为分母，**不含非协议日志**）换算、缓存命中、失败不缓存、ES 异常降级为空 |
 
 样本在 `samples.py`（字段名取自实机 `/logs/*.log`），含"没有 `log_type` 的旧文档"
 这条只能靠猜的路径。

@@ -4,8 +4,11 @@
 - `traffic`：`date_histogram`（1 小时）出逐小时字节量与条数。**必须过滤 `log_type=conn`**：
   `bytes_in` 在 HTTP 文档里取自 `response_body_len`（见 `ingestion/normalizer.py` 的
   `_http_fields`），不在 conn 上过滤就会把同一份响应字节重复计一遍，曲线直接虚高。
-- `protocols`：`log_type` 的 `terms` 占比（不过滤，这才是"协议分析占比"）；
-  顺带按 `log_type_known` 分一下，好告诉运营「有多少类型是只入库不进检测的」。
+- `protocols`：**只统计协议识别类日志**（白名单 `ST_STATS_PROTOCOL_LOG_TYPES`，见
+  `ingestion/log_types.py`）的 `terms` 占比。不这么限，conn（流记录）/weird（异常）/
+  files（文件产物）/syslog（主机日志）会一起进饼图，那张图就不再是「协议占比」而是
+  「我们的日志构成」——实机 24h 里 conn 一家就占 56%。另回一个 `excluded_docs`
+  （被排除的非协议日志量），好让图上注明「另有 X% 未计入」，不静默消失。
 
 **缓存**：24h 聚合在几百万文档上是秒级操作，而总览页每 15 秒轮询 → 进程内缓存
 `ST_STATUS_AGG_CACHE_SECONDS`（默认 300s），命中直接回 `cached=True`，**不许穿透到 ES**。
@@ -23,6 +26,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+from app.ingestion.log_types import stats_protocol_log_types
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -74,10 +78,26 @@ def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
                     }
                 },
             },
-            # 协议占比不过滤：看的就是全部类型的分桶
-            "protocols": {"terms": {"field": "log_type.keyword", "size": PROTOCOL_TOP_N}},
-            # 白名单外的类型（只入库、不进检测）占比，给图上补一句说明
-            "known": {"terms": {"field": "log_type_known"}},
+            # 协议占比**只算协议识别类日志**（白名单；理由见模块注释与 log_types.py）：
+            # conn/weird/files/syslog 这些「流记录/异常/文件产物/主机日志」不算协议。
+            # 用 `include` 而不是拉全部再前端过滤：几百万文档上少传几百个桶。
+            "protocols": {
+                "terms": {
+                    "field": "log_type.keyword",
+                    "size": PROTOCOL_TOP_N,
+                    "include": sorted(stats_protocol_log_types()),
+                }
+            },
+            # 被排除掉的量（非协议日志）：给图上注明「另有 X% 未计入」，不静默消失。
+            "excluded": {
+                "filter": {
+                    "bool": {
+                        "must_not": [
+                            {"terms": {"log_type.keyword": sorted(stats_protocol_log_types())}}
+                        ]
+                    }
+                }
+            },
         },
     }
 
@@ -134,44 +154,38 @@ def shape_traffic(resp: Any, *, hours: int) -> dict[str, Any]:
 
 
 def shape_protocols(resp: Any) -> dict[str, Any]:
-    """ES 响应 → 协议占比（前 N + 其他）与「白名单外类型」占比。"""
+    """ES 响应 → 协议占比（前 N + 其他）；非协议日志另外报一个「未计入」的量。
+
+    分母 = 协议类文档总数（= top N 桶之和 + `sum_other_doc_count`）。
+    `excluded_*` 是没算进来的那部分（conn/weird/files/syslog 等），只在图上作一句说明。
+    """
     aggs = resp.get("aggregations") or {}
     buckets = (aggs.get("protocols") or {}).get("buckets") or []
     items: list[dict[str, Any]] = []
-    known_docs = 0
+    listed_docs = 0
     for bucket in buckets:
         if not isinstance(bucket, dict):
             continue
         docs = _int_of(bucket.get("doc_count"))
-        known_docs += docs
+        listed_docs += docs
         name = str(bucket.get("key") or "").strip() or "(空)"
         items.append({"log_type": name, "docs": docs, "percent": 0.0})
 
-    # 总文档数包含 top N 之外的（sum_other_doc_count），百分比的分母必须是它
+    # 协议总数含 top N 之外的（sum_other_doc_count），百分比的分母必须是它
     other_docs = _int_of((aggs.get("protocols") or {}).get("sum_other_doc_count"))
-    total = known_docs + other_docs
+    total = listed_docs + other_docs
     for item in items:
         item["percent"] = round(item["docs"] * 100.0 / total, 2) if total else 0.0
 
-    # log_type_known=false 的比例（那部分只入库、不进检测与画像）
-    unclassified = 0
-    for bucket in (aggs.get("known") or {}).get("buckets") or []:
-        if not isinstance(bucket, dict):
-            continue
-        key = bucket.get("key_as_string", bucket.get("key"))
-        if str(key).strip().lower() in ("false", "0"):
-            unclassified = _int_of(bucket.get("doc_count"))
-    known_total = sum(
-        _int_of(b.get("doc_count"))
-        for b in ((aggs.get("known") or {}).get("buckets") or [])
-        if isinstance(b, dict)
-    )
+    # 非协议日志（conn 流记录 / weird 异常 / files 产物 / syslog 主机日志 / 名单外新类型…）
+    excluded = _int_of((aggs.get("excluded") or {}).get("doc_count"))
+    all_docs = total + excluded
     return {
         "total": total,
         "other_docs": other_docs,
         "items": items,
-        "unclassified_docs": unclassified,
-        "unclassified_percent": round(unclassified * 100.0 / known_total, 2) if known_total else 0.0,
+        "excluded_docs": excluded,
+        "excluded_percent": round(excluded * 100.0 / all_docs, 2) if all_docs else 0.0,
     }
 
 
@@ -190,8 +204,8 @@ def _fetch(hours: int) -> dict[str, Any]:
             "total": 0,
             "other_docs": 0,
             "items": [],
-            "unclassified_docs": 0,
-            "unclassified_percent": 0.0,
+            "excluded_docs": 0,
+            "excluded_percent": 0.0,
         },
         "computed_at": end_dt.isoformat(),
         "cached": False,

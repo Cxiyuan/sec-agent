@@ -59,23 +59,34 @@ def test_build_query_filters_traffic_on_conn_only(stats: ModuleType) -> None:
     assert hist["fixed_interval"] == "1h"
     assert hist["min_doc_count"] == 0
     assert hist["extended_bounds"]["min"] == "2026-10-03T00:00:00Z"
-    # 协议侧不过滤
+    # 协议侧：只算协议识别类日志 —— 用白名单 `include` 限住，而不是拉全量再前端过滤
     assert "filter" not in q["aggs"]["protocols"]
     assert q["aggs"]["protocols"]["terms"]["field"] == "log_type.keyword"
     assert q["aggs"]["protocols"]["terms"]["size"] == stats.PROTOCOL_TOP_N
-    # 顺带按白名单内外分桶
-    assert q["aggs"]["known"]["terms"]["field"] == "log_type_known"
+    include = q["aggs"]["protocols"]["terms"]["include"]
+    assert isinstance(include, list) and include
+    # 非协议日志决不能在白名单里（用户明确要求：不想看到 conn/weird 这些）
+    for bad in ("conn", "weird", "files", "notice", "x509", "syslog", "stats", "reporter"):
+        assert bad not in include, bad
+    # 协议识别类必须在（不然图就空了）
+    for good in ("http", "dns", "ssl", "ssh", "mysql", "pgsql", "smtp", "ftp"):
+        assert good in include, good
+    # 被排除的量单独一个 filter agg（给图上写「另有 X% 未计入」，不静默消失）
+    must_not = q["aggs"]["excluded"]["filter"]["bool"]["must_not"]
+    assert must_not == [{"terms": {"log_type.keyword": include}}]
 
 
 # ---------- 形状换算 ----------
 
 
-def _resp_with(buckets: list[dict[str, Any]], *, other: int = 0, known: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _resp_with(
+    buckets: list[dict[str, Any]], *, other: int = 0, excluded: int = 0
+) -> dict[str, Any]:
     return {
         "aggregations": {
             "traffic": {"per_hour": {"buckets": buckets}},
             "protocols": {"buckets": [], "sum_other_doc_count": other},
-            "known": {"buckets": known or []},
+            "excluded": {"doc_count": excluded},
         }
     }
 
@@ -111,25 +122,21 @@ def test_shape_traffic_skips_bad_buckets(stats: ModuleType) -> None:
 
 
 def test_shape_protocols_uses_topn_plus_other_as_denominator(stats: ModuleType) -> None:
-    resp = _resp_with(
-        [],
-        other=300,
-        known=[
-            {"key_as_string": "true", "doc_count": 700},
-            {"key_as_string": "false", "doc_count": 300},
-        ],
-    )
+    """分母只算协议类文档（top N 之和 + other），**不含**被排除的非协议日志。"""
+    resp = _resp_with([], other=300, excluded=4000)
     resp["aggregations"]["protocols"]["buckets"] = [
-        {"key": "conn", "doc_count": 500},
+        {"key": "http", "doc_count": 500},
         {"key": "dns", "doc_count": 200},
     ]
     out = stats.shape_protocols(resp)
-    assert out["total"] == 1000  # 500 + 200 + other(300)
+    assert out["total"] == 1000  # 500 + 200 + other(300)：协议类总数
     assert out["other_docs"] == 300
-    assert out["items"][0] == {"log_type": "conn", "docs": 500, "percent": 50.0}
+    # 百分比的分母必须是协议类总数（1000），不是全量（5000）
+    assert out["items"][0] == {"log_type": "http", "docs": 500, "percent": 50.0}
     assert out["items"][1]["percent"] == 20.0
-    assert out["unclassified_docs"] == 300
-    assert out["unclassified_percent"] == 30.0
+    # 被排除的那部分单独报（4000 / 5000 = 80%）
+    assert out["excluded_docs"] == 4000
+    assert out["excluded_percent"] == 80.0
 
 
 def test_shape_protocols_handles_empty(stats: ModuleType) -> None:
@@ -138,9 +145,18 @@ def test_shape_protocols_handles_empty(stats: ModuleType) -> None:
         "total": 0,
         "other_docs": 0,
         "items": [],
-        "unclassified_docs": 0,
-        "unclassified_percent": 0.0,
+        "excluded_docs": 0,
+        "excluded_percent": 0.0,
     }
+
+
+def test_shape_protocols_excluded_only(stats: ModuleType) -> None:
+    """全是被排除的非协议日志：协议图为空，但「未计入 100%」要说得出来，不能除零。"""
+    out = stats.shape_protocols(_resp_with([], excluded=42))
+    assert out["items"] == []
+    assert out["total"] == 0
+    assert out["excluded_docs"] == 42
+    assert out["excluded_percent"] == 100.0
 
 
 def test_shape_protocols_names_empty_log_type(stats: ModuleType) -> None:
@@ -161,7 +177,7 @@ def test_endpoint_caches_and_reports_hit(stats: ModuleType, monkeypatch: pytest.
         return {
             "hours": hours,
             "traffic": {"points": [], "total_docs": 0, "total_bytes": 0, "avg_bytes_per_sec": 0.0},
-            "protocols": {"total": 0, "other_docs": 0, "items": [], "unclassified_docs": 0, "unclassified_percent": 0.0},
+            "protocols": {"total": 0, "other_docs": 0, "items": [], "excluded_docs": 0, "excluded_percent": 0.0},
             "computed_at": "x",
             "cached": False,
             "error": "",
@@ -246,7 +262,7 @@ def test_fetch_accepts_mapping_response_from_es_client(
         ],
         other=1,
     )
-    body["aggregations"]["protocols"]["buckets"] = [{"key": "conn", "doc_count": 3}]
+    body["aggregations"]["protocols"]["buckets"] = [{"key": "http", "doc_count": 3}]
 
     class _Client:
         def search(self, **_kw: Any) -> Any:
@@ -257,4 +273,4 @@ def test_fetch_accepts_mapping_response_from_es_client(
     assert out["error"] == "", out["error"]
     assert len(out["traffic"]["points"]) == 1
     assert out["traffic"]["points"][0]["bytes_per_sec"] == 1.0
-    assert out["protocols"]["items"][0]["log_type"] == "conn"
+    assert out["protocols"]["items"][0]["log_type"] == "http"

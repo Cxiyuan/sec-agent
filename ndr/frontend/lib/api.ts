@@ -689,15 +689,16 @@ export interface ProtocolSlice {
 }
 
 export interface ProtocolShare {
+  /** 协议识别类日志的文档总数（= items 之和 + other_docs），百分比的分母 */
   total: number;
   other_docs: number;
   items: ProtocolSlice[];
-  unclassified_docs: number;
-  /** 白名单外类型（只入库、不进检测）的占比 */
-  unclassified_percent: number;
+  /** 未计入这张图的非协议日志量（conn 流记录 / weird 异常 / files 产物 / 主机日志…） */
+  excluded_docs: number;
+  excluded_percent: number;
 }
 
-/** `GET /api/stats/overview`：24h 流量（仅 conn 的字节量）+ 协议占比（后端 300 秒缓存） */
+/** `GET /api/stats/overview`：24h 流量（仅 conn 的字节量）+ 协议占比（仅协议识别类日志；后端 300 秒缓存） */
 export interface StatsOverview {
   hours: number;
   since: string;

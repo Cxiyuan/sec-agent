@@ -790,6 +790,13 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 1. **ES 响应不是 dict，也不是 Mapping** —— `/api/stats/overview` 实机回「ES 返回了非预期结构」、流量曲线与协议圆图全空。原因：`elastic_transport.ObjectApiResponse` 的 MRO 是 `[ObjectApiResponse, ApiResponse, Generic, object]`，**既不是 `dict` 也不是 `Mapping`**，只是鸭子类型实现了 `.get`/`__getitem__`；而 `_fetch` 拿 `isinstance(resp, dict)` 当有效性判定（第一版修成 `isinstance(resp, Mapping)` **仍然错**）。本地测试全用 dict 桩，所以完全没抓到。**改为不做类型判定、直接按鸭子类型用，把 shape 解析包进 try**（解析真失败才落 `error`）；测试桩 `_EsObjectResponse` 改成**不继承 Mapping** 的鸭子类型对象，以后再有 `isinstance(resp, dict/Mapping)` 直接红。
 2. **`/` 的 307 不带 `Location`** —— 实机 `curl localhost:3000/` 只看到 `307 Temporary Redirect` 且无 `Location`，`curl -L` 原地不动；返回的 HTML 是 `<html id="__next_error__">` 错误外壳，靠 `NEXT_REDIRECT` 摘要让客户端 JS 跳，还被 `s-maxage=31536000` **缓存一年**。原因：在 App Router 里对**静态页**调 `redirect()`，Next 把重定向烘进错误外壳而不是回重定向响应。**改为 `next.config.mjs` 的服务端级 `redirects()`**（真回 `Location`、不依赖 JS、不进页面缓存），并删掉 `app/page.tsx`（留着它只能产生坏 307）。
 
+**修订（同日，用户口径）：协议占比只算「协议识别类」日志**。原实现是 `log_type` 全量 `terms`（实机 24h 里 `conn` 一家 1.86M 条占 56%、`syslog` 570K、`weird` 201K —— 那张饼图实际上是「我们的日志构成」，不是协议占比）。现改为**白名单 `ST_STATS_PROTOCOL_LOG_TYPES`**（`dns,http,ssl,ssh,ftp,smtp,smb,kerberos,ntp,dhcp,snmp,rdp,mysql,pgsql,radius,ldap,modbus,quic,websocket,mqtt…`），查询用 `terms.include` 限住；百分比分母 = **协议类文档总数**（top N 之和 + `sum_other_doc_count`）；被排除的量单独一个 `filter` agg 回 `excluded_docs` / `excluded_percent`，卡片上写「另有 X% 为 conn 流记录/异常/主机日志等非协议日志，未计入」——**不静默消失**。
+
+- 选白名单而不是黑名单的理由：实机确实混进了 `analyzer`（4.5K）、`wazuh`（2K）这类名单外的新类型，黑名单得不停地追着加；白名单则默认不上图，要加改配置一行。
+- **口径区别必须写清**（已写进 config 注释、README 配置表、`log_types.py` 的 docstring）：这张图看的是「协议」，与 `ST_ZEEK_EVENT_LOG_TYPES`/`_OPS_`（决定谁进检测）**不是一回事**。所以 `ntp`/`dhcp` 属 ops（不进检测）但会出现在图上；`conn`/`weird`/`files` 属 event（进检测）但不该出现在图上。
+- 旧的 `unclassified_docs`/`unclassified_percent`（“白名单外只入库不进检测”）已随本次改写删掉：它与新口径分母不同、摆在一张卡片上只会让人算不清；那个信息在「数据存储/类型分布」与 `log_type_known` 字段里本来就能看。
+- 测试（`test_stats_overview.py`）：断言白名单里**不得**出现 conn/weird/files/notice/x509/syslog/stats/reporter、必须含 http/dns/ssl/ssh/mysql/pgsql/smtp/ftp；断言 `excluded` 的 `must_not` 就是同一份白名单；新增加只排除非协议日志时的除零边界用例（协议图为空、未计入 100%）。
+
 
 ### 每期收尾门禁
 

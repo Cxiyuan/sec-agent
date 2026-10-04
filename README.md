@@ -231,7 +231,10 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     **服务器状态**（CPU/内存/磁盘三个圆环，容器内读 `/proc`）、**组件呼吸灯**（网络采集器/
     主机监控/Redis/Logstash/Elasticsearch/归一化服务/分析智能体，绿=正常、黄闪=注意、红=不可用、
     灰=未知）、**威胁事件**（24h 命中与摘要趋势、严重度分布、规则 TOP15、投递覆盖率）、
-    **24h 流量与协议**（按小时字节/秒曲线 + 协议占比圆图）、**链路细节**（五段速率、队列深度趋势、
+    **24h 流量与协议**（按小时字节/秒曲线 + 协议占比圆图，**圆图只算协议识别类日志**：
+    按 `ST_STATS_PROTOCOL_LOG_TYPES` 白名单取 http/dns/ssl/ssh/mysql/pgsql/smtp/ftp/snmp… 这类
+    一个协议一个日志流的类型；`conn`（流记录）、`weird`（异常）、`files`（文件产物）、`syslog`（主机日志）
+    不上图，图上另注明「另有 X% 未计入」）、**链路细节**（五段速率、队列深度趋势、
     丢弃原因、投递重发、ES 按天索引、Logstash 吞吐、基线画像）。历史上 Redis 写满（noeviction）会使
     整条链路静默卡死 —— 队列/内存那两块一旦标红就是这个前兆。
     失败**不再静默**，各有明确去处：投递失败看「智能体对接 → 摘要推送」的 `undelivered` / `retry_lost` /
@@ -367,6 +370,7 @@ NDR 线路（采集与检测）：
 | `ST_DETECTOR_HISTORY_KEY` / `ST_DETECTOR_HISTORY_MAX` | shentong:detector:history / 288 | **检测器历史采样**（总览页 24h 趋势/威胁图的数据源）：每 `ST_DETECTOR_STATS_LOG_SECONDS` 追加一条，LPUSH+LTRIM 固定条数（288 = 24h @ 5min）+ 7 天 TTL。以前 `shentong:detector:rates` 每次都被覆盖，没有历史可画 |
 | `ST_STATUS_PROBE_CACHE_SECONDS` | 30 | 总览页「组件呼吸灯」的进程内探测缓存（组件健康 + ES 新鲜度）：页面 15 秒轮询，两次里大约一次命中缓存，不每轮都打 ES/外部 API |
 | `ST_STATUS_AGG_CACHE_SECONDS` | 300 | 总览页 24h 流量/协议聚合（ES）的进程内缓存；命中直接回 `cached=true`，页面轮询不得穿透 |
+| `ST_STATS_PROTOCOL_LOG_TYPES` | dns,http,ssl,ssh,mysql,pgsql… | 总览页「24h 协议分析占比」的**协议识别类日志白名单（只影响画图）**：`conn`（流记录）/`weird`（异常）/`files`/`syslog`（主机日志）等非协议日志不上图，图上另注明「另有 X% 未计入」。**与 `ST_ZEEK_EVENT_LOG_TYPES` / `_OPS_` 不是同一口径**：那两个决定谁进检测；`ntp`/`dhcp` 属 ops 不进检测，但它们是协议，会出现在图上 |
 | `ST_SYSTEM_METRICS_CPU_SAMPLE_SECONDS` | 0.15 | 读两次 `/proc/stat` 的间隔（算 CPU 占用%；端点是同步 `def`，跑在线程池，不阻塞事件循环） |
 | `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；**空 = 不投递**（不再进退役队列，会明确计 `undelivered`） |
 | `ST_AGENT_PUSH_TOKEN` | 空 | 推送令牌（与智能体 `ST_PUSH_TOKEN` 一致） |

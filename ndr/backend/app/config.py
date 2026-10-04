@@ -202,6 +202,19 @@ class Settings(BaseSettings):
     # 进程内缓存：页面 15 秒轮询，组件探测与 24h 聚合都不允许穿透到 ES/外部 API。
     status_probe_cache_seconds: int = 30  # 组件健康 + ES 新鲜度探测
     status_agg_cache_seconds: int = 300  # 24h 流量 / 协议占比聚合
+    # 「24h 协议分析占比」只统计**协议识别类**日志（每个协议一个日志流）。
+    # 为什么不直接把 log_type 全丢进去：conn/weird/files 是流记录与异常、syslog/wazuh
+    # 是主机日志、x509/ocsp/pe 是产物元数据——它们混进饼图会把「协议占比」变成
+    # 「我们的日志构成」；实机 24h 里 conn 一家就占 56%。
+    # 用**白名单**而不是黑名单：名单外的新类型（如 analyzer）不该默默进这张图。
+    # 注意口径与 zeek_event_log_types/zeek_ops_log_types **不是一回事**：后两者决定
+    # 「谁进检测」；这里只是画图。例：ntp/dhcp 属 ops（不进检测），但它们是协议，会出现在图上。
+    stats_protocol_log_types: str = (
+        "dns,http,http2,ssl,quic,websocket,ssh,ftp,smtp,smb,smb_mapping,smb_files,dce_rpc,"
+        "kerberos,ntlm,ntp,dhcp,snmp,sip,rdp,mysql,pgsql,irc,radius,ldap,ldap_search,modbus,"
+        "dnp3,enip,profinet,gtp,tftp,socks,rfb,xmpp,mqtt,mqtt_publish,mqtt_connect,"
+        "mqtt_subscribe,tunnel"
+    )
     # 读两次 /proc/stat 的间隔（算 CPU%；同步 def 端点跑在线程池，不阻塞事件循环）
     system_metrics_cpu_sample_seconds: float = 0.15
     # 选主（Redis 租约）
