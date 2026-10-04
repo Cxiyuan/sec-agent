@@ -767,7 +767,7 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 用户要求：「将侧边栏运行状态上移到首页作为页面进入的默认页面，同时改造运行状态页面以图表方式显示各个数值」，随后补充要展示：**服务器状态（CPU/内存/磁盘圆环）**、**组件状态呼吸灯（zeek/wazuh/redis/logstash/elasticsearch/归一化/分析智能体）**、**威胁事件统计**、**24h 流量捕捉曲线**、**24h 协议分析占比圆图**。计划阶段定了三件事：趋势数据**后端加采样**、呈现方式**数字块 + 图表混合**、入口**置顶 + 默认跳转 + 改名「总览」**。
 
-**入口（路由不变）**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 仍 `/admin/status`**；`app/page.tsx` 的 `/` 重定向从 `/admin/rules` 改为 `/admin/status`；`app/admin/status/page.tsx` 标题改「总览」。
+**入口（路由不变）**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 仍 `/admin/status`**；`/` 的重定向写进 `next.config.mjs` 的 `redirects()`（`/` → `/admin/status`，307）；`app/admin/status/page.tsx` 标题改「总览」，原 `app/page.tsx`（内含 `redirect()`）**已删**——原因见下面「上线复验」。
 
 **后端（4 个新端点 + 1 个采样）**：
 
@@ -784,6 +784,11 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **测试**：新增 `tests/py/test_detector_history.py`（写入有界/TTL、读取时间正序与容错、区间计数用后即清、严重度增量不为负、**静态断言 runner 统计块确实调了采样**）、`test_system_metrics.py`（`/proc/stat` 与 `/proc/meminfo` 解析、计数器回退不算负载、端点缺指标不 500）、`test_health_components.py`（判据边界、七盏灯齐全、**单个探测抛异常只影响它自己**、30s 缓存与 TTL=0 关闭缓存）、`test_stats_overview.py`（查询结构必须只在流量侧过滤 conn、字节/秒与百分比换算、缓存命中、失败不缓存、ES 异常降级）。共 80 例。
 
 **门禁（2026-10，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors`；`pytest tests/py --stack=ndr -q` **518 passed, 14 skipped**；`--stack=agent -q` **304 passed, 228 skipped**；两侧 `npx tsc --noEmit` 无输出。
+
+**上线复验补修（同日，两处本地门禁全绿也没抓到的）**：
+
+1. **ES 响应不是 dict，也不是 Mapping** —— `/api/stats/overview` 实机回「ES 返回了非预期结构」、流量曲线与协议圆图全空。原因：`elastic_transport.ObjectApiResponse` 的 MRO 是 `[ObjectApiResponse, ApiResponse, Generic, object]`，**既不是 `dict` 也不是 `Mapping`**，只是鸭子类型实现了 `.get`/`__getitem__`；而 `_fetch` 拿 `isinstance(resp, dict)` 当有效性判定（第一版修成 `isinstance(resp, Mapping)` **仍然错**）。本地测试全用 dict 桩，所以完全没抓到。**改为不做类型判定、直接按鸭子类型用，把 shape 解析包进 try**（解析真失败才落 `error`）；测试桩 `_EsObjectResponse` 改成**不继承 Mapping** 的鸭子类型对象，以后再有 `isinstance(resp, dict/Mapping)` 直接红。
+2. **`/` 的 307 不带 `Location`** —— 实机 `curl localhost:3000/` 只看到 `307 Temporary Redirect` 且无 `Location`，`curl -L` 原地不动；返回的 HTML 是 `<html id="__next_error__">` 错误外壳，靠 `NEXT_REDIRECT` 摘要让客户端 JS 跳，还被 `s-maxage=31536000` **缓存一年**。原因：在 App Router 里对**静态页**调 `redirect()`，Next 把重定向烘进错误外壳而不是回重定向响应。**改为 `next.config.mjs` 的服务端级 `redirects()`**（真回 `Location`、不依赖 JS、不进页面缓存），并删掉 `app/page.tsx`（留着它只能产生坏 307）。
 
 
 ### 每期收尾门禁
