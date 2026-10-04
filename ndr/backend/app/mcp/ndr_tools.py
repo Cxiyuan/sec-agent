@@ -705,9 +705,13 @@ def _entity_profile(args: dict[str, Any]) -> dict[str, Any]:
         return result
     result["threshold"] = settings.profile_risk_threshold
     result["note"] = (
-        "风险分是加权累加：新源 IP +0.35、新 UA +0.2、非常用时段 +0.15、"
-        "会话跨 ≥2 个 IP +0.45、失败 ≥5 且多于成功 +0.25；"
+        "风险分是加权累加：新源 IP +0.35（v6 只在 /64 前缀也新时算，隐私地址轮换不算）、"
+        "新 UA +0.2、非常用时段 +0.15（画像建立满 "
+        f"{settings.profile_hour_min_age_hours} 小时且见过 ≥{settings.profile_hour_min_coverage} "
+        "个时段才判）、同族跨 ≥2 个 IP +0.45（v4+v6 双栈不算会话劫持）、"
+        "失败 ≥5 且多于成功 +0.25；"
         f"达到 {settings.profile_risk_threshold} 才算异常，冷启动（观测不足）不算。"
+        "风险分是「当前窗口」的值：本轮无异常会归零并清空，risk_at 是判定时间。"
     )
     return result
 

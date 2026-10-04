@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 from collections import Counter
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -47,6 +49,47 @@ _TRIM_FACTOR = 4
 
 def _csv(value: str) -> tuple[str, ...]:
     return tuple(x.strip() for x in (value or "").split(",") if x.strip())
+
+
+def _v6_prefix(ip: str) -> str:
+    """取 IPv6 的 /64 前缀。
+
+    为什么需要：IPv6 隐私扩展地址（RFC 4941）会在同一 /64 里不断轮换新地址，
+    「没见过这个地址」并不等于「换了客户端」。所以 v6 只在**前缀**也新时才算新源 IP。
+    """
+    try:
+        return str(ipaddress.IPv6Network(f"{ip}/64", strict=False))
+    except ValueError:
+        return str(ip)
+
+
+def _families(ips: Iterable[str]) -> tuple[set[str], set[str]]:
+    """把地址按 v4 / v6 分开。
+
+    为什么要分：同一个客户端在双栈网络（移动端尤甚）会同时用 v4 与 v6 访问，
+    把「v4+v6 各一个」当成「会话跨 2 个源 IP（疑似会话劫持）」是纯误报——
+    2026-10 实机 QA：被判会话劫持的 5 条**全部**是这种双栈（或 v6 换地址），
+    没有一条是真的多 IPv4。所以「跨 IP」只在**同族内** ≥ 2 个时才成立。
+    """
+    v4: set[str] = set()
+    v6: set[str] = set()
+    for ip in ips:
+        text = str(ip)
+        (v6 if ":" in text else v4).add(text)
+    return v4, v6
+
+
+def _old_enough(profile: EntityProfile) -> bool:
+    """画像建立是否已满 `profile_hour_min_age_hours` 小时。"""
+    min_hours = max(0, int(settings.profile_hour_min_age_hours))
+    if min_hours <= 0:
+        return True
+    first = profile.first_seen
+    if first is None:
+        return False
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=UTC)
+    return datetime.now(UTC) - first >= timedelta(hours=min_hours)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -195,7 +238,17 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     risk = 0.0
 
     known_ips = set((profile.src_ips or {}).keys())
-    new_ips = sorted(ip for ip in obs["src_ips"] if ip not in known_ips)
+    known_v6_prefixes = {_v6_prefix(ip) for ip in known_ips if ":" in ip}
+    new_ips: list[str] = []
+    for ip in obs["src_ips"]:
+        ip = str(ip)
+        if ip in known_ips:
+            continue
+        # v6 同 /64 内的新地址：同一个客户端的隐私地址轮换，不算新源 IP
+        if ":" in ip and _v6_prefix(ip) in known_v6_prefixes:
+            continue
+        new_ips.append(ip)
+    new_ips.sort()
     if new_ips:
         reasons.append(f"新源 IP：{', '.join(new_ips[:3])}")
         risk += 0.35
@@ -206,17 +259,27 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
         risk += 0.2
 
+    # 非常用时段：三个条件都要满足才判（否则就是整点批量误报，见 config 里那两个门槛）
     hist = profile.hour_hist or {}
     total_hours = sum(_safe_int(v) for v in hist.values())
-    if total_hours >= settings.profile_min_obs and obs["hours"]:
+    covered = sum(1 for v in hist.values() if _safe_int(v) > 0)
+    if (
+        obs["hours"]
+        and total_hours >= settings.profile_min_obs
+        and covered >= max(1, int(settings.profile_hour_min_coverage))
+        and _old_enough(profile)
+    ):
         rare = [h for h in obs["hours"] if _safe_int(hist.get(h, 0)) / total_hours < 0.01]
         if len(rare) == len(obs["hours"]):
             reasons.append(f"非常用时段：{','.join(sorted(rare))} 时")
             risk += 0.15
 
-    if kind == SESSION and len(obs["src_ips"]) >= 2:
-        reasons.append(f"会话跨 {len(obs['src_ips'])} 个源 IP（疑似会话劫持）")
-        risk += 0.45
+    if kind == SESSION:
+        # 只在**同族内** ≥ 2 个才算会话跨 IP：v4+v6 是同一客户端的双栈，不是劫持
+        v4, v6 = _families(obs["src_ips"])
+        if len(v4) >= 2 or len(v6) >= 2:
+            reasons.append(f"会话跨 {len(v4) + len(v6)} 个同族源 IP（疑似会话劫持）")
+            risk += 0.45
 
     if obs["fail"] >= 5 and obs["fail"] > obs["success"]:
         reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次）")
@@ -317,11 +380,19 @@ def update_profiles(
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])
                 row.fail_count = (row.fail_count or 0) + _safe_int(obs["fail"])
 
-                # 回写本轮异常风险（供列表排序与 TOP）
+                # 回写本轮异常风险（供列表排序与 TOP）：**本轮没理由就归零**。
+                # 不归零的后果（2026-10 实机 QA）：实体一旦被报过就永久挂在「画像风险 TOP」，
+                # 实测 4 条 risk≥0.6 的画像已 2~4 小时没再出现，界面仍当当前风险看。
                 risk = (risks or {}).get(f"{obs['kind']}|{obs['key']}") or {}
                 if risk:
                     row.risk_score = float(risk.get("risk") or 0.0)
                     row.anomalies = list(risk.get("reasons") or [])[:20]
+                    row.risk_at = now
+                else:
+                    row.risk_score = 0.0
+                    row.anomalies = []
+                    # 风险时间跟着归零：只保留「当前风险」的判定时间，避免陈旧时间被当新时间
+                    row.risk_at = None
             db.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("更新实体画像失败: %s", exc)
@@ -355,6 +426,9 @@ def _profile_dict(p: EntityProfile) -> dict[str, Any]:
         "entity_display": p.entity_display,
         "obs_count": p.obs_count,
         "risk_score": p.risk_score,
+        # 风险分的判定时间：没有它，界面无法区分「现在异常」与「几小时前的陈旧结果」
+        # （`updated_at` 每轮观测都刷新，不能当风险时间用）。
+        "risk_at": p.risk_at.isoformat() if p.risk_at else None,
         "first_seen": p.first_seen.isoformat() if p.first_seen else None,
         "last_seen": p.last_seen.isoformat() if p.last_seen else None,
         "src_ips": p.src_ips or {},
@@ -399,18 +473,32 @@ def list_profiles(
 
 
 def top_anomalies(limit: int = 10) -> dict[str, Any]:
-    """按风险分取 TOP（运行状态页用）。"""
+    """按风险分取 TOP（运行状态页用）。
+
+    只取``risk_at`` 在有效期（`profile_risk_ttl_minutes`）内的：本函数是「**当前**风险」，
+    不是历史榜单 —— 实测旧实现会把 2~4 小时前判过、之后再没出现过的实体一直列出来。
+    """
+    ttl = max(0, int(settings.profile_risk_ttl_minutes))
+    stmt = select(EntityProfile).where(
+        EntityProfile.risk_score >= settings.profile_risk_threshold
+    )
+    if ttl > 0:
+        cutoff = datetime.now(UTC) - timedelta(minutes=ttl)
+        stmt = stmt.where(EntityProfile.risk_at.is_not(None), EntityProfile.risk_at >= cutoff)
     try:
         with SessionLocal() as db:
             rows = db.scalars(
-                select(EntityProfile)
-                .where(EntityProfile.risk_score >= settings.profile_risk_threshold)
-                .order_by(EntityProfile.risk_score.desc())
-                .limit(max(1, min(int(limit or 10), 100)))
+                stmt.order_by(EntityProfile.risk_score.desc()).limit(max(1, min(int(limit or 10), 100)))
             ).all()
     except Exception as exc:  # noqa: BLE001
-        return {"threshold": settings.profile_risk_threshold, "items": [], "error": str(exc)}
+        return {
+            "threshold": settings.profile_risk_threshold,
+            "ttl_minutes": ttl,
+            "items": [],
+            "error": str(exc),
+        }
     return {
         "threshold": settings.profile_risk_threshold,
+        "ttl_minutes": ttl,
         "items": [_profile_dict(r) for r in rows],
     }

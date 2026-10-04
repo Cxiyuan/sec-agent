@@ -30,6 +30,9 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_system_metrics.py` | 服务器圆环：`/proc/stat`（含 idle+iowait、计数器回退不算负载）与 `/proc/meminfo`（用 MemAvailable）解析、缺指标不 500 而是 null+notes |
 | `test_health_components.py` | 组件呼吸灯：判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置≠坏了）、七盏灯齐全、**单个探测抛异常只影响它自己**、30 秒缓存 |
 | `test_stats_overview.py` | 24h 流量与协议：查询结构必须**只在流量侧过滤 `log_type=conn`**、**协议侧只算协议识别类日志**（白名单 `include` + 非协议日志单列 `excluded` 计数，conn/weird/files/syslog 不得入白名单）、逐小时字节/秒与百分比（协议类 top N + 其他为分母，**不含非协议日志**）换算、缓存命中、失败不缓存、ES 异常降级为空 |
+| `test_baseline_profile.py` | 画像判据与风险写回（2026-10 实机 QA 的产物）：非常用时段的三个门槛（覆盖时段数 / 画像年龄 / 占比）、**双栈 v4+v6 不算会话劫持**而同族 ≥2 个算、新源 IP 对 v6 只看 /64 前缀、冷启动不打分、**本轮无理由则风险归零 + 理由清空 + risk_at 置空** |
+| `test_baseline_stats.py` | 数值基线存取：`snapshot()` **只能一条 SQL**（回归：以前两条 `COUNT(*)` 被 15s 轮询）、warmed>total 不为负、PG 异常降级；保留期 `cleanup()` 只删过期键、0 = 不清理、失败不抛；Welford 增量（10/20 → mean 15、样本标准差 √50） |
+| `test_baseline_engine.py` | 基线心跳与清理接线：`*_last_round` 与累计量**分名**（回归：`anomalies` 被当累计读，而实机 0 vs 库里 54 条风险>0）、`anomalies_total`/`anomaly_rounds` 累加、心跳有 TTL、`flush()` 的清理段**确实调了数值基线清理**且不依赖画像开关 |
 
 样本在 `samples.py`（字段名取自实机 `/logs/*.log`），含"没有 `log_type` 的旧文档"
 这条只能靠猜的路径。

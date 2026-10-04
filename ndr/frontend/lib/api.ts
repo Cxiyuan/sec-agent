@@ -481,6 +481,8 @@ export interface BaselineProfile {
   entity_display?: string;
   obs_count?: number;
   risk_score?: number;
+  /** 风险分的**判定时间**（本轮落库时间）。本轮无异常时 risk_score 归零、这里为 null */
+  risk_at?: string | null;
   anomalies?: string[];
   src_ips?: Record<string, number>;
   user_agents?: Record<string, number>;
@@ -500,16 +502,23 @@ export interface BaselineAnomalies {
   error?: string;
 }
 
-/** 检测器进程写的基线心跳（进程不在时 `alive=false`，属正常） */
+/** 检测器进程写的基线心跳（进程不在时 `alive=false`，属正常）
+ *
+ * ⚠️ 字段分两种语义，名字里已区分（2026-10 实机 QA：原来混在一起会被当成累计值读）：
+ * - 累计：`observed` / `numeric_samples` / `flushes` / `profiles_*` / `anomalies_total`；
+ * - 只反映**上一轮**：`numeric_keys_last_round` / `anomalies_last_round`（会被覆盖）。
+ */
 export interface BaselineDetector {
   alive: boolean;
   observed?: number;
-  numeric_keys?: number;
+  numeric_keys_last_round?: number;
   numeric_samples?: number;
   flushes?: number;
   profiles_created?: number;
   profiles_updated?: number;
-  anomalies?: number;
+  anomalies_total?: number;
+  anomaly_rounds?: number;
+  anomalies_last_round?: number;
   flush_at?: number;
 }
 
@@ -524,6 +533,8 @@ export interface BaselinePayload {
   anomalies: BaselineAnomalies;
   detector: BaselineDetector;
   note: string;
+  /** true = 命中后端 30 秒进程内缓存（总览页 15s 轮询，不该每次穿透到库/Redis） */
+  cached: boolean;
 }
 
 // ---------- 当前账号（默认口令提示 / 改密） ----------

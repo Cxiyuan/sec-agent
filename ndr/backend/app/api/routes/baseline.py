@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -20,6 +22,11 @@ from app.workers.log import get_logger
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/baseline", tags=["baseline"])
+
+#: 进程内缓存：总览页每 15 秒轮询一次，而这个端点要跑聚合 SQL + 读 Redis。
+#: 复用组件探测那个 30 秒 TTL（同一张页、同一个节奏），与项目「15s 轮询不得穿透」的约定一致。
+_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
 
 
 def _detector_counters() -> dict[str, Any]:
@@ -49,8 +56,29 @@ def baseline_overview(
     _: Annotated[User, Depends(get_current_user)],
     limit: int = 10,
 ):
-    """运行状态页用：基线规模、观测期进度、过阈值画像 TOP、检测器侧计数。"""
+    """运行状态页用：基线规模、观测期进度、过阈值画像 TOP、检测器侧计数。
+
+    结果进程内缓存 `status_probe_cache_seconds`（默认 30s，0 = 关）。
+    """
     top = max(1, min(int(limit or 10), 50))
+    ttl = max(0.0, float(settings.status_probe_cache_seconds))
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(top)
+        if ttl > 0 and hit is not None and now - hit[0] < ttl:
+            return {**hit[1], "cached": True}
+    payload = _build_overview(top)
+    with _cache_lock:
+        _cache[top] = (now, payload)
+        # 只要最近用过的 limit（界面只会用 10），不影响其它请求
+        if len(_cache) > 8:
+            for key in list(_cache)[: len(_cache) - 8]:
+                _cache.pop(key, None)
+    return {**payload, "cached": False}
+
+
+def _build_overview(top: int) -> dict[str, Any]:
+    """真去读库/Redis（不缓存）。"""
     snap = stats_mod.snapshot()
     anomalies = profiles.top_anomalies(top)
     return {
@@ -66,6 +94,7 @@ def baseline_overview(
         "note": (
             "观测期内的维度不参与判定；「没报偏离」不等于正常。"
             "判据 当前值 > mean + zσ，NDR 只在摘要里打标，定性由智能体做。"
+            "画像风险分按「当前窗口」算：本轮无异常就归零并清空，risk_at 是判定时间。"
         ),
     }
 

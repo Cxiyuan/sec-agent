@@ -12,9 +12,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import CursorResult, delete, func, select
 
 from app.config import settings
 from app.db.base import SessionLocal
@@ -155,27 +155,53 @@ def lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
     }
 
 
+def cleanup(retention_days: int | None = None) -> dict[str, int]:
+    """按 ``updated_at`` 删除长期没再观测过的数值基线键。
+
+    为什么必须有（2026-10 实机 QA）：key = ``{src_ip}:{feature}``，被扫过一次的 IP
+    （尤其是外网/攻击者地址）会永久留下 3 行；而画像有 `profile_retention_days` 清理、
+    数值基线一行清理逻辑都没有 —— 只增不减。
+    """
+    days = max(0, int(retention_days if retention_days is not None else settings.baseline_retention_days))
+    if days <= 0:
+        return {"deleted": 0}  # 0 = 不清理（与 observe_days 不同，这里允许显式关掉）
+    before = datetime.now(UTC) - timedelta(days=days)
+    try:
+        with SessionLocal() as db:
+            result = cast(
+                CursorResult[Any],
+                db.execute(delete(BaselineStat).where(BaselineStat.updated_at < before)),
+            )
+            db.commit()
+            return {"deleted": result.rowcount or 0}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("清理数值基线失败: %s", exc)
+        return {"deleted": 0}
+
+
 def snapshot() -> dict[str, Any]:
-    """运行状态页用：基线规模与观测期进度。"""
+    """运行状态页用：基线规模与观测期进度。
+
+    **一条 SQL 同时算 total 与 warmed**：以前是两条 ``COUNT(*)``（其中 warmed 还过滤一个
+    没有索引的列），而总览页每 15 秒轮询一次 —— 2026-10 实机 QA 发现 seq_scan 已 1660。
+    """
     now = datetime.now(UTC)
     days = max(0, int(settings.baseline_observe_days))
     warmed_cut = now - timedelta(days=days)
+    warmed_cond = (BaselineStat.first_seen.is_not(None)) & (BaselineStat.first_seen <= warmed_cut)
     try:
         with SessionLocal() as db:
-            total = int(db.scalar(select(func.count()).select_from(BaselineStat)) or 0)
-            warmed = int(
-                db.scalar(
-                    select(func.count())
-                    .select_from(BaselineStat)
-                    .where(
-                        BaselineStat.first_seen.is_not(None),
-                        BaselineStat.first_seen <= warmed_cut,
-                    )
-                )
-                or 0
-            )
+            # FILTER (WHERE ...) 是 PG 的聚合过滤语法，一次扫描就出两个数
+            row = db.execute(
+                select(
+                    func.count(),
+                    func.coalesce(func.count().filter(warmed_cond), 0),
+                ).select_from(BaselineStat)
+            ).one()
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读基线失败：{exc}", "total_keys": 0, "warmed_keys": 0}
+    total = int(row[0] or 0)
+    warmed = int(row[1] or 0)
     return {
         "observe_days": days,
         "total_keys": total,

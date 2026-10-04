@@ -175,9 +175,14 @@ class BaselineStat(Base):
     count: Mapped[int] = mapped_column(Integer, default=0)
     mean: Mapped[float] = mapped_column(Float, default=0.0)
     m2: Mapped[float] = mapped_column(Float, default=0.0)  # 平方差累计，用于算标准差
-    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # first_seen / updated_at 都建索引：前者是「观测期是否已过」（快照里的预热计数）的过滤列，
+    # 后者是保留期清理的过滤列 —— 两者以前都是全表扫描（2026-10 实机 QA：snapshot 每次轮询
+    # 两条 COUNT(*)，seq_scan 已经跑到 1660）。
+    first_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
     )
 
 
@@ -209,6 +214,10 @@ class EntityProfile(Base):
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 风险分/异常理由的**判定时间**（= 本轮落库时间）。为什么要单独一列：`updated_at`
+    #: 每轮观测都会刷新，拿它当「风险时间」会让几小时前的陈旧风险看着像刚刚算出来的
+    #: （2026-10 实机 QA 发现的问题）。本轮无异常时 risk_score 归零、本列置空。
+    risk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     anomalies: Mapped[list] = mapped_column(JSONB, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

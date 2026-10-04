@@ -328,7 +328,14 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
   当前值 > 均值 + `ST_BASELINE_ZSCORE` 个标准差就算偏离。**观测期内（默认 7 天）不打标**，
   标签里的 `warmed` 为 0 就代表「没报偏离 ≠ 正常」
 - **账号/会话画像**：按账号（`account` 再退 `user`）与会话 cookie 累计源 IP / UA / 路径 / 时段分布，
-  加权打分（新源 IP、新 UA、非常用时段、会话跨多 IP、失败多于成功），过 `ST_PROFILE_RISK_THRESHOLD` 才进异常
+  加权打分（新源 IP、新 UA、非常用时段、同族跨 ≥2 个 IP、失败多于成功），过 `ST_PROFILE_RISK_THRESHOLD` 才进异常。
+  判据上的三个防误报口径（2026-10 实机 QA 修）：
+  - **v4/v6 分开看**：「会话跨 IP」只在**同族内** ≥2 个时成立；v4+v6 各一个是同一客户端的双栈，不算劫持。
+    新源 IP 对 v6 只看 **/64 前缀**（RFC 4941 隐私地址在同一 /64 里轮换，不算换客户端）
+  - **非常用时段要看门槛**：见过 ≥`ST_PROFILE_HOUR_MIN_COVERAGE` 个不同时段、且画像建立满
+    `ST_PROFILE_HOUR_MIN_AGE_HOURS` 小时才判（否则每个整点、每个活跃实体各报一次）
+  - **风险分按当前窗口**：本轮没理由就归零 + 清空理由，判定时间落 `risk_at`（`updated_at` 每轮观测都刷新，
+    不能当风险时间用）；界面的 TOP 图 tooltip 会显示判定时间
 - **会话 cookie 先哈希再落库**（sha256，展示只用前 8 位），事件正文里只留截断值
 - **交付**：① 摘要字段 `baseline`（`{checked, warmed, numeric[], profiles[]}`）——
   数值偏离会被智能体当作「异常确认」的候选，**定性仍由云端模型做**（NDR 只打标）；
@@ -385,9 +392,12 @@ NDR 线路（采集与检测）：
 | `ST_BASELINE_CLEANUP_SECONDS` | 3600 | 过期画像清理的检查节奏（秒） |
 | `ST_BASELINE_MAX_OBSERVATIONS` | 50000 | 单窗口最多攒多少条画像观测，超了提前落库 |
 | `ST_BASELINE_CACHE_MAX` | 20000 | 进程内数值基线缓存条目上限（超出丢最旧的） |
-| `ST_BASELINE_STATS_KEY` | shentong:baseline:stats | 检测器侧基线计数键（「运行状态」页看活性） |
+| `ST_BASELINE_STATS_KEY` | shentong:baseline:stats | 检测器侧基线计数键（「运行状态」页看活性）。字段分两类：`observed`/`numeric_samples`/`flushes`/`profiles_*`/`anomalies_total` 是**累计**，`numeric_keys_last_round`/`anomalies_last_round` 只反映**上一轮**（名字里带 `last_round`，别当累计读） |
+| `ST_BASELINE_RETENTION_DAYS` | 90 | **数值基线保留期**（按 `updated_at` 清理，0 = 不清理）。key 是 `{src_ip}:{feature}`，被扫过一次的 IP（尤其外网/攻击者）会永久留 3 行 —— 以前一行清理逻辑都没有，只增不减（实测 6 小时就 486 个 IP / 1458 行） |
 | `ST_PROFILE_ENABLED` | true | 账号/会话画像开关（关掉则只算数值 2σ） |
 | `ST_PROFILE_MIN_OBS` | 5 | 观测次数不足时只学习、不打分（冷启动） |
+| `ST_PROFILE_HOUR_MIN_COVERAGE` | 8 | 「非常用时段」判据的门槛之一：至少要见过这么多个**不同**时段才判。不加门槛就是整点批量误报 —— 分母只算历史出现过的时段，新时段恒为 0% < 1% |
+| `ST_PROFILE_HOUR_MIN_AGE_HOURS` | 24 | 「非常用时段」判据的门槛之二：画像建立不足这么久不判（否则上线第一天每个整点都是「新时段」） |
 | `ST_PROFILE_RISK_THRESHOLD` | 0.6 | 画像异常风险分阈值（达到才报） |
 | `ST_PROFILE_RETENTION_DAYS` | 180 | 画像保留期（到期清理） |
 | `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,… | 会话 cookie 名单（命中才按会话建画像；**先哈希再落库**） |

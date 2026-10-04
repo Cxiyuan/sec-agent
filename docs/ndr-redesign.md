@@ -808,6 +808,26 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 - 卡片加高（饼图 260 → 300；严重度那一行三张同高 220 → 280），否则标签会被挤在图里。
 - 四个新用到的键（`minShowLabelAngle`/`labelLayout`/`labelLine`/`avoidLabelOverlap`）已在本仓 `node_modules/echarts/types` 里逐个核对存在，不靠猜。
 
+### 2026-10-04 基线与画像实机 QA：六处修复（含三处假阳性来源）
+
+用户要求「QA 一下服务器上基线/画像的实际运行状况，有什么 BUG 需要修」。先拿实机数据，再定性，再修 —— 全部结论都有库/接口/日志证据。
+
+**先看运行状况（这部分是好的）**：检测器心跳有值；`entity_profiles` 567 条（会话 441 / 账号 126）、`baseline_stats` 1458 行（486 个 IP × 3 维度），都在实时更新；`GET /api/baseline`、`/profiles?min_risk=`、`/stats?ip=`（真实 IP 回 3 个维度，读写 key 格式一致）全部 200；无一条落库失败。观测期 7 天内 `warmed=0` 属预期。
+
+**但查出 6 个问题，其中 3 个是假阳性来源**：
+
+1. **「非常用时段」把每个整点当异常**（假阳性最大来源）。判据分母只算历史出现过的时段，新时段恒为 0% < 1% ⇒ 每个整点、每个活跃实体各报一次。实机：risk>0 的 54 条里 **40 条**是这个原因，10/11/12/13/14/15 时各 3~9 个（明显整点批量）。**修**：新增 `ST_PROFILE_HOUR_MIN_COVERAGE`（≥8 个不同时段）与 `ST_PROFILE_HOUR_MIN_AGE_HOURS`（画像 ≥24h）两个门槛，三条件同时满足才判。
+2. **「会话跨源 IP」不分 v4/v6**（假阳性第二来源）。实机被判的 5 条**全部**是双栈（v4+v6）或纯 v6 换地址，没有一条是真的多 IPv4；最像真问题的那个是 iPhone+微信 UA，`110.185.129.127`(v4,108 次) 与 `240e:398:...`(v6,8 次)。**修**：只在**同族内** ≥2 个才算（v4∩v4 或 v6∩v6），跨族不算。
+3. **新源 IP 对 v6 一律算新**。IPv6 隐私地址（RFC 4941）在同一 /64 内轮换是常态。**修**：v6 只在 **/64 前缀**也新时才算。
+4. **风险分只升不降、没有风险时间**。只在有理由时写 `risk_score`，实体不再异常后旧值永久保留 —— 实机 4 条 risk≥0.6 的画像 `last_seen` 是 11:56~13:58（已 2~4 小时没再出现），却一直挂在总览「画像风险 TOP」；而 `updated_at` 每轮观测都刷新，**无法判断风险新旧**。**修（用户选 A）**：本轮无理由就归零 + 清空理由 + `risk_at` 置空（新列 + 启动迁移 ALTER）；有理由则写 `risk_at`，总览 TOP 的 tooltip 显示判定时间。
+5. **`baseline_stats` 没有保留期**。全仓零清理逻辑（`profile.cleanup()` 只删画像）；key 是 `{src_ip}:{feature}`，被扫过一次的 IP（尤其外网/攻击者）永久留 3 行；且 `first_seen` 无索引，而 `snapshot()` 每次轮询都 `COUNT(*) ... WHERE first_seen <=`（实机 seq_scan 已 1660）。**修**：新增 `ST_BASELINE_RETENTION_DAYS`（90，按 `updated_at` 清理，挂在 `flush()` 的清理段、不依赖画像开关）+ `first_seen`/`updated_at` 两个索引（模型 + 启动迁移 `CREATE INDEX IF NOT EXISTS`）。
+6. **心跳计数语义混乱**。`anomalies`/`numeric_keys` 是**上一轮的值**（覆盖写），`observed`/`numeric_samples`/`flushes`/`profiles_*` 是累计，混在一个 dict 返回 —— 实机 `anomalies=0` 而库里有 54 条 risk>0，读的人会当成「没有异常」。**修**：改名 `anomalies_last_round`/`numeric_keys_last_round`，另给累计 `anomalies_total`/`anomaly_rounds`；前端类型同步并标明两类语义。
+7. **顺便修掉 `/api/baseline` 没缓存**：总览页 15 秒轮询 → 每次 2 条 `COUNT(*)` + 一次 Redis 连接，而项目其它轮询端点都做了 30s/300s 缓存。**修**：`snapshot()` 改成**一条聚合 SQL**（`count() FILTER (WHERE ...)` 一次出 total 与 warmed）+ 端点复用 `ST_STATUS_PROBE_CACHE_SECONDS`（30s），响应带 `cached`。
+
+**顺带发现的缺口**：基线是第 8 期迁移过来的核心逻辑，但 `tests/py` 下**没有任何专门测试**（只有零散提及）。本次补三个文件：`test_baseline_profile.py`（17 例）、`test_baseline_stats.py`（10 例）、`test_baseline_engine.py`（4 例）。
+
+**未改的两处（记下口径）**：`paths` 采集了但判据里没用（detect 只看新 IP/新 UA/时段/跨 IP/失败激增），属死数据、还被静态资源挤占 30 条上限；会话画像的展示名是 cookie 哈希前 8 位，运维看不懂 —— 两者都是隐私/展示取舍，要动得先定口径。
+
 
 ### 每期收尾门禁
 

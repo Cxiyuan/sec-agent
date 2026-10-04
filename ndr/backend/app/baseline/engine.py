@@ -18,7 +18,7 @@ from collections import Counter
 from typing import Any
 
 from app.baseline import profile as profiles
-from app.baseline.stats import apply_stats, load_stats
+from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
@@ -191,7 +191,12 @@ class BaselineEngine:
         for item in found:
             eid = f"{item.get('kind')}|{item.get('key')}"
             self._anomalies[eid] = {**item, "_at": now}
-        self.stats["anomalies"] = len(found)
+        # 命名区分「本轮」与「累计」（2026-10 实机 QA：原来叫 anomalies，被当成累计计数读，
+        # 而它其实是**上一轮的值** —— 实机 anomalies=0 但库里有 54 条风险>0 的画像）
+        self.stats["anomalies_last_round"] = len(found)
+        if found:
+            self.stats["anomalies_total"] = self.stats.get("anomalies_total", 0) + len(found)
+            self.stats["anomaly_rounds"] = self.stats.get("anomaly_rounds", 0) + 1
 
     # ---------- 周期：落库 + 判异常 + 清理 ----------
 
@@ -217,6 +222,14 @@ class BaselineEngine:
                 result = profiles.cleanup()
                 if result.get("deleted"):
                     log.info("基线画像清理：删除 %d 条过期画像", result["deleted"])
+            # 数值基线的保留期清理：与画像同节奏（不依赖 profile_enabled，两者是两回事）
+            dropped = stats_cleanup()
+            if dropped.get("deleted"):
+                log.info(
+                    "数值基线清理：删除 %d 个超过 %d 天没更新的键",
+                    dropped["deleted"],
+                    settings.baseline_retention_days,
+                )
         self._publish()
 
     def _flush_stats(self) -> None:
@@ -268,7 +281,8 @@ class BaselineEngine:
             return
         for key, state in applied.items():
             self._base[key] = state
-        self.stats["numeric_keys"] = len(applied)
+        # 同样是「上一轮」语义（见 _remember_anomalies 的说明）
+        self.stats["numeric_keys_last_round"] = len(applied)
         self.stats["numeric_samples"] = self.stats.get("numeric_samples", 0) + sum(
             len(v) for v in pending.values()
         )
@@ -306,12 +320,16 @@ class BaselineEngine:
                 settings.baseline_stats_key,
                 mapping={
                     "observed": int(self.stats.get("observed", 0)),
-                    "numeric_keys": int(self.stats.get("numeric_keys", 0)),
+                    # 累计量（只增）
                     "numeric_samples": int(self.stats.get("numeric_samples", 0)),
                     "flushes": int(self.stats.get("flushes", 0)),
                     "profiles_created": int(self.stats.get("profiles_created", 0)),
                     "profiles_updated": int(self.stats.get("profiles_updated", 0)),
-                    "anomalies": int(self.stats.get("anomalies", 0)),
+                    "anomalies_total": int(self.stats.get("anomalies_total", 0)),
+                    "anomaly_rounds": int(self.stats.get("anomaly_rounds", 0)),
+                    # 上一轮的量（会被覆盖）——名字里必须带 last_round，别再让人当成累计值
+                    "numeric_keys_last_round": int(self.stats.get("numeric_keys_last_round", 0)),
+                    "anomalies_last_round": int(self.stats.get("anomalies_last_round", 0)),
                     "flush_at": int(time.time()),
                 },
             )

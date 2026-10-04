@@ -200,7 +200,7 @@ class Settings(BaseSettings):
     detector_history_key: str = "shentong:detector:history"
     detector_history_max: int = 288
     # 进程内缓存：页面 15 秒轮询，组件探测与 24h 聚合都不允许穿透到 ES/外部 API。
-    status_probe_cache_seconds: int = 30  # 组件健康 + ES 新鲜度探测
+    status_probe_cache_seconds: int = 30  # 组件健康 + ES 新鲜度探测 + 基线总览（/api/baseline）
     status_agg_cache_seconds: int = 300  # 24h 流量 / 协议占比聚合
     # 「24h 协议分析占比」只统计**协议识别类**日志（每个协议一个日志流）。
     # 为什么不直接把 log_type 全丢进去：conn/weird/files 是流记录与异常、syslog/wazuh
@@ -235,10 +235,23 @@ class Settings(BaseSettings):
     baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库
     baseline_cache_max: int = 20000  # 进程内数值基线缓存条目上限（超出丢最旧的）
     baseline_stats_key: str = "shentong:baseline:stats"  # 检测器侧基线计数（界面看活性）
+    # 数值基线保留期（天）：key = `{src_ip}:{feature}`，被扫过一次的 IP（尤其外网/攻击者）
+    # 会永久留下 3 行，不清就是只增不减（2026-10 实机 QA：6 小时就 486 个 IP / 1458 行）。
+    # 必须 > baseline_observe_days，否则还没判过异常就被清掉。
+    baseline_retention_days: int = 90
     profile_enabled: bool = True
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
     profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）
+    # 「当前风险」的有效期（分钟）：超过这么久没被判过风险，就不再算「当前风险」。
+    # 为什么要它（2026-10 实机 QA）：归零只在「该实体又被观测到」时发生，实体一去不回
+    # （会话结束）就会把几小时前的陈旧风险永久挂在「画像风险 TOP」上。0 = 不过滤（当历史看）。
+    profile_risk_ttl_minutes: int = 60
     profile_retention_days: int = 180  # 画像保留期（到期清理）
+    # 「非常用时段」判据的两个门槛（2026-10 实机 QA 新增）：分母只算历史里出现过的时段，
+    # 所以每个整点的新时段恒为 0% < 1% —— 不加门槛就是「每个整点、每个活跃实体报一次」
+    # （实测 risk>0 的 54 条里 40 条是这个原因，10~15 时每档 3~9 个，明显整点批量）。
+    profile_hour_min_coverage: int = 8  # 至少见过这么多个不同时段才判时段异常
+    profile_hour_min_age_hours: int = 24  # 画像建立不足这么久不判时段（第一天必然全是「新时段」）
     session_cookie_names: str = (
         "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
     )

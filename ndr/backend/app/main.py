@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 _MIGRATIONS: tuple[str, ...] = (
     # MCP 令牌过期（到期判定在 mcp/auth.py）：可空 = 永不过期
     "ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+    # 画像风险分的判定时间（2026-10 实机 QA）：只有它有「当前风险」的时间语义，
+    # updated_at 每轮观测都刷新，不能当风险时间用
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS risk_at TIMESTAMPTZ",
+    # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
+    "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
+    "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
 )
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）

@@ -503,12 +503,35 @@ export function StatusPanel() {
           </div>
 
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <ChartCard title="基线维度结构" option={charts.baseline} height={180} />
+            <ChartCard
+              title="基线维度结构"
+              extra={
+                baseline ? (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    观测期 {baseline.observe_days} 天 · 已预热 {baseline.stats.warmed_keys} /
+                    {baseline.stats.total_keys} 个维度
+                  </span>
+                ) : null
+              }
+              option={charts.baseline}
+              height={180}
+            />
             <ChartCard
               title="画像风险 TOP"
+              extra={
+                /* 口径：风险分是「当前窗口」的值（本轮无异常就归零），所以卡上必须说明，
+                   免得把 tooltip 里的判定时间当成多余信息。 */
+                <span className="text-xs font-normal text-muted-foreground">
+                  风险分按当前窗口算，本轮无理由即归零（判定时间见 tooltip）
+                </span>
+              }
               option={charts.anomalies}
               height={180}
-              empty={baseline?.anomalies.items.length ? undefined : "暂无过阈值画像（观测期内的维度不参与判定）"}
+              empty={
+                baseline?.anomalies.items.length
+                  ? undefined
+                  : "暂无过阈值画像（风险分按当前窗口算；观测期内的维度不参与判定）"
+              }
             />
           </div>
 

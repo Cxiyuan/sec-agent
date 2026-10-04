@@ -69,6 +69,15 @@ function clockOf(ts: number | undefined): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** ISO 时间戳 → `MM-DD HH:MM`（画像风险的判定时间）。空值/脏值一律给 `-`，不显示 NaN。 */
+function stampOf(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function hourOf(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -498,24 +507,45 @@ export function baselineOption(baseline: BaselinePayload | null): EChartsOption 
   };
 }
 
-/** 画像风险 TOP N（横向条 + 阈值线）。 */
+/** 画像风险 TOP N（横向条 + 阈值线）。
+ *
+ * tooltip 里带**判定时间**：风险分是「当前窗口」的值（本轮无异常就归零），没有这个时间
+ * 就无法区分「现在异常」和「几小时前的陈旧结果」。
+ */
 export function anomalyOption(baseline: BaselinePayload | null, top = 8): EChartsOption {
-  const items = (baseline?.anomalies.items || [])
+  const rows = (baseline?.anomalies.items || [])
     .slice(0, top)
-    .map((p) => [String(p.entity_display || p.entity_key || "?"), Number(p.risk_score || 0)] as [string, number])
+    .map((p) => ({
+      name: String(p.entity_display || p.entity_key || "?"),
+      kind: p.kind === "account" ? "账号" : "会话",
+      risk: Number(p.risk_score || 0),
+      at: stampOf(p.risk_at),
+      reasons: p.anomalies || [],
+    }))
     .reverse();
   const threshold = baseline?.risk_threshold ?? 0.6;
   return {
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (v: unknown) => Number(v).toFixed(2) },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: unknown) => {
+        const list: unknown[] = Array.isArray(params) ? params : [params];
+        const first = list[0] as { dataIndex?: number } | undefined;
+        const row = rows[first?.dataIndex ?? 0];
+        if (!row) return "";
+        const why = row.reasons.length ? `<br/>${row.reasons.slice(0, 3).join("；")}` : "";
+        return `${row.kind} ${row.name}<br/>风险 ${row.risk.toFixed(2)}（判定 ${row.at}）${why}`;
+      },
+    },
     grid: { left: 8, right: 30, top: 8, bottom: 8, containLabel: true },
     xAxis: { ...VAL, max: 1 },
-    yAxis: { ...AXIS, data: items.map(([name]) => name) },
+    yAxis: { ...AXIS, data: rows.map((r) => r.name) },
     series: [
       {
         type: "bar",
         barMaxWidth: 14,
         itemStyle: { color: "#f97316" },
-        data: items.map(([, v]) => v),
+        data: rows.map((r) => r.risk),
         markLine: {
           silent: true,
           symbol: "none",
