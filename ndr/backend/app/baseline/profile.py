@@ -106,11 +106,12 @@ def _path_regexes() -> tuple[re.Pattern[str] | None, re.Pattern[str] | None]:
 
 
 def api_path(path: str) -> bool:
-    """这条路径要不要计进画像（只留接口、排掉静态资源）。
+    """这条路径要不要计进画像（只留接口、排掉静态资源与页面）。
 
     为什么要排：前端 js/css/图片/字体访问次数天然最多，会把 30 条上限占满
     （2026-10 实机：会话画像的 paths 里全是前端 js 与字体，如 /static/app.js、
-    /assets/font.woff2），有价值的接口路径反而被挤出去。两个正则都能在配置里改。
+    /assets/font.woff2），有价值的接口路径反而被挤出去。两个正则都能在配置里改；
+    默认**只用排除名单**（include 为空），因为实测真实接口不一定会带 `/api/`。
     """
     text = (path or "").strip()
     if not text:
@@ -391,6 +392,16 @@ def _merge(base: Any, add: Counter, limit: int) -> dict[str, int]:
     return dict(sorted(merged.items(), key=lambda item: -item[1])[:limit])
 
 
+def _kept_paths(paths: Any) -> dict[str, int]:
+    """把库里已有的路径按当前口径再过一遗（自愈）。
+
+    为什么要过：口径是后加上的，老库里已经存了一堆静态资源路径（实测某环境有 5237 条
+    不含 `/api/` 的旧值：.css/.png/页面）。合并前先剔掉，否则 30 条上限永远被它们占着，
+    新口径等于没生效。（不需要额外的数据迁移：每个画像被再次观测时就自愈一次。）
+    """
+    return {k: _safe_int(v) for k, v in dict(paths or {}).items() if api_path(k)}
+
+
 def update_profiles(
     observations: dict[str, dict[str, Any]],
     risks: dict[str, dict[str, Any]] | None = None,
@@ -433,7 +444,7 @@ def update_profiles(
                 row.user_agents = _merge(
                     row.user_agents, obs["user_agents"], _LIMITS["user_agents"]
                 )
-                row.paths = _merge(row.paths, obs["paths"], _LIMITS["paths"])
+                row.paths = _merge(_kept_paths(row.paths), obs["paths"], _LIMITS["paths"])
                 row.hour_hist = _merge(row.hour_hist, obs["hours"], _LIMITS["hour_hist"])
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])
                 row.fail_count = (row.fail_count or 0) + _safe_int(obs["fail"])

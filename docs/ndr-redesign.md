@@ -841,11 +841,17 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 - **会话画像仍在算**：摘要标签（`baseline.profiles`）与 MCP `entity_profile` 都还看得到会话异常 ——
   只改「展示」，不动检测能力，包括 MCP 的 `anomalies_only`。
 
-**二、增加拿路径判异常，只留 `/api/` 这类接口、过滤静态资源**。
+**二、增加拿路径判异常，只留接口、过滤静态资源**。
 
-- 实机证据：会话画像的 `paths` 里全是前端 js 与字体（次数最多，把 30 条上限占满了），有价值的接口路径反而进不来。
-- 采集侧就过滤：`api_path()` 按 `ST_PROFILE_PATH_INCLUDE_REGEX`（默认 `(?i)/api/`）+ `ST_PROFILE_PATH_EXCLUDE_REGEX`
-  （静态资源后缀）决定要不要记；两个正则都能改，任一为空 = 那一步不过滤。
+- 实机证据：会话画像的 `paths` 里全是前端 js/css/图片/字体（次数最多，把 30 条上限占满了），有价值的接口路径反而进不来。
+- 采集侧就过滤：`api_path()` 按 `ST_PROFILE_PATH_INCLUDE_REGEX` + `ST_PROFILE_PATH_EXCLUDE_REGEX`
+  决定要不要记；任一为空 = 那一步不过滤。
+- **默认只用排除名单（include 留空）—— 与用户字面口径的差异，有实机证据**：部署后一查库，该环境的真实接口是
+  `/seeyon/rest/…`、`/pty/mad/user/…`，**不含 `/api/`**；若默认要求 `/api/`，会把真实接口全滤光、一个异常也报不出来，
+  而该滤的 `.css/.png` 反倒留着。所以默认排掉静态资源与页面后缀（`.js/.css/图片/字体/.html/.jsp/.php/.do…`），
+  要再窄化就填 include。（库里当时已积了 5237 条不合口径的旧路径值。）
+- **老数据自愈**：`update_profiles` 合并前先按当前口径过一遍已有的 `paths`（`_kept_paths`），
+  静态路径在该画像再次被观测时被剔掉，不需要额外的数据迁移。
 - 新增判据「新接口路径」+0.25，且要求画像已认识 ≥`ST_PROFILE_PATH_MIN_KNOWN`（默认 3）条，
   否则刚建的画像「第一条路径就是新的」等于白报。MCP 的权重说明同步。
 

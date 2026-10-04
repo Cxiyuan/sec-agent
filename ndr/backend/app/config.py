@@ -253,14 +253,19 @@ class Settings(BaseSettings):
     profile_hour_min_coverage: int = 8  # 至少见过这么多个不同时段才判时段异常
     profile_hour_min_age_hours: int = 24  # 画像建立不足这么久不判时段（第一天必然全是「新时段」）
     # ---- 路径判据（「新接口路径」）----
-    # 只记录与判定 **API 形态**的路径：前端 js/css/图片/字体访问次数天然最多，
+    # 只记录与判定 **接口形态**的路径：前端 js/css/图片/字体访问次数天然最多，
     # 会把 30 条上限占满（2026-10 实机：会话画像的 paths 里全是前端 js 与字体，如
     # /static/app.js、/assets/font.woff2），有价值的接口路径反而被挤出去 —— 这份数据就废了。
-    # 两个正则都可改：include 为空 = 不过滤（保留全部路径），exclude 为空 = 不排静态资源。
-    profile_path_include_regex: str = r"(?i)/api/"  # 只留这类接口路径（空 = 全留）
+    #
+    # 默认**只用排除名单**（静态资源/页面后缀），include 故意留空：
+    # 实测某环境的真实接口是 /seeyon/rest/…、/pty/mad/user/…，**不含** /api/ —— 若默认要求
+    # `/api/`，会把真实接口全滤光、一个异常也报不出来，而该滤的 .css/.png 反倒留着。
+    # 要再窄化（比如只关心某个前缀）就填 include；任一为空 = 那一步不过滤。
+    profile_path_include_regex: str = ""  # 空 = 不按形态要求（只靠下面的排除名单）
     profile_path_exclude_regex: str = (
         r"(?i)\.(js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|bmp|avif|woff2?|ttf|eot|otf|"
-        r"mp[34]|avi|mov|zip|gz|tgz|tar|rar|7z|pdf|docx?|xlsx?|pptx?|html?)(\?|$|#)"
+        r"mp[34]|avi|mov|zip|gz|tgz|tar|rar|7z|pdf|docx?|xlsx?|pptx?|"
+        r"html?|jsp|asp|aspx|php|do|action|cgi)(\?|$|#)"
     )
     profile_path_min_known: int = 3  # 至少已知这么多条接口路径才判「新路径」
     session_cookie_names: str = (

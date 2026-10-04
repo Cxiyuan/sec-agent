@@ -335,9 +335,10 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     新源 IP 对 v6 只看 **/64 前缀**（RFC 4941 隐私地址在同一 /64 里轮换，不算换客户端）
   - **非常用时段要看门槛**：见过 ≥`ST_PROFILE_HOUR_MIN_COVERAGE` 个不同时段、且画像建立满
     `ST_PROFILE_HOUR_MIN_AGE_HOURS` 小时才判（否则每个整点、每个活跃实体各报一次）
-  - **只收接口路径**：`paths` 只记命中 `ST_PROFILE_PATH_INCLUDE_REGEX`（默认 `/api/`）且不在
-    `ST_PROFILE_PATH_EXCLUDE_REGEX`（静态资源后缀）里的路径，已知 ≥`ST_PROFILE_PATH_MIN_KNOWN` 条才判「新接口路径」。
-    不收的话前端 js/字体（次数最多）会把 30 条上限占满，有价值的接口路径反而进不来
+  - **只收接口路径**：`paths` 只记**不是静态资源/页面**的路径（`ST_PROFILE_PATH_EXCLUDE_REGEX`，默认排 `.js/.css/图片/字体/.html/.jsp` 等），
+    已知 ≥`ST_PROFILE_PATH_MIN_KNOWN` 条才判「新接口路径」。默认**不要求路径含 `/api/`**：实测真实接口常常不带它
+    （如 `/seeyon/rest/…`、`/pty/…`），按字面只留 `/api/` 会把真实接口全滤光；要再窄化就填 `ST_PROFILE_PATH_INCLUDE_REGEX`。
+    老库里已经存下的静态路径会在该画像再次被观测时被剔掉（自愈，不用手工迁移）
   - **风险分按当前窗口**：本轮没理由就归零 + 清空理由，判定时间落 `risk_at`（`updated_at` 每轮观测都刷新，
     不能当风险时间用）；「画像风险 TOP」只列 `risk_at` 在 `ST_PROFILE_RISK_TTL_MINUTES` 内的
   - **界面只展示账号画像**（标签带关联服务端 IP）：会话展示名是 cookie 哈希前 8 位，运维看不懂；
@@ -405,7 +406,7 @@ NDR 线路（采集与检测）：
 | `ST_PROFILE_HOUR_MIN_COVERAGE` | 8 | 「非常用时段」判据的门槛之一：至少要见过这么多个**不同**时段才判。不加门槛就是整点批量误报 —— 分母只算历史出现过的时段，新时段恒为 0% < 1% |
 | `ST_PROFILE_HOUR_MIN_AGE_HOURS` | 24 | 「非常用时段」判据的门槛之二：画像建立不足这么久不判（否则上线第一天每个整点都是「新时段」） |
 | `ST_PROFILE_RISK_THRESHOLD` | 0.6 | 画像异常风险分阈值（达到才报） |
-| `ST_PROFILE_PATH_INCLUDE_REGEX` / `_EXCLUDE_REGEX` | `(?i)/api/` / 静态资源后缀 | **接口路径过滤**：`paths` 只记命中 include 且不在 exclude 里的路径（include 空 = 全留）。不收静态资源，否则前端 js/字体把 30 条上限占满 |
+| `ST_PROFILE_PATH_INCLUDE_REGEX` / `_EXCLUDE_REGEX` | 空 / 静态资源与页面后缀 | **接口路径过滤**：`paths` 只记不在 exclude 里、且（若填了 include）命中 include 的路径。**默认 include 留空**：实测真实接口不一定会带 `/api/`（如 `/seeyon/rest/…`），按字面只留 `/api/` 会把真实接口全滤掉；exclude 把 js/css/图片/字体/页面排掉，避免它们占满 30 条上限 |
 | `ST_PROFILE_PATH_MIN_KNOWN` | 3 | 已知接口路径 ≥ 这么多条才判「新接口路径」（刚建的画像第一条不算异常） |
 | `ST_PROFILE_RETENTION_DAYS` | 180 | 画像保留期（到期清理） |
 | `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,… | 会话 cookie 名单（命中才按会话建画像；**先哈希再落库**） |

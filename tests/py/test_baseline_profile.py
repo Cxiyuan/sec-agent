@@ -198,13 +198,24 @@ def test_missing_profile_is_cold_start(profiles: ModuleType) -> None:
 
 
 def test_api_path_keeps_interfaces_drops_static(profiles: ModuleType) -> None:
-    """只留接口、排静态资源（实机 paths 里全是 js/woff2，把 30 条上限占满了）。"""
-    keep = ["/portal/PortalApi/api/Account/Login", "/api/v2/users", "/api/v2/users?page=2"]
+    """只留接口、排静态资源与页面（实机 paths 里全是 js/css/png，把 30 条上限占满了）。
+
+    注意接口路径**不一定带 /api/**：实测某环境真实接口是 /seeyon/rest/…、/pty/…，
+    所以默认只用排除名单（include 为空）。
+    """
+    keep = [
+        "/seeyon/rest/officePlugins/personal/settings",
+        "/pty/mad/user/agyInfo/menuList",
+        "/api/v2/users",
+        "/api/v2/users?page=2",
+    ]
     drop = [
+        "/seeyon/common/ctpUi/dist/css/ctpUi.css",
+        "/selfservice/common/self/img/index_subpage_content_border_1.png",
         "/static/js/app.60735aa5.js",
         "/assets/fonts/iconfont.e2dfd4b7.woff2",
         "/portal/index.html",
-        "/portal/Account/ToLogin",  # 页面，不是接口
+        "/portal/login.jsp",
         "/static/logo.png?hash=1",
         "",
     ]
@@ -260,6 +271,22 @@ def test_known_api_path_is_not_reported(profiles: ModuleType) -> None:
     prof = _profile(profiles, paths={"/api/a": 10, "/api/b": 10, "/api/c": 10})
     out = profiles.detect("account", _obs(kind="account", paths=["/api/a"]), prof)
     assert "新接口路径" not in _reasons(out)
+
+
+def test_update_profiles_prunes_stale_static_paths(
+    profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自愈：老库里存的静态资源路径要在再次观测时被剔掉（否则 30 条上限永远被占着）。
+
+    实测某环境库里积了 5237 条不合口径的旧值（.css/.png/页面）。
+    """
+    row = _profile(profiles)
+    row.paths = {"/seeyon/rest/keep": 5, "/seeyon/x/ctpUi.css": 99, "/img/a.png": 88}
+    monkeypatch.setattr(profiles, "SessionLocal", lambda: _FakeSession(row))
+    profiles.update_profiles({"session|k": _obs(paths=["/seeyon/rest/keep"])}, {})
+    assert "/seeyon/x/ctpUi.css" not in row.paths
+    assert "/img/a.png" not in row.paths
+    assert row.paths["/seeyon/rest/keep"] == 6
 
 
 def test_update_profiles_merges_dst_ips(
