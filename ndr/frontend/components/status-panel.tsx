@@ -388,9 +388,25 @@ export function StatusPanel() {
             />
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            <ChartCard title="24h 命中与摘要趋势" option={charts.rateTrend} empty={historyItems.length ? undefined : noHistory} />
-            <ChartCard title="24h 严重度分布" option={charts.severity} empty={historyItems.length ? undefined : noHistory} />
-            <ChartCard title="规则 TOP 15" option={charts.ruleTop} empty={historyItems.length ? undefined : noHistory} />
+            {/* 三张图同高（饼图要留位置给指引线，行内其余两张跟着对齐） */}
+            <ChartCard
+              title="24h 命中与摘要趋势"
+              option={charts.rateTrend}
+              height={280}
+              empty={historyItems.length ? undefined : noHistory}
+            />
+            <ChartCard
+              title="24h 严重度分布"
+              option={charts.severity}
+              height={280}
+              empty={historyItems.length ? undefined : noHistory}
+            />
+            <ChartCard
+              title="规则 TOP 15"
+              option={charts.ruleTop}
+              height={280}
+              empty={historyItems.length ? undefined : noHistory}
+            />
           </div>
         </Section>
 
@@ -408,7 +424,7 @@ export function StatusPanel() {
                   ) : null
                 }
                 option={charts.traffic}
-                height={260}
+                height={300}
                 empty={trafficPoints.length ? undefined : noTraffic}
               />
             </div>
@@ -425,7 +441,7 @@ export function StatusPanel() {
                 ) : null
               }
               option={charts.protocols}
-              height={260}
+              height={300}
               empty={overview?.protocols?.items?.length ? undefined : noTraffic}
             />
           </div>

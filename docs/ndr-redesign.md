@@ -799,6 +799,15 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 **修订（同日，用户口径）：严重度分布与协议占比改成实心饼图**。原来两张图都是圆环（`radius: ["45%", "68%"]` / `["42%", "66%"]`），用户要求**实心圆形**显示比例。`components/status-charts.ts` 的 `severityOption` 与 `protocolPieOption` 改成单值半径（`"68%"` / `"66%"`），中心点与图例不动；圆环只留给真正该是环的图（CPU/内存/磁盘、队列/投递容量、投递覆盖率），它们表达的是「占了多少额度」，有中心数字的需求。
 
+**再修订（同日，用户口径）：两张饼图加指针（指引线）+ 旁边文字**。两张图不能只靠 tooltip/图例，要用指针把每块的内容标在圆外：
+
+- `severityOption`：`label.formatter = "{b} {c} 条 ({d}%)"`（5 个严重度，连带条数一起标）；
+- `protocolPieOption`：`label.formatter = "{b} {d}%"`，另设 `minShowLabelAngle: 6`——协议是长尾，`quic 0.02%` 这类小块的标签会把图糊满，所以**角度小于 6° 的块不标**（块本身仍在图上，看 tooltip/图例）；
+- 两者都开 `labelLine`（`length: 8, length2: 10, smooth: true`）+ `labelLayout.hideOverlap`，并 `avoidLabelOverlap`；
+- **半径从无标签时的 68%/66% 收到 52%/50%、中心点上移到 46%**：不收小就没有位置放指针与文字。
+- 卡片加高（饼图 260 → 300；严重度那一行三张同高 220 → 280），否则标签会被挤在图里。
+- 四个新用到的键（`minShowLabelAngle`/`labelLayout`/`labelLine`/`avoidLabelOverlap`）已在本仓 `node_modules/echarts/types` 里逐个核对存在，不靠猜。
+
 
 ### 每期收尾门禁
 

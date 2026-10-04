@@ -100,7 +100,12 @@ def test_shape_traffic_computes_bytes_per_sec(stats: ModuleType) -> None:
                 "bytes_out": {"value": 7200},
                 "bytes_in": {"value": 3600},
             },
-            {"key_as_string": "2026-10-04T11:00:00.000Z", "doc_count": 0, "bytes_out": {}, "bytes_in": {}},
+            {
+                "key_as_string": "2026-10-04T11:00:00.000Z",
+                "doc_count": 0,
+                "bytes_out": {},
+                "bytes_in": {},
+            },
         ]
     )
     out = stats.shape_traffic(resp, hours=2)
@@ -169,7 +174,9 @@ def test_shape_protocols_names_empty_log_type(stats: ModuleType) -> None:
 # ---------- 缓存 ----------
 
 
-def test_endpoint_caches_and_reports_hit(stats: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_endpoint_caches_and_reports_hit(
+    stats: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls = {"n": 0}
 
     def fake_fetch(hours: int) -> dict[str, Any]:
@@ -177,7 +184,13 @@ def test_endpoint_caches_and_reports_hit(stats: ModuleType, monkeypatch: pytest.
         return {
             "hours": hours,
             "traffic": {"points": [], "total_docs": 0, "total_bytes": 0, "avg_bytes_per_sec": 0.0},
-            "protocols": {"total": 0, "other_docs": 0, "items": [], "excluded_docs": 0, "excluded_percent": 0.0},
+            "protocols": {
+                "total": 0,
+                "other_docs": 0,
+                "items": [],
+                "excluded_docs": 0,
+                "excluded_percent": 0.0,
+            },
             "computed_at": "x",
             "cached": False,
             "error": "",

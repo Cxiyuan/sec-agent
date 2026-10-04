@@ -173,10 +173,18 @@ export function severityOption(items: DetectorHistoryPoint[]): EChartsOption {
       {
         type: "pie",
         // 实心饼图（用户口径：严重度分布要实心圆，不要圆环）
-        radius: "68%",
-        center: ["50%", "44%"],
+        // 半径收小是给外面的指引线+文字留位置（原先无标签时是 68%）
+        radius: "52%",
+        center: ["50%", "46%"],
         avoidLabelOverlap: true,
-        label: { show: false },
+        // 指针（指引线）+ 旁边文字：直接标出每块是什么、占多少
+        label: {
+          show: true,
+          fontSize: 10,
+          formatter: "{b} {c} 条 ({d}%)",
+        },
+        labelLine: { show: true, length: 8, length2: 10, smooth: true },
+        labelLayout: { hideOverlap: true },
         data: data.filter((d) => d.value > 0),
       },
     ],
@@ -263,9 +271,20 @@ export function protocolPieOption(share: ProtocolShare | undefined): EChartsOpti
       {
         type: "pie",
         // 实心饼图（用户口径：协议占比要实心圆，不要圆环）
-        radius: "66%",
-        center: ["50%", "44%"],
-        label: { show: false },
+        // 半径收小是给外面的指引线+文字留位置（原先无标签时是 66%）
+        radius: "50%",
+        center: ["50%", "46%"],
+        avoidLabelOverlap: true,
+        // 指针（指引线）+ 旁边文字。协议是长尾：**太小的塊不标**（否则 quic 0.02%
+        // 这类标签会把图糊满），它们仍留在图上，看 tooltip/图例即可
+        minShowLabelAngle: 6,
+        label: {
+          show: true,
+          fontSize: 10,
+          formatter: "{b} {d}%",
+        },
+        labelLine: { show: true, length: 8, length2: 10, smooth: true },
+        labelLayout: { hideOverlap: true },
         data,
       },
     ],

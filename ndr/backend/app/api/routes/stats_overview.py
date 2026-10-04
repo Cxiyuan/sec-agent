@@ -118,10 +118,9 @@ def _float_of(value: Any, default: float = 0.0) -> float:
 
 def shape_traffic(resp: Any, *, hours: int) -> dict[str, Any]:
     """ES 响应 → 逐小时点（含字节/秒）与合计。"""
-    buckets = (
-        (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_hour") or {}).get("buckets")
-        or []
-    )
+    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_hour") or {}).get(
+        "buckets"
+    ) or []
     points: list[dict[str, Any]] = []
     total_bytes = 0
     total_docs = 0
