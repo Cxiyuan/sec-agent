@@ -274,7 +274,11 @@ BUILTIN_RULES: list[dict] = [
                 },
                 {"field": "user_agent", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "referer", "op": "regex", "value": "(?i)\\$\\{jndi:"},
-                {"field": "query", "op": "regex", "value": "(?i)(\\bognl\\b|\\bspel\\b|%24%7bjndi)"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(\\bognl\\b|\\bspel\\b|%24%7bjndi)",
+                },
                 # CVE-2021-44228 的头注入向量：Zeek 的头值只在 req_headers/resp_headers 里
                 {"field": "req_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "resp_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
@@ -377,7 +381,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(%0d%0a|%0a|\\r\\n)(set-cookie|location|content-length|refresh|http/1\\.)"},
+                {
+                    "field": "query",
+                    "op": "regex",
+                    "value": "(?i)(%0d%0a|%0a|\\r\\n)(set-cookie|location|content-length|refresh|http/1\\.)",
+                },
                 {
                     "field": "body",
                     "op": "regex",
@@ -400,7 +408,11 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()",
                 },
-                {"field": "body", "op": "regex", "value": "(?i)(\\)\\(\\||\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()"},
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)(\\)\\(\\||\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()",
+                },
             ],
         },
     },
@@ -504,7 +516,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)filename\\s*=\\s*\"[^\"]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)\"",
+                    "value": '(?i)filename\\s*=\\s*"[^"]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)"',
                 },
                 {"field": "status_code", "op": "in", "value": [200, 201, 202, 204]},
             ],
@@ -729,9 +741,17 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 # `.do$` / `.action$` 是遗留 Java 应用的**正常**请求后缀（评审 P1）；
                 # rememberMe= 与 内置-反序列化特征 重复且优先级更低（p10 vs p8），只留前者。
-                {"field": "uri_path", "op": "regex", "value": "(?i)(/struts/|/weaver/|/e-mobile/|/mobile/plugin/)"},
+                {
+                    "field": "uri_path",
+                    "op": "regex",
+                    "value": "(?i)(/struts/|/weaver/|/e-mobile/|/mobile/plugin/)",
+                },
                 # ThinkPHP 的 `?s=index/...`：uri_path 已去查询串，必须走 query_string
-                {"field": "query_string", "op": "regex", "value": "(?i)(^|&)s=/?(index|home|user|api)/"},
+                {
+                    "field": "query_string",
+                    "op": "regex",
+                    "value": "(?i)(^|&)s=/?(index|home|user|api)/",
+                },
                 {"field": "body", "op": "regex", "value": "(?i)(@type.*com\\.sun|fastjson|jndi:)"},
                 {"field": "uri_path", "op": "regex", "value": "(?i)(/seeyon/|/shiro/)"},
             ],
@@ -844,7 +864,11 @@ BUILTIN_RULES: list[dict] = [
             # `src_ip exists` 是恒真条件（评审 P0-3）：那等于「无条件按源计数」，
             # 监控/备份/代理/NAT 全部命中。改为只统计「未建立的连接」。
             "rules": [
-                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
+                {
+                    "field": "event_type",
+                    "op": "in",
+                    "value": ["scan_attempt", "rejected_connection"],
+                },
             ],
         },
     },
@@ -875,7 +899,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             # 只认 S0 会漏掉 REJ/RSTOS0/RSTRH 型扫描（conn_states 表）
             "rules": [
-                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection", "port_scan"]},
+                {
+                    "field": "event_type",
+                    "op": "in",
+                    "value": ["scan_attempt", "rejected_connection", "port_scan"],
+                },
             ],
         },
     },
@@ -1066,7 +1094,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)\"(pass(word|wd)?|pwd)\"\\s*:\\s*\"(admin|123456|root|test|guest|admin123)\"",
+                    "value": '(?i)"(pass(word|wd)?|pwd)"\\s*:\\s*"(admin|123456|root|test|guest|admin123)"',
                 },
             ],
         },
@@ -1640,7 +1668,11 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
                 # 服务器回包/正常会话也会计入（评审 P1）：只看未建立的连接
-                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
+                {
+                    "field": "conn_state",
+                    "op": "in",
+                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"],
+                },
             ],
         },
     },
@@ -1662,7 +1694,11 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "log_type", "op": "eq", "value": "conn"},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
-                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
+                {
+                    "field": "conn_state",
+                    "op": "in",
+                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"],
+                },
             ],
         },
     },
@@ -1697,7 +1733,11 @@ BUILTIN_RULES: list[dict] = [
             "min_distinct": 20,
             "logic": "and",
             "rules": [
-                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
+                {
+                    "field": "event_type",
+                    "op": "in",
+                    "value": ["scan_attempt", "rejected_connection"],
+                },
             ],
         },
     },

@@ -766,7 +766,13 @@ def _handle(
         if freq.observe(rule, entry):
             stats["freq_hit"] += 1
             _aggregate(
-                agg, entry, rule, entry.raw, source, stats=stats, **_exclusion_of(entry, rule, stats)
+                agg,
+                entry,
+                rule,
+                entry.raw,
+                source,
+                stats=stats,
+                **_exclusion_of(entry, rule, stats),
             )
 
 

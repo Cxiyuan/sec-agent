@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     detector_raw_queue: str = "shentong:events:raw"
     detector_digest_queue: str = "shentong:events:digest"
     detector_processing_queue: str = "shentong:events:processing"
-    detector_delivery_queue: str = "shentong:events:dispatch"  # 旧投递队列（第 5 期回退通道；新 agent 不消费）
+    detector_delivery_queue: str = (
+        "shentong:events:dispatch"  # 旧投递队列（第 5 期回退通道；新 agent 不消费）
+    )
     detector_handled_key: str = "shentong:handled:docs"
     detector_drop_key: str = "shentong:detector:dropped"  # 丢弃计数（跨重启可查）
     detector_dedup_key: str = "shentong:detector:dedup"  # 去重拦下计数（第 5 期起只读历史值）
@@ -70,7 +72,9 @@ class Settings(BaseSettings):
     # 误报治理（策略级）：判据集中在 triage_policy，全部环境无关、可后台调；两侧一致
     policy_internal_routine_skip: bool = True
     # 按名跳过（名字必须与 app/rules/builtin.py 的 `Rule.name` 逐字一致，写错会静默无效）。
-    policy_skip_rules: list[str] = ["内置-扫描尝试连接"]  # 只能放 severity < policy_internal_routine_min_severity 的规则
+    policy_skip_rules: list[str] = [
+        "内置-扫描尝试连接"
+    ]  # 只能放 severity < policy_internal_routine_min_severity 的规则
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True
@@ -211,7 +215,9 @@ class Settings(BaseSettings):
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
     profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）
     profile_retention_days: int = 180  # 画像保留期（到期清理）
-    session_cookie_names: str = "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
+    session_cookie_names: str = (
+        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
+    )
 
     # 采集侧归一化服务（Filebeat → Redis → 归一化 → Logstash → ES）
     collector_collect_queue: str = "shentong:events:collect"  # Filebeat 写入的原始日志
