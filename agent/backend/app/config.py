@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # 误报治理（判据集中在 triage_policy，两侧一致）；名字必须与 app/rules/builtin.py 逐字一致
     policy_internal_routine_skip: bool = True
-    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-恶意文件传输"]
+    policy_skip_rules: list[str] = ["内置-扫描尝试连接"]  # 只能放 severity < policy_internal_routine_min_severity 的规则
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True
@@ -91,7 +91,10 @@ class Settings(BaseSettings):
     # 留空 = 不信任任何代理头（fail-closed，见 ingestion/normalizer.py）。
     zeek_trusted_proxies: str = ""
     web_login_path_regex: str = (
-        "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
+        # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
+        # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
+        "(?i)(^|/)(login|signin|sign-in|sign_in|wp-login|auth|authorize|authenticate"
+        "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
     max_logs_per_window: int = 20000
     exclusion_cache_seconds: int = 30

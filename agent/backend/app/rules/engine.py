@@ -89,15 +89,29 @@ def _text_candidates(log: UnifiedLog, field: str, extra: dict[str, Any] | None =
 def _match(cond: dict[str, Any], log: UnifiedLog, extra: dict[str, Any] | None = None) -> bool:
     field = cond.get("field")
     op = cond.get("op", "eq")
+    # 条件必须指定字段名：`whitelist: [{}]` 这类空条件以前会静默全命中（`None == None`），
+    # 让整条规则永不生效。宁可不求值，也不静默命中。
+    if not isinstance(field, str) or not field:
+        return False
     expected = cond.get("value")
-    actual = _get_field(log, field, extra) if field else None
+    actual = _get_field(log, field, extra)
 
     if op == "exists":
-        # 非空才算存在（空字符串不应视为存在，否则 JA3/MITRE 等规则会全量误报）
-        return actual is not None and str(actual).strip() != ""
+        # 非空才算存在（空字符串不应视为存在，否则 JA3/MITRE 等规则会全量误报）。
+        # 布尔值算存在：`file_is_orig` 的 False 是有效取值（=服务端下发），不是"缺失"。
+        if actual is None:
+            return False
+        return not (isinstance(actual, str) and actual.strip() == "")
     if op == "eq":
+        # 缺值不算相等：错字段名（getattr → None）配 `value: null` 会静默全命中
+        if actual is None or expected is None:
+            return False
         return actual == expected
     if op == "ne":
+        # 字段缺失（None 或空串）时**不算**"不等于任何值"（否则 `auth_scheme ne basic`
+        # 在空值上恒真，等于把"没带认证头"当成"不是 Basic 认证"放行 —— 见 2026-10 规则评审）
+        if actual is None or (isinstance(actual, str) and actual.strip() == ""):
+            return False
         return actual != expected
     if op == "contains":
         return any(str(expected) in text for text in _text_candidates(log, str(field or ""), extra))
@@ -248,15 +262,13 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
 # 在 Wazuh 告警上永不求值，所以这些字段与 wazuh 并列。
 _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     # http / wazuh 共有的 Web 字段
-    "uri": ("http",),
     "uri_path": ("http", "wazuh"),
     "query_string": ("http", "wazuh"),
     "method": ("http", "wazuh"),
     "status_code": ("http", "wazuh"),
     "user_agent": ("http", "wazuh"),
     "body": ("http", "wazuh"),
-    "request_body_len": ("http",),
-    "response_body_len": ("http",),
+    "content_type": ("http", "wazuh"),
     "resp_body": ("http",),
     "resp_body_len": ("http",),
     "req_headers": ("http",),
@@ -265,18 +277,15 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     # dns：`query` 在 dns.log 里是域名，在 http / Wazuh 里是完整 URL，
     # 所以只引用 query 的规则（开放重定向、URL 里的 token）要一并挂 http / wazuh。
     "query": ("dns", "http", "wazuh"),
-    "rcode": ("dns",),
     "qtype": ("dns",),
-    "answers": ("dns",),
-    # conn
+    # conn：`dst_ip` 本身全来源都有（属通用字段），但把它登记成 conn 的 owner 是为了让
+    # 「query/body 命中 + dst_ip 命中」这类 OR 规则**在 conn 日志上也求值** ——
+    # 否则 SSRF/云元数据（builtin.py:308/660）的 `dst_ip eq 169.254.169.254` 分支在
+    # conn 上永不求值（真实取证路径漏报，2026-10 规则评审 P0-4）。只加不减，安全。
+    "dst_ip": ("conn",),
     "conn_state": ("conn",),
-    "duration": ("conn",),
-    "orig_bytes": ("conn",),
-    "resp_bytes": ("conn",),
     "bytes_out": ("conn",),
     "bytes_in": ("conn",),
-    "proto": ("conn",),
-    "service": ("conn",),
     # files
     "mime_type": ("files",),
     "filename": ("files",),
@@ -289,13 +298,13 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "extracted": ("files",),
     "extracted_size": ("files",),
     "extracted_cutoff": ("files",),
-    "seen_bytes": ("files",),
     # ssl
-    "server_name": ("ssl",),
     "ja3": ("ssl",),
     "ja3s": ("ssl",),
     "ja4": ("ssl",),
-    "issuer": ("ssl",),
+    "tls_version": ("ssl",),
+    "cert_issuer": ("ssl",),
+    "cert_self_signed": ("ssl",),
 }
 _COMMON_FIELDS = {
     "src_ip",
@@ -350,10 +359,16 @@ def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
             for c in (cond.get("rules") or [])
             if isinstance(c, dict) and c.get("field") == "log_type" and c.get("op") == "eq"
         }
-        owner: set[str] = set(explicit)
-        if not owner:
-            for field in fields:
-                owner.update(_FIELD_TYPES.get(field, ()))
+        # 显式写了 `log_type == X` 就是规则作者的明确意图，必须是**权威**的：
+        # 以前的顺序是先判通配、再看 explicit，结果「log_type eq wazuh + 通用字段」的规则
+        # 反而被归进通配集合（每条日志都跑）—— 显式意图被静默忽略。
+        if explicit:
+            for kind in explicit:
+                types.setdefault(kind, []).append(rule)
+            continue
+        owner: set[str] = set()
+        for field in fields:
+            owner.update(_FIELD_TYPES.get(field, ()))
         if not owner or not (fields - _COMMON_FIELDS - {"log_type"}):
             wild.append(rule)
             continue
@@ -363,8 +378,32 @@ def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def rules_for_log_type(index: Any, log_type: Any) -> list[dict[str, Any]]:
-    """取"本期日志该跑"的规则（专有规则 + 通配规则）。索引缺失时返回空表（调用方回退全量）。"""
+    """取"本期日志该跑"的规则（专有规则 + 通配规则）。
+
+    索引缺失时返回空表（调用方回退全量）。
+
+    **合并后必须按 (priority, name) 重排**：`types[kind]` 与 `wild` 是两张独立列表，
+    直接拼接会把所有专有规则排在所有通配规则之前，而调用方是「首个命中即停」——
+    于是通配的 p5/p10（Wazuh 恶意软件告警、暴力破解）会被专有的 p25（参数 fuzzing）
+    遮蔽。排序一次的开销可忽略（每期日志只算一次）。
+    """
     if not isinstance(index, dict):
         return []
     kind = str(log_type or "").strip().lower()
-    return list(index.get("types", {}).get(kind, [])) + list(index.get("wild", []))
+    merged = list(index.get("types", {}).get(kind, [])) + list(index.get("wild", []))
+    merged.sort(key=_rule_order)
+    return merged
+
+
+def _rule_order(rule: dict[str, Any]) -> tuple[int, str]:
+    """稳定排序键：priority 升序，同优先级按规则名（避免依赖 DB 行序）。"""
+    raw = rule.get("priority")
+    priority = 1000
+    if isinstance(raw, (int, float)):
+        priority = int(raw)
+    elif isinstance(raw, str):
+        try:
+            priority = int(raw)
+        except ValueError:
+            priority = 1000
+    return priority, str(rule.get("name") or "")

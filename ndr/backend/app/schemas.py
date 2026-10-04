@@ -67,6 +67,9 @@ class UnifiedLog(BaseModel):
     ja4: str = ""
     tls_version: str = ""
     cert_issuer: str = ""
+    # 自签判定（normalizer 由 x509 的 certificate.issuer/subject 算出）：
+    # 引擎没有「字段对字段」比较，自签只能在归一化层算好——否则规则无法表达。
+    cert_self_signed: bool | None = None
     # DNS / 文件
     qtype: str = ""
     filename: str = ""

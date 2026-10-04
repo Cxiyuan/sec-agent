@@ -314,6 +314,25 @@ def _split_uri(uri: str) -> tuple[str, str]:
 
 
 _AUTH_HEADER_RE = re.compile(r"(?im)^[ \t]*authorization[ \t]*:[ \t]*([^\r\n]+)")
+#: 逐行 `Name: value` 的头文本（Zeek 的 req_headers/resp_headers 是这个形态）
+_HEADER_LINE_RE = re.compile(r"(?im)^[ \t]*([A-Za-z0-9_-]+)[ \t]*:[ \t]*([^\r\n]*)")
+
+
+def _header_value(headers: Any, *names: str) -> str:
+    """从 Zeek 收集的原始头文本里取某个头的值（`Name: value\\n` 逐行）。
+
+    Zeek 的 http.log **没有** cookie / content-type 这些列，头值只在 `req_headers` 里
+    （见 `zeek/site/shentong-httpheaders.zeek`）。不解析这里的话：
+    - `cookie` 恒空 → 内置「会话跨IP复用」（critical 级会话劫持）与「反序列化 rememberMe」
+      分支永不触发；
+    - `content_type` 恒空 → `http_upload` / 「上传类型不匹配」永不触发。
+    （均见 2026-10 内置规则质量评审 P0-2 / P0-5。）
+    """
+    wanted = {n.lower() for n in names}
+    for match in _HEADER_LINE_RE.finditer(str(headers or "")):
+        if match.group(1).lower() in wanted:
+            return match.group(2).strip()
+    return ""
 
 
 def _auth_from_headers(headers: Any) -> str:
@@ -513,12 +532,38 @@ def _real_client_ip(doc: dict[str, Any], peer_ip: Any = None) -> str | None:
     return None
 
 
+def _cert_info(doc: dict[str, Any]) -> tuple[str, bool]:
+    """返回 (签发者, 是否自签)。
+
+    Zeek x509.log 把签发者/主体嵌套在 `certificate.issuer` / `certificate.subject` 下，
+    只从顶层取 `issuer` 会**恒空** —— 内置「自签或异常证书」规则因此永不触发
+    （2026-10 内置规则质量评审 P1）。这里同时算出 `cert_self_signed`（subject == issuer），
+    给规则一个语义确定、无需比对两个字段的判据。
+    """
+    cert = doc.get("certificate")
+    cert = cert if isinstance(cert, dict) else {}
+    issuer = str(doc.get("cert_issuer") or doc.get("issuer") or cert.get("issuer") or "")[:256]
+    subject = str(doc.get("cert_subject") or cert.get("subject") or "")[:256]
+    self_signed = bool(issuer.strip()) and issuer.strip() == subject.strip()
+    return issuer, self_signed
+
+
 def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dict[str, Any]:
     """抽取 HTTP/TLS/DNS/文件相关的扩展字段；peer_ip 见 `_real_client_ip`。"""
     body_value = _first(doc, _csv(settings.http_body_fields))
     uri = str(doc.get("uri") or "")
     path, qs = _split_uri(uri) if log_type == "http" else ("", "")
-    content_type = str(doc.get("content_type") or doc.get("request_content_type") or "")
+    req_headers = str(doc.get("req_headers") or "")[:8192]
+    content_type = str(
+        doc.get("content_type")
+        or doc.get("request_content_type")
+        or _header_value(req_headers, "content-type")
+    )
+    cookie = _clip(
+        doc.get("cookie") or _header_value(req_headers, "cookie"),
+        settings.http_cookie_max_chars,
+    )
+    cert_issuer, cert_self_signed = _cert_info(doc)
     resp_mime = _to_str_list(doc.get("resp_mime_types") or doc.get("response_content_type"))
     return {
         "method": str(doc.get("method") or "")[:16],
@@ -529,18 +574,19 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
             _first(doc, _csv(settings.http_resp_body_fields)), http_resp_body_limit()
         ),
         "resp_body_len": _to_int(doc.get("response_body_len")),
-        "req_headers": str(doc.get("req_headers") or "")[:8192],
+        "req_headers": req_headers,
         "resp_headers": str(doc.get("resp_headers") or "")[:8192],
         "real_client_ip": _real_client_ip(doc, peer_ip),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
-        "cookie": _clip(doc.get("cookie"), settings.http_cookie_max_chars),
+        "cookie": cookie,
         "content_type": content_type[:128],
         "resp_mime": resp_mime[:128],
         "ja3": str(doc.get("ja3") or "")[:64],
         "ja3s": str(doc.get("ja3s") or "")[:64],
         "ja4": str(doc.get("ja4") or "")[:64],
         "tls_version": str(doc.get("version") or doc.get("tls_version") or "")[:32],
-        "cert_issuer": str(doc.get("cert_issuer") or doc.get("issuer") or "")[:256],
+        "cert_issuer": cert_issuer,
+        "cert_self_signed": cert_self_signed,
         # qtype 存的是 **Zeek 原始值**：dns.log 里 `qtype` 是数字码（1=A、28=AAAA、16=TXT…），
         # `qtype_name` 才是人类可读名。对外口径（规则/检索/前端）统一按数字码：
         # C 组规则只用 "16"、D 组 catalog 按数字码写描述、G 组前端按数字码显示；
@@ -650,7 +696,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
             str(extra["method"]), str(extra["uri_path"]), str(extra["content_type"]), status_code
         )
         if log_type == "http"
-        else _zeek_event_type(log_type, note, conn_state)
+        else _zeek_event_type(
+            log_type, note, conn_state, doc.get("name") if log_type == "weird" else None
+        )
     )
 
     return UnifiedLog(
@@ -780,7 +828,9 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
     )
 
 
-def _zeek_event_type(log_type: str, note: str | None, conn_state: str | None) -> str:
+def _zeek_event_type(
+    log_type: str, note: str | None, conn_state: str | None, weird_name: str | None = None
+) -> str:
     """按日志类型 + notice 细分事件类型。"""
     if note:
         n = note.lower()
@@ -815,6 +865,15 @@ def _zeek_event_type(log_type: str, note: str | None, conn_state: str | None) ->
     if log_type == "notice":
         return "zeek_notice"
 
+    if log_type == "weird":
+        # 采集面已关掉 Zeek 自带 notice（shentong-policies.zeek 的 disable_stream），
+        # protocol_anomaly / tls_anomaly 只能从 weird.log 的名字里出；否则内置
+        # 「协议异常」「TLS异常」两规则在本部署永不触发（2026-10 规则评审 P0-5）。
+        name = str(weird_name or "").lower()
+        if any(k in name for k in ("ssl", "tls", "cert")):
+            return "tls_anomaly"
+        return "protocol_anomaly"
+
     if conn_state:
         # conn_state 的语义（标签 + 是否算「握手真的完成过」）统一维护在
         # app/ingestion/conn_states.py 的一张表里，这里只查表、不再手写 if 链：
@@ -832,7 +891,10 @@ def _wazuh_event_type(level: Any, rule_groups: str, description: Any) -> str:
     groups = (rule_groups or "").lower()
     if any(k in groups for k in ("web", "attack", "web_scan")):
         return "wazuh_web_attack"
-    if any(k in groups for k in ("authentication_failed", "authentication_failures", "sshd")):
+    if any(k in groups for k in ("authentication_failed", "authentication_failures")):
+        # 注意：**不能**把 `sshd` 算进来 —— Wazuh 的 sshd 组同时覆盖**成功**登录，
+        # 否则正常运维登录会被判成 brute_force，连带 内置-暴力破解/高频认证失败/撞库
+        # 在无攻击时就报（实机评审 P1）。失败语义已由组名与描述兜底。
         return "brute_force"
     if any(k in groups for k in ("malware", "ransomware", "virus", "rootcheck", "trojan")):
         return "wazuh_malware"

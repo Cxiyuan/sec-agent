@@ -29,6 +29,17 @@ _WHITELIST_HEALTH = [
     },
 ]
 
+# 健康检查白名单的扩展：K8s actuator / 探针 / 指标接口被业务与编排常驻轮询，
+# 归到「敏感文件探测」「未授权访问」这类规则里就是持续 FP（2026-10 规则评审 P1）。
+_WHITELIST_PROBE = _WHITELIST_HEALTH + [
+    {
+        "field": "uri_path",
+        "op": "regex",
+        "value": "(?i)(/actuator/(health|info|readiness|liveness)"
+        "|/healthz?$|/readyz$|/livez$|/metrics$|/health/)",
+    },
+]
+
 BUILTIN_RULES: list[dict] = [
     # ================= A. 勒索 / 僵尸网络 / 挖矿 =================
     {
@@ -43,7 +54,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(ransom|lockbit|blacksuit|conti|emotet|trickbot|cobaltstrike|meterpreter|beacon)",
+                    "value": "(?i)\\b(ransom|lockbit|blacksuit|conti|emotet|trickbot|cobaltstrike|cobalt[-_ ]?strike|meterpreter)\\b",
                 }
             ],
         },
@@ -60,7 +71,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(xmr|monero|minergate|nanopool|minexmr|coin-hive|cryptonight|stratum\\+tcp|2miners|f2pool)",
+                    "value": "(?i)(\\bxmr\\b|\\bxmrig\\b|monero|minergate|nanopool|minexmr|coin-hive|cryptonight|stratum\\+tcp|2miners|f2pool)",
                 }
             ],
         },
@@ -73,7 +84,12 @@ BUILTIN_RULES: list[dict] = [
         "severity": "critical",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_malware"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "event_type", "op": "eq", "value": "wazuh_malware"},
+                # 低等级 rootcheck/策略类「恶意软件」告警不该定 critical（评审 P2）
+                {"field": "severity", "op": "in", "value": ["high", "critical"]},
+            ],
         },
     },
     # ================= B. 注入 / 漏洞利用 =================
@@ -89,12 +105,12 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(union\\s+(all\\s+)?select|or\\s+1\\s*=\\s*1|and\\s+1\\s*=\\s*1|sleep\\s*\\(|benchmark\\s*\\(|waitfor\\s+delay)",
+                    "value": "(?i)(union\\s+(all\\s+)?select|or\\s+1\\s*=\\s*1|and\\s+1\\s*=\\s*1|sleep\\s*\\(|pg_sleep\\s*\\(|benchmark\\s*\\(|waitfor\\s+delay)",
                 },
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(union\\s+(all\\s+)?select|or\\s+1\\s*=\\s*1|sleep\\s*\\(|benchmark\\s*\\(|waitfor\\s+delay)",
+                    "value": "(?i)(union\\s+(all\\s+)?select|or\\s+1\\s*=\\s*1|and\\s+1\\s*=\\s*1|sleep\\s*\\(|pg_sleep\\s*\\(|benchmark\\s*\\(|waitfor\\s+delay)",
                 },
             ],
         },
@@ -116,7 +132,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(information_schema|into\\s+(out|dump)file|load_file\\s*\\(|xp_cmdshell)",
+                    "value": "(?i)(information_schema|into\\s+(out|dump)file|load_file\\s*\\(|xp_cmdshell|pg_sleep)",
                 },
             ],
         },
@@ -133,12 +149,12 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)",
+                    "value": "(?i)(\\$ne|\\$gt|\\$gte|\\$lt|\\$regex|\\$where|\\$exists|\\$or\\b|\\$in\\b|\\$nin\\b|\\$nor\\b|\\$expr|\\$function)",
                 },
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(\\$ne|\\$gt|\\$regex|\\$where|\\$exists)",
+                    "value": "(?i)(\\$ne|\\$gt|\\$gte|\\$lt|\\$regex|\\$where|\\$exists|\\$or\\b|\\$in\\b|\\$nin\\b|\\$nor\\b|\\$expr|\\$function)",
                 },
             ],
         },
@@ -155,12 +171,12 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(;\\s*(cat|ls|id|whoami|uname|curl|wget|nc|bash|sh)\\s|/bin/(sh|bash)|cmd\\.exe|powershell\\s+-|\\|\\s*nc\\s|`[^`]+`)",
+                    "value": "(?i)([;&|]{1,2}\\s*(cat|ls|id|whoami|uname|curl|wget|nc|ncat|bash|sh|python|perl|php|powershell)\\b|/bin/(sh|bash)|cmd\\.exe|powershell\\s+-|\\|\\s*nc\\s|\\$\\([^)]+\\)|`[^`]+`)",
                 },
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(;\\s*(cat|ls|id|whoami|curl|wget|bash|sh)\\s)|/bin/(sh|bash)|cmd\\.exe|powershell\\s+-|\\$\\(",
+                    "value": "(?i)([;&|]{1,2}\\s*(cat|ls|id|whoami|curl|wget|nc|bash|sh|python|perl|php)\\b)|/bin/(sh|bash)|cmd\\.exe|powershell\\s+-|\\$\\([^)]+\\)",
                 },
             ],
         },
@@ -178,7 +194,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(%2e%2e%2f|%2e%2e/|%252e%252e|%c0%ae|\\.\\.%5c|%2e%2e%5c)",
+                    "value": "(?i)(%2e%2e%2f|%2e%2e/|%252e%252e|%252e%252e%252f|%c0%ae|%c1%9c|\\.\\.%5c|%2e%2e%5c|\\.\\.;/)",
                 },
                 {
                     "field": "query",
@@ -205,12 +221,12 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(<script|</script|javascript:|onerror\\s*=|onload\\s*=|alert\\s*\\(|document\\.cookie|<img[^>]+src\\s*=)",
+                    "value": "(?i)(<script|</script|javascript:|on(error|load|mouseover|focus|click|animationstart)\\s*=|srcdoc\\s*=|<svg|alert\\s*\\(|document\\.cookie|<img[^>]+src\\s*=)",
                 },
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(<script|javascript:|onerror\\s*=|document\\.cookie)",
+                    "value": "(?i)(<script|javascript:|on(error|load|mouseover|focus)\\s*=|srcdoc\\s*=|document\\.cookie)",
                 },
             ],
         },
@@ -220,19 +236,19 @@ BUILTIN_RULES: list[dict] = [
         "description": "命中服务端模板注入（SSTI）表达式",
         "source": "builtin",
         "priority": 10,
-        "severity": "high",
+        "severity": "medium",
         "conditions": {
             "logic": "or",
             "rules": [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(\\{\\{[^}]*\\}\\}|\\$\\{[^}]+\\}|#\\{[^}]+\\}|<%=[^%]+%>)",
+                    "value": "(\\{\\{[^}]*\\}\\}|\\{%[^%]*%\\}|\\$\\{[^}]+\\}|#\\{[^}]+\\}|<%=[^%]+%>)",
                 },
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(\\{\\{[^}]*\\}\\}|\\$\\{[^}]+\\}|<%=[^%]+%>)",
+                    "value": "(\\{\\{[^}]*\\}\\}|\\{%[^%]*%\\}|#\\{[^}]+\\}|<%=[^%]+%>)",
                 },
             ],
         },
@@ -258,7 +274,10 @@ BUILTIN_RULES: list[dict] = [
                 },
                 {"field": "user_agent", "op": "regex", "value": "(?i)\\$\\{jndi:"},
                 {"field": "referer", "op": "regex", "value": "(?i)\\$\\{jndi:"},
-                {"field": "query", "op": "regex", "value": "(?i)(ognl|spel|%24%7bjndi)"},
+                {"field": "query", "op": "regex", "value": "(?i)(\\bognl\\b|\\bspel\\b|%24%7bjndi)"},
+                # CVE-2021-44228 的头注入向量：Zeek 的头值只在 req_headers/resp_headers 里
+                {"field": "req_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
+                {"field": "resp_headers", "op": "regex", "value": "(?i)\\$\\{jndi:"},
             ],
         },
     },
@@ -295,12 +314,7 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": '(?i)(__reduce__|c__builtin__|cos\\nsystem|pickle\\.loads|O:8:"|O:4:")',
                 },
-                {"field": "cookie", "op": "regex", "value": "(?i)rememberMe="},
-                {
-                    "field": "body",
-                    "op": "regex",
-                    "value": "(?i)(java\\.io\\.Serializable|ObjectInputStream|readObject)",
-                },
+                {"field": "req_headers", "op": "regex", "value": "(?i)rememberme="},
             ],
         },
     },
@@ -349,7 +363,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(php://(input|filter)|data://|expect://)",
+                    "value": "(?i)(php://(input|filter)|data://|expect://|zip://|phar://)",
                 },
             ],
         },
@@ -363,11 +377,11 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query", "op": "regex", "value": "(?i)(%0d%0a|%0a%0d|\\r\\n)"},
+                {"field": "query", "op": "regex", "value": "(?i)(%0d%0a|%0a|\\r\\n)(set-cookie|location|content-length|refresh|http/1\\.)"},
                 {
                     "field": "body",
                     "op": "regex",
-                    "value": "(?i)(%0d%0a|\\r\\n(set-cookie|location):)",
+                    "value": "(?i)(%0d%0a|\\r\\n)(set-cookie|location):",
                 },
             ],
         },
@@ -384,9 +398,9 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass)",
+                    "value": "(?i)(\\)\\(\\||\\(\\&|\\*\\)\\(|\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()",
                 },
-                {"field": "body", "op": "regex", "value": "(?i)(\\)\\(\\||\\|\\(objectclass)"},
+                {"field": "body", "op": "regex", "value": "(?i)(\\)\\(\\||\\|\\(objectclass|\\)\\(uid=|\\|\\(cn=|\\)\\(!\\()"},
             ],
         },
     },
@@ -399,16 +413,14 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
+                # 必须真的跳转（3xx）才算开放重定向；只匹配参数会出现大量正常外链（评审 P1）。
+                # 参数名在 query_string 上匹配（http 的 `query` 是完整 URI，`(^|&)` 对不上 `?x=`）。
                 {
-                    "field": "query",
+                    "field": "query_string",
                     "op": "regex",
-                    "value": "(?i)(redirect|url|next|return|continue|dest|goto|target)=",
+                    "value": "(?i)(^|&)(redirect|url|next|return|continue|dest|goto|target|redir|forward|to)=[^&]{0,200}(https?://|//[a-z0-9-]+\\.[a-z]{2,})",
                 },
-                {
-                    "field": "query",
-                    "op": "regex",
-                    "value": "(?i)(https?://|//[a-z0-9-]+\\.[a-z]{2,})",
-                },
+                {"field": "status_code", "op": "in", "value": [301, 302, 303, 307, 308]},
             ],
         },
     },
@@ -419,18 +431,26 @@ BUILTIN_RULES: list[dict] = [
         "priority": 15,
         "severity": "medium",
         "conditions": {
-            "logic": "or",
+            # `hostname` 在 Zeek 是 Host 头/SNI，在 Wazuh 是 **agent 名**（评审 P1）：
+            # 不限定来源时，「agent 名恰好是 localhost/127.0.0.1」的主机会条条命中。
+            "logic": "and",
             "rules": [
+                {"field": "source_system", "op": "eq", "value": "zeek"},
+                {"field": "log_type", "op": "eq", "value": "http"},
                 {
-                    "field": "hostname",
-                    "op": "regex",
-                    "value": "(?i)(localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254)",
-                },
-                {"field": "hostname", "op": "contains", "value": ","},
-                {
-                    "field": "hostname",
-                    "op": "regex",
-                    "value": "(?i)(burpcollaborator|interact\\.sh|oast\\.|canarytokens)",
+                    "logic": "or",
+                    "rules": [
+                        {
+                            "field": "hostname",
+                            "op": "regex",
+                            "value": "(?i)(localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|metadata\\.google\\.internal)",
+                        },
+                        {
+                            "field": "hostname",
+                            "op": "regex",
+                            "value": "(?i)(burpcollaborator|interact\\.sh|oast\\.|canarytokens)",
+                        },
+                    ],
                 },
             ],
         },
@@ -445,18 +465,25 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "http"},
+                # OPTIONS（CORS 预检）/ PUT / DELETE 是常规业务方法，逐条报会等于把
+                # 正常前端流量当攻击（评审 P2）：只留真正的探测/隧道方法。
                 {
                     "field": "method",
                     "op": "in",
-                    "value": ["PUT", "DELETE", "TRACE", "TRACK", "PROPFIND", "OPTIONS"],
+                    "value": ["TRACE", "TRACK", "PROPFIND"],
                 },
             ],
             "whitelist": [
                 {
+                    "field": "req_headers",
+                    "op": "regex",
+                    "value": "(?im)^[ \\t]*access-control-request-method[ \\t]*:",
+                },
+                {
                     "field": "user_agent",
                     "op": "regex",
                     "value": "(?i)(kube-probe|prometheus|healthcheck)",
-                }
+                },
             ],
         },
     },
@@ -470,16 +497,16 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "method", "op": "in", "value": ["POST", "PUT"]},
+                # 判据必须是「上传了脚本文件」，不能是「请求路径以 .php 结尾」（评审 P0-1）：
+                # 原实现把 `POST /login.php → 302` 这类正常表单提交全报 critical，而真正的
+                # multipart 上传 shell.php 到 /api/upload 反而漏报。
+                {"field": "content_type", "op": "regex", "value": "(?i)multipart/form-data"},
                 {
-                    "field": "uri_path",
+                    "field": "body",
                     "op": "regex",
-                    "value": "(?i)\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)(\\?|$)",
+                    "value": "(?i)filename\\s*=\\s*\"[^\"]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx|war|sh|pl|py)\"",
                 },
-                {
-                    "field": "status_code",
-                    "op": "in",
-                    "value": [200, 201, 202, 204, 302],
-                },
+                {"field": "status_code", "op": "in", "value": [200, 201, 202, 204]},
             ],
         },
     },
@@ -493,9 +520,11 @@ BUILTIN_RULES: list[dict] = [
             "logic": "or",
             "rules": [
                 {
+                    # 原正则要求 `/` 紧邻关键字、关键字后紧邻扩展名 → shell2.php / x_shell.php
+                    # / b374k-3.php / wso.php 全漏（评审 P1）
                     "field": "uri_path",
                     "op": "regex",
-                    "value": "(?i)/(shell|cmd|webshell|c99|b374k|r57|antsword|behinder|godzilla)(\\.php|\\.jsp|\\.aspx|/|$)",
+                    "value": "(?i)/[a-z0-9_.-]*(shell|cmd|webshell|c99|b374k|r57|antsword|behinder|godzilla|wso|alfa|uploader)[a-z0-9_.-]*\\.(php|php[0-9]|phtml|jsp|jspx|asp|aspx|ashx)",
                 },
                 {"field": "uri_path", "op": "regex", "value": "(?i)/\\.(php|jsp|aspx)$"},
             ],
@@ -506,11 +535,15 @@ BUILTIN_RULES: list[dict] = [
         "description": "Zeek files 中出现可执行/脚本类文件",
         "source": "builtin",
         "priority": 12,
-        "severity": "high",
+        "severity": "medium",
         "conditions": {
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "files"},
+                # 只报「客户端上传可执行体」：软件更新与内部 JAR 下载全是服务端下发
+                # （评审 P1），方向不限会把它们全报 high。下载方向的投递风险由
+                # 大流量/下载类规则与文件哈希面覆盖。
+                {"field": "file_is_orig", "op": "eq", "value": True},
                 {
                     "field": "mime_type",
                     "op": "regex",
@@ -524,11 +557,14 @@ BUILTIN_RULES: list[dict] = [
         "description": "使用 SSLv3/TLS1.0/TLS1.1 等弱协议版本",
         "source": "builtin",
         "priority": 25,
-        "severity": "medium",
+        "severity": "low",
         "conditions": {
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "ssl"},
+                # 内网每一条 TLS1.0/1.1 会话都算 medium 会到数千-上万/天（评审 P1）：
+                # 只看「外网服务端」，并降为 low。
+                {"field": "dst_external", "op": "eq", "value": True},
                 {
                     "field": "tls_version",
                     "op": "regex",
@@ -547,10 +583,14 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "ssl"},
+                # `self`/`openssl`/`test` 几乎不会出现在真实 DN 里（评审 P1），改成
+                # normalizer 算好的自签判定（subject == issuer）。
                 {
-                    "field": "cert_issuer",
-                    "op": "regex",
-                    "value": "(?i)(self|unknown|localhost|test|openssl)",
+                    "logic": "or",
+                    "rules": [
+                        {"field": "cert_self_signed", "op": "eq", "value": True},
+                        {"field": "cert_issuer", "op": "regex", "value": "(?i)(unknown|localhost)"},
+                    ],
                 },
             ],
         },
@@ -632,9 +672,10 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "uri_path",
                     "op": "regex",
-                    "value": "(?i)(/actuator|/swagger|/api-docs|/v2/api-docs|/graphql|/debug/|/console)",
+                    "value": "(?i)(/actuator(/|$)|/swagger|/api-docs|/v2/api-docs|/graphql|/debug/|/console)",
                 },
             ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -652,8 +693,11 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)^/(admin|manager|manage|console|dashboard|api/v[0-9]+/(users|config|admin)|actuator)",
                 },
-                {"field": "auth_scheme", "op": "ne", "value": "basic"},
+                # 只放过「完全没带认证头」的请求：`ne basic` 在空值上恒真，等于把
+                # 所有会话式登录都放行（评审 P1）。
+                {"not": {"field": "auth_scheme", "op": "exists"}},
             ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -669,6 +713,8 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "body", "op": "contains", "value": "169.254.169.254"},
                 {"field": "query", "op": "contains", "value": "metadata.google.internal"},
                 {"field": "dst_ip", "op": "eq", "value": "169.254.169.254"},
+                {"field": "query", "op": "contains", "value": "100.100.100.100"},
+                {"field": "body", "op": "contains", "value": "100.100.100.100"},
             ],
         },
     },
@@ -681,18 +727,13 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "cookie", "op": "regex", "value": "(?i)(rememberMe=|shiro)"},
-                {
-                    "field": "uri_path",
-                    "op": "regex",
-                    "value": "(?i)(\\.action$|\\.do$|/index\\.php\\?s=|/struts/)",
-                },
+                # `.do$` / `.action$` 是遗留 Java 应用的**正常**请求后缀（评审 P1）；
+                # rememberMe= 与 内置-反序列化特征 重复且优先级更低（p10 vs p8），只留前者。
+                {"field": "uri_path", "op": "regex", "value": "(?i)(/struts/|/weaver/|/e-mobile/|/mobile/plugin/)"},
+                # ThinkPHP 的 `?s=index/...`：uri_path 已去查询串，必须走 query_string
+                {"field": "query_string", "op": "regex", "value": "(?i)(^|&)s=/?(index|home|user|api)/"},
                 {"field": "body", "op": "regex", "value": "(?i)(@type.*com\\.sun|fastjson|jndi:)"},
-                {
-                    "field": "uri_path",
-                    "op": "regex",
-                    "value": "(?i)(/seeyon/|/weaver/|/e-mobile/|/mobile/plugin/)",
-                },
+                {"field": "uri_path", "op": "regex", "value": "(?i)(/seeyon/|/shiro/)"},
             ],
         },
     },
@@ -705,9 +746,10 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "or",
             "rules": [
-                {"field": "query_string", "op": "regex", "value": "^.{600,}$"},
-                {"field": "uri_path", "op": "regex", "value": "^.{400,}$"},
+                {"field": "query_string", "op": "regex", "value": "^.{900,}$"},
+                {"field": "uri_path", "op": "regex", "value": "^.{600,}$"},
             ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -737,12 +779,16 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
-            "min_count": 40,
+            "min_count": 50,
             "distinct": "uri_path",
-            "min_distinct": 40,
+            "min_distinct": 50,
             "logic": "and",
-            "rules": [{"field": "log_type", "op": "eq", "value": "http"}],
-            "whitelist": _WHITELIST_HEALTH,
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "http"},
+                # 爬虫/压测/正常浏览会访问大量 200 路径；这里只看「大量不同路径且失败」
+                {"field": "status_code", "op": "in", "value": [200, 401, 403, 404]},
+            ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -753,11 +799,15 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip", "uri_path"],
-            "min_count": 60,
+            "key": ["src_ip", "dst_ip", "uri_path"],
+            "min_count": 100,
             "logic": "and",
-            "rules": [{"field": "log_type", "op": "eq", "value": "http"}],
-            "whitelist": _WHITELIST_HEALTH,
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "http"},
+                # 轮询接口（2s 刷新）正常返回 200；爆炸式枚举的典型特征是持续失败
+                {"field": "status_code", "op": "in", "value": [401, 403, 404]},
+            ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -768,13 +818,14 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 20,
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 30,
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "http"},
                 {"field": "status_code", "op": "gte", "value": 500},
             ],
+            "whitelist": _WHITELIST_PROBE,
         },
     },
     {
@@ -786,18 +837,22 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
-            "min_count": 25,
+            "min_count": 40,
             "distinct": "dst_ip",
-            "min_distinct": 25,
+            "min_distinct": 40,
             "logic": "and",
-            "rules": [{"field": "src_ip", "op": "exists"}],
+            # `src_ip exists` 是恒真条件（评审 P0-3）：那等于「无条件按源计数」，
+            # 监控/备份/代理/NAT 全部命中。改为只统计「未建立的连接」。
+            "rules": [
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
+            ],
         },
     },
     {
         "name": "内置-端口扫描",
         "description": "检测到端口扫描行为（notice）",
         "source": "builtin",
-        "priority": 20,
+        "priority": 28,
         "severity": "medium",
         "conditions": {
             "logic": "and",
@@ -814,15 +869,21 @@ BUILTIN_RULES: list[dict] = [
             "mode": "count",
             "key": ["src_ip"],
             "min_count": 30,
+            "distinct": "dst_port",
+            "min_distinct": 8,
+            "window": 1800,
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "in", "value": ["scan_attempt", "port_scan"]}],
+            # 只认 S0 会漏掉 REJ/RSTOS0/RSTRH 型扫描（conn_states 表）
+            "rules": [
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection", "port_scan"]},
+            ],
         },
     },
     {
         "name": "内置-扫描尝试连接",
         "description": "Zeek 记录的扫描尝试（conn_state = S0：只发 SYN、没有任何回应）",
         "source": "builtin",
-        "priority": 20,
+        "priority": 30,
         "severity": "low",
         "conditions": {
             "logic": "and",
@@ -835,7 +896,7 @@ BUILTIN_RULES: list[dict] = [
         "description": "检测到暴力破解行为（notice/规则描述）",
         "source": "builtin",
         "priority": 10,
-        "severity": "high",
+        "severity": "medium",
         "conditions": {
             "logic": "and",
             "rules": [{"field": "event_type", "op": "eq", "value": "brute_force"}],
@@ -849,7 +910,12 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "rule_groups", "op": "regex", "value": "(?i)authentication_fail"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "rule_groups", "op": "regex", "value": "(?i)authentication_fail"},
+                # 归一化已把它判成 brute_force 的告警归 内置-暴力破解，本条只做补集
+                {"not": {"field": "event_type", "op": "eq", "value": "brute_force"}},
+            ],
         },
     },
     {
@@ -857,11 +923,12 @@ BUILTIN_RULES: list[dict] = [
         "description": "同源在窗口内出现大量认证失败（≥10 次）",
         "source": "builtin",
         "priority": 12,
-        "severity": "critical",
+        "severity": "high",
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
             "min_count": 10,
+            "window": 900,
             "logic": "and",
             "rules": [{"field": "event_type", "op": "eq", "value": "brute_force"}],
         },
@@ -874,8 +941,9 @@ BUILTIN_RULES: list[dict] = [
         "severity": "critical",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 15,
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 30,
+            "window": 600,
             "logic": "and",
             "rules": [
                 {"field": "event_type", "op": "eq", "value": "http_login"},
@@ -892,10 +960,11 @@ BUILTIN_RULES: list[dict] = [
         "severity": "critical",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 5,
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 8,
+            "window": 900,
             "distinct": "account",
-            "min_distinct": 5,
+            "min_distinct": 8,
             "logic": "and",
             "rules": [
                 {"field": "event_type", "op": "eq", "value": "http_login"},
@@ -912,9 +981,10 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "mode": "count",
             "key": ["account"],
-            "min_count": 3,
+            "min_count": 5,
+            "window": 1800,
             "distinct": "src_ip",
-            "min_distinct": 3,
+            "min_distinct": 5,
             "logic": "and",
             "rules": [
                 {"field": "event_type", "op": "in", "value": ["http_login", "brute_force"]},
@@ -930,8 +1000,8 @@ BUILTIN_RULES: list[dict] = [
         "severity": "high",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 15,
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 20,
             "logic": "and",
             "rules": [
                 {"field": "auth_scheme", "op": "eq", "value": "basic"},
@@ -963,12 +1033,12 @@ BUILTIN_RULES: list[dict] = [
         "description": "HTTP（非 TLS）端口上出现登录/凭证提交",
         "source": "builtin",
         "priority": 15,
-        "severity": "high",
+        "severity": "medium",
         "conditions": {
             "logic": "and",
             "rules": [
                 {"field": "event_type", "op": "eq", "value": "http_login"},
-                {"field": "dst_port", "op": "eq", "value": 80},
+                {"field": "dst_port", "op": "in", "value": [80, 8000, 8080, 8081, 8888]},
                 {"field": "method", "op": "eq", "value": "POST"},
             ],
         },
@@ -992,6 +1062,12 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(pass(word)?=(admin|123456|root|test|guest))",
                 },
+                # JSON 登录体（现代前后端分离的主流形态）也要覆盖
+                {
+                    "field": "body",
+                    "op": "regex",
+                    "value": "(?i)\"(pass(word|wd)?|pwd)\"\\s*:\\s*\"(admin|123456|root|test|guest|admin123)\"",
+                },
             ],
         },
     },
@@ -1009,7 +1085,6 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(token|jwt|access_token|id_token)=ey[A-Za-z0-9_-]{10,}",
                 },
-                {"field": "auth_scheme", "op": "in", "value": ["bearer", "jwt"]},
             ],
         },
     },
@@ -1028,7 +1103,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "uri_path",
                     "op": "regex",
-                    "value": "(?i)/(reset|forgot|password|passwd|recover|unlock)",
+                    "value": "(?i)/((reset|forgot|recover|unlock)([_-]?(password|passwd|pwd))?|(password|passwd)/(reset|forgot|recover|change))(/|$)",
                 },
             ],
         },
@@ -1042,12 +1117,14 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
-            "min_count": 8,
+            "min_count": 12,
             "distinct": "account",
-            "min_distinct": 8,
+            "min_distinct": 12,
             "logic": "and",
             "rules": [
                 {"field": "account", "op": "exists"},
+                # Wazuh 缺 srcip 时会被归并到同一个空键（评审 P2），先挡掉
+                {"field": "src_ip", "op": "exists"},
                 {"field": "log_type", "op": "eq", "value": "wazuh"},
             ],
         },
@@ -1056,15 +1133,26 @@ BUILTIN_RULES: list[dict] = [
         "name": "内置-Wazuh账号锁定",
         "description": "Wazuh 账号锁定/多次失败后锁定类规则",
         "source": "builtin",
-        "priority": 12,
+        "priority": 9,
         "severity": "high",
         "conditions": {
             "logic": "and",
             "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
                 {
-                    "field": "rule_groups",
-                    "op": "regex",
-                    "value": "(?i)(account_lock|locked|disabled)",
+                    "logic": "or",
+                    "rules": [
+                        {
+                            "field": "rule_groups",
+                            "op": "regex",
+                            "value": "(?i)(account_lock|locked[_ ]?out|account[_ ]?disabled|user[_ ]?disabled)",
+                        },
+                        {
+                            "field": "summary",
+                            "op": "regex",
+                            "value": "(?i)(account (is )?locked|locked out|too many (authentication )?failures|account (has been )?disabled)",
+                        },
+                    ],
                 },
             ],
         },
@@ -1076,17 +1164,25 @@ BUILTIN_RULES: list[dict] = [
         "priority": 10,
         "severity": "high",
         "conditions": {
-            "logic": "or",
+            "logic": "and",
             "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                # 正常管理员 sudo 成功也会命中「组名含 sudo」（评审 P2）：先按等级闸门
+                {"field": "severity", "op": "in", "value": ["high", "critical"]},
                 {
-                    "field": "rule_groups",
-                    "op": "regex",
-                    "value": "(?i)(privilege_escalation|sudo|su_)",
-                },
-                {
-                    "field": "summary",
-                    "op": "regex",
-                    "value": "(?i)(privilege escalation|sudo:|su: )",
+                    "logic": "or",
+                    "rules": [
+                        {
+                            "field": "rule_groups",
+                            "op": "regex",
+                            "value": "(?i)(privilege_escalation|sudoers|su_root)",
+                        },
+                        {
+                            "field": "summary",
+                            "op": "regex",
+                            "value": "(?i)(privilege escalation|not in sudoers|incident)",
+                        },
+                    ],
                 },
             ],
         },
@@ -1109,6 +1205,8 @@ BUILTIN_RULES: list[dict] = [
                     "op": "in",
                     "value": [445, 139, 135, 3389, 5985, 5986, 512, 513, 514],
                 },
+                # 只算真的建立过会话的连接（评审 P1：S0/REJ 是扫描，不是横向）
+                {"field": "conn_state", "op": "in", "value": ["SF", "S1", "S2", "S3"]},
             ],
         },
     },
@@ -1122,11 +1220,13 @@ BUILTIN_RULES: list[dict] = [
             "mode": "count",
             "key": ["src_ip"],
             "min_count": 8,
+            "window": 1800,
             "distinct": "dst_ip",
             "min_distinct": 8,
             "logic": "and",
             "rules": [
                 {"field": "dst_port", "op": "in", "value": [445, 139, 135, 3389, 5985, 5986]},
+                {"field": "conn_state", "op": "in", "value": ["SF", "S1", "S2", "S3"]},
             ],
         },
     },
@@ -1140,7 +1240,10 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "dst_port", "op": "in", "value": [445, 139, 135, 3389, 5985, 5986, 2049]},
-                {"field": "event_type", "op": "ne", "value": "scan_attempt"},
+                # 无方向的端口命中会把企业里海量正常 445/3389 会话全报（评审 P1，挤占投递额度）
+                {"field": "src_internal", "op": "eq", "value": True},
+                {"field": "dst_internal", "op": "eq", "value": True},
+                {"field": "conn_state", "op": "in", "value": ["SF", "S1", "S2", "S3"]},
             ],
         },
     },
@@ -1172,7 +1275,9 @@ BUILTIN_RULES: list[dict] = [
                         54321,
                     ],
                 },
-                {"field": "event_type", "op": "ne", "value": "scan_attempt"},
+                {"field": "src_internal", "op": "eq", "value": True},
+                {"field": "dst_external", "op": "eq", "value": True},
+                {"field": "conn_state", "op": "in", "value": ["SF", "S1", "S2", "S3"]},
             ],
         },
     },
@@ -1198,12 +1303,18 @@ BUILTIN_RULES: list[dict] = [
         "severity": "high",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip", "query"],
-            "min_count": 10,
+            # 原来 key 含 query（同一个名字重复 10 次）与隧道语义相反（评审 P1）：
+            # TXT 隧道的特征是「同源查询大量**不同**的 TXT 名字」。
+            "key": ["src_ip"],
+            "min_count": 20,
+            "window": 900,
+            "distinct": "query",
+            "min_distinct": 20,
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "dns"},
-                {"field": "qtype", "op": "in", "value": ["16"]},
+                # qtype 优先存数字码，上游缺数字时才回落 qtype_name（评审 P1）
+                {"field": "qtype", "op": "regex", "value": "(?i)^(16|txt)$"},
             ],
         },
     },
@@ -1219,7 +1330,7 @@ BUILTIN_RULES: list[dict] = [
                 {
                     "field": "query",
                     "op": "regex",
-                    "value": "(?i)(\\.onion|\\.top$|\\.xyz$|\\.tk$|\\.pw$|dyn(dns)?\\.|no-ip\\.|ngrok\\.|pastebin\\.|transfer\\.sh)",
+                    "value": "(?i)(\\.onion($|[:/])|\\b(dyndns|dynu|no-ip|ngrok|hopto|zapto|serveo|localtunnel|pastebin|transfer\\.sh|anonfiles|file\\.io)\\b|\\.(top|xyz|tk|pw|buzz|click|gq|ml|cf|ga|su)($|[:/]))",
                 }
             ],
         },
@@ -1233,7 +1344,11 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "bytes_out", "op": "gt", "value": 10485760}],
+            "rules": [
+                {"field": "bytes_out", "op": "gt", "value": 10485760},
+                {"field": "src_internal", "op": "eq", "value": True},
+                {"field": "dst_external", "op": "eq", "value": True},
+            ],
         },
     },
     {
@@ -1244,7 +1359,11 @@ BUILTIN_RULES: list[dict] = [
         "severity": "high",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "bytes_out", "op": "gt", "value": 104857600}],
+            "rules": [
+                {"field": "bytes_out", "op": "gt", "value": 104857600},
+                {"field": "src_internal", "op": "eq", "value": True},
+                {"field": "dst_external", "op": "eq", "value": True},
+            ],
         },
     },
     {
@@ -1255,19 +1374,29 @@ BUILTIN_RULES: list[dict] = [
         "severity": "high",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "bytes_in", "op": "gt", "value": 104857600}],
+            "rules": [
+                {"field": "bytes_in", "op": "gt", "value": 104857600},
+                {"field": "src_external", "op": "eq", "value": True},
+                {"field": "dst_internal", "op": "eq", "value": True},
+            ],
         },
     },
     # ================= H. Wazuh 其他语义 =================
     {
         "name": "内置-Wazuh高危告警",
-        "description": "Wazuh 规则等级 >= 12 的高危主机事件",
+        "description": "Wazuh 归一级别为 high/critical 的主机告警（含被分组规则归类的 syscheck/audit）",
         "source": "builtin",
         "priority": 10,
         "severity": "high",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_high_alert"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "source_system", "op": "eq", "value": "wazuh"},
+                # 只看 event_type 会漏掉「等级很高但先被分组规则归类」的事件（评审 P2）：
+                # level>=12 的 syscheck/audit 也会被归成 wazuh_system_change/policy_violation。
+                {"field": "severity", "op": "in", "value": ["high", "critical"]},
+            ],
         },
     },
     {
@@ -1278,18 +1407,26 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_system_change"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "event_type", "op": "eq", "value": "wazuh_system_change"},
+                # 高等级变更已由 内置-Wazuh高危告警 覆盖，这里只留低等级，避免重复与埋没
+                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
+            ],
         },
     },
     {
         "name": "内置-Wazuh漏洞告警",
         "description": "Wazuh 漏洞/CVE 类规则组",
         "source": "builtin",
-        "priority": 30,
-        "severity": "medium",
+        "priority": 36,
+        "severity": "low",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_vulnerability"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "event_type", "op": "eq", "value": "wazuh_vulnerability"},
+            ],
         },
     },
     {
@@ -1300,18 +1437,27 @@ BUILTIN_RULES: list[dict] = [
         "severity": "medium",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_network_alert"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "event_type", "op": "eq", "value": "wazuh_network_alert"},
+            ],
         },
     },
     {
         "name": "内置-Wazuh MITRE映射命中",
         "description": "Wazuh 规则带 MITRE ATT&CK 映射",
         "source": "builtin",
-        "priority": 32,
-        "severity": "medium",
+        "priority": 36,
+        "severity": "low",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "mitre", "op": "exists"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "source_system", "op": "eq", "value": "wazuh"},
+                {"field": "mitre", "op": "exists"},
+                # 高等级告警已由 内置-Wazuh高危告警 报出，本条降为「MITRE 标注」
+                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
+            ],
         },
     },
     {
@@ -1322,15 +1468,19 @@ BUILTIN_RULES: list[dict] = [
         "severity": "low",
         "conditions": {
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "wazuh_policy_violation"}],
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "wazuh"},
+                {"field": "event_type", "op": "eq", "value": "wazuh_policy_violation"},
+                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
+            ],
         },
     },
     # ================= I. 其他 Web / 协议异常 =================
     {
         "name": "内置-CSRF可疑来源",
-        "description": "状态变更请求携带外部站点 Referer",
+        "description": "状态变更请求的 Referer 指向已知测试/攻击域名（仅覆盖已知域，不是通用 CSRF 检测）",
         "source": "builtin",
-        "priority": 30,
+        "priority": 40,
         "severity": "low",
         "conditions": {
             "logic": "and",
@@ -1364,6 +1514,12 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)origin=(null|https?://(evil|attacker))",
                 },
+                # Origin 是请求头，真正的落脚点是 req_headers（评审 P2）
+                {
+                    "field": "req_headers",
+                    "op": "regex",
+                    "value": "(?im)^[ \\t]*origin[ \\t]*:[ \\t]*(null|https?://(evil|attacker))",
+                },
             ],
         },
     },
@@ -1394,11 +1550,18 @@ BUILTIN_RULES: list[dict] = [
         "severity": "low",
         "conditions": {
             "mode": "count",
-            "key": ["src_ip"],
+            "key": ["src_ip", "dst_ip"],
             "min_count": 200,
             "logic": "and",
             "rules": [{"field": "uri_path", "op": "regex", "value": "(?i)^/(api|rest|graphql)"}],
-            "whitelist": _WHITELIST_HEALTH,
+            # 原白名单是 uri_path in [/health,/ping…]，与 ^/(api|rest|graphql) 恒不同真（评审 P2）
+            "whitelist": [
+                {
+                    "field": "uri_path",
+                    "op": "regex",
+                    "value": "(?i)^/(api|rest|graphql)/(health|healthz|ping|metrics|status)",
+                }
+            ],
         },
     },
     {
@@ -1430,11 +1593,16 @@ BUILTIN_RULES: list[dict] = [
         "priority": 30,
         "severity": "medium",
         "conditions": {
-            "logic": "or",
-            "rules": [
-                {"field": "event_type", "op": "eq", "value": "smtp_abuse"},
-                {"field": "log_type", "op": "eq", "value": "smtp"},
-            ],
+            # 原 `OR log_type==smtp` 会把**每一封正常邮件**报 medium（评审 P1）；
+            # 而 smtp_abuse 只由已关闭的 notice 流产出。改成「同源群发」的频率规则。
+            "mode": "count",
+            "key": ["src_ip"],
+            "min_count": 50,
+            "window": 1800,
+            "distinct": "dst_ip",
+            "min_distinct": 20,
+            "logic": "and",
+            "rules": [{"field": "log_type", "op": "eq", "value": "smtp"}],
         },
     },
     {
@@ -1447,6 +1615,9 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "dst_port", "op": "in", "value": [22, 23, 3389, 3306, 5432, 6379, 27017]},
+                # 无方向的端口命中会把内网运维/DB 流量全报（评审 P2）
+                {"field": "src_external", "op": "eq", "value": True},
+                {"field": "dst_internal", "op": "eq", "value": True},
             ],
         },
     },
@@ -1460,13 +1631,16 @@ BUILTIN_RULES: list[dict] = [
             "mode": "count",
             "key": ["src_ip"],
             "window": 21600,
-            "min_count": 5,
+            "min_count": 10,
             "distinct": "dst_ip",
-            "min_distinct": 5,
+            "min_distinct": 10,
             "logic": "and",
             "rules": [
+                {"field": "log_type", "op": "eq", "value": "conn"},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
+                # 服务器回包/正常会话也会计入（评审 P1）：只看未建立的连接
+                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
             ],
         },
     },
@@ -1480,13 +1654,50 @@ BUILTIN_RULES: list[dict] = [
             "mode": "count",
             "key": ["src_ip", "dst_ip"],
             "window": 21600,
-            "min_count": 10,
+            "min_count": 25,
             "distinct": "dst_port",
-            "min_distinct": 10,
+            "min_distinct": 25,
             "logic": "and",
             "rules": [
+                {"field": "log_type", "op": "eq", "value": "conn"},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
+                {"field": "conn_state", "op": "in", "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"]},
+            ],
+        },
+    },
+    # ================= J. 2026-10 规则评审补漏 =================
+    {
+        "name": "内置-Bearer令牌高频使用",
+        "description": "同源到同目标在窗口内高频携带 Bearer/JWT（≥60 次，疑似令牌被脚本化滥用）",
+        "source": "builtin",
+        "priority": 26,
+        "severity": "medium",
+        "conditions": {
+            "mode": "count",
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 60,
+            "window": 600,
+            "logic": "and",
+            "rules": [{"field": "auth_scheme", "op": "in", "value": ["bearer", "jwt"]}],
+        },
+    },
+    {
+        "name": "内置-单目标多端口深扫",
+        "description": "同源对同一目标在窗口内试探 ≥20 个不同端口（单目标深扫）",
+        "source": "builtin",
+        "priority": 22,
+        "severity": "high",
+        "conditions": {
+            "mode": "count",
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 20,
+            "window": 1800,
+            "distinct": "dst_port",
+            "min_distinct": 20,
+            "logic": "and",
+            "rules": [
+                {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]},
             ],
         },
     },

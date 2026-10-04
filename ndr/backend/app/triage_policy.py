@@ -41,12 +41,13 @@ DIR_UNKNOWN = "unknown"  # 缺地址信息，不做方向判定（只保留证�
 SEVERITY_RANK: dict[str, int] = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _RANK_TO_SEVERITY = {v: k for k, v in SEVERITY_RANK.items()}
 
-# 视为"连接成功"的事件类型：只放**非 conn_state 来源**的标签（conn_http 来自 HTTP 日志），
-# 以及作为兜底保留的 conn_established（摘要里 conn_states 被截断时还能判出来）。
+# 视为"连接成功"的事件类型：只放**非 conn_state 来源**的标签。
 # conn_state 来源的语义一律以 app/ingestion/conn_states.py 的表为准，**不许用标签反推
 # "握手完成没完成"** —— 历史 bug：SH（发了 SYN 又 FIN、从未收到 SYN-ACK，没建立）被标成
 # connection_shutdown，而这个标签在成功集合里，于是没建立的连接被当成"已建立"。
-SUCCESS_EVENT_TYPES = {"conn_established", "conn_http"}
+# 注意（2026-10 规则评审）：原来写的 `conn_http` **全仓没有任何生产者**，等于 HTTP 侧永远
+# "无成功连接"→ 反而更容易被内网常规策略跳过。改成真实存在的 HTTP 标签。
+SUCCESS_EVENT_TYPES = {"conn_established", "http_login", "http_upload", "http_request"}
 # Zeek conn_state 里算"握手真的完成过"的集合：**由表生成**，不要再手写第二份。
 SUCCESS_CONN_STATES = ESTABLISHED_CONN_STATES
 

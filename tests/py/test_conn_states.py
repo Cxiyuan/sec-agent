@@ -151,7 +151,8 @@ def test_has_success_follows_table(state: str, want: tuple[str, bool]) -> None:
 
 def test_has_success_event_type_branch() -> None:
     policy = _triage_policy()
-    assert policy.has_success(["conn_http"], None) is True
+    assert policy.has_success(["http_login"], None) is True
+    assert policy.has_success(["http_request"], None) is True
     assert policy.has_success(["conn_established"], None) is True
     # 坑二的核心：connection_shutdown 标签（SH/SHR 产生的那个）不许再算"成功连接"。
     assert policy.has_success(["connection_shutdown"], None) is False
@@ -174,7 +175,11 @@ def test_triage_sets_derived_from_table() -> None:
     policy = _triage_policy()
     assert set(policy.SUCCESS_CONN_STATES) == set(conn_states.ESTABLISHED_CONN_STATES)
     assert "connection_shutdown" not in policy.SUCCESS_EVENT_TYPES
-    assert {"conn_established", "conn_http"} == set(policy.SUCCESS_EVENT_TYPES)
+    assert {"conn_established", "http_login", "http_upload", "http_request"} == set(
+        policy.SUCCESS_EVENT_TYPES
+    )
+    # 曾经的幻影标签：全仓无生产者，留着会让 HTTP 侧永远判「无成功连接」
+    assert "conn_http" not in policy.SUCCESS_EVENT_TYPES
 
 
 def test_unknown_state_generic_not_established_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:

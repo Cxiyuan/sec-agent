@@ -49,6 +49,15 @@ class FreqWindow:
         # 每规则窗口（长窗规则如 6h 慢速横向用）：缺省沿用全局窗口
         window = max(1, _to_int(cond.get("window"), self.window))
         cutoff = ts - window
+        # 冷却：同一分组在冷却期内只触发一次。
+        # 缺省取 max(全局冷却, 本规则窗口) —— 长窗规则（例：6h 慢速横向）若沿用 300s 全局
+        # 冷却，会在窗口内每 5 分钟重复出发一次（单主机 6h 最多 72 条摘要，实机已见）。
+        # 规则可用 conditions.cooldown 显式覆盖（0 = 不冷却）。
+        raw_cooldown = cond.get("cooldown")
+        if raw_cooldown is None:
+            cooldown = max(self.cooldown, window)
+        else:
+            cooldown = max(0, _to_int(raw_cooldown, self.cooldown))
         base = f"{_PREFIX}:{name}:{group}"
         cnt_key = f"{base}:cnt"
         ttl = window * 2 + 60
@@ -76,9 +85,9 @@ class FreqWindow:
             return False
 
         # 冷却：同一分组在冷却期内只触发一次
-        if self.cooldown <= 0:
+        if cooldown <= 0:
             return True
-        return bool(self.r.set(f"{base}:cool", "1", nx=True, ex=self.cooldown))
+        return bool(self.r.set(f"{base}:cool", "1", nx=True, ex=cooldown))
 
 
 def _to_int(value: Any, default: int) -> int:

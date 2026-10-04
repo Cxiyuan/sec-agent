@@ -681,6 +681,42 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **399 passed, 1 skipped**；`--stack=agent -q` **270 passed, 130 skipped**。
 
 
+### 2026-10-04 内置规则质量评审与修复（7 条车道全量评审 + 落地）
+
+来源：用户要求「派子 agent 从网络安全专家视角评审 NDR 内置规则质量」。7 条只读评审车道（注入 / Web-WebShell / 探测 / 凭证 / 网络威胁 / Wazuh+杂项 / 引擎语义）逐条评审 82 条规则，产出 [`docs/ndr-rules-quality-report.md`](ndr-rules-quality-report.md)（原始 7 份在 `docs/review/ndr-rules/`）。**评审后已全部落地修复**（规则 82 → 84 条）。
+
+**引擎与链路（`rules/engine.py` / `rules/service.py` / `detector/*`）**
+
+- `rules_for_log_type` 合并 `types + wild` 后**按 (priority, name) 重排**：原来两张表直接拼接、调用方「首个命中即停」，通配的 p5/p10（Wazuh 恶意软件告警、暴力破解）会被专有的 p25（参数 fuzzing）遮蔽。
+- `build_rule_index`：**显式 `log_type eq X` 现在是权威的** —— 原来先判通配再看 explicit，导致「log_type eq wazuh + 通用字段」的规则反被归入通配集合（每条日志都跑）。
+- `_FIELD_TYPES`：删 12 个僵尸键（`uri`/`request_body_len`/`response_body_len`/`rcode`/`answers`/`duration`/`orig_bytes`/`resp_bytes`/`proto`/`service`/`seen_bytes`/`issuer`/`server_name`），补 `content_type`/`tls_version`/`cert_issuer`/`cert_self_signed`，并给 `dst_ip` 登记 conn owner —— 否则 SSRF/云元数据规则的 `dst_ip eq 169.254.169.254` 分支在 conn 日志上**永不求值**（真实取证路径漏报）。
+- `_match` 收口：条件必须给字段名（`whitelist: [{}]` 不再静默全命中）、`eq` 缺值不算相等、**`ne` 在空值上不再恒真**（`auth_scheme ne basic` 曾把「没带认证头」当成「不是 Basic 认证」放行）、`exists` 把布尔 `False` 当存在（`file_is_orig` 的 False 是有效取值）。
+- `service.get_enabled_rules` 改 `order_by(priority, id)`：同优先级无二级键时命中归属随 DB 行序漂移。
+- `_flush`：额度不足时**按严重度降序**投递（不再 FIFO）；新增**单规则每分钟上限**（`ST_DETECTOR_MAX_DIGESTS_PER_RULE_MINUTE=8`），超限计入 `dropped.rule_capped`；`aggregate._MAX_SET` 50 → 200（baseline 拿 `len(dst_ips)` 当 `distinct_dst_ips` 特征，50 会截断导致 2σ 失真），样本改为「最早 2 条 + 最新 1 条」。
+- `frequency.FreqWindow`：长窗规则（6h）缺省冷却改为 `max(全局冷却, 本规则窗口)`，并支持规则自带 `cooldown` —— 原来 300s 全局冷却让 6h 规则每 5 分钟重复触发（单主机 6h 最多 72 条）。
+
+**上游字段生产（`ingestion/normalizer.py`，两侧同改）**
+
+- **从头文本解析 `Cookie` 与 `Content-Type`**（`_header_value`）：Zeek 的 http.log 没有这两列 → `cookie` 恒空，「会话跨IP复用」（critical 级会话劫持）与「反序列化 rememberMe」分支永不触发；`content_type` 恒空让「WebShell 上传」「上传类型不匹配」无从判定。
+- **`weird.log` → `protocol_anomaly` / `tls_anomaly`**：采集面已关掉 Zeek 自带 notice，原来这两个标签只由 notice 产出 → 「协议异常」「TLS异常」两规则在**本部署永不触发**（零覆盖却看不出）。
+- **x509 自签判定**：`cert_issuer` 原来只取顶层 `issuer`，而 Zeek 把签发者嵌套在 `certificate.issuer`（恒空）→「自签或异常证书」死规则。现解析嵌套并新增 `cert_self_signed`（subject == issuer，引擎无法比字段，只能在归一化层算）。
+- **`_wazuh_event_type` 去掉 `sshd` 判据**：Wazuh 的 sshd 组同时覆盖**成功**登录，原来会把正常运维登录判成 `brute_force`，连带「暴力破解 / 高频认证失败 / 撞库」在无攻击时就报。
+- `schemas` 两侧新增 `cert_self_signed`；`triage_policy.SUCCESS_EVENT_TYPES` 里的 `conn_http` **全仓无生产者**（HTTP 侧永远判「无成功连接」），换成真实存在的 `http_login`/`http_upload`/`http_request`。
+- `config.web_login_path_regex` 补常见登录形态（`/wp-login.php`、`/admin/login.do`、`/api/v2/authenticate`、`/user/sign_in`）并加词首边界：原正则漏掉它们，让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
+- `policy_skip_rules` 移除「内置-恶意文件传输」：它 `severity=high ≥ min_severity=medium`，**永远不生效**（死配置）；顺带把该规则改为只报上传方向（`file_is_orig`），不再把软件更新/内部 JAR 下载全报 high。
+
+**内置规则内容（84 条：`ndr/` 与 `agent/` 两份逐字一致）**
+
+- **P0**：`WebShell上传` 判据从「请求路径以 .php 结尾」改为「multipart + body 里真有 `filename="x.php"`」（原来 `POST /login.php→302` 报 critical、真上传却漏报）；`Log4Shell` 的 `ognl|spel` 加词边界（`/spellcheck` 曾报 critical）并补 `req_headers`/`resp_headers`（CVE-2021-44228 头向量漏报）；`命令注入` 允许分隔符后直接跟命令（`;id`/`|id`/`&&id` 曾全漏）；`大面积目标探测` 去掉恒真条件 `src_ip exists`（实为无条件按源计数）；`cookie`/`weird` 类死规则经上游修复复活。
+- **P1**：新增方向/连接状态限定（横向移动、异常外联、外传、弱 TLS、敏感端口）；账号类 count 规则 key 加 `dst_ip`、抬高阈值（密码喷洒 5→8/5 分钟、登录爆破 15→30/10 分钟、撞库 3→5/30 分钟）并修 normalizer 的 `sshd` 误判；`DNS-TXT隧道` 改为「同源多个不同 TXT 名字」（原 key 含 query，语义相反）；`横向移动管理端口`/`内网慢速横向`/`服务枚举` 补方向与失败连接限定、阈值收敛；`多路径探测`/`暴力路径枚举`/`服务端错误突变` 补状态码过滤与白名单。
+- **P2**：Wazuh 五条规则与等级脱钩（高危告警改按 `severity in [high,critical]`，FIM/策略违规/MITRE 加「非高危」闸门并降级）；`邮件滥用` 从「命中任意 SMTP」改为同源群发频率规则；`CSRF可疑来源` 描述改为与实现一致（已知测试域名黑名单，不是通用 CSRF 检测）；`危险HTTP方法` 去掉 OPTIONS/PUT/DELETE（常规业务）并白名单放行 CORS 预检；`Host头攻击` 限定 `source_system=zeek + log_type=http`（Wazuh 的 hostname 是 agent 名）。
+- **新增两条补漏规则**：「内置-Bearer令牌高频使用」（把原 `auth_scheme in [bearer,jwt]` 的逐条误报改成 ≥60 次/10 分钟的频率规则）、「内置-单目标多端口深扫」（补「单目标多端口」漏报）。
+
+**测试（新增 `tests/py/test_rules_quality.py`，两侧都跑）**：`_FIELD_TYPES` 无僵尸键、**规则引用的字段必须存在**（防写错字段名静默失效）、正则全可编译、路由全局 priority 有序、`_match` 收口语义、cookie/content-type 头解析、weird→异常事件类型、x509 自签、sshd 不再等于爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**最普通的正常 conn/http 流量不得命中任何逐条规则**（恒真/过宽条件护栏）、Wazuh 规则必须路由到 wazuh、单规则限速 + 严重度优先。
+
+**门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **417 passed, 1 skipped**；`--stack=agent -q` **287 passed, 131 skipped**；`sh tests/zeek/run.sh` 全 `PASS`（`FAILS=0`）；两侧 `npx tsc --noEmit` 无输出。
+
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

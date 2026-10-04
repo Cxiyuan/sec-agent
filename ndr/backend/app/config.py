@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # 误报治理（策略级）：判据集中在 triage_policy，全部环境无关、可后台调；两侧一致
     policy_internal_routine_skip: bool = True
     # 按名跳过（名字必须与 app/rules/builtin.py 的 `Rule.name` 逐字一致，写错会静默无效）。
-    policy_skip_rules: list[str] = ["内置-扫描尝试连接", "内置-恶意文件传输"]
+    policy_skip_rules: list[str] = ["内置-扫描尝试连接"]  # 只能放 severity < policy_internal_routine_min_severity 的规则
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True
@@ -113,7 +113,10 @@ class Settings(BaseSettings):
     # 留空 = 不信任任何代理头（fail-closed，见 ingestion/normalizer.py）。
     zeek_trusted_proxies: str = ""
     web_login_path_regex: str = (
-        "(?i)/(login|signin|sign-in|auth|authorize|session|sso|oauth|token|passwd|password)($|[/?])"
+        # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
+        # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
+        "(?i)(^|/)(login|signin|sign-in|sign_in|wp-login|auth|authorize|authenticate"
+        "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
     exclusion_cache_seconds: int = 30  # 过滤器配置缓存秒数（跨进程最迟这么久生效）
     ingest_filter_cache_seconds: int = 30  # 降噪过滤（入库前）配置缓存秒数
@@ -168,6 +171,14 @@ class Settings(BaseSettings):
     detector_batch_max: int = 5
     detector_max_per_batch: int = 50
     detector_max_digests_per_minute: int = 24
+    # 单**规则名**每分钟最多投递多少条摘要（0 = 不限）。
+    # 为什么需要：per-event 规则自身没有任何抑制手段，一条噪声规则（例：横向移动管理端口
+    # 命中企业里海量正常 445/3389 会话）可在几分钟内吃满 24 条/分钟的总额度，
+    # 把勒索/WebShell 这类高价值摘要挤到 30 分钟超龄丢弃（2026-10 规则评审 P1）。
+    # 超限的摘要并不静默：计入 dropped.rule_capped（Redis 可查）。
+    detector_max_digests_per_rule_minute: int = 8
+    # 规则级摘要限速的 Redis 键前缀（每分钟一个桶，TTL 180s）
+    detector_rule_cap_key: str = "shentong:detector:rulecap"
     detector_queue_max: int = 20000
     detector_raw_queue_max: int = 30000
     detector_coverage_warn_ratio: float = 0.6

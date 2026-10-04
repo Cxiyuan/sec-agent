@@ -360,6 +360,7 @@ NDR 线路（采集与检测）：
 | `ST_DETECTOR_AGG_SECONDS` | 300 | 短窗聚合时长（源IP+规则） |
 | `ST_DETECTOR_BATCH_SECONDS` / `ST_DETECTOR_BATCH_MAX` | 20 / 5 | 攒批投递触发条件 |
 | `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE` | 24 | 投递速率上限（对齐模型容量） |
+| `ST_DETECTOR_MAX_DIGESTS_PER_RULE_MINUTE` | 8 | **单规则名**每分钟摘要上限（0=不限）。per-event 规则没有别的抑制手段，一条噪声规则（如横向移动管理端口）能几分钟吃满总额度把高价值摘要挤到超龄丢弃；超限计入 `dropped.rule_capped`。额度不足时**按严重度降序**投递，不再 FIFO |
 | `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；**空 = 不投递**（不再进退役队列，会明确计 `undelivered`） |
 | `ST_AGENT_PUSH_TOKEN` | 空 | 推送令牌（与智能体 `ST_PUSH_TOKEN` 一致） |
 | `ST_AGENT_PUSH_ENABLED` | true | 推送开关（关掉 = 不投递，同样计 `undelivered`） |

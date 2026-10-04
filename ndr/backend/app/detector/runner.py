@@ -487,6 +487,51 @@ def _drop(client: Any, reason: str, count: int, stats: Counter[str]) -> None:
         )
 
 
+#: 摘要严重度排序：投递额度不够时先保高价值摘要（评审 P1）。
+_DIGEST_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+
+def _severity_rank(digest: dict[str, Any]) -> int:
+    """摘要的严重度排序值（缺值/脏值算 0）。"""
+    return _DIGEST_SEVERITY_RANK.get(str(digest.get("rule_severity") or "").strip().lower(), 0)
+
+
+def _cap_per_rule(
+    client: Any, items: list[tuple[str, dict[str, Any]]], stats: Counter[str]
+) -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
+    """按规则名限速：每分钟每条规则最多投多少条摘要。
+
+    返回 (保留项, 需 ack 的丢弃 payload)。丢弃**不静默**：写 dropped.rule_capped。
+    `cap<=0`、规则名为空或 Redis 不可用时一律放行（fail-open，宁可多投不静默丢）。
+    """
+    cap = settings.detector_max_digests_per_rule_minute
+    if cap <= 0:
+        return items, []
+    kept: list[tuple[str, dict[str, Any]]] = []
+    dropped: list[str] = []
+    bucket = rate_bucket()
+    for payload, digest in items:
+        rule = str(digest.get("rule") or "")
+        if not rule:
+            kept.append((payload, digest))
+            continue
+        try:
+            key = f"{settings.detector_rule_cap_key}:{bucket}:{rule}"
+            used = int(client.incr(key))
+            if used == 1:
+                client.expire(key, 180)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("规则级限速计数失败（按放行处理）: %s", exc)
+            kept.append((payload, digest))
+            continue
+        if used <= cap:
+            kept.append((payload, digest))
+        else:
+            _drop(client, "rule_capped", 1, stats)
+            dropped.append(payload)
+    return kept, dropped
+
+
 def _digest_age(entry: dict[str, Any]) -> float:
     """摘要已存在秒数（取 last_seen；解析失败返回 0 视为新鲜）。
 
@@ -538,7 +583,15 @@ def _flush(
             continue
         items.append((payload, digest))
 
-    # 严格按剩余额度投递：超出的放回队尾（下轮优先）
+    # 单规则每分钟上限：per-event 噪声规则（例：横向移动管理端口）能几分钟吃满总额度，
+    # 把高价值摘要挤到超龄丢弃（评审 P1）。超限的计入 dropped.rule_capped 后 ack。
+    items, capped = _cap_per_rule(client, items, stats)
+    for payload in capped:
+        q.ack(payload)
+    # 按剩余额度投递：超出的放回队尾（下轮优先）。
+    # **先按严重度降序**：额度长期不够时先保高价值摘要，而不是让 FIFO 把扫描噪声
+    # 排在勒索告警前面（评审 P1）。
+    items.sort(key=lambda item: _severity_rank(item[1]), reverse=True)
     surplus = [payload for payload, _ in items[budget:]]
     items = items[:budget]
     for payload in surplus:

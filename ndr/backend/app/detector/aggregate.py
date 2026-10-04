@@ -21,7 +21,10 @@ log = get_logger(__name__)
 _PREFIX = "shentong:agg"
 _DUE_KEY = "shentong:agg:due"
 _MAX_SAMPLES = 3
-_MAX_SET = 50
+# 摘要里 dst_ips/dst_ports/event_types/conn_states 的成员上限。
+# **不能太小**：baseline/engine.py 拿 `len(digest["dst_ips"])` 当 distinct_dst_ips 特征，
+# 50 的上限会让 >50 扇出的目标数被截断，2σ 基线失真（2026-10 规则评审 P2）。
+_MAX_SET = 200
 # 满额降级：原来只 warning 一次就 return，命中被静默丢掉（QA 应修 6）。
 # 现在把丢弃写进 `settings.detector_drop_key` 的 agg_full 计数（跨重启可查），并限频告警。
 _DROP_TTL = 30 * 24 * 3600
@@ -110,8 +113,13 @@ class Aggregator:
         if entry.conn_state:
             _push_unique(state, "conn_states", entry.conn_state)
         samples = state.setdefault("samples", [])
-        if len(samples) < _MAX_SAMPLES:  # 保留最多 3 条原文作为分析样本
-            samples.append({"source": log_source, "doc": raw_doc})
+        # 样本：保留「最早 2 条 + 最新 1 条」。只留最早 3 条会让分析样本全是聚合窗开头的
+        # 探活请求（评审 P2）；最后一条从第 3 条起被窗内最新命中持续覆盖。
+        sample = {"source": log_source, "doc": raw_doc}
+        if len(samples) < _MAX_SAMPLES:
+            samples.append(sample)
+        else:
+            samples[-1] = sample
 
         current = _to_int(self.r.zcard(_DUE_KEY), 0)
         if current >= self.max_keys and not self.r.zscore(_DUE_KEY, key):
