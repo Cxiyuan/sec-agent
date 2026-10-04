@@ -77,7 +77,9 @@ def test_heartbeat_deletes_legacy_field_names(engine_mod: ModuleType) -> None:
     assert client.deleted == [(engine_mod.settings.baseline_stats_key, "anomalies", "numeric_keys")]
 
 
-def test_route_hides_legacy_fields(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_hides_legacy_fields(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """接口侧再拦一道：就算 Redis 里残留旧字段（老进程写的），也不能回给前端。"""
     if request.config.getoption("--stack") != "ndr":
         pytest.skip("基线路由只在 NDR 侧")
@@ -118,8 +120,12 @@ def test_flush_runs_numeric_baseline_cleanup(
 ) -> None:
     """flush 的清理段必须同时清数值基线（不依赖 profile_enabled）。"""
     calls: list[str] = []
-    monkeypatch.setattr(engine_mod, "stats_cleanup", lambda: calls.append("stats") or {"deleted": 3})
-    monkeypatch.setattr(engine_mod.profiles, "cleanup", lambda: calls.append("profiles") or {"deleted": 0})
+    monkeypatch.setattr(
+        engine_mod, "stats_cleanup", lambda: calls.append("stats") or {"deleted": 3}
+    )
+    monkeypatch.setattr(
+        engine_mod.profiles, "cleanup", lambda: calls.append("profiles") or {"deleted": 0}
+    )
 
     engine = engine_mod.BaselineEngine(_FakeRedis())
     engine._last_cleanup = -1e9  # 一定过期 → 本轮必须触发清理
@@ -131,8 +137,12 @@ def test_flush_skips_cleanup_before_interval(
     engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(engine_mod, "stats_cleanup", lambda: calls.append("stats") or {"deleted": 0})
-    monkeypatch.setattr(engine_mod.profiles, "cleanup", lambda: calls.append("profiles") or {"deleted": 0})
+    monkeypatch.setattr(
+        engine_mod, "stats_cleanup", lambda: calls.append("stats") or {"deleted": 0}
+    )
+    monkeypatch.setattr(
+        engine_mod.profiles, "cleanup", lambda: calls.append("profiles") or {"deleted": 0}
+    )
 
     engine = engine_mod.BaselineEngine(_FakeRedis())
     engine.flush()  # _last_flush/_last_cleanup 都是 0 → 会跑一次

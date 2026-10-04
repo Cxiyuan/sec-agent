@@ -223,7 +223,9 @@ def test_update_profiles_resets_risk_when_no_reasons(
     profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """本轮没有理由 → 风险归零、理由清空、风险时间置空（否则陈旧风险永远挂在 TOP 上）。"""
-    row = _profile(profiles, risk_score=0.9, anomalies=["新源 IP：1.2.3.4"], risk_at=datetime.now(UTC))
+    row = _profile(
+        profiles, risk_score=0.9, anomalies=["新源 IP：1.2.3.4"], risk_at=datetime.now(UTC)
+    )
     monkeypatch.setattr(profiles, "SessionLocal", lambda: _FakeSession(row))
     result = profiles.update_profiles({"session|k": _obs(src_ips=["10.0.0.1"])}, {})
     assert result == {"created": 0, "updated": 1}

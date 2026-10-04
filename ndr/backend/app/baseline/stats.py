@@ -87,7 +87,9 @@ def apply_stats(values: dict[str, list[float]]) -> dict[str, dict[str, Any]]:
             rows: dict[str, BaselineStat] = {}
             for start in range(0, len(keys), _BATCH):
                 chunk = keys[start : start + _BATCH]
-                for row in db.scalars(select(BaselineStat).where(BaselineStat.key.in_(chunk))).all():
+                for row in db.scalars(
+                    select(BaselineStat).where(BaselineStat.key.in_(chunk))
+                ).all():
                     rows[row.key] = row
             for key, samples in merged.items():
                 row = rows.get(key)
@@ -162,7 +164,9 @@ def cleanup(retention_days: int | None = None) -> dict[str, int]:
     （尤其是外网/攻击者地址）会永久留下 3 行；而画像有 `profile_retention_days` 清理、
     数值基线一行清理逻辑都没有 —— 只增不减。
     """
-    days = max(0, int(retention_days if retention_days is not None else settings.baseline_retention_days))
+    days = max(
+        0, int(retention_days if retention_days is not None else settings.baseline_retention_days)
+    )
     if days <= 0:
         return {"deleted": 0}  # 0 = 不清理（与 observe_days 不同，这里允许显式关掉）
     before = datetime.now(UTC) - timedelta(days=days)

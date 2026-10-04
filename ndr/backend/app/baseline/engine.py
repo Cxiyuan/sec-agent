@@ -264,9 +264,7 @@ class BaselineEngine:
             total = sum(len(v) for v in self._pending.values())
             if total > cap:
                 # 极端情况（PG 长时间不可用）只做一次有界丢弃，避免内存无限增长，并留计数可查
-                self.stats["stats_write_dropped"] = (
-                    self.stats.get("stats_write_dropped", 0) + total
-                )
+                self.stats["stats_write_dropped"] = self.stats.get("stats_write_dropped", 0) + total
                 self._pending.clear()
                 log.error(
                     "基线落库持续失败，待落库样本超过 %d 条，已丢弃 %d 条（PG 恢复后请核查）",

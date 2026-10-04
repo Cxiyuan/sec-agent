@@ -479,16 +479,16 @@ def top_anomalies(limit: int = 10) -> dict[str, Any]:
     不是历史榜单 —— 实测旧实现会把 2~4 小时前判过、之后再没出现过的实体一直列出来。
     """
     ttl = max(0, int(settings.profile_risk_ttl_minutes))
-    stmt = select(EntityProfile).where(
-        EntityProfile.risk_score >= settings.profile_risk_threshold
-    )
+    stmt = select(EntityProfile).where(EntityProfile.risk_score >= settings.profile_risk_threshold)
     if ttl > 0:
         cutoff = datetime.now(UTC) - timedelta(minutes=ttl)
         stmt = stmt.where(EntityProfile.risk_at.is_not(None), EntityProfile.risk_at >= cutoff)
     try:
         with SessionLocal() as db:
             rows = db.scalars(
-                stmt.order_by(EntityProfile.risk_score.desc()).limit(max(1, min(int(limit or 10), 100)))
+                stmt.order_by(EntityProfile.risk_score.desc()).limit(
+                    max(1, min(int(limit or 10), 100))
+                )
             ).all()
     except Exception as exc:  # noqa: BLE001
         return {

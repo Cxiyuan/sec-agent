@@ -116,9 +116,7 @@ def test_cleanup_can_be_disabled(stats_mod: ModuleType, monkeypatch: pytest.Monk
     assert session.statements == []
 
 
-def test_cleanup_swallows_db_errors(
-    stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cleanup_swallows_db_errors(stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     class _Boom(_Session):
         def execute(self, stmt: Any) -> Any:
             raise RuntimeError("pg down")
@@ -127,9 +125,7 @@ def test_cleanup_swallows_db_errors(
     assert stats_mod.cleanup(30) == {"deleted": 0}
 
 
-def test_apply_stats_is_welford(
-    stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_apply_stats_is_welford(stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """Welford 增量：两次观测 10/20 → count=2、mean=15、样本标准差 sqrt(50)≈7.071。"""
     session = _Session(rows=[])
     monkeypatch.setattr(stats_mod, "SessionLocal", lambda: session)

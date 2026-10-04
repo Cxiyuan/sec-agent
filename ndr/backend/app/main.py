@@ -75,6 +75,7 @@ def _rename_builtin_rules(db: Any) -> None:
             row.name = new
         db.flush()
 
+
 #: 启动时下发 ILM/索引模板的节奏。compose 同时拉起十个服务时 ES 常比后端起得晚
 #: （实测 ES 就绪要 30~40 秒，`stop` 后再 `start` 更慢），一次性下发会静默失败 ——
 #: 模板缺失时 Logstash 自动建的索引拿到默认 `number_of_replicas: 1`，单节点集群恒
