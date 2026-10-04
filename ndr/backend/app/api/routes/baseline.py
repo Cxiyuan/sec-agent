@@ -43,6 +43,10 @@ def _detector_counters() -> dict[str, Any]:
         return {"alive": False}
     out: dict[str, Any] = {"alive": bool(raw)}
     for field, value in raw.items():
+        # 改名前的歧义字段不往外吐（旧字段名叫 anomalies，实际是「上一轮的值」，
+        # 被当成累计值读就会误判「没有异常」）。心跳键有 24h TTL，老进程写过的值会残留。
+        if field in ("anomalies", "numeric_keys"):
+            continue
         # Redis 里全是字符串，统一按数字解析；解不出来就原样回（别把 None 变成 0）
         try:
             out[field] = int(float(value or 0))

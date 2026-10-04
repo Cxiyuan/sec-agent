@@ -30,6 +30,7 @@ class _FakeRedis:
     def __init__(self) -> None:
         self.hashes: dict[str, dict[str, Any]] = {}
         self.expires: list[tuple[str, int]] = []
+        self.deleted: list[tuple[str, ...]] = []
 
     def hset(self, key: str, mapping: dict[str, Any] | None = None, **_kw: Any) -> int:
         self.hashes[key] = dict(mapping or {})
@@ -38,6 +39,10 @@ class _FakeRedis:
     def expire(self, key: str, seconds: int) -> bool:
         self.expires.append((key, seconds))
         return True
+
+    def hdel(self, key: str, *fields: str) -> int:
+        self.deleted.append((key, *fields))
+        return len(fields)
 
 
 def test_heartbeat_separates_last_round_from_totals(engine_mod: ModuleType) -> None:
@@ -59,6 +64,44 @@ def test_heartbeat_separates_last_round_from_totals(engine_mod: ModuleType) -> N
     assert "anomalies" not in mapping
     assert "numeric_keys" not in mapping
     assert client.expires  # 心跳要有 TTL，进程没了不留僵尸值
+
+
+def test_heartbeat_deletes_legacy_field_names(engine_mod: ModuleType) -> None:
+    """改名前的 `anomalies` / `numeric_keys` 必须从哈希里删掉。
+
+    哈希只增不删（TTL 24h）：不删就新旧并存，读的人又可能拿到那个被当成累计值的 `anomalies`。
+    """
+    client = _FakeRedis()
+    engine = engine_mod.BaselineEngine(client)
+    engine._publish()
+    assert client.deleted == [(engine_mod.settings.baseline_stats_key, "anomalies", "numeric_keys")]
+
+
+def test_route_hides_legacy_fields(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """接口侧再拦一道：就算 Redis 里残留旧字段（老进程写的），也不能回给前端。"""
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("基线路由只在 NDR 侧")
+    import importlib
+
+    route = importlib.import_module("app.api.routes.baseline")
+    redis_mod = importlib.import_module("redis")
+
+    class _Client:
+        def hgetall(self, _key: str) -> dict[str, str]:
+            return {
+                "observed": "894",
+                "anomalies": "0",  # 旧字段：实际是「上一轮」，不是累计
+                "numeric_keys": "102",
+                "anomalies_last_round": "2",
+                "anomalies_total": "37",
+            }
+
+    monkeypatch.setattr(redis_mod.Redis, "from_url", lambda *_a, **_k: _Client())
+    out = route._detector_counters()
+    assert "anomalies" not in out and "numeric_keys" not in out
+    assert out["anomalies_last_round"] == 2
+    assert out["anomalies_total"] == 37
+    assert out["observed"] == 894
 
 
 def test_numeric_keys_last_round_is_overwritten(engine_mod: ModuleType) -> None:

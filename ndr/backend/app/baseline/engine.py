@@ -334,5 +334,8 @@ class BaselineEngine:
                 },
             )
             self._client.expire(settings.baseline_stats_key, 24 * 3600)
+            # 清掉改名前的歧义字段：哈希只增不删（TTL 24h），不删就会新旧并存 ——
+            # 读的人可能又拿到那个被当成累计值的 `anomalies`（2026-10 实机 QA 的误读源）。
+            self._client.hdel(settings.baseline_stats_key, "anomalies", "numeric_keys")
         except Exception as exc:  # noqa: BLE001
             log.debug("基线计数写入 Redis 失败: %s", exc)
