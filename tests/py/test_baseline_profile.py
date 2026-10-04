@@ -273,6 +273,47 @@ def test_known_api_path_is_not_reported(profiles: ModuleType) -> None:
     assert "新接口路径" not in _reasons(out)
 
 
+def test_fail_burst_bands(profiles: ModuleType) -> None:
+    """认证失败突增的分档（用户 2026-10 定）：≥5 → .25 / ≥10 → .35 / ≥20 且零成功 → .6。"""
+    assert profiles.fail_burst_score(4, 0) == (0.0, "")
+    assert profiles.fail_burst_score(5, 5) == (0.0, "")  # 失败必须多于成功
+    assert profiles.fail_burst_score(5, 4)[0] == 0.25
+    assert profiles.fail_burst_score(9, 1)[0] == 0.25
+    assert profiles.fail_burst_score(10, 3)[0] == 0.35
+    assert profiles.fail_burst_score(19, 1)[0] == 0.35
+    # 有成功过 → 不进最高档（可能是用户反复输错，不是脚本在撞）
+    assert profiles.fail_burst_score(20, 5)[0] == 0.35
+    score, suffix = profiles.fail_burst_score(20, 0)
+    assert score == 0.6 and "疑似爆破" in suffix
+    assert profiles.fail_burst_score(100, 0)[0] == 0.6  # 封顶在最上一档
+
+
+def test_top_fail_band_reaches_threshold_alone(profiles: ModuleType) -> None:
+    """最高档必须**单独**就达阈值。
+
+    回归背景（用户 2026-10 指出）：原来固定 +0.25、而阈值 0.6 —— 单条永远报不出来，
+    真爆破只要没伴随新 IP/新 UA 就漏了。
+    """
+    score, _ = profiles.fail_burst_score(20, 0)
+    assert score >= profiles.settings.profile_risk_threshold
+
+
+def test_detect_reports_top_fail_band(profiles: ModuleType) -> None:
+    """接进 detect()：窗口内 20 次失败零成功时，总分应过阈值。"""
+    prof = _profile(profiles)  # 其余特征都是已知的，只有失败突增命中
+    out = profiles.detect("session", _obs(fail=20, success=0), prof)
+    assert any("认证失败突增" in r for r in out["reasons"]), out
+    assert out["risk"] >= profiles.settings.profile_risk_threshold
+
+
+def test_detect_ignores_mild_failures(profiles: ModuleType) -> None:
+    """输错几次不该报（失败 5 次成功 4 次 → 只 0.25 分，不过阈值）。"""
+    prof = _profile(profiles)
+    out = profiles.detect("session", _obs(fail=5, success=4), prof)
+    assert any("认证失败突增" in r for r in out["reasons"]), out
+    assert out["risk"] < profiles.settings.profile_risk_threshold
+
+
 def test_update_profiles_prunes_stale_static_paths(
     profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

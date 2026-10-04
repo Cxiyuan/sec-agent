@@ -122,6 +122,34 @@ def api_path(path: str) -> bool:
     return not (exclude is not None and exclude.search(text))
 
 
+# 认证失败突增的分档权重（用户 2026-10 定的口径）。
+# 为什么要分档：原来固定 +0.25，而异常阈值是 0.6 —— **单条永远到不了阈值**，
+# 真爆破只要没伴随新 IP/新 UA（同台机器、同一 UA 一直试）就报不出来（漏报）。
+# 分档后「≥20 次且零成功」单独就过阈值（这类形态基本就是脚本在撞），
+# 而「输错几次」仍然只是 0.25，不放大误报。
+_FAIL_BANDS: tuple[tuple[int, bool, float], ...] = (
+    (20, True, 0.6),  # ≥20 次且一次没成功 → 直接达阈值
+    (10, False, 0.35),  # ≥10 次
+    (5, False, 0.25),  # ≥5 次
+)
+
+
+def fail_burst_score(fail: int, success: int) -> tuple[float, str]:
+    """认证失败突增的分值：返回（分值, 理由后缀）。达不到最低档返回 (0.0, "")。
+
+    门槛与原来一致：失败 ≥5 且多于成功；最高档额外要求「零成功」。
+    """
+    fails = max(0, int(fail or 0))
+    wins = max(0, int(success or 0))
+    if fails < 5 or fails <= wins:
+        return 0.0, ""
+    for floor, need_zero_success, score in _FAIL_BANDS:
+        if fails >= floor and (not need_zero_success or wins == 0):
+            suffix = "—— 疑似爆破/撞库（一次都没成功）" if need_zero_success else ""
+            return score, suffix
+    return 0.0, ""
+
+
 def _old_enough(profile: EntityProfile) -> bool:
     """画像建立是否已满 `profile_hour_min_age_hours` 小时。"""
     min_hours = max(0, int(settings.profile_hour_min_age_hours))
@@ -338,9 +366,10 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
             reasons.append(f"会话跨 {len(v4) + len(v6)} 个同族源 IP（疑似会话劫持）")
             risk += 0.45
 
-    if obs["fail"] >= 5 and obs["fail"] > obs["success"]:
-        reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次）")
-        risk += 0.25
+    score, suffix = fail_burst_score(obs["fail"], obs["success"])
+    if score > 0:
+        reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次{suffix}）")
+        risk += score
 
     return {"reasons": reasons, "risk": min(risk, 1.0), "cold_start": False}
 

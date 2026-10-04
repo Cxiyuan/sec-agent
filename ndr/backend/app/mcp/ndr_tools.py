@@ -709,7 +709,8 @@ def _entity_profile(args: dict[str, Any]) -> dict[str, Any]:
         "新 UA +0.2（非常用时段 +0.15，需画像满 "
         f"{settings.profile_hour_min_age_hours} 小时且见过 ≥{settings.profile_hour_min_coverage} 个时段）、"
         f"新接口路径 +0.25（只算接口形态，已知 ≥{settings.profile_path_min_known} 条才判）、"
-        "同族跨 ≥2 个 IP +0.45（v4+v6 双栈不算会话劫持）、失败 ≥5 且多于成功 +0.25；"
+        "同族跨 ≥2 个 IP +0.45（v4+v6 双栈不算会话劫持）、"
+        "认证失败突增分档：≥5 且多于成功 +0.25 / ≥10 +0.35 / ≥20 且零成功 +0.6（这类基本是脚本在撞，单条即达阈值）；"
         f"达到 {settings.profile_risk_threshold} 才算异常，冷启动（观测不足）不算。"
         "风险分是「当前窗口」的值：本轮无异常会归零并清空，risk_at 是判定时间。"
     )
