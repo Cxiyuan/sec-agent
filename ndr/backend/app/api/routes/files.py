@@ -36,7 +36,14 @@ router = APIRouter(prefix="/api/files", tags=["files"])
 _FUID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 #: 查 ES 时要的字段（省流；文件本体不在 ES 里）
-_SOURCE_FIELDS = ("fuid", "extracted", "extracted_size", "extracted_cutoff", "filename", "mime_type")
+_SOURCE_FIELDS = (
+    "fuid",
+    "extracted",
+    "extracted_size",
+    "extracted_cutoff",
+    "filename",
+    "mime_type",
+)
 
 
 def _download_name(name: str, fallback: str) -> str:

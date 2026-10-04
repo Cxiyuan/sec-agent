@@ -93,9 +93,7 @@ def test_valid_refs_accumulate_across_calls(
     """引用白名单必须跨调用累积：以前每次调用新建 ToolCtx，`raw_evidence` 的校验永远跳过。"""
     server = quiet_run
     ref = "es:shentong-events-2026.10.04/abc123"
-    monkeypatch.setattr(
-        server, "execute_es_tool", lambda name, args, ctx: {"hits": [{"ref": ref}]}
-    )
+    monkeypatch.setattr(server, "execute_es_tool", lambda name, args, ctx: {"hits": [{"ref": ref}]})
     token = server._current_token_id.set("tok-refs")
     try:
         server.search_events(source="zeek")
@@ -145,9 +143,7 @@ def test_raw_evidence_rejects_foreign_index(
             raise AssertionError("不该真的去读非事件索引")
 
     monkeypatch.setattr(es_query, "_es", lambda: _Boom())
-    result = mcpapi.execute_es_tool(
-        "raw_evidence", {"ref": "es:.kibana/1"}, es_tools.ToolCtx()
-    )
+    result = mcpapi.execute_es_tool("raw_evidence", {"ref": "es:.kibana/1"}, es_tools.ToolCtx())
     assert "只允许读取事件索引族" in str(result.get("error"))
 
 
@@ -157,9 +153,7 @@ def test_raw_evidence_enforces_item_cap(request: pytest.FixtureRequest) -> None:
     es_tools = importlib.import_module("app.investigation.tools")
     mcpapi = importlib.import_module("app.mcpapi")
     ctx = es_tools.ToolCtx(raw_evidence=[{"i": i} for i in range(es_tools.RAW_EVIDENCE_MAX)])
-    result = mcpapi.execute_es_tool(
-        "raw_evidence", {"ref": "es:shentong-events-2026.10.04/x"}, ctx
-    )
+    result = mcpapi.execute_es_tool("raw_evidence", {"ref": "es:shentong-events-2026.10.04/x"}, ctx)
     assert "已达上限" in str(result.get("note"))
 
 
@@ -287,7 +281,10 @@ def test_agent_get_rule_requires_an_identifier(agent_mods: dict[str, Any]) -> No
         ({"status": "failed"}, "pending"),
         ({"status": "partial", "path": [{"stage": "侦察"}]}, "inconclusive"),
         ({"status": "succeeded", "path": []}, "inconclusive"),
-        ({"status": "succeeded", "path": [{"stage": "侦察"}], "contradiction": True}, "inconclusive"),
+        (
+            {"status": "succeeded", "path": [{"stage": "侦察"}], "contradiction": True},
+            "inconclusive",
+        ),
         ({"status": "succeeded", "path": [{"stage": "侦察"}], "confidence": 0.9}, "true_positive"),
         ({"status": "succeeded", "path": [{"stage": "侦察"}], "confidence": 0.3}, "suspicious"),
     ],
@@ -305,7 +302,12 @@ def test_writeback_writes_one_conclusion_per_fingerprint(
     monkeypatch.setattr(
         wb.mcp_client, "call", lambda name, args, **_: seen.append(args) or {"ok": True}
     )
-    case = {"id": "c1", "display_id": "AC-1", "severity": "high", "group_fingerprints": ["f1", "f2"]}
+    case = {
+        "id": "c1",
+        "display_id": "AC-1",
+        "severity": "high",
+        "group_fingerprints": ["f1", "f2"],
+    }
     payload = {
         "status": "succeeded",
         "path": [{"stage": "侦察"}, {"stage": "横向"}],
@@ -324,7 +326,9 @@ def test_writeback_skips_without_fingerprints_or_mcp(
 ) -> None:
     wb = agent_mods["writeback"]
     monkeypatch.setattr(wb.mcp_client, "enabled", lambda: True)
-    assert wb.record_conclusion({"group_fingerprints": []}, {"status": "succeeded"}, "succeeded") == 0
+    assert (
+        wb.record_conclusion({"group_fingerprints": []}, {"status": "succeeded"}, "succeeded") == 0
+    )
     monkeypatch.setattr(wb.mcp_client, "enabled", lambda: False)
     assert (
         wb.record_conclusion({"group_fingerprints": ["f1"]}, {"status": "succeeded"}, "succeeded")
@@ -338,7 +342,10 @@ def test_writeback_never_raises_on_rejection(
     wb = agent_mods["writeback"]
     monkeypatch.setattr(wb.mcp_client, "enabled", lambda: True)
     monkeypatch.setattr(wb.mcp_client, "call", lambda name, args, **_: {"error": "被拒"})
-    assert wb.record_conclusion({"group_fingerprints": ["f1"]}, {"status": "succeeded"}, "succeeded") == 0
+    assert (
+        wb.record_conclusion({"group_fingerprints": ["f1"]}, {"status": "succeeded"}, "succeeded")
+        == 0
+    )
 
 
 # ---------- catalog 不漂移 ----------
@@ -372,7 +379,5 @@ def test_skill_validation_accepts_investigation_tools(
         tools=["ioc_extract", "search_events", "get_rule"],
     )
     assert routes._validate(body) == []
-    bad = routes.SkillIn(
-        name="t", event_types=["x"], sop="y", tools=["no_such_tool"]
-    )
+    bad = routes.SkillIn(name="t", event_types=["x"], sop="y", tools=["no_such_tool"])
     assert any("不存在" in e["msg"] for e in routes._validate(bad))

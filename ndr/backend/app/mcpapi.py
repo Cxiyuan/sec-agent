@@ -132,7 +132,9 @@ def list_profiles(
     offset: int = 0,
 ) -> dict[str, Any]:
     """查账号 / 会话画像（跨窗口长期基线），可按实体键指名或只看过阈值的异常。"""
-    return _profile.list_profiles(kind=kind, keys=keys, min_risk=min_risk, limit=limit, offset=offset)
+    return _profile.list_profiles(
+        kind=kind, keys=keys, min_risk=min_risk, limit=limit, offset=offset
+    )
 
 
 def top_anomalies(limit: int = 10) -> dict[str, Any]:

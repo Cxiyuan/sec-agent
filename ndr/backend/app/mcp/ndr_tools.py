@@ -748,7 +748,9 @@ def _file_content(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "提取件字段未通过路径校验（拒绝读取）"}
     try:
         if not path.is_file():
-            return {"error": "提取件已被清理（非白名单类型或超出容量上限，见 zeek/extract_cleanup.py）"}
+            return {
+                "error": "提取件已被清理（非白名单类型或超出容量上限，见 zeek/extract_cleanup.py）"
+            }
         size = path.stat().st_size
         with path.open("rb") as fh:
             blob = fh.read(want)

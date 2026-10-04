@@ -196,7 +196,11 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "Zeek 文件 id：可与 http/dns/smtp 等日志里的 fuids 对上，串起“哪个连接传了它”",
     },
-    "md5": {"path": "md5", "kind": "keyword", "desc": "文件 MD5（Zeek FileHash 分析器算好落 files.log）"},
+    "md5": {
+        "path": "md5",
+        "kind": "keyword",
+        "desc": "文件 MD5（Zeek FileHash 分析器算好落 files.log）",
+    },
     "sha1": {"path": "sha1", "kind": "keyword", "desc": "文件 SHA1"},
     "sha256": {"path": "sha256", "kind": "keyword", "desc": "文件 SHA256"},
     "file_source": {
