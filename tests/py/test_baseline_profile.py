@@ -424,18 +424,31 @@ def test_top_anomalies_can_be_unfiltered(
     assert "risk_at" not in _where_of(session.statements[0]), session.statements[0]
 
 
-def test_cleanup_keeps_fresh_profiles(
+def test_cleanup_prunes_old_static_paths(
     profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """清理按 last_seen 判定：库里没有被删的行时，返回的计数必须是 0（不是 None/异常）。"""
+    """清理做两件事：删过期画像 + 剔除不合口径的旧路径。
+
+    为什么路径自愈放在这里：口径是后加上的，老库里积了一堆静态资源路径（实测某环境 3934 条），
+    只靠「该画像又被观测到」的话，不再活跃的画像永远不会清。
+    """
     statements: list[str] = []
+    row = _profile(profiles)
+    row.paths = {"/seeyon/rest/keep": 1, "/seeyon/x/a.css": 2, "/img/b.png": 3}
+    untouched = _profile(profiles)
+    untouched.paths = {"/seeyon/rest/other": 5}
 
     class _Session:
         def execute(self, stmt: Any) -> Any:
             from types import SimpleNamespace
 
             statements.append(str(stmt))
-            return SimpleNamespace(rowcount=0)
+            return SimpleNamespace(rowcount=4)
+
+        def scalars(self, _stmt: Any) -> Any:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(all=lambda: [row, untouched])
 
         def commit(self) -> None:
             return None
@@ -447,5 +460,8 @@ def test_cleanup_keeps_fresh_profiles(
             return False
 
     monkeypatch.setattr(profiles, "SessionLocal", _Session)
-    assert profiles.cleanup()["deleted"] == 0
+    out = profiles.cleanup()
+    assert out == {"deleted": 4, "pruned": 2}
+    assert row.paths == {"/seeyon/rest/keep": 1}
+    assert untouched.paths == {"/seeyon/rest/other": 5}  # 合口径的不动
     assert statements and "DELETE FROM entity_profiles" in statements[0]

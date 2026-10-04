@@ -469,19 +469,33 @@ def update_profiles(
 
 
 def cleanup() -> dict[str, int]:
-    """清理长期无观测的画像。"""
+    """清理长期无观测的画像，并顺手把不合口径的旧路径剔掉。
+
+    为什么在这里做路径自愈：路径口径是后加上的，老库里已经存了一堆静态资源/页面路径
+    （实测某环境 3934 条），它们会把 30 条上限占着。只靠「该画像又被观测到」自愈的话，
+    不再活跃的画像永远不会清；放到小时级清理里，一小时内全库都会对齐，
+    而且口径仍然只来自配置（不在 SQL 里重写一份正则，避免两处漂移）。
+    """
     before = datetime.now(UTC) - timedelta(days=settings.profile_retention_days)
+    deleted = pruned = 0
     try:
         with SessionLocal() as db:
             result = cast(
                 CursorResult[Any],
                 db.execute(delete(EntityProfile).where(EntityProfile.last_seen < before)),
             )
+            deleted = result.rowcount or 0
+            for row in db.scalars(select(EntityProfile)).all():
+                current = row.paths or {}
+                kept = _kept_paths(current)
+                if len(kept) != len(current):
+                    pruned += len(current) - len(kept)
+                    row.paths = kept
             db.commit()
-            return {"deleted": result.rowcount or 0}
+            return {"deleted": deleted, "pruned": pruned}
     except Exception as exc:  # noqa: BLE001
         log.warning("清理实体画像失败: %s", exc)
-        return {"deleted": 0}
+        return {"deleted": 0, "pruned": 0}
 
 
 # ---------- 列表 ----------

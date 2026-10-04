@@ -220,8 +220,12 @@ class BaselineEngine:
             self._last_cleanup = now
             if settings.profile_enabled:
                 result = profiles.cleanup()
-                if result.get("deleted"):
-                    log.info("基线画像清理：删除 %d 条过期画像", result["deleted"])
+                if result.get("deleted") or result.get("pruned"):
+                    log.info(
+                        "基线画像清理：删除 %d 条过期画像、剔除 %d 条不合口径的旧路径",
+                        result.get("deleted") or 0,
+                        result.get("pruned") or 0,
+                    )
             # 数值基线的保留期清理：与画像同节奏（不依赖 profile_enabled，两者是两回事）
             dropped = stats_cleanup()
             if dropped.get("deleted"):
