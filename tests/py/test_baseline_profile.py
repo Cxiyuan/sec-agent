@@ -299,9 +299,7 @@ def test_update_profiles_merges_dst_ips(
     assert row.dst_ips == {"10.0.0.80": 6, "10.0.0.81": 1}
 
 
-def test_top_anomalies_kind_filter(
-    profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_top_anomalies_kind_filter(profiles: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """界面只取账号画像（会话展示名是哈希，看不懂）—— SQL 里必须有 kind 过滤。"""
     session = _FakeSession(row=None, rows=[])
     monkeypatch.setattr(profiles, "SessionLocal", lambda: session)
