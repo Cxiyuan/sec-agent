@@ -310,6 +310,16 @@ def _probe(cfg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def probe_status() -> dict[str, Any]:
+    """连通性 + 基本信息（总览页的组件灯也用它，避免两处各写一遍探测）。"""
+    return _probe(_cfg())
+
+
+def ingest_stats() -> dict[str, Any]:
+    """近 24 小时 source_system=wazuh 的告警/原始日志条数（组件灯判「接了但没数据」）。"""
+    return _ingest_stats()
+
+
 def _first_item(data: Any) -> dict[str, Any]:
     if isinstance(data, dict):
         items = data.get("data", {}).get("affected_items")

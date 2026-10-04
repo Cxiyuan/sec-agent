@@ -1,0 +1,237 @@
+"""24 小时流量（字节量）与协议占比（总览页的两张图）。
+
+**一次 ES `_search` 拿两块**，因为它们共用同一个时间窗与同一份文档集合：
+- `traffic`：`date_histogram`（1 小时）出逐小时字节量与条数。**必须过滤 `log_type=conn`**：
+  `bytes_in` 在 HTTP 文档里取自 `response_body_len`（见 `ingestion/normalizer.py` 的
+  `_http_fields`），不在 conn 上过滤就会把同一份响应字节重复计一遍，曲线直接虚高。
+- `protocols`：`log_type` 的 `terms` 占比（不过滤，这才是"协议分析占比"）；
+  顺带按 `log_type_known` 分一下，好告诉运营「有多少类型是只入库不进检测的」。
+
+**缓存**：24h 聚合在几百万文档上是秒级操作，而总览页每 15 秒轮询 → 进程内缓存
+`ST_STATUS_AGG_CACHE_SECONDS`（默认 300s），命中直接回 `cached=True`，**不许穿透到 ES**。
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends
+
+from app.api.deps import get_current_user
+from app.config import settings
+from app.db.models import User
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
+
+router = APIRouter(prefix="/api/stats", tags=["stats"])
+
+#: 协议占比取前多少个类型（其余并进「其他」）
+PROTOCOL_TOP_N = 15
+#: 默认 / 允许的时间窗（小时）
+DEFAULT_HOURS = 24
+MAX_HOURS = 168
+#: 聚合粒度固定 1 小时（总览页的曲线就是按小时的 24 个点）
+_INTERVAL = "1h"
+
+_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
+
+
+def clamp_hours(value: Any) -> int:
+    """时间窗夹到 `1..MAX_HOURS`；脏值回落默认 24h。"""
+    try:
+        hours = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_HOURS
+    return max(1, min(hours, MAX_HOURS))
+
+
+def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
+    """构造那一份同时出流量与协议的查询（纯函数，单测直接断言结构）。"""
+    return {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
+        "aggs": {
+            # 流量只在 conn 上统计（见模块注释：不过滤会把 HTTP 的 bytes_in 重复计入）
+            "traffic": {
+                "filter": {"term": {"log_type.keyword": "conn"}},
+                "aggs": {
+                    "per_hour": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": _INTERVAL,
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start, "max": end},
+                        },
+                        "aggs": {
+                            "bytes_out": {"sum": {"field": "bytes_out"}},
+                            "bytes_in": {"sum": {"field": "bytes_in"}},
+                        },
+                    }
+                },
+            },
+            # 协议占比不过滤：看的就是全部类型的分桶
+            "protocols": {"terms": {"field": "log_type.keyword", "size": PROTOCOL_TOP_N}},
+            # 白名单外的类型（只入库、不进检测）占比，给图上补一句说明
+            "known": {"terms": {"field": "log_type_known"}},
+        },
+    }
+
+
+def _int_of(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_of(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def shape_traffic(resp: dict[str, Any], *, hours: int) -> dict[str, Any]:
+    """ES 响应 → 逐小时点（含字节/秒）与合计。"""
+    buckets = (
+        (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_hour") or {}).get("buckets")
+        or []
+    )
+    points: list[dict[str, Any]] = []
+    total_bytes = 0
+    total_docs = 0
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        bytes_out = _int_of(bucket.get("bytes_out", {}).get("value"))
+        bytes_in = _int_of(bucket.get("bytes_in", {}).get("value"))
+        docs = _int_of(bucket.get("doc_count"))
+        total = bytes_out + bytes_in
+        total_bytes += total
+        total_docs += docs
+        points.append(
+            {
+                "ts": str(bucket.get("key_as_string") or ""),
+                "docs": docs,
+                "bytes_out": bytes_out,
+                "bytes_in": bytes_in,
+                "bytes_total": total,
+                # 每小时一个桶 → 字节/秒；前端画曲线用这个（不同小时可比）
+                "bytes_per_sec": round(total / 3600.0, 1),
+            }
+        )
+    return {
+        "points": points,
+        "total_docs": total_docs,
+        "total_bytes": total_bytes,
+        "avg_bytes_per_sec": round(total_bytes / max(1, hours * 3600), 1),
+    }
+
+
+def shape_protocols(resp: dict[str, Any]) -> dict[str, Any]:
+    """ES 响应 → 协议占比（前 N + 其他）与「白名单外类型」占比。"""
+    aggs = resp.get("aggregations") or {}
+    buckets = (aggs.get("protocols") or {}).get("buckets") or []
+    items: list[dict[str, Any]] = []
+    known_docs = 0
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        docs = _int_of(bucket.get("doc_count"))
+        known_docs += docs
+        name = str(bucket.get("key") or "").strip() or "(空)"
+        items.append({"log_type": name, "docs": docs, "percent": 0.0})
+
+    # 总文档数包含 top N 之外的（sum_other_doc_count），百分比的分母必须是它
+    other_docs = _int_of((aggs.get("protocols") or {}).get("sum_other_doc_count"))
+    total = known_docs + other_docs
+    for item in items:
+        item["percent"] = round(item["docs"] * 100.0 / total, 2) if total else 0.0
+
+    # log_type_known=false 的比例（那部分只入库、不进检测与画像）
+    unclassified = 0
+    for bucket in (aggs.get("known") or {}).get("buckets") or []:
+        if not isinstance(bucket, dict):
+            continue
+        key = bucket.get("key_as_string", bucket.get("key"))
+        if str(key).strip().lower() in ("false", "0"):
+            unclassified = _int_of(bucket.get("doc_count"))
+    known_total = sum(
+        _int_of(b.get("doc_count"))
+        for b in ((aggs.get("known") or {}).get("buckets") or [])
+        if isinstance(b, dict)
+    )
+    return {
+        "total": total,
+        "other_docs": other_docs,
+        "items": items,
+        "unclassified_docs": unclassified,
+        "unclassified_percent": round(unclassified * 100.0 / known_total, 2) if known_total else 0.0,
+    }
+
+
+def _fetch(hours: int) -> dict[str, Any]:
+    """真去打 ES（不缓存）。失败时返回带 error 的空结构，端点不 500。"""
+    end_dt = datetime.now(UTC)
+    start_dt = end_dt - timedelta(hours=hours)
+    start_iso = start_dt.isoformat().replace("+00:00", "Z")
+    end_iso = end_dt.isoformat().replace("+00:00", "Z")
+    payload: dict[str, Any] = {
+        "hours": hours,
+        "since": start_iso,
+        "until": end_iso,
+        "traffic": {"points": [], "total_docs": 0, "total_bytes": 0, "avg_bytes_per_sec": 0.0},
+        "protocols": {
+            "total": 0,
+            "other_docs": 0,
+            "items": [],
+            "unclassified_docs": 0,
+            "unclassified_percent": 0.0,
+        },
+        "computed_at": end_dt.isoformat(),
+        "cached": False,
+        "error": "",
+    }
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        cfg = es_config.current()
+        pattern = str(cfg.get("es.events_index") or settings.es_events_index)
+        resp = get_es().search(index=pattern, body=build_query(hours, start=start_iso, end=end_iso))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("24h 流量/协议聚合失败: %s", exc)
+        payload["error"] = str(exc)[:200]
+        return payload
+    if not isinstance(resp, dict):
+        payload["error"] = "ES 返回了非预期结构"
+        return payload
+    payload["traffic"] = shape_traffic(resp, hours=hours)
+    payload["protocols"] = shape_protocols(resp)
+    return payload
+
+
+@router.get("/overview")
+def stats_overview(
+    _: Annotated[User, Depends(get_current_user)],
+    hours: int = DEFAULT_HOURS,
+):
+    """24 小时流量（字节量）+ 协议占比。结果进程内缓存 `status_agg_cache_seconds`。"""
+    window = clamp_hours(hours)
+    ttl = max(0.0, float(settings.status_agg_cache_seconds))
+    key = str(window)
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if ttl > 0 and hit is not None and now - hit[0] < ttl:
+            return {**hit[1], "cached": True}
+        payload = _fetch(window)
+        # 聚合失败不写缓存：下一轮还能立刻重试（而不是把错误钉 5 分钟）
+        if not payload.get("error"):
+            _cache[key] = (now, payload)
+        return payload

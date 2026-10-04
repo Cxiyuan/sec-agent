@@ -763,6 +763,29 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **门禁（2026-10，仓库根）**：ruff `All checks passed!`；pyright `0 errors`；`pytest tests/py --stack=ndr -q` **438 passed, 14 skipped**；`--stack=agent -q` **303 passed, 149 skipped**；`sh tests/zeek/run.sh` 全 `PASS`；两侧 `npx tsc --noEmit` 无输出。
 
 
+### 2026-10 「总览」页：默认落地页 + 服务器/组件/威胁/流量与协议 + 全页图表化
+
+用户要求：「将侧边栏运行状态上移到首页作为页面进入的默认页面，同时改造运行状态页面以图表方式显示各个数值」，随后补充要展示：**服务器状态（CPU/内存/磁盘圆环）**、**组件状态呼吸灯（zeek/wazuh/redis/logstash/elasticsearch/归一化/分析智能体）**、**威胁事件统计**、**24h 流量捕捉曲线**、**24h 协议分析占比圆图**。计划阶段定了三件事：趋势数据**后端加采样**、呈现方式**数字块 + 图表混合**、入口**置顶 + 默认跳转 + 改名「总览」**。
+
+**入口（路由不变）**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 仍 `/admin/status`**；`app/page.tsx` 的 `/` 重定向从 `/admin/rules` 改为 `/admin/status`；`app/admin/status/page.tsx` 标题改「总览」。
+
+**后端（4 个新端点 + 1 个采样）**：
+
+- **检测器历史采样**（新增 `detector/history.py`，接线在 `runner.py` 统计块）：以前 `shentong:detector:rates` 每次 `HSET` **覆盖**，界面根本拿不到历史。现每 `ST_DETECTOR_STATS_LOG_SECONDS`（默认 300s）把快照 LPUSH 进 `shentong:detector:history` 并 `LTRIM` 到 288 条（24h）+ 7 天 TTL；采样里除既有 `d_*` 与累计计数器外，新增**本区间按严重度增量**（`d_digest_sev_*`，走既有 `rate_prev` 增量机制）与**本区间按规则计数**（`by_rule`，用 `digest_rule_*` 前缀计数器、**读完即清**，否则会变成进程启动以来的累计）。`GET /api/detector/history?limit=288` 时间正序返回。
+- **`GET /api/system/metrics`**（新增 `api/routes/system_metrics.py`）：CPU 取两次 `/proc/stat` 差值（间隔 `ST_SYSTEM_METRICS_CPU_SAMPLE_SECONDS`，idle 含 iowait）、内存用 `MemAvailable`（比 `MemFree` 贴近 `top`）、磁盘 `shutil.disk_usage("/")`，另回 `load_1m` 与原始字节数。**在容器内读就够**：backend 未设 `mem_limit`/`cpus`，`/proc` 与根分区就是宿主的；任一项读不到 → 字段 `null` + `notes`，**端点不 500**。
+- **`GET /api/health/components`**（新增）：七盏灯一次算完，判据全在 `judge_*` 纯函数里（`ok/degraded/down/unknown`）：ES=cluster health、Redis=PING+内存告警线、Logstash=9600 探活+重载失败数、网络采集器=近 5/30 分钟有无 zeek 文档、主机监控=管理 API 可达+近 24h 入库量、归一化=近 2/15 分钟有无文档入库（它是唯一写 ES 的角色）、分析智能体=`agent-push` 的 `active`/`last_success_at`（**未配置 → unknown，是「不知道」而不是「坏了」**）。**一个 ES 往返**（近 30 分钟按 `source_system` 的 `max(@timestamp)`）喂三盏灯；结果**进程内缓存 30s**（页面 15s 轮询）。每个探测都过 `_guard()`：**任何一个探测失败只影响它自己那盏灯**（总览页不能白屏）。
+- **`GET /api/stats/overview?hours=24`**（新增）：一次 ES `_search` 同时出**流量**（`date_histogram` 1h + `sum(bytes_out/bytes_in)`，**必须过滤 `log_type=conn`** —— HTTP 文档的 `bytes_in` 取自 `response_body_len`，不过滤就把同一份响应字节重复计一遍）与**协议占比**（`log_type` terms top15 + other；顺带按 `log_type_known` 分桶，好在图上注明「白名单外 X% 只入库不进检测」）。**进程内缓存 300s**（失败**不写缓存**，下一轮能立刻重试），命中回 `cached=true`。
+- **配置新增**：`ST_DETECTOR_HISTORY_KEY`/`_MAX`（288）、`ST_STATUS_PROBE_CACHE_SECONDS`（30）、`ST_STATUS_AGG_CACHE_SECONDS`（300）、`ST_SYSTEM_METRICS_CPU_SAMPLE_SECONDS`（0.15）。
+
+**前端**：新增 `components/status-charts.ts`（11+ 个**纯函数** option 构造：圆环 / 五段速率漏斗 / 速率与队列趋势 / 严重度环 / 规则 TOP / 流量曲线 / 协议圆图 / 丢弃原因 / 投递重发 / ES 按天双轴 / Logstash 吞吐 / 基线维度 / 画像风险 / 覆盖率）；`components/status-panel.tsx` 重写为五个带锚点的分区（服务器 / 组件 / 威胁事件 / 流量与协议 / 链路细节），12 个接口 `Promise.all` + `loadInto` 并行取（单接口失败只影响对应卡片），保留 15 秒自刷新与开关；`globals.css` 加呼吸动画 keyframes（ok 3s 慢呼吸、degraded 1s 快闪、down/unknown 静止，**尊重 `prefers-reduced-motion`**）；`lib/api.ts` 补 12 个类型。
+
+**顺手修掉的既存缺陷（图表化必需）**：`packages/ui` 的 `Chart` 原来在 `useEffect([option])` 里 `dispose()` + `init()` —— 轮询页面每 15 秒就会把每张图重建一次（闪 + 白付成本）。现改为**实例只建一次、option 变化走 `setOption(option, true)` 原地更新**（`height` 变化单独 `resize()`）。这条对智能体侧的 `/dashboard` 同样生效。
+
+**测试**：新增 `tests/py/test_detector_history.py`（写入有界/TTL、读取时间正序与容错、区间计数用后即清、严重度增量不为负、**静态断言 runner 统计块确实调了采样**）、`test_system_metrics.py`（`/proc/stat` 与 `/proc/meminfo` 解析、计数器回退不算负载、端点缺指标不 500）、`test_health_components.py`（判据边界、七盏灯齐全、**单个探测抛异常只影响它自己**、30s 缓存与 TTL=0 关闭缓存）、`test_stats_overview.py`（查询结构必须只在流量侧过滤 conn、字节/秒与百分比换算、缓存命中、失败不缓存、ES 异常降级）。共 80 例。
+
+**门禁（2026-10，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors`；`pytest tests/py --stack=ndr -q` **518 passed, 14 skipped**；`--stack=agent -q` **304 passed, 228 skipped**；两侧 `npx tsc --noEmit` 无输出。
+
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。

@@ -295,6 +295,11 @@ def _runtime_status() -> dict[str, Any]:
     }
 
 
+def pipeline_runtime() -> dict[str, Any]:
+    """Logstash 运行状态（总览页的组件灯也用它，避免两处各写一遍探测）。"""
+    return _runtime_status()
+
+
 def _queue_depth() -> int | None:
     """待归一化的积压（Filebeat 写进采集队列、还没被归一化服务取走的条数）。"""
     try:

@@ -15,6 +15,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
 from app.detector import health
+from app.detector.history import read as history_read
 from app.detector.runner import FAILED_KEY, PAUSED_KEY, rate_bucket
 from app.workers.log import get_logger
 
@@ -346,4 +347,35 @@ def get_stats(_: Annotated[User, Depends(get_current_user)]):
     except Exception as exc:  # noqa: BLE001
         log.warning("读取检测器状态失败: %s", exc)
         out["error"] = str(exc)[:200]
+    return out
+
+
+@router.get("/history")
+def detector_history(
+    _: Annotated[User, Depends(get_current_user)],
+    limit: int = 288,
+):
+    """检测器历史采样（**时间正序**）：每 `ST_DETECTOR_STATS_LOG_SECONDS` 一条，默认存 24h。
+
+    总览页的 24h 趋势图与威胁事件图（命中/摘要趋势、严重度分布、规则 TOP）都吃这一份；
+    检测器没跑时返回空表 —— 那是「趋势自然中断」，不是错误。
+    """
+    cap = max(1, int(settings.detector_history_max))
+    want = max(1, min(int(limit or cap), cap))
+    out: dict[str, Any] = {
+        "items": [],
+        "count": 0,
+        "max": cap,
+        "interval_hint_seconds": int(settings.detector_stats_log_seconds),
+    }
+    try:
+        import redis
+
+        client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)[:200]
+        return out
+    items = history_read(client, key=settings.detector_history_key, limit=want)
+    out["items"] = items
+    out["count"] = len(items)
     return out

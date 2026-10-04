@@ -26,6 +26,12 @@ from app.detector.aggregate import Aggregator
 from app.detector.fingerprint import digest_age
 from app.detector.frequency import FreqWindow
 from app.detector.handled import HandledRegistry, doc_hash
+from app.detector.history import (
+    append as history_append,
+    extract_interval_rules,
+    mark_digest,
+    severity_deltas,
+)
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue, make_blocking_client
 from app.ingestion import exclusion, log_types
@@ -256,6 +262,8 @@ def run() -> None:
             _apply_routine_policy(digest, client, stats)
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
+            # 历史采样的原料：按严重度累计 + 按规则计本区间数（进下一次统计块的采样点）
+            mark_digest(stats, digest)
         # 基线落库：画像观测 + 数值统计攒到这里一次性写（节奏由 baseline_flush_seconds 控制）
         engine.maybe_flush()
 
@@ -359,6 +367,42 @@ def run() -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 log.debug("写入速率快照失败: %s", exc)
+            # 历史采样（总览页的 24h 趋势与威胁事件图都吃这一份）：一条 = 一个统计区间。
+            # 必须在 `rate_prev.update` **之前**算增量，否则拿到的全是 0。
+            sample: dict[str, Any] = {
+                "ts": now_ts,
+                "interval_seconds": interval,
+                "d_scanned": stats["scanned"] - rate_prev["scanned"],
+                "d_hit": stats["hit"] - rate_prev["hit"],
+                "d_digest": stats["digest"] - rate_prev["digest"],
+                "d_delivered": stats["delivered"] - rate_prev["delivered"],
+                "d_raw_trimmed": stats["dropped_raw_trimmed"] - rate_prev["raw_trimmed"],
+                # 按严重度、按规则的区间增量（威胁事件图用）
+                **severity_deltas(stats, rate_prev),
+                "by_rule": extract_interval_rules(stats),
+                "scanned": stats["scanned"],
+                "hit": stats["hit"],
+                "digest": stats["digest"],
+                "delivered": stats["delivered"],
+                "undelivered": stats["dropped_undelivered"],
+                "failed": stats["dropped_handle_failed"],
+                "agg_full": stats["dropped_agg_full"],
+                "raw_trimmed": stats["dropped_raw_trimmed"],
+                "limit_saturated": stats["limit_saturated"],
+                "requeued": stats["requeued"],
+                # 队列与内存是**采样瞬时值**（不是区间平均），图上要注明
+                "queue_raw": q_raw,
+                "queue_processing": q_proc,
+                "queue_failed": _failed_depth(client),
+                "agg_pending": agg.pending(),
+                "redis_perc": mem.get("perc"),
+            }
+            history_append(
+                client,
+                sample,
+                key=settings.detector_history_key,
+                max_items=settings.detector_history_max,
+            )
             rate_prev.update(
                 {
                     "ts": now_ts,

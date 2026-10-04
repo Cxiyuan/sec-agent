@@ -59,3 +59,30 @@ select option:hover {
   background: hsl(var(--muted));
   border-radius: 4px;
 }
+
+/* 总览页的组件「呼吸灯」：ok 低频呼吸（3s）、degraded 快闪（1s）；down/unknown 静止只靠颜色。
+   弱动效环境（prefers-reduced-motion）下全部关掉动画 —— 那时靠颜色与文字仍然分得清。 */
+@keyframes st-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.light-breathe {
+  animation: st-breathe 3s ease-in-out infinite;
+}
+
+.light-blink {
+  animation: st-breathe 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .light-breathe,
+  .light-blink {
+    animation: none;
+  }
+}

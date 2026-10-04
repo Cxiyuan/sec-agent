@@ -3,12 +3,15 @@
 import { PageShell } from "@/components/page-shell";
 import { StatusPanel } from "@/components/status-panel";
 
-/** 运行状态：队列积压、投递速率、推送重发、Redis 内存、Wazuh 入库量。 */
+/**
+ * 总览（默认落地页）：服务器状态 / 组件呼吸灯 / 威胁事件 / 24h 流量与协议 / 链路细节。
+ * 路由仍是 `/admin/status`（第 7 期拆页时定的地址，不改以免破坏书签与文档引用）。
+ */
 export default function StatusPage() {
   return (
     <PageShell
-      title="运行状态"
-      desc="链路活着没有、卡在哪一环。队列长度与 Redis 内存是最真实的故障前兆，这一页每 15 秒自动刷新。"
+      title="总览"
+      desc="服务器资源、各组件连接状态、威胁事件、24 小时流量与协议占比、链路细节 —— 每 15 秒自动刷新；ES 侧的 24h 聚合与组件探测在后端各自缓存，不会每轮都打 ES。"
     >
       <StatusPanel />
     </PageShell>

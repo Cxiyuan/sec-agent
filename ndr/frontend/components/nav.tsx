@@ -4,10 +4,10 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  Activity,
   Bot,
   Database,
   Filter,
+  LayoutDashboard,
   Network,
   Radio,
   SlidersHorizontal,
@@ -17,15 +17,16 @@ import { cn } from "@shentong/ui";
 import { apiFetch, type AuthMe, type NetworksStatus } from "@/lib/api";
 
 // 第 7 期拆页：左侧导航按链路分段。
+// 第一项「总览」（运行状态页，路由仍是 /admin/status）同时是默认落地页（`/` 重定向到这里）；
 // logo、当前用户、退出登录、告警铃铛都在全局页头（components/topbar.tsx）。
 const items = [
+  { href: "/admin/status", label: "总览", icon: LayoutDashboard },
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
   { href: "/admin/networks", label: "监控网段", icon: Network },
   { href: "/admin/storage", label: "数据存储", icon: Database },
   { href: "/admin/filters", label: "过滤规则", icon: Filter },
   { href: "/admin/agent", label: "智能体对接", icon: Bot },
-  { href: "/admin/status", label: "运行状态", icon: Activity },
   { href: "/admin/account", label: "账户", icon: UserRound },
 ];
 

@@ -546,3 +546,165 @@ export interface ChangePasswordResult {
   /** 后端说明（无状态 JWT 不做服务端吊销，旧令牌到期前仍有效） */
   note: string;
 }
+
+// ---------- 总览页（服务器 / 组件 / 威胁趋势 / 流量与协议 / 速率与覆盖率） ----------
+
+/** `GET /api/system/metrics`：容器内读 /proc + 根分区（未设限额 ⇒ 等于宿主机） */
+export interface SystemMetrics {
+  cpu_percent: number | null;
+  mem_percent: number | null;
+  disk_percent: number | null;
+  mem_used_bytes: number | null;
+  mem_total_bytes: number | null;
+  disk_used_bytes: number | null;
+  disk_total_bytes: number | null;
+  load_1m: number | null;
+  cpu_count: number | null;
+  disk_path: string;
+  sampled_at: string;
+  /** 读不到的指标各给一条说明（端点不会 500，字段会是 null） */
+  notes: string[];
+}
+
+/** 组件灯的四个状态：ok 正常 / degraded 注意 / down 不可用 / unknown 信息不足（如未配置） */
+export type ComponentState = "ok" | "degraded" | "down" | "unknown";
+
+export interface ComponentHealthItem {
+  key: string;
+  name: string;
+  state: ComponentState;
+  detail: string;
+  last_seen: string;
+}
+
+/** `GET /api/health/components`：七个组件/服务的连接状态（后端 30 秒缓存一轮） */
+export interface ComponentHealthPayload {
+  checked_at: string;
+  items: ComponentHealthItem[];
+  notes: string[];
+  cached: boolean;
+}
+
+/** 检测器历史采样：一条 = 一个统计区间（默认 5 分钟，24h = 288 条） */
+export interface DetectorHistoryPoint {
+  ts: number;
+  interval_seconds: number;
+  /** 本区间增量（算速率用；除以 interval_seconds 得每秒值） */
+  d_scanned?: number;
+  d_hit?: number;
+  d_digest?: number;
+  d_delivered?: number;
+  d_raw_trimmed?: number;
+  d_digest_sev_critical?: number;
+  d_digest_sev_high?: number;
+  d_digest_sev_medium?: number;
+  d_digest_sev_low?: number;
+  d_digest_sev_info?: number;
+  /** 本区间各规则的摘要数（后端用后即清，所以是区间值） */
+  by_rule?: Record<string, number>;
+  scanned?: number;
+  hit?: number;
+  digest?: number;
+  delivered?: number;
+  queue_raw?: number;
+  queue_processing?: number;
+  queue_failed?: number;
+  agg_pending?: number;
+  redis_perc?: number | null;
+}
+
+/** `GET /api/detector/history`：时间正序的采样点（检测器没跑时 items 为空） */
+export interface DetectorHistory {
+  items: DetectorHistoryPoint[];
+  count: number;
+  max: number;
+  interval_hint_seconds: number;
+  error?: string;
+}
+
+/** `GET /api/detector/rate`：五段速率与队列容量（哪一段窄一眼可见） */
+export interface DetectorRate {
+  queue_raw?: number;
+  queue_digest?: number;
+  queue_raw_pct?: number;
+  agent_capacity_per_min?: number;
+  ingest_per_sec_est?: number;
+  scanned_per_sec?: number;
+  hits_per_min?: number;
+  digests_per_min?: number;
+  delivered_per_min?: number;
+  undelivered_total?: number;
+  failed_total?: number;
+  agg_full_total?: number;
+  raw_trimmed_total?: number;
+  limit_saturated?: number;
+  requeued_total?: number;
+  over_capacity?: boolean;
+  interval_seconds?: number;
+  snapshot_age_seconds?: number;
+  trimmed_windows?: { at?: string; [k: string]: unknown }[];
+  redis_error?: string;
+  note?: string;
+}
+
+/** `GET /api/detector/coverage`：窗口内事件量 vs 投递量（看趋势突变，不看绝对值） */
+export interface DetectorCoverage {
+  minutes: number;
+  since: string;
+  delivered_total: number;
+  delivered_interval: number;
+  interval_seconds: number | null;
+  snapshot_age_seconds: number | null;
+  stale: boolean;
+  delivered_window_est: number | null;
+  es_docs: number | null;
+  coverage_ratio: number | null;
+  warn: boolean;
+  warn_reason?: string;
+  dropped?: Record<string, string>;
+  es_error?: string;
+}
+
+export interface TrafficPoint {
+  ts: string;
+  docs: number;
+  bytes_out: number;
+  bytes_in: number;
+  bytes_total: number;
+  /** 该小时的平均字节/秒（不同小时可比） */
+  bytes_per_sec: number;
+}
+
+export interface TrafficSeries {
+  points: TrafficPoint[];
+  total_docs: number;
+  total_bytes: number;
+  avg_bytes_per_sec: number;
+}
+
+export interface ProtocolSlice {
+  log_type: string;
+  docs: number;
+  percent: number;
+}
+
+export interface ProtocolShare {
+  total: number;
+  other_docs: number;
+  items: ProtocolSlice[];
+  unclassified_docs: number;
+  /** 白名单外类型（只入库、不进检测）的占比 */
+  unclassified_percent: number;
+}
+
+/** `GET /api/stats/overview`：24h 流量（仅 conn 的字节量）+ 协议占比（后端 300 秒缓存） */
+export interface StatsOverview {
+  hours: number;
+  since: string;
+  until: string;
+  traffic: TrafficSeries;
+  protocols: ProtocolShare;
+  computed_at: string;
+  cached: boolean;
+  error?: string;
+}

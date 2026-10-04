@@ -193,6 +193,17 @@ class Settings(BaseSettings):
     detector_poll_timeout: int = 5
     detector_scope_refresh_seconds: int = 60
     detector_stats_log_seconds: int = 300
+
+    # ---- 总览页（/admin/status）需要的采样与缓存 ----
+    # 检测器历史采样：每 detector_stats_log_seconds 追加一条，LPUSH + LTRIM 固定条数。
+    # 288 条 = 24h @ 5min（总览页的趋势图与威胁事件图都吃这一份）。
+    detector_history_key: str = "shentong:detector:history"
+    detector_history_max: int = 288
+    # 进程内缓存：页面 15 秒轮询，组件探测与 24h 聚合都不允许穿透到 ES/外部 API。
+    status_probe_cache_seconds: int = 30  # 组件健康 + ES 新鲜度探测
+    status_agg_cache_seconds: int = 300  # 24h 流量 / 协议占比聚合
+    # 读两次 /proc/stat 的间隔（算 CPU%；同步 def 端点跑在线程池，不阻塞事件循环）
+    system_metrics_cpu_sample_seconds: float = 0.15
     # 选主（Redis 租约）
     detector_leader_key: str = "shentong:detector:leader"
     detector_leader_ttl_seconds: int = 30

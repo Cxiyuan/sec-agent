@@ -18,6 +18,12 @@ from app.api.routes import (
     zeek,
 )
 
+# 总览页的三个新只读端点：直接用「子模块」形式导入（与上面同义的另一种写法，
+# 这里刻意保持模块名可读、便于按名字定位文件）。
+from app.api.routes.health_components import router as health_components_router
+from app.api.routes.stats_overview import router as stats_overview_router
+from app.api.routes.system_metrics import router as system_metrics_router
+
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(exclusions.router)
@@ -26,6 +32,9 @@ api_router.include_router(rules.router)
 api_router.include_router(es_admin.router)
 api_router.include_router(logstash.router)
 api_router.include_router(detector.router)
+api_router.include_router(stats_overview_router)
+api_router.include_router(system_metrics_router)
+api_router.include_router(health_components_router)
 api_router.include_router(baseline.router)
 api_router.include_router(zeek.router)
 api_router.include_router(files.router)
