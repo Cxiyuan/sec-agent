@@ -257,11 +257,13 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     ES 一回来就补上，日志里会有一条「已在第 N 次尝试下发成功」。想立刻触发就到「数据存储 →
     保留期」点一次「下发保留期」——它同时会把**已经建好**的同类索引副本口径拉回
     `0 副本 + 0-1`（旧版本遗留的 1 副本索引也靠这一步回 green）
-14. （NDR 线路）**确认存储端口没有对外暴露**：`docker compose ps` 里 ES/Postgres/Redis 的
-    PORTS 应显示 `127.0.0.1:...`（或 `.env` 里 `REDIS_BIND` 指定的那一个地址），**不应是
-    `0.0.0.0:...`** —— ES 与 Postgres 无额外鉴权、Redis 默认无密码，发布到 `0.0.0.0`
-    等于同网段任何机器都能直接读写库与队列。只有智能体线路确实要连 Redis 时才按 §二
-    放开一个受控地址（`REDIS_BIND` + `REDIS_HOST` 成对改）`
+14. （NDR 线路）**确认存储与采集管道端口没有对外暴露**：`docker compose ps` 里
+    ES/Postgres/Redis/**Logstash** 的 PORTS 应显示 `127.0.0.1:...`（或 `.env` 里
+    `REDIS_BIND` 指定的那一个地址），**不应是 `0.0.0.0:...`** —— ES 与 Postgres 无额外鉴权、
+    Redis 默认无密码；**Logstash 的 `8080` 是 `json_lines` 输入且无鉴权，谁都能往 ES 灌数据**
+    （`9600` 是监控 API）。它们只给容器网络用（归一化服务 POST `logstash:8080`、后端读
+    `logstash:9600`），发布到 `0.0.0.0` 等于同网段任何机器都能直接读写库、队列与归档。
+    只有智能体线路确实要连 Redis 时才按 §二放开一个受控地址（`REDIS_BIND` + `REDIS_HOST` 成对改）`
 15. （NDR 线路）**删卷重建后要重新做的事**：`docker compose down -v`（或换服务器）会清掉 ES 事件、
     Postgres（规则/用户/系统配置）、Redis 队列、Zeek 配置与日志、提取件；重新 `up -d` 后**建表、
     默认管理员 `admin`/`admin123`、内置规则、ES 模板与 ILM、Logstash 管道都会自动回来**，但

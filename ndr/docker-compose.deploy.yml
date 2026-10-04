@@ -198,8 +198,11 @@ services:
       # 否则 2xx 只代表事件进了内存队列。
       - logstash-queue:/usr/share/logstash/data
     ports:
-      - "8080:8080" # 归一化服务的 http 输入（JSON / NDJSON）
-      - "9600:9600" # 监控 API（后端读存活/吞吐/重载统计）
+      # 只监听本机：两个口都只给**容器网络**用（归一化服务 POST 8080、后端读 9600），
+      # 没有任何外部服务需要宿主直连。8080 是 json_lines 输入且**无鉴权**，发布到
+      # 0.0.0.0 等于同网段谁都能往 ES 里灌数据；宿主机排查走 127.0.0.1 就够。
+      - "127.0.0.1:8080:8080" # 归一化服务的 http 输入（JSON / NDJSON）
+      - "127.0.0.1:9600:9600" # 监控 API（后端读存活/吞吐/重载统计）
     depends_on:
       - elasticsearch
     restart: unless-stopped

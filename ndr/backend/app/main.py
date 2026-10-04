@@ -75,6 +75,10 @@ def _push_es_retention() -> None:
     前 `_ES_SETUP_ATTEMPTS` 次每 5 秒试一次（覆盖 ES 冷启动），之后每 5 分钟
     复查一次；第一次放弃高速重试时记一条 warning（并提示界面上那个手工入口），
     之后不再刷日志。成功后也继续复查 —— 模板被删、ES 卷被换都能自动长回来。
+
+    日志口径：**失败后重试成功**才记一条 info（带实际重试次数），稳态下每 5 分钟的
+    幂等复查只记 debug —— 否则一条「第 N 次尝试下发成功」会每 5 分钟刷一次，
+    N 一直涨（实机实测），看着像一直在重试。
     """
     from app.api.routes.es_admin import ensure_retention
 
@@ -96,7 +100,14 @@ def _push_es_retention() -> None:
             time.sleep(_ES_SETUP_RECHECK_SECONDS if slow else _ES_SETUP_INTERVAL_SECONDS)
             continue
         if attempt > 1:
-            logger.info("ES 保留期策略/索引模板已在第 %d 次尝试下发成功", attempt)
+            logger.info(
+                "ES 保留期策略/索引模板第 %d 次尝试下发成功（前 %d 次失败）",
+                attempt,
+                attempt - 1,
+            )
+        else:
+            logger.debug("ES 保留期策略/索引模板复查成功（幂等，不计失败）")
+        attempt = 0
         time.sleep(_ES_SETUP_RECHECK_SECONDS)
 
 

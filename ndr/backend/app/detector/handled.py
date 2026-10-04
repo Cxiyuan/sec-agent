@@ -27,6 +27,12 @@ from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
+#: 单桶超限告警的最小间隔（秒）。高流量下每个桶都会被顶满，逐条告警会刷满日志
+#: （实机实测：最近 2000 行全被这一条 WARNING 占满，真告警被淹没）。计数不丢 ——
+#: 丢弃累计仍写 `handled.skipped`（周期统计日志与 Redis `...:skipped` 都能看到）。
+_CAP_LOG_INTERVAL_SECONDS = 60.0
+_last_cap_log = 0.0
+
 
 def _as_int(value: Any, default: int) -> int:
     """安全转 int（值可能来自环境变量/后台配置，可能是脏字符串）。"""
@@ -83,6 +89,7 @@ class HandledRegistry:
             ),
         )
         self.skipped = 0  # 超限被丢弃的登记数（可查，不静默）
+        self._cap_dropped_since_log = 0  # 距上次告警又丢弃了多少（供限频后的汇总一条）
 
     def _keys(self, now: float | None = None) -> list[str]:
         """需要查看的桶：当前桶 + 覆盖整个 TTL 的历史桶。"""
@@ -104,12 +111,7 @@ class HandledRegistry:
                 hashes = hashes[:room]
                 if dropped > 0:
                     self.skipped += dropped
-                    log.warning(
-                        "已处理登记单桶达上限 %d，丢弃 %d 条登记（这些文档兜底时会重复分析）——"
-                        "若频繁出现请下调流量或提高 detector_handled_max_members 上限",
-                        self.max_members,
-                        dropped,
-                    )
+                    self._log_cap(dropped)
             if not hashes:
                 return
             pipe = self.r.pipeline()
@@ -120,6 +122,30 @@ class HandledRegistry:
             pipe.execute()
         except Exception as exc:  # noqa: BLE001
             log.debug("写入已处理登记失败（不影响主流程）: %s", exc)
+
+    def _log_cap(self, dropped: int) -> None:
+        """单桶超限告警（限频：同类最多每 `_CAP_LOG_INTERVAL_SECONDS` 一条）。
+
+        限频期间丢掉的条数会累计进 `_cap_dropped_since_log`，下一条告警里带出来，
+        不会因为限频而丢掉「丢了多少」这个事实。
+        """
+        global _last_cap_log
+        self._cap_dropped_since_log += dropped
+        now = time.time()
+        if now - _last_cap_log < _CAP_LOG_INTERVAL_SECONDS:
+            return
+        _last_cap_log = now
+        pending = self._cap_dropped_since_log
+        self._cap_dropped_since_log = 0
+        log.warning(
+            "已处理登记单桶达上限 %d，本进程累计丢弃 %d 条登记（近 %.0f 秒内 %d 条）——"
+            "这些文档兜底时会重复分析；若频繁出现请下调流量或提高 "
+            "detector_handled_max_members 上限（同类告警已限频）",
+            self.max_members,
+            self.skipped,
+            _CAP_LOG_INTERVAL_SECONDS,
+            pending,
+        )
 
     def is_handled(self, h: str, now: float | None = None) -> bool:
         keys = self._keys(now)

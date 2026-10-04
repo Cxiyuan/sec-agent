@@ -670,6 +670,17 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **385 passed, 1 skipped**；`--stack=agent -q` **262 passed, 124 skipped**；`sh tests/zeek/run.sh` 四个测试文件全 `PASS`（`FAILS=0`）；`ndr/frontend` 与 `agent/frontend` 的 `npx tsc --noEmit` 均无输出。
 
+### 2026-10-04 实机巡检收口：Logstash 暴露面 / 检测器告警刷屏 / 启动日志噪音
+
+用户要求（`m13679`）：「回收 logstash 8080 的对外暴露；检测器日志被刷屏问题处理；小噪音处理」。三件事一次收口，来源是 `172.16.196.77` 的实机巡检（11 容器全 Up、ES green、7k~10k 事件/分钟、ja4/请求头/提取件等新字段全在）。
+
+- **Logstash 端口收回回环**：`ndr/docker-compose.deploy.yml` 的 `logstash` 服务 `8080/9600` 由发布到 `0.0.0.0` 改为 `127.0.0.1` —— `8080` 是 `json_lines` 输入且**无鉴权**，发布到 `0.0.0.0` 等于同网段谁都能往 ES 灌数据；这两个口本来也只给**容器网络**用（归一化服务 POST `logstash:8080`、后端读 `logstash:9600`），宿主机排查走 `127.0.0.1` 就够。新增 `tests/py/test_deploy_exposure.py` 用编排文件钉住红线（ES / Postgres / Logstash 必须写死 `127.0.0.1`、Redis 默认必须是 `${REDIS_BIND:-127.0.0.1}`）。README §四第 14 条同步把 Logstash 列入「不许对外暴露」的必查清单。
+- **检测器「已处理登记单桶达上限」告警限频**：`ndr/backend/app/detector/handled.py` 原来每丢弃一条登记就打一条 WARNING；实机流量下每个桶（10 分钟 / 5 万成员）都会被顶满，最近 2000 行日志**全被这一条占满**，真告警被淹没。改为模块级限频 `_CAP_LOG_INTERVAL_SECONDS = 60`：同类最多 60 秒一条，且下一条带出「本进程累计丢弃 N 条 / 近 60 秒 M 条」—— **计数不丢**（`handled.skipped` 仍进周期统计日志与 Redis `shentong:handled:docs:skipped`）。测试 `tests/py/test_handled_registry.py`（分桶上限、计数、限频、限频窗口过后重新告警）。
+- **启动日志噪音**：`ndr/backend/app/main.py::_push_es_retention` 原来只要 `attempt > 1` 就打一条 info，而它每 5 分钟幂等复查一次、`attempt` 一直累加 —— 实机每 5 分钟刷一条「第 N 次尝试下发成功」（N 已涨到 15+），看着像一直在重试。改为：成功后**重置 attempt**，稳态复查只记 debug，只有「失败后重试成功」才记一条 info —— `第 N 次尝试下发成功（前 N-1 次失败）`；连续失败的告警口径不变（仍只在第 `_ES_SETUP_ATTEMPTS` 次一条，不回归）。测试 `tests/py/test_main_retention.py`（稳态不记 info、失败后成功记一条带次数、连续失败只一条 warning）。
+
+**门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **399 passed, 1 skipped**；`--stack=agent -q` **270 passed, 130 skipped**。
+
+
 ### 每期收尾门禁
 
 仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。
