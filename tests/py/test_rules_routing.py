@@ -133,7 +133,10 @@ def test_baseline_observe_threshold_uses_window_not_cumulative(monkeypatch) -> N
         baseline_max_observations = 1000  # 引擎里还有 max(1000, 配置) 的下限
 
     eng = baseline_engine.BaselineEngine()
-    monkeypatch.setattr(baseline_engine, "settings", _Settings())
+    # 参数现在走 `params`（后台可改），补丁要打到它上，打 settings 已经无效了
+    monkeypatch.setattr(baseline_engine.params, "baseline_enabled", lambda: True)
+    monkeypatch.setattr(baseline_engine.params, "profile_enabled", lambda: True)
+    monkeypatch.setattr(baseline_engine.params, "max_observations", lambda: 1000)
     flushes: list[int] = []
 
     def fake_flush() -> None:

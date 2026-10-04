@@ -885,6 +885,40 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **顺带做的数据清理（用户要求「立刻清理干净」）**：库里 50 条改代码前留下的陈旧风险（`risk_at` 为空或已过 60 分钟有效期，却还挂着 risk/旧格式理由）被一次性归零（`SET risk_score=0, anomalies='[]', risk_at=NULL`），清后残留 0、不一致行 0、旧格式理由 0；当前带风险分的只剩 5 条新鲜判定（≤0.5 分，未过阈值）。
 
 
+### 2026-10 「行为分析」页：基线与画像的明细 + 判据参数编辑区
+
+用户要求：「在用户 web 界面创建行为分析的功能页面，将基线和画像的分析内容动态展示，并提供可配置参数的编辑区域」。
+
+**为什么先改后端再加页面**：明细本来就有（`baseline_stats` + `entity_profiles` 两张表），但**参数改不了** ——
+`observe_days` / `zscore` / `risk_threshold` / 时段与路径门槛 / 路径正则 / 保留期 这些原来直接读 `settings`，
+改一次要动 `.env` 再重启。所以先做一层**运行时可配参数**（`baseline/params.py`），再让页面长在它上面。
+
+**后端**：
+- `app/baseline/params.py`（新增）：**单一定义源** —— `KNOBS` 里一行一个参数（键、标签、类型、默认值、
+  范围、单位、说明），同时驱动「校验」「`GET/PUT /api/baseline/config`」「前端表单」三处，加参数只改这一处。
+  共 18 项：数值基线 8（开关/观测期/σ/落库节奏/清理节奏/保留期/单窗口上限/缓存上限）+ 画像 10（开关/冷启动/
+  阈值/时效/时段两个门槛/路径 include、exclude、已知门槛/保留期）。读侧每个存取器都**夹紧到范围内**
+  （库里被手改成越界或非数字也不会把运行时带坏）；写侧**只认白名单**，正则先编译通过。
+- `stats.py` / `profile.py` / `engine.py` 的 `settings.*` 读取全部切到 `params.*`（`session_cookie_names`、
+  Redis 键名、`detector_agg_seconds` 保持 env 专用，不暴露给界面）。
+- 路径正则的缓存从 `lru_cache` 改成**按正则文本做键**的字典：改完参数下次调用就是新键，不需要显式失效。
+- 新端点：`GET/PUT /api/baseline/config`（读清单/保存，400 带 `field_errors`）、`POST /api/baseline/config/reset`
+  （恢复默认，可单键）、`GET /api/baseline/numeric`（数值基线**浏览**：key 子串/维度过滤 + 排序 + 分页 ——
+  原来的 `/stats` 必须指名 IP 或完整 key，没法翻着看）；`/api/baseline/profiles` 加 `q` 搜索；
+  `snapshot()` 多回 `oldest_first_seen` / `next_warm_at`（**观测期倒计时**，与总数/预热数同一条聚合 SQL）。
+- 保存后会清掉总览的 30 秒进程内缓存，避免界面继续显示旧标量。
+
+**前端**：新增导航项「行为分析」（放在「总览」之后 —— 两个都是「看数据」的页）+ `app/admin/behavior/page.tsx`
++ `components/behavior-panel.tsx`，四块：①学习进度与心跳（含**观测期倒计时**与当前风险 TOP）；②参数编辑区
+（按 `baseline.` / `profile.` 分两组，每项显示类型/范围/默认值/「已改」标记，越界与坏正则在字段下方报错，
+支持「保存改动 / 单键恢复默认 / 全部恢复默认」）；③画像表（类型/名称/风险下限筛选、分页、展开看
+理由/来源 IP/服务端 IP/UA/接口路径/时段分布直方图）；④数值基线表（按 IP/key 搜、按维度与排序筛选、分页，
+标出「可判偏离 / 观测中 / 样本不足」）。30 秒自刷新（可关），单接口失败只影响自己那块。
+
+**测试**：新增 `tests/py/test_baseline_config.py`（18 例：白名单、越界/非数字/坏正则/跨字段约束、
+读侧夹紧脏值、save/reset 只动白名单且让缓存失效、端点接线与 400）。改造后同步修了 4 个引用旧 `settings`
+打桩的旧用例（补丁改打到 `params`），并给快照的倒计时字段补了断言。
+
 ### 每期收尾门禁
 
 **本地（仓库根，都不需要 Docker、不产生构建产物）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。

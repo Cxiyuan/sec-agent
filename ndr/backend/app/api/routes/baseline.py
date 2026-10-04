@@ -3,6 +3,10 @@
 读取分两处：
 - **库**：`baseline_stats` / `entity_profiles` 两张表（学习进度与画像内容）；
 - **Redis**：检测器进程每轮落库时写的心跳计数（判断基线有没有在跑）。
+
+后台「行为分析」页用这里的接口：`/api/baseline`（总览 + 当前风险 TOP）、`/profiles`（画像列表，
+支持搜索/筛选/分页）、`/numeric`（数值基线浏览）、`/stats`（按 IP 或 key 精查）、
+`/config`（**可调参数的读与写**，白名单见 `app/baseline/params.py`）。
 """
 
 from __future__ import annotations
@@ -12,10 +16,14 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.baseline import profile as profiles, stats as stats_mod
+from app.baseline import params, profile as profiles, stats as stats_mod
 from app.config import settings
+from app.db.base import get_db
 from app.db.models import User
 from app.workers.log import get_logger
 
@@ -88,12 +96,12 @@ def _build_overview(top: int) -> dict[str, Any]:
     # 会话画像本身仍在算，摘要标签与 MCP `entity_profile` 都还看得到。
     anomalies = profiles.top_anomalies(top, kind=profiles.ACCOUNT)
     return {
-        "enabled": bool(settings.baseline_enabled),
-        "profile_enabled": bool(settings.profile_enabled),
-        "observe_days": int(settings.baseline_observe_days),
-        "zscore": float(settings.baseline_zscore),
-        "risk_threshold": float(settings.profile_risk_threshold),
-        "flush_seconds": int(settings.baseline_flush_seconds),
+        "enabled": params.baseline_enabled(),
+        "profile_enabled": params.profile_enabled(),
+        "observe_days": params.observe_days(),
+        "zscore": params.zscore(),
+        "risk_threshold": params.risk_threshold(),
+        "flush_seconds": params.flush_seconds(),
         "stats": snap,
         "anomalies": anomalies,
         "detector": _detector_counters(),
@@ -110,18 +118,21 @@ def _build_overview(top: int) -> dict[str, Any]:
 def baseline_profiles(
     _: Annotated[User, Depends(get_current_user)],
     kind: str = "",
+    q: str = "",
     min_risk: float = 0.0,
     limit: int = 50,
     offset: int = 0,
 ):
-    """账号/会话画像列表（按风险降序），可按 kind / 风险下限过滤。
+    """账号/会话画像列表（按风险降序）：可按 kind / 名称搜索 / 风险下限过滤，带分页。
 
-    界面目前只画了 `GET /api/baseline` 总览里的 TOP 画像，这个列表接口还**没接前端**；
-    它是第 8 期交付时写进 `docs/ndr-redesign.md` 的对外只读能力，保留（未删）。
+    后台「行为分析」页的画像表就是它。`q` 匹配展示名或实体键（账号的展示名就是账号名；
+    会话是 cookie 哈希，只能按哈希前几位搜）。风险分是「当前窗口」的值，
+    每行都带 `risk_at`（判定时间）好判断新旧。
     """
     kind_clean = kind.strip().lower() if kind else ""
     return profiles.list_profiles(
         kind=kind_clean if kind_clean in (profiles.ACCOUNT, profiles.SESSION) else None,
+        q=q,
         min_risk=max(0.0, float(min_risk or 0.0)),
         limit=max(1, min(int(limit or 50), 200)),
         offset=max(0, int(offset or 0)),
@@ -140,3 +151,84 @@ def baseline_stats(
     同 `/profiles`：文档里的对外只读能力，尚未接前端，保留。
     """
     return stats_mod.lookup(ip=ip, key=key, limit=max(1, min(int(limit or 50), 500)))
+
+
+@router.get("/numeric")
+def baseline_numeric(
+    _: Annotated[User, Depends(get_current_user)],
+    q: str = "",
+    feature: str = "",
+    sort: str = "count",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """数值基线浏览（「行为分析」页的表格）：按 key 子串 / 维度过滤，排序 + 分页。
+
+    与 `/stats` 的区别：`/stats` 要指名 IP 或完整 key（适合精确查），这个能「翻着看」
+    （默认按观测次数降序 —— 次数多的就是活跃维度）。
+    """
+    return stats_mod.list_stats(q=q, feature=feature, sort=sort, limit=limit, offset=offset)
+
+
+class ConfigIn(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfigResetIn(BaseModel):
+    keys: list[str] = Field(default_factory=list)
+
+
+def _invalidate_overview_cache() -> None:
+    """参数改了以后，总览缓存里的标量（观测期/阈值…）立刻就旧了，清掉。"""
+    with _cache_lock:
+        _cache.clear()
+
+
+@router.get("/config")
+def baseline_config(_: Annotated[User, Depends(get_current_user)]):
+    """可调参数清单：类型/范围/默认值/当前值/是否被后台改过（前端据此渲染表单）。"""
+    return {"items": params.items(), "effective": params.effective()}
+
+
+@router.put("/config")
+def save_baseline_config(
+    payload: ConfigIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """保存可调参数（**只允许白名单里的键**）；校验不过 400 + `field_errors`。
+
+    改完立即生效（配置缓存被 invalidate）——检测器下一个窗口就用新值，不用重启。
+    """
+    values = payload.values or {}
+    if not values:
+        return JSONResponse(
+            status_code=400, content={"conflict": "field_error", "detail": "没有要保存的参数"}
+        )
+    errors = params.validate(values)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
+    written = params.save(db, values)
+    _invalidate_overview_cache()
+    log.info("基线/画像参数已更新：%d 项（%s）", written, ", ".join(sorted(values)))
+    return {"written": written, "items": params.items(), "effective": params.effective()}
+
+
+@router.post("/config/reset")
+def reset_baseline_config(
+    payload: ConfigResetIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """恢复默认：删掉后台覆盖值（`keys` 为空 = 全部恢复）。"""
+    removed = params.reset(db, payload.keys or None)
+    _invalidate_overview_cache()
+    log.info("基线/画像参数已恢复默认：%d 项", removed)
+    return {"removed": removed, "items": params.items(), "effective": params.effective()}

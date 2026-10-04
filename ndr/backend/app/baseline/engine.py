@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from typing import Any
 
-from app.baseline import profile as profiles
+from app.baseline import params, profile as profiles
 from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
 from app.schemas import UnifiedLog
@@ -62,12 +62,12 @@ class BaselineEngine:
 
         纯内存计数，没有 I/O；攒太多就提前落库，避免长时间不落库。
         """
-        if not settings.baseline_enabled or not settings.profile_enabled:
+        if not params.baseline_enabled() or not params.profile_enabled():
             return
         added = profiles.observe_entry(self._obs, entry)
         self.stats["observed"] += added
         self._obs_since_flush += added
-        if self._obs_since_flush >= max(1000, int(settings.baseline_max_observations)):
+        if self._obs_since_flush >= max(1000, int(params.max_observations())):
             self.flush()
 
     # ---------- 摘要：打标 ----------
@@ -84,7 +84,7 @@ class BaselineEngine:
         `warmed` 是「已经过了观测期的维度数」：为 0 说明基线还在学习，
         **没报偏离 ≠ 正常**。画像异常为空时 `profiles` 不出现。
         """
-        if not settings.baseline_enabled:
+        if not params.baseline_enabled():
             return {}
         numeric, checked, warmed = self._numeric(digest)
         matched = self._profiles_for(digest)
@@ -106,7 +106,7 @@ class BaselineEngine:
             "distinct_dst_ports": float(len(digest.get("dst_ports") or [])),
             "distinct_dst_ips": float(len(digest.get("dst_ips") or [])),
         }
-        zscore = float(settings.baseline_zscore)
+        zscore = params.zscore()
         deviations: list[dict[str, Any]] = []
         warmed = 0
         for feature in _FEATURES:
@@ -154,7 +154,7 @@ class BaselineEngine:
         self.stats["cache_loads"] += len(states)
 
     def _trim_cache(self) -> None:
-        cap = max(1000, int(settings.baseline_cache_max))
+        cap = max(1000, int(params.cache_max()))
         if len(self._base) <= cap:
             return
         # dict 保序：丢掉最早插入的（再遇到会从库里重新捞）
@@ -201,13 +201,13 @@ class BaselineEngine:
     # ---------- 周期：落库 + 判异常 + 清理 ----------
 
     def maybe_flush(self) -> None:
-        if time.monotonic() - self._last_flush < max(5, int(settings.baseline_flush_seconds)):
+        if time.monotonic() - self._last_flush < max(5, int(params.flush_seconds())):
             return
         self.flush()
 
     def flush(self) -> None:
         """把攒下的观测与统计落库（`observe` 攒够量时也会直接调）。"""
-        if not settings.baseline_enabled:
+        if not params.baseline_enabled():
             return
         now = time.monotonic()
         self._last_flush = now
@@ -216,9 +216,9 @@ class BaselineEngine:
             self._flush_stats()
         if self._obs:
             self._flush_profiles()
-        if now - self._last_cleanup >= max(60, int(settings.baseline_cleanup_seconds)):
+        if now - self._last_cleanup >= max(60, int(params.cleanup_seconds())):
             self._last_cleanup = now
-            if settings.profile_enabled:
+            if params.profile_enabled():
                 result = profiles.cleanup()
                 if result.get("deleted") or result.get("pruned"):
                     log.info(
@@ -232,7 +232,7 @@ class BaselineEngine:
                 log.info(
                     "数值基线清理：删除 %d 个超过 %d 天没更新的键",
                     dropped["deleted"],
-                    settings.baseline_retention_days,
+                    params.retention_days(),
                 )
         self._publish()
 
@@ -261,7 +261,7 @@ class BaselineEngine:
         if not applied and any(pending.values()):
             # `baseline/stats.py` 写失败时只 log 警告并返回 {}（不抛异常）。这里必须把样本并回
             # 待落库队列下一轮重试，否则「PG 抖一下」这批观测就永久丢失、而且任何指标都看不到。
-            cap = max(1000, int(settings.baseline_max_observations)) * 4
+            cap = max(1000, int(params.max_observations())) * 4
             for key, values in pending.items():
                 if values:
                     self._pending.setdefault(key, []).extend(values)
@@ -291,7 +291,7 @@ class BaselineEngine:
 
     def _flush_profiles(self) -> None:
         observations, self._obs = self._obs, {}
-        if not settings.profile_enabled or not observations:
+        if not params.profile_enabled() or not observations:
             return
         info = profiles.recall_from_observations(observations)
         risks = {f"{e['kind']}|{e['key']}": e for e in info.get("entities") or []}

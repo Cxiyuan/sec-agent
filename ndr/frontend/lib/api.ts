@@ -470,6 +470,10 @@ export interface BaselineStats {
   total_keys: number;
   warmed_keys: number;
   learning_keys: number;
+  /** 最早观测的维度时间（界面用它算「还有多久过观测期」） */
+  oldest_first_seen?: string | null;
+  /** 最早那批维度过观测期的时刻（= oldest_first_seen + 观测期） */
+  next_warm_at?: string | null;
   error?: string;
 }
 
@@ -500,6 +504,8 @@ export interface BaselineAnomalies {
   total: number;
   items: BaselineProfile[];
   threshold?: number;
+  /** 「当前风险」的有效期（分钟）：超过这么久没被判过的风险不算数 */
+  ttl_minutes?: number;
   note?: string;
   error?: string;
 }
@@ -720,5 +726,58 @@ export interface StatsOverview {
   protocols: ProtocolShare;
   computed_at: string;
   cached: boolean;
+  error?: string;
+}
+
+// ---------- 行为分析页（/admin/behavior） ----------
+
+/** `GET /api/baseline/config`：一个可调参数（后端单一定义源，前端只负责渲染） */
+export interface BaselineConfigItem {
+  key: string;
+  label: string;
+  kind: "int" | "float" | "bool" | "regex" | "text";
+  unit: string;
+  note: string;
+  low: number | null;
+  high: number | null;
+  default: string | number | boolean;
+  value: string | number | boolean;
+  /** true = 后台改过（不是默认值） */
+  overridden: boolean;
+}
+
+export interface BaselineConfigPayload {
+  items: BaselineConfigItem[];
+  effective: Record<string, string | number | boolean>;
+  /** 保存/恢复接口会回这两个额外字段 */
+  written?: number;
+  removed?: number;
+}
+
+/** `GET /api/baseline/profiles`：画像列表（分页 + 搜索） */
+export interface BaselineProfilesPayload {
+  total: number;
+  items: BaselineProfile[];
+  error?: string;
+}
+
+/** `GET /api/baseline/numeric`：数值基线的一行 */
+export interface NumericStat {
+  key: string;
+  feature: string;
+  count: number;
+  mean: number;
+  m2?: number;
+  std: number;
+  first_seen: string;
+  /** true = 已过观测期（可判偏离）；false = 还在学习 */
+  warmed: boolean;
+}
+
+export interface NumericListPayload {
+  total: number;
+  returned: number;
+  observe_days: number;
+  items: NumericStat[];
   error?: string;
 }

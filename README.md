@@ -109,7 +109,7 @@ docker compose -f docker-compose.deploy.yml up -d
 | 线路 | 服务 | 作用 |
 | --- | --- | --- |
 | NDR | `elasticsearch` / `postgres` / `redis` | 存储与消息 |
-| NDR | `backend` / `frontend` | API + 管理后台（全局页头：logo 深瞳·NDR / 告警铃铛 / 当前用户 / 退出；左侧八页：**总览** / 规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 账户；**`/` 默认落到「总览」**） |
+| NDR | `backend` / `frontend` | API + 管理后台（全局页头：logo 深瞳·NDR / 告警铃铛 / 当前用户 / 退出；左侧九页：**总览** / **行为分析** / 规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 账户；**`/` 默认落到「总览」**） |
 | NDR | `normalizer` | **归一化服务**（消费采集队列 → 检测器队列 + 写 ES） |
 | NDR | `detector` | 实时检测器（消费归一化队列） |
 | NDR | `ndr-mcp` | MCP 服务（`python -m app.mcp.server`，宿主 `:8090`） |
@@ -244,7 +244,9 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     `shentong:events:dead`（上限 1 万条）与 `shentong:collector:stats` 的累计计数里，
     采集队列被裁剪时也记计数。**Filebeat 的 `ndjson` 解析失败不再产生空壳文档**：能在顶层
     `message` 里拼回完整 JSON 的照常入库，拼不回的一律进死信（以前会落成只有时间戳与
-    `log_type`、其余全空的文档，看着像"采集正常"）
+    `log_type`、其余全空的文档，看着像"采集正常"）。
+    要**深挖明细**（每个维度的均值方差、每个画像的分布、以及判据参数）去左侧「行为分析」页，
+    见 §五 的 `ST_BASELINE_*` / `ST_PROFILE_*`（这些参数现在能在界面上改）
 12. **专门核对 Zeek 的日志生成与协议解析**（真实网卡上线后必做一遍）：实际产出了哪些
     `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
     `log_type`/`event_type` 与内置规则的命中情况；反向代理场景的原始客户端 IP 走 `http.log` 的
@@ -405,6 +407,7 @@ NDR 线路（采集与检测）：
 | `ST_BASELINE_MAX_OBSERVATIONS` | 50000 | 单窗口最多攒多少条画像观测，超了提前落库 |
 | `ST_BASELINE_CACHE_MAX` | 20000 | 进程内数值基线缓存条目上限（超出丢最旧的） |
 | `ST_BASELINE_STATS_KEY` | shentong:baseline:stats | 检测器侧基线计数键（「运行状态」页看活性）。字段分两类：`observed`/`numeric_samples`/`flushes`/`profiles_*`/`anomalies_total` 是**累计**，`numeric_keys_last_round`/`anomalies_last_round` 只反映**上一轮**（名字里带 `last_round`，别当累计读） |
+| `ST_BASELINE_*` / `ST_PROFILE_*`（观测期 / σ / 风险阈值 / 时效 / 时段与路径门槛 / 路径正则 / 保留期… 共 18 项） | 见下面几行的默认值 | **这些可以在界面改**：左侧「行为分析 → 判据参数」直接编辑（写进 `SystemConfig`，后端 30 秒内生效、检测器下一个窗口就用新值，**不需要重启容器**）。环境变量仍是默认值与兜底；界面上标「已改」的就是被后台覆盖过的项 |
 | `ST_BASELINE_RETENTION_DAYS` | 90 | **数值基线保留期**（按 `updated_at` 清理，0 = 不清理）。key 是 `{src_ip}:{feature}`，被扫过一次的 IP（尤其外网/攻击者）会永久留 3 行 —— 以前一行清理逻辑都没有，只增不减（实测 6 小时就 486 个 IP / 1458 行） |
 | `ST_PROFILE_ENABLED` | true | 账号/会话画像开关（关掉则只算数值 2σ） |
 | `ST_PROFILE_MIN_OBS` | 5 | 观测次数不足时只学习、不打分（冷启动） |

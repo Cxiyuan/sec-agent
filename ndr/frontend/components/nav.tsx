@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Activity,
   Bot,
   Database,
   Filter,
@@ -21,6 +22,8 @@ import { apiFetch, type AuthMe, type NetworksStatus } from "@/lib/api";
 // logo、当前用户、退出登录、告警铃铛都在全局页头（components/topbar.tsx）。
 const items = [
   { href: "/admin/status", label: "总览", icon: LayoutDashboard },
+  // 行为分析：基线与画像的「看得见的明细 + 可调参数」（与总览的概览图互补）
+  { href: "/admin/behavior", label: "行为分析", icon: Activity },
   { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
   { href: "/admin/networks", label: "监控网段", icon: Network },

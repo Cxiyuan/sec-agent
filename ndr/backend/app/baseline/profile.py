@@ -18,11 +18,12 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, delete, func, or_, select
 
+from app.baseline import params
+from app.baseline.stats import like_pattern
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import EntityProfile
@@ -88,21 +89,35 @@ def _families(ips: Iterable[str]) -> tuple[set[str], set[str]]:
     return v4, v6
 
 
-@lru_cache
+_path_regex_cache: dict[tuple[str, str], tuple[re.Pattern[str] | None, re.Pattern[str] | None]] = {}
+
+
+def _build_regex(pattern: str) -> re.Pattern[str] | None:
+    text = (pattern or "").strip()
+    if not text:
+        return None
+    try:
+        return re.compile(text)
+    except re.error:
+        log.warning("路径正则写错了，已忽略：%r", text)
+        return None
+
+
 def _path_regexes() -> tuple[re.Pattern[str] | None, re.Pattern[str] | None]:
-    """（include, exclude）两个路径正则；空字符串 = 那一步不过滤。"""
+    """（include, exclude）两个路径正则；空字符串 = 那一步不过滤。
 
-    def build(pattern: str) -> re.Pattern[str] | None:
-        text = (pattern or "").strip()
-        if not text:
-            return None
-        try:
-            return re.compile(text)
-        except re.error:
-            log.warning("路径正则写错了，已忽略：%r", text)
-            return None
-
-    return build(settings.profile_path_include_regex), build(settings.profile_path_exclude_regex)
+    缓存键就是两个正则文本：后台「行为分析」页改完参数后再调就是新键，不需要显式失效。
+    （原先是 `lru_cache`，改了配置必须重启进程才生效。）
+    """
+    key = (params.path_include_regex(), params.path_exclude_regex())
+    cached = _path_regex_cache.get(key)
+    if cached is not None:
+        return cached
+    built = (_build_regex(key[0]), _build_regex(key[1]))
+    if len(_path_regex_cache) > 32:  # 反复改配置会积旧键，给个上限
+        _path_regex_cache.clear()
+    _path_regex_cache[key] = built
+    return built
 
 
 def api_path(path: str) -> bool:
@@ -152,7 +167,7 @@ def fail_burst_score(fail: int, success: int) -> tuple[float, str]:
 
 def _old_enough(profile: EntityProfile) -> bool:
     """画像建立是否已满 `profile_hour_min_age_hours` 小时。"""
-    min_hours = max(0, int(settings.profile_hour_min_age_hours))
+    min_hours = max(0, int(params.hour_min_age_hours()))
     if min_hours <= 0:
         return True
     first = profile.first_seen
@@ -308,7 +323,7 @@ def load_profiles(keys: list[tuple[str, str]]) -> dict[str, EntityProfile]:
 
 def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dict[str, Any]:
     """与长期基线比对，返回 {reasons, risk, cold_start}。冷启动只学习不告警。"""
-    if profile is None or (profile.obs_count or 0) < settings.profile_min_obs:
+    if profile is None or (profile.obs_count or 0) < params.min_obs():
         return {"reasons": [], "risk": 0.0, "cold_start": True}
 
     reasons: list[str] = []
@@ -340,7 +355,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     # 否则刚建的画像「第一条路径就是新的」等于白报。
     known_paths = set((profile.paths or {}).keys())
     new_paths = sorted(p for p in obs["paths"] if p not in known_paths)
-    if new_paths and len(known_paths) >= max(0, int(settings.profile_path_min_known)):
+    if new_paths and len(known_paths) >= max(0, int(params.path_min_known())):
         reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
         risk += 0.25
 
@@ -350,8 +365,8 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     covered = sum(1 for v in hist.values() if _safe_int(v) > 0)
     if (
         obs["hours"]
-        and total_hours >= settings.profile_min_obs
-        and covered >= max(1, int(settings.profile_hour_min_coverage))
+        and total_hours >= params.min_obs()
+        and covered >= max(1, int(params.hour_min_coverage()))
         and _old_enough(profile)
     ):
         rare = [h for h in obs["hours"] if _safe_int(hist.get(h, 0)) / total_hours < 0.01]
@@ -380,7 +395,7 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
     `entities` 是「有异常理由」的全部实体（按风险降序），`anomalies` 是其中过阈值的
     （`profile_risk_threshold`）—— 后者才会被写进摘要标签。
     """
-    if not settings.profile_enabled or not observations:
+    if not params.profile_enabled() or not observations:
         return {"entities": [], "anomalies": []}
 
     profiles = load_profiles([(o["kind"], o["key"]) for o in observations.values()])
@@ -404,7 +419,7 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
             }
         )
     entities.sort(key=lambda x: -x["risk"])
-    threshold = settings.profile_risk_threshold
+    threshold = params.risk_threshold()
     return {
         "entities": entities,
         "anomalies": [e for e in entities if e["risk"] >= threshold],
@@ -440,7 +455,7 @@ def update_profiles(
     risks：key = f"{kind}|{key}"，值含 {risk, reasons}（来自 `recall_from_observations`）；
     回写后按风险排序的列表与 TOP 才生效。
     """
-    if not observations or not settings.profile_enabled:
+    if not observations or not params.profile_enabled():
         return {"created": 0, "updated": 0}
     now = datetime.now(UTC)
     created = updated = 0
@@ -505,7 +520,7 @@ def cleanup() -> dict[str, int]:
     不再活跃的画像永远不会清；放到小时级清理里，一小时内全库都会对齐，
     而且口径仍然只来自配置（不在 SQL 里重写一份正则，避免两处漂移）。
     """
-    before = datetime.now(UTC) - timedelta(days=settings.profile_retention_days)
+    before = datetime.now(UTC) - timedelta(days=params.profile_retention_days())
     deleted = pruned = 0
     try:
         with SessionLocal() as db:
@@ -559,10 +574,16 @@ def list_profiles(
     *,
     kind: str | None = None,
     keys: list[str] | None = None,
+    q: str = "",
     min_risk: float = 0.0,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    """画像列表（风险降序）。
+
+    `q`：按展示名/实体键模糊搜（账号名就是展示名；会话是 cookie 哈希，只能按哈希前几位搜）。
+    风险分是「当前窗口」的值，列表里也会带上 `risk_at`（判定时间）好判断新旧。
+    """
     try:
         with SessionLocal() as db:
             conds = []
@@ -571,6 +592,14 @@ def list_profiles(
             if keys:
                 # 指名道姓查几个实体（智能体问「这组 IP 关联的账号/会话画像」走这里）
                 conds.append(EntityProfile.entity_key.in_(list(keys)[:500]))
+            if (q or "").strip():
+                pattern = like_pattern(q)
+                conds.append(
+                    or_(
+                        EntityProfile.entity_display.ilike(pattern, escape="\\"),
+                        EntityProfile.entity_key.ilike(pattern, escape="\\"),
+                    )
+                )
             if min_risk > 0:
                 conds.append(EntityProfile.risk_score >= min_risk)
 
@@ -595,8 +624,8 @@ def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]
     `kind`：界面只传 `"account"`（会话的展示名是 cookie 哈希前 8 位，运维看不懂；
     会话画像本身仍在算，摘要标签与 MCP 调查还看得到）。
     """
-    ttl = max(0, int(settings.profile_risk_ttl_minutes))
-    stmt = select(EntityProfile).where(EntityProfile.risk_score >= settings.profile_risk_threshold)
+    ttl = max(0, int(params.risk_ttl_minutes()))
+    stmt = select(EntityProfile).where(EntityProfile.risk_score >= params.risk_threshold())
     if kind:
         stmt = stmt.where(EntityProfile.kind == kind)
     if ttl > 0:
@@ -611,13 +640,13 @@ def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]
             ).all()
     except Exception as exc:  # noqa: BLE001
         return {
-            "threshold": settings.profile_risk_threshold,
+            "threshold": params.risk_threshold(),
             "ttl_minutes": ttl,
             "items": [],
             "error": str(exc),
         }
     return {
-        "threshold": settings.profile_risk_threshold,
+        "threshold": params.risk_threshold(),
         "ttl_minutes": ttl,
         "items": [_profile_dict(r) for r in rows],
     }

@@ -448,16 +448,14 @@ def test_top_anomalies_only_lists_current_risk(
 def test_top_anomalies_can_be_unfiltered(
     profiles: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """TTL=0 = 不过滤（当历史榜单看），此时 WHERE 里不该出现 risk_at。"""
-    from types import SimpleNamespace
+    """TTL=0 = 不过滤（当历史榜单看），此时 WHERE 里不该出现 risk_at。
 
+    参数现在走 `params`（后台可改），所以补丁也要打到它上（原来是直接改 settings）。
+    """
     session = _FakeSession(row=None, rows=[])
     monkeypatch.setattr(profiles, "SessionLocal", lambda: session)
-    monkeypatch.setattr(
-        profiles,
-        "settings",
-        SimpleNamespace(profile_risk_threshold=0.6, profile_risk_ttl_minutes=0),
-    )
+    monkeypatch.setattr(profiles.params, "risk_ttl_minutes", lambda: 0)
+    monkeypatch.setattr(profiles.params, "risk_threshold", lambda: 0.6)
     out = profiles.top_anomalies(5)
     assert out["ttl_minutes"] == 0
     assert "risk_at" not in _where_of(session.statements[0]), session.statements[0]

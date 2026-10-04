@@ -78,3 +78,8 @@ def invalidate() -> None:
     global _cache, _cache_at
     _cache = None
     _cache_at = 0.0
+
+
+def overrides() -> dict[str, Any]:
+    """库里实际存过的覆盖值（只含被改过的键）。给「哪些参数被后台改过」这类展示用。"""
+    return dict(_snapshot())

@@ -61,7 +61,7 @@ def test_snapshot_uses_one_round_trip(
     stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """一次 execute 同时拿到 total 与 warmed（回归：以前是两条 COUNT(*)，轮询会打两次库）。"""
-    session = _Session(row=(1200, 300))
+    session = _Session(row=(1200, 300, None))
     monkeypatch.setattr(stats_mod, "SessionLocal", lambda: session)
     snap = stats_mod.snapshot()
     assert snap == {
@@ -69,17 +69,30 @@ def test_snapshot_uses_one_round_trip(
         "total_keys": 1200,
         "warmed_keys": 300,
         "learning_keys": 900,
+        "oldest_first_seen": None,
+        "next_warm_at": None,
     }
     assert len(session.statements) == 1, session.statements
     # 过滤条件必须是「first_seen 不为空且早于观测期边界」
     assert "first_seen" in session.statements[0]
 
 
+def test_snapshot_reports_observe_countdown(
+    stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """观测期倒计时：界面要显示「最早那批维度什么时候过观测期」。"""
+    oldest = datetime(2026, 10, 4, 10, 3, 37, tzinfo=UTC)
+    monkeypatch.setattr(stats_mod, "SessionLocal", lambda: _Session(row=(5, 0, oldest)))
+    snap = stats_mod.snapshot()
+    assert snap["oldest_first_seen"] == oldest.isoformat()
+    assert snap["next_warm_at"] == (oldest + timedelta(days=7)).isoformat()
+
+
 def test_snapshot_never_returns_negative_learning(
     stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """脏数据（warmed > total）不能让 learning 变成负数。"""
-    monkeypatch.setattr(stats_mod, "SessionLocal", lambda: _Session(row=(10, 12)))
+    monkeypatch.setattr(stats_mod, "SessionLocal", lambda: _Session(row=(10, 12, None)))
     assert stats_mod.snapshot()["learning_keys"] == 0
 
 

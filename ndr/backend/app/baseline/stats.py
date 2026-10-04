@@ -16,7 +16,7 @@ from typing import Any, cast
 
 from sqlalchemy import CursorResult, delete, func, select
 
-from app.config import settings
+from app.baseline import params
 from app.db.base import SessionLocal
 from app.db.models import BaselineStat
 from app.workers.log import get_logger
@@ -36,7 +36,7 @@ def _std(m2: float, count: int) -> float:
 def _warmed(first_seen: datetime | None, now: datetime) -> bool:
     if first_seen is None:
         return False
-    days = max(0, int(settings.baseline_observe_days))
+    days = params.observe_days()
     if days <= 0:
         return True
     return first_seen <= now - timedelta(days=days)
@@ -123,6 +123,65 @@ def apply_stats(values: dict[str, list[float]]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def like_pattern(q: str) -> str:
+    """把用户输入转成安全的 LIKE 模式（转义通配符，避免 `%`/`_` 变成未知查询）。"""
+    text = (q or "").strip()
+    for ch in ("\\", "%", "_"):
+        text = text.replace(ch, "\\" + ch)
+    return f"%{text}%"
+
+
+_SORTS: dict[str, Any] = {
+    "count": lambda: BaselineStat.count.desc(),
+    "updated": lambda: BaselineStat.updated_at.desc(),
+    "key": lambda: BaselineStat.key.asc(),
+}
+
+
+def list_stats(
+    *,
+    q: str = "",
+    feature: str = "",
+    sort: str = "count",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """浏览数值基线（后台「行为分析」页用）。
+
+    为什么要有它：`lookup()` 必须指名 IP 或完整 key，页面根本没法「翻着看」。
+    过滤：`q` 匹配 key 子串（填 IP 前缀就等于看那个 IP 的维度）；`feature` 按维度后缀匹配。
+    排序：count（观测次数，默认）/ updated（最近更新）/ key。
+    """
+    cap = max(1, min(int(limit or 50), 500))
+    start = max(0, int(offset or 0))
+    now = datetime.now(UTC)
+    conds = []
+    if (q or "").strip():
+        conds.append(BaselineStat.key.like(like_pattern(q), escape="\\"))
+    if (feature or "").strip():
+        conds.append(BaselineStat.key.like(like_pattern(f":{feature.strip()}"), escape="\\"))
+    order = _SORTS.get((sort or "count").strip(), _SORTS["count"])()
+    try:
+        with SessionLocal() as db:
+            total = int(
+                db.scalar(select(func.count()).select_from(BaselineStat).where(*conds)) or 0
+            )
+            rows = db.scalars(
+                select(BaselineStat).where(*conds).order_by(order).limit(cap).offset(start)
+            ).all()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读数值基线失败：{exc}", "total": 0, "items": []}
+    items = [
+        {"key": row.key, "feature": row.key.split(":")[-1], **_state(row, now)} for row in rows
+    ]
+    return {
+        "total": total,
+        "returned": len(items),
+        "observe_days": params.observe_days(),
+        "items": items,
+    }
+
+
 def lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
     """按 IP（该 IP 的全部维度）或完整 key 查基线。"""
     try:
@@ -150,7 +209,7 @@ def lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
         "key": key,
         "total": total,
         "returned": len(rows),
-        "observe_days": int(settings.baseline_observe_days),
+        "observe_days": params.observe_days(),
         "items": [
             {"key": row.key, "feature": row.key.split(":")[-1], **_state(row, now)} for row in rows
         ],
@@ -165,7 +224,7 @@ def cleanup(retention_days: int | None = None) -> dict[str, int]:
     数值基线一行清理逻辑都没有 —— 只增不减。
     """
     days = max(
-        0, int(retention_days if retention_days is not None else settings.baseline_retention_days)
+        0, int(retention_days if retention_days is not None else params.retention_days())
     )
     if days <= 0:
         return {"deleted": 0}  # 0 = 不清理（与 observe_days 不同，这里允许显式关掉）
@@ -190,25 +249,32 @@ def snapshot() -> dict[str, Any]:
     没有索引的列），而总览页每 15 秒轮询一次 —— 2026-10 实机 QA 发现 seq_scan 已 1660。
     """
     now = datetime.now(UTC)
-    days = max(0, int(settings.baseline_observe_days))
+    days = params.observe_days()
     warmed_cut = now - timedelta(days=days)
     warmed_cond = (BaselineStat.first_seen.is_not(None)) & (BaselineStat.first_seen <= warmed_cut)
     try:
         with SessionLocal() as db:
-            # FILTER (WHERE ...) 是 PG 的聚合过滤语法，一次扫描就出两个数
+            # FILTER (WHERE ...) 是 PG 的聚合过滤语法，一次扫描就出三个数
             row = db.execute(
                 select(
                     func.count(),
                     func.coalesce(func.count().filter(warmed_cond), 0),
+                    func.min(BaselineStat.first_seen),
                 ).select_from(BaselineStat)
             ).one()
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读基线失败：{exc}", "total_keys": 0, "warmed_keys": 0}
     total = int(row[0] or 0)
     warmed = int(row[1] or 0)
+    oldest = row[2]
+    if oldest is not None and oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
     return {
         "observe_days": days,
         "total_keys": total,
         "warmed_keys": warmed,
         "learning_keys": max(0, total - warmed),
+        # 观测期进度（界面显示倒计时）：最早观测的维度 + 它什么时候过观测期
+        "oldest_first_seen": oldest.isoformat() if oldest else None,
+        "next_warm_at": (oldest + timedelta(days=days)).isoformat() if oldest else None,
     }
