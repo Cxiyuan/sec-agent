@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterator, Mapping
 from types import ModuleType
 from typing import Any
 
@@ -204,3 +205,53 @@ def test_fetch_returns_error_payload_when_es_fails(
     assert out["error"]
     assert out["traffic"]["points"] == []
     assert out["protocols"]["items"] == []
+
+
+class _EsObjectResponse(Mapping[str, Any]):
+    """模拟 elasticsearch-py 8.x 的 `ObjectApiResponse`：**是 Mapping，但不是 dict**。
+
+    实机曾因此整张图空白：`_fetch` 用 `isinstance(resp, dict)` 判，把正常响应当成坏响应
+    报「ES 返回了非预期结构」；而本地测试用的是 dict 桩，所以完全没抓到。
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+def test_fetch_accepts_mapping_response_from_es_client(
+    stats: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ES 客户端返回的不是普通 dict —— 不能拿 `isinstance(resp, dict)` 当有效性判定。"""
+    es_client = importlib.import_module("app.ingestion.es_client")
+    body = _resp_with(
+        [
+            {
+                "key_as_string": "2026-10-04T10:00:00.000Z",
+                "doc_count": 3,
+                "bytes_out": {"value": 3600},
+                "bytes_in": {"value": 0},
+            }
+        ],
+        other=1,
+    )
+    body["aggregations"]["protocols"]["buckets"] = [{"key": "conn", "doc_count": 3}]
+
+    class _Client:
+        def search(self, **_kw: Any) -> Any:
+            return _EsObjectResponse(body)
+
+    monkeypatch.setattr(es_client, "get_es", lambda: _Client())
+    out = stats._fetch(24)
+    assert out["error"] == "", out["error"]
+    assert len(out["traffic"]["points"]) == 1
+    assert out["traffic"]["points"][0]["bytes_per_sec"] == 1.0
+    assert out["protocols"]["items"][0]["log_type"] == "conn"
