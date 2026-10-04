@@ -97,6 +97,23 @@ def _has_extracted(doc: dict[str, Any]) -> bool:
     return bool(str(doc.get("extracted") or "").strip())
 
 
+def is_valid_fuid(fuid: str) -> bool:
+    """fuid 格式校验（MCP 的 file_content 工具复用同一口径，不另写一份正则）。"""
+    return bool(_FUID_RE.match(str(fuid or "")))
+
+
+def lookup_extract(fuid: str) -> dict[str, Any] | None:
+    """按 fuid 找回「有提取件」的那条事件（没有则 None）。
+
+    取数与判定口径与下载路由完全一致（`_latest_docs` + `_has_extracted`）：
+    MCP 的文件内容工具与 Web 下载入口必须看到同一份事实。
+    """
+    for doc in _latest_docs(fuid):
+        if _has_extracted(doc):
+            return doc
+    return None
+
+
 @router.get("/{fuid}")
 def download_extracted_file(
     fuid: str,
@@ -107,7 +124,7 @@ def download_extracted_file(
     **这是给智能体取证用的下载入口**（第 12 期约定的对外能力）：智能体在分析事件时
     拿到 fuid 就能取回文件本体，不要当死路由删掉。同时前端也能用同一个 URL。
     """
-    if not _FUID_RE.match(fuid):
+    if not is_valid_fuid(fuid):
         raise HTTPException(status_code=400, detail="fuid 格式不合法")
 
     try:

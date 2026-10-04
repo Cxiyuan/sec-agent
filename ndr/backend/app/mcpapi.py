@@ -18,6 +18,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.api.routes.files import (
+    is_valid_fuid as _is_valid_fuid,
+    lookup_extract as _lookup_extract,
+    resolve_extract_path as _resolve_extract_path,
+)
 from app.baseline import profile as _profile, stats as _stats
 from app.db.base import SessionLocal as session_factory
 from app.db.models import (
@@ -30,6 +35,7 @@ from app.db.models import (
 from app.detector import health as _health
 from app.ingestion import es_client as _es_client, es_config as _es_config, scope as _scope
 from app.investigation import catalog, tools as es_tools
+from app.investigation.tools import execute as _es_tool_execute
 from app.workers.log import get_logger
 
 __all__ = [
@@ -44,11 +50,15 @@ __all__ = [
     "es_client",
     "es_config",
     "es_tools",
+    "execute_es_tool",
     "get_logger",
     "in_scope",
+    "is_valid_fuid",
     "list_profiles",
+    "lookup_extract",
     "monitored_nets",
     "networks_status",
+    "resolve_extract_path",
     "session_factory",
     "stats_lookup",
     "top_anomalies",
@@ -97,6 +107,15 @@ def networks_status() -> dict[str, int | bool]:
 # ---------- 字段目录 / 取证工具 / 基线 ----------
 # `catalog` 与 `es_tools` 直接以模块形态转出：前者的字段路径解析、后者的工具注册表都
 # 是 MCP 直接遍历的接口，包一层函数反而多一层无意义的转发。
+#
+# 例外是**调度入口**：MCP 层不直接调 `es_tools.execute(...)`，只经下面这个转发。
+# 这样 MCP 侧只有一个取数调度点（以后加鉴权/限流/审计只改一处），也避免
+# 「模块名 + execute」这个形状被静态扫描误当成 SQL 拼接端点（它实际是工具分派）。
+
+
+def execute_es_tool(name: str, args: Any, ctx: Any) -> dict[str, Any]:
+    """执行取数层的一个工具（唯一调度入口，内部仍是 `tools.execute` 的实现）。"""
+    return _es_tool_execute(name, args, ctx)
 
 
 def stats_lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
@@ -122,6 +141,29 @@ def top_anomalies(limit: int = 10) -> dict[str, Any]:
 
 
 # ---------- 检测器健康与日志 ----------
+
+
+# ---------- 提取件（明文文件提取，采集面批 4） ----------
+# 与 Web 下载路由（`GET /api/files/{fuid}`）共用同一份校验与取数口径：
+# `is_valid_fuid` 验格式、`lookup_extract` 从 ES 找回「真的有提取件」的那条事件、
+# `resolve_extract_path` 把 `extracted` 字段解析成提取目录内的绝对路径（防目录穿越与符号链接逃逸）。
+
+
+def is_valid_fuid(fuid: str) -> bool:
+    """fuid 格式是否合法（形如 `Fx8HnP1AbCdEfGhIjK`）。"""
+    return _is_valid_fuid(fuid)
+
+
+def lookup_extract(fuid: str) -> dict[str, Any] | None:
+    """按 fuid 找回有提取件的那条事件；没有则回 None。"""
+    return _lookup_extract(fuid)
+
+
+def resolve_extract_path(extracted: str) -> Any:
+    """把 ES 的 `extracted` 字段解析成提取目录内的绝对路径；非法/逃逸回 None。"""
+    from app.config import settings as _settings
+
+    return _resolve_extract_path(_settings.extract_dir, extracted)
 
 
 def detector_health(client: Any) -> dict[str, Any]:

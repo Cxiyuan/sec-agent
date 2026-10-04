@@ -170,6 +170,7 @@ def _describe_data(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     sources = described.get("sources")
     if not isinstance(sources, list):
         sources = []
+    lookback = described.get("lookback_limit_days")
     return {
         "sources": sources,
         "case": {
@@ -182,7 +183,11 @@ def _describe_data(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
             "last_seen": ctx.case.get("last_seen"),
             "group_count": ctx.case.get("group_count"),
         },
-        "lookback_limit_days": settings.investigation_max_lookback_days,
+        # 透传 NDR 的值：它跟着**运行时保留期**走（后台改保留期不用重启），
+        # 用本地静态配置覆盖会出现「实际能查 45 天、模型被告知只能查 7 天」。
+        "lookback_limit_days": (
+            lookback if isinstance(lookback, int) else settings.investigation_max_lookback_days
+        ),
         "hint": "时间参数用 ISO 格式；字段用 fields 里的逻辑名；未知字段会被拒绝并回传可用清单。",
     }
 
@@ -417,6 +422,52 @@ def _entity_profile(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     return {"kind": kind, "requested": len(keys), **result}
 
 
+def _get_rule(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
+    """取检测规则原文（规则条件/严重度/优先级）。
+
+    为什么需要它：摘要只带规则名与严重度，不带条件——模型无法回答「这条为什么被判可疑」。
+    NDR 是规则的唯一事实源（`get_rule` 是它的 MCP 工具），所以转发过去而不是用本地副本。
+    """
+    _check_unknown(args, ("name", "rule_id"), "get_rule")
+    name = _str_param(args, "name")
+    rule_id = _str_param(args, "rule_id")
+    if not name and not rule_id:
+        raise ValueError("name 与 rule_id 至少要给一个（摘要里带的是规则名）")
+    payload: dict[str, Any] = {}
+    if name:
+        payload["name"] = name
+    if rule_id:
+        payload["rule_id"] = rule_id
+    return mcp_client.call("get_rule", payload)
+
+
+def _list_filters(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
+    """取 NDR 的两道过滤闸门（降噪过滤 + 排除过滤）。
+
+    为什么必须能调到：这两类配置都会让「某条事件没有告警」。看不到它们，
+    就只能把「被过滤掉」当成「本来就没事」—— 漏报的锅会扣错地方。
+    """
+    _check_unknown(args, (), "list_filters")
+    return mcp_client.call("list_filters", {})
+
+
+def _file_content(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
+    """取提取件内容（有界）或元数据；按 fuid（事件里的 extracted/fuid 字段）。
+
+    文件提取与下载通道只在 NDR 侧（提取件落在 Zeek 容器目录），这里转发到 NDR 的
+    `file_content`；要完整文件用返回里的 download 路径（需 NDR 登录）。
+    """
+    _check_unknown(args, ("fuid", "encoding", "max_bytes"), "file_content")
+    payload: dict[str, Any] = {"fuid": _str_param(args, "fuid", required=True)}
+    encoding = _str_param(args, "encoding")
+    if encoding:
+        payload["encoding"] = encoding
+    max_bytes = _opt_int(args, "max_bytes", lo=1, hi=1048576)
+    if max_bytes is not None:
+        payload["max_bytes"] = max_bytes
+    return mcp_client.call("file_content", payload)
+
+
 def _memory_recall(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     _check_unknown(args, ("ips", "limit"), "memory_recall")
     ips = _list_param(args, "ips") or _present_ips(ctx)
@@ -625,6 +676,25 @@ TOOLS: dict[str, dict[str, Any]] = {
             "kind": "account|session",
             "keys": "账号或会话键数组",
             "min_risk": "只返回风险不低于该值（0~1，可选）",
+        },
+    },
+    "get_rule": {
+        "run": _get_rule,
+        "desc": "取检测规则原文（条件/严重度/优先级）——回答「这条摘要为什么被判可疑」",
+        "params": {"name": "规则名（与摘要里的完全一致）", "rule_id": "规则 ID（可选）"},
+    },
+    "list_filters": {
+        "run": _list_filters,
+        "desc": "NDR 的两道过滤闸门（降噪过滤=不进检测器；排除过滤=跳过分析）",
+        "params": {},
+    },
+    "file_content": {
+        "run": _file_content,
+        "desc": "取提取件（落地/外泄的文件）内容或元数据（有界）；fuid 来自事件的 extracted 字段",
+        "params": {
+            "fuid": "文件 id（事件的 extracted/fuid 字段）",
+            "encoding": "text|base64（默认 base64）",
+            "max_bytes": "最多读多少字节（默认 64KiB，上限 1MiB）",
         },
     },
     "memory_recall": {

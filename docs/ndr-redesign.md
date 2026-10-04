@@ -309,7 +309,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    server.streamable_http_app(streamable_http_path=settings.mcp_path, host=settings.mcp_host)
    ```
 
-   **共 17 个工具**（10 个 ES 查询/调查 + 7 个 NDR 自身；**第 8 期新增 `baseline_lookup` / `entity_profile` 后为 19 个 = 10 + 9，见第 8 期小节**），全部写成**显式形参的普通函数**注册 —— MCP 的 `inputSchema` 由函数签名推导，用 `**kwargs` 会被当成一个必填参数（实测报 `1 validation error for search_eventsArguments kwargs Field required`），这个坑踩过一次。工具名与参数名**逐字沿用**智能体原来的 10 个工具，提示词与调用样例不用改。
+   **共 17 个工具**（10 个 ES 查询/调查 + 7 个 NDR 自身；**第 8 期新增 `baseline_lookup` / `entity_profile` 后为 19 个 = 10 + 9**；**2026-10 MCP QA 又新增 `file_content` 后为 20 个 = 10 + 10**，见「2026-10 MCP 质量收口」小节），全部写成**显式形参的普通函数**注册 —— MCP 的 `inputSchema` 由函数签名推导，用 `**kwargs` 会被当成一个必填参数（实测报 `1 validation error for search_eventsArguments kwargs Field required`），这个坑踩过一次。工具名与参数名**逐字沿用**智能体原来的 10 个工具，提示词与调用样例不用改。
 
 2. **ES 查询层搬进 NDR 并重写**：新增 `ndr/backend/app/investigation/{__init__,catalog,es_query,tools}.py`（1595 行）；字段目录从 50 条收敛到 **42 条**（删掉只在 `raw` 里的 `duration`/`rcode`/`answers`/`fuid`/`md5`/`sha1`、合并掉 `service`/`host`/`server_name`/`uri`/`note`/`msg`/`rule_level`/`agent_name`/`wazuh_url` 等，新增 12 条顶层统一字段）。索引选择塌成单族：
 
@@ -715,6 +715,23 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **测试（新增 `tests/py/test_rules_quality.py`，两侧都跑）**：`_FIELD_TYPES` 无僵尸键、**规则引用的字段必须存在**（防写错字段名静默失效）、正则全可编译、路由全局 priority 有序、`_match` 收口语义、cookie/content-type 头解析、weird→异常事件类型、x509 自签、sshd 不再等于爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**最普通的正常 conn/http 流量不得命中任何逐条规则**（恒真/过宽条件护栏）、Wazuh 规则必须路由到 wazuh、单规则限速 + 严重度优先。
 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **417 passed, 1 skipped**；`--stack=agent -q` **287 passed, 131 skipped**；`sh tests/zeek/run.sh` 全 `PASS`（`FAILS=0`）；两侧 `npx tsc --noEmit` 无输出。
+
+
+### 2026-10 MCP 质量收口：失效的校验 / 死输出 / 覆盖缺口 / 文件内容工具
+
+背景：对 MCP 做了专项 QA（工具面覆盖 + 空实现 + 死代码 + 逻辑）。19 个工具**没有一个是空壳函数**（两层都用 `TOOLS[name]["run"]` 分派表，逐个实现；签名与参数说明表 19/19 一致），但查出四类问题，已全部收口（工具 19 → 20）。
+
+- **“空校验”修复：ToolCtx 按令牌会话复用**（`mcp/server.py`）。原实现每次工具调用都 `es_tools.ToolCtx()` 新建上下文，于是三件事**静默失效**：① `raw_evidence` 的「不能凭空引用」白名单（`if ctx.valid_refs and ...` 永远空集）；② `RAW_EVIDENCE_MAX=20` 的条数上限（计数永远从 0 开始）；③ `describe_data` 的 `case` 块永远为 null（agent 侧已就在注释里说明"NDR 侧的 ToolCtx 是新建的空上下文"）。现改为按**令牌 id** 缓存（TTL 6h、最多 64 个会话、单会话最多 2 万条 ref 超出即清空），并在 `_run` 这个**唯一入口**统一登记本次结果里的 ref —— 这样 `fetch_window` 这类 native 工具带的 ref 也能被后续 `raw_evidence` 认。
+- **索引白名单**（`investigation/tools.py::_raw_evidence`）：ref 里的索引是调用方给的，叠加上述失效等于“MCP 令牌持有者可以读 ES 里任意索引的任意文档”。现只允许运行时 `es.events_index` 的索引族（`shentong-events-*`），其余直接报错。
+- **死输出清理**：`describe_data` 的 `case` 块与 NDR 侧 `ToolCtx.case` 字段删除（MCP 工具不收参数，永远拿不到案件；agent 侧本来就在自己拼 `case`）；`get_event` 的 `dispatch` 空壳块改成一句 `delivery_note`（NDR 从第 5 期起就不记投递指纹，返回一个只有 note 的"伪结构"只会误导模型），工具描述同步改成「取已有结论」。
+- **新工具 `file_content`**（提取件内容）：采集面批 4 的文件提取与下载入口只在 NDR Web API 上（要管理员 JWT），**智能体拿不到** —— 模型知道"有个文件"却看不到内容，采集做了、分析用不上。新工具按 fuid 取回**有界**内容（默认 64 KiB、硬上限 1 MiB，`encoding=text|base64`）与元数据，取数校验与前缀路径校验与下载路由**完全同源**（`is_valid_fuid` / `lookup_extract` / `resolve_extract_path` 经 `mcpapi` 转发）；完整文件仍走 `/api/files/{fuid}`（响应里回 `download` 路径）。
+- **智能体侧补上三个可调工具**（`agent/.../investigation/tools.py`）：`get_rule`（取规则原文——摘要只带规则名与严重度，模型无法回答"这条为什么被判可疑"）、`list_filters`（兑现「让智能体看到两道闸门、别把被过滤读成没异常」的文档承诺）、`file_content`。原 `get_event` / `record_conclusion` / `detector_status` / `baseline_lookup` 仍无模型可调入口（`fetch_window` / `list_networks` 由 agent 内部调用）。
+- **结论回写真正落地**（新增 `agent/.../investigation/ndr_writeback.py`）：NDR 后台「智能体对接 → 写回结论」面板与 `get_event` 读的是 NDR 结论表，而那张表**只有** MCP 的 `record_conclusion` 会写，智能体从不调它 ⇒ 面板永远为空、`ConclusionRecord` 全仓唯一写入方形同虚设。现改为在调查收尾（`service.investigate` 落库之后）**用确定性代码**按案件的事件组指纹逐条回写（每次最多 20 组，判定映射：failed→pending / 非 succeeded 或无攻击链或 contradiction→inconclusive / 有链且 confidence≥0.6→true_positive / 否则 suspicious），旁路失败不影响本轮结果。
+- **一致性小项**：字段目录补 `cert_self_signed`（bool）与 `log_type_known`（bool，模型可筛白名单外的流）；`describe_data` 的 `lookback_limit_days` 在 agent 侧改为**透传 NDR 的值**（原来被本地静态配置覆盖，而 NDR 那个是跟着运行时保留期走的）；技能 `tools` 字段的校验从「只认脚本工具注册表」改成「脚本工具 ∪ 调查工具」（原来声明 `search_events` 会被判"工具不存在"）；`mcp_client._fresh_session` 加**单飞锁**（并发首调会建两条会话并泄漏一条）；`ndr_tools.execute` 改名 `dispatch`、取数调度收归门面 `mcpapi.execute_es_tool` —— 前者是名字里带 execute 会被静态扫描当成动态执行端点（实际参数是工具名），后者让 MCP 侧只有一个取数调度点。
+
+**测试**：新增 `tests/py/test_mcp_coverage.py`（27 例，按栈分配）：注册表与调度表一一对应、签名与参数表不漂移、上下文按令牌复用且 ref 跨调用累积/有上限、`raw_evidence` 拒绝非事件索引、证据条数上限生效、`file_content` 的正/反例（含截断与 base64 回环）、智能体三个新工具的转发参数与必填校验、结论回写的判定矩阵/逐指纹写入/无指纹或无 MCP 时跳过/被拒时不抛、字段目录覆盖 `UnifiedLog`（防漂移）、技能工具名校验认两套注册表。
+
+**门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors`；`pytest tests/py --stack=ndr -q` **431 passed, 14 skipped**；`--stack=agent -q` **300 passed, 145 skipped**；`sh tests/zeek/run.sh` 全 `PASS`。
 
 
 ### 每期收尾门禁

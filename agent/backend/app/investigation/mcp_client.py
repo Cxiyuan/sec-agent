@@ -23,6 +23,9 @@ log = logging.getLogger(__name__)
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 _boot_lock = threading.Lock()
+#: 会话重建的**单飞**锁（跑在后台循环里）。没它的话，两个线程同时发现会话为空就会
+#: 各自建一条连接、`_stack` 被后建的覆盖，先建的那条泄漏（2026-10 MCP QA）。
+_session_lock: asyncio.Lock | None = None
 # 会话与它的 AsyncExitStack 只在后台循环里使用，别的线程不碰（Any 是为了不把 SDK 类型
 # 拖进类型检查——它在 1.x/2.x 之间改过名，标注具体类型只会让升级时到处报错）
 _session: Any = None
@@ -37,13 +40,15 @@ def enabled() -> bool:
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
-    global _loop, _thread
+    global _loop, _thread, _session_lock
     with _boot_lock:
         if _loop is None or _thread is None or not _thread.is_alive():
             loop = asyncio.new_event_loop()
             thread = threading.Thread(target=loop.run_forever, name="mcp-client", daemon=True)
             thread.start()
             _loop, _thread = loop, thread
+            # 3.10+ 的 asyncio.Lock 不在构造时绑定事件循环，可以在这里建
+            _session_lock = asyncio.Lock()
             log.debug("MCP 客户端后台事件循环已启动")
         return _loop
 
@@ -85,11 +90,18 @@ async def _reset() -> None:
 
 
 async def _fresh_session() -> Any:
-    """按当前配置拿到可用会话（地址或令牌变了就重建）。"""
-    if _session is None or _conn != (settings.mcp_url, settings.mcp_token):
-        await _reset()
-        await _connect()
-    return _session
+    """按当前配置拿到可用会话（地址或令牌变了就重建）。
+
+    **单飞**：并发调用只会建一条连接，建成后才轮到后来者取用。
+    """
+    if _session is not None and _conn == (settings.mcp_url, settings.mcp_token):
+        return _session
+    lock = _session_lock or asyncio.Lock()
+    async with lock:
+        if _session is None or _conn != (settings.mcp_url, settings.mcp_token):
+            await _reset()
+            await _connect()
+        return _session
 
 
 def _decode(result: Any) -> dict[str, Any]:

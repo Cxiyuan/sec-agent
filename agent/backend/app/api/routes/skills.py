@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.base import get_db
 from app.db.models import Skill, User
+from app.investigation.tools import tool_names as investigation_tool_names
 from app.tools import TOOLS, tool_names
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -39,7 +40,10 @@ def _validate(body: SkillIn) -> list[dict[str, str]]:
         )
     if not body.sop.strip():
         errors.append({"field": "sop", "msg": "SOP 正文不能为空"})
-    known = set(tool_names())
+    # 两套注册表都要认：`app.tools`（确定性脚本工具）与 `app.investigation.tools`
+    # （调查工具：search_events / get_rule / list_filters / file_content…）。
+    # 只校验前者会把合法声明判成「工具不存在」（2026-10 MCP QA）。
+    known = set(tool_names()) | set(investigation_tool_names())
     for t in body.tools:
         if t not in known:
             errors.append({"field": "tools", "msg": f"工具 {t} 不存在"})

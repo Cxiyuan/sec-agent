@@ -9,6 +9,7 @@ MCP 层拿到结果后统一转成 JSON 文本给模型。
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,9 +28,12 @@ from app.mcpapi import (
     es_client,
     es_config,
     in_scope,
+    is_valid_fuid,
     list_profiles,
+    lookup_extract,
     monitored_nets,
     networks_status,
+    resolve_extract_path,
     session_factory,
     stats_lookup,
     top_anomalies,
@@ -70,7 +74,7 @@ def _llen(client: Any, key: str) -> int:
 
 
 def _get_event(args: dict[str, Any]) -> dict[str, Any]:
-    """按事件ID 或指纹取「这条事件被投递过什么、后来得出了什么结论」。"""
+    """按事件ID 或指纹取「这条事件已经有哪些结论」。"""
     event_id = str(args.get("event_id") or "").strip()[:64]
     fingerprint = str(args.get("fingerprint") or "").strip()[:64]
     if not event_id and not fingerprint:
@@ -118,16 +122,16 @@ def _get_event(args: dict[str, Any]) -> dict[str, Any]:
         ]
 
         if fingerprint:
-            # 第 5 期起判重下放到智能体（按事件组指纹），NDR 侧不再记录投递指纹；
-            # 这里只说明「投递状态要去智能体那边看」，不再假装有本侧记录。
-            out["dispatch"] = {
-                "fingerprint": fingerprint,
-                "note": "NDR 侧已不记录投递指纹（判重在智能体侧按事件组指纹做）；"
-                "投递/分析状态请看智能体的分析记录与结论。",
-            }
+            # 第 5 期起判重下放到智能体（按事件组指纹），NDR 侧**不再记录投递指纹**，
+            # 所以这里没有"被投递过什么"可返回。以前它返回一个只有 note 的 dispatch 块，
+            # 看着像有数据实则恒空（2026-10 MCP QA）：改为一句顶层说明，不再放假结构。
+            out["delivery_note"] = (
+                "NDR 侧不记录投递指纹（判重在智能体侧按事件组指纹做）；"
+                "投递/分析状态请看智能体的分析记录。本工具只回结论。"
+            )
 
-    if not out["conclusions"] and "dispatch" not in out:
-        out["note"] = "没有这条事件的投递记录与结论：ID 可能不对，或已过保留期被清掉了。"
+    if not out["conclusions"]:
+        out["note"] = "没有这条事件的结论：ID 可能不对，或结论已过保留期被清掉。"
     return out
 
 
@@ -648,6 +652,10 @@ def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
 
 BASELINE_MAX = 200
 PROFILE_MAX = 50
+# 提取件内容：默认回 64 KiB、硬上限 1 MiB（回的是文本，必须封顶，
+# 否则一份大文件就能把模型上下文吃光）。要完整文件用 Web 下载入口。
+FILE_DEFAULT_BYTES = 65536
+FILE_MAX_BYTES = 1048576
 _FEATURE_EXAMPLE = "conn_count"
 
 
@@ -704,12 +712,82 @@ def _entity_profile(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# ---------- file_content（提取件内容，采集面批 4） ----------
+
+
+def _file_content(args: dict[str, Any]) -> dict[str, Any]:
+    """取提取件的内容（有界）或元数据。
+
+    为什么需要它：文件提取与下载通道只在 NDR 的 Web API 上（要管理员 JWT），智能体拿不到，
+    于是「模型知道有个文件、却看不到文件内容」——采集面做了提取、分析面用不上（2026-10 MCP QA）。
+    这里用与下载路由**完全相同**的校验（fuid 格式 + `lookup_extract` + `resolve_extract_path`），
+    只把不可变的字节按有界长度回给模型。
+    """
+    fuid = str(args.get("fuid") or "").strip()
+    if not is_valid_fuid(fuid):
+        return {"error": "fuid 格式不合法（形如 Fx8HnP1AbCdEfGhIjK，8~64 位 URL 安全字符）"}
+    encoding = str(args.get("encoding") or "base64").strip().lower()
+    if encoding not in ("text", "base64"):
+        return {"error": "encoding 只能是 text 或 base64"}
+    try:
+        want = int(args.get("max_bytes") or FILE_DEFAULT_BYTES)
+    except (TypeError, ValueError):
+        want = FILE_DEFAULT_BYTES
+    want = max(1, min(want, FILE_MAX_BYTES))
+
+    try:
+        doc = lookup_extract(fuid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"查事件库失败：{exc}"}
+    if not doc:
+        return {
+            "error": f"没有 fuid={fuid} 的提取件（来源不是 HTTP/FTP 明文，或未开启提取、已被清理）"
+        }
+    path = resolve_extract_path(str(doc.get("extracted") or ""))
+    if path is None:
+        return {"error": "提取件字段未通过路径校验（拒绝读取）"}
+    try:
+        if not path.is_file():
+            return {"error": "提取件已被清理（非白名单类型或超出容量上限，见 zeek/extract_cleanup.py）"}
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            blob = fh.read(want)
+    except OSError as exc:
+        return {"error": f"读取提取件失败：{exc}"}
+
+    out: dict[str, Any] = {
+        "fuid": fuid,
+        "filename": str(doc.get("filename") or ""),
+        "mime_type": str(doc.get("mime_type") or ""),
+        "size_on_disk": size,
+        "es_extracted_size": doc.get("extracted_size"),
+        "es_extracted_cutoff": bool(doc.get("extracted_cutoff")),
+        "read_bytes": len(blob),
+        "truncated": size > len(blob),
+        "max_bytes": want,
+        # 二进制本体不可能全塞进模型上下文：要完整文件得走这个下载入口（需 NDR 登录）
+        "download": f"/api/files/{fuid}",
+    }
+    if encoding == "text":
+        out["encoding"] = "text"
+        out["content"] = blob.decode("utf-8", errors="replace")
+    else:
+        out["encoding"] = "base64"
+        out["content_base64"] = base64.b64encode(blob).decode("ascii")
+    if out["truncated"]:
+        out["note"] = (
+            f"只读了前 {len(blob)} 字节（文件共 {size} 字节）；需要更多请调大 max_bytes"
+            f"（上限 {FILE_MAX_BYTES}），或走 download 取完整文件。"
+        )
+    return out
+
+
 # ---------- 注册表 ----------
 
 TOOLS: dict[str, dict[str, Any]] = {
     "get_event": {
         "run": _get_event,
-        "desc": "按事件ID/指纹取这条事件被投递过什么、已有哪些结论（推送载荷里带着这两个 ID）",
+        "desc": "按事件ID/指纹取这条事件已有的结论（推送载荷里带着这两个 ID）",
         "params": {"event_id": "事件ID", "fingerprint": "指纹（二者至少给一个）"},
     },
     "get_rule": {
@@ -782,6 +860,18 @@ TOOLS: dict[str, dict[str, Any]] = {
             "limit": f"最多返回条数（默认 20，上限 {PROFILE_MAX}）",
         },
     },
+    "file_content": {
+        "run": _file_content,
+        "desc": (
+            "取提取件（Zeek 落盘的明文文件）的**内容或元数据**：按 fuid 取回有界字节；"
+            "文本用 encoding=text、二进制用 base64；只要元数据（大小/类型/是否被截断）就调小 max_bytes=1"
+        ),
+        "params": {
+            "fuid": "文件 id（事件里的 extracted/fuid 字段）",
+            "encoding": "text 或 base64（默认 base64）",
+            "max_bytes": f"最多读多少字节（默认 {FILE_DEFAULT_BYTES}，上限 {FILE_MAX_BYTES}）",
+        },
+    },
 }
 
 
@@ -789,8 +879,12 @@ def tool_names() -> list[str]:
     return sorted(TOOLS)
 
 
-def execute(name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """执行工具；错误一律转成结构化结果（模型自我纠正，不炸掉整次调用）。"""
+def dispatch(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    """按工具名分派到对应实现；错误一律转成结构化结果（模型自我纠正，不炸掉整次调用）。
+
+    叫 `dispatch` 而不是 `execute`：它分派的是调查工具，与任何 SQL/子进程端点无关；
+    名字里带 execute 还会被静态扫描当成动态执行端点（实际参数是工具名）。
+    """
     spec = TOOLS.get(name)
     if spec is None:
         return {"error": f"未知工具 {name}。可用工具：{', '.join(tool_names())}"}

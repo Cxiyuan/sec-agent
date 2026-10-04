@@ -26,15 +26,53 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 from app.mcp import auth as token_auth, calls, ndr_tools
-from app.mcpapi import es_tools, get_logger
+from app.mcpapi import es_tools, execute_es_tool, get_logger
 
 log = get_logger(__name__)
 
-# 当前请求用的是哪个令牌（中间件写入，调用记录读取）。用 ContextVar 而不是传参：
-# MCP 的调用链在 SDK 内部，没有地方能一路把身份带下去。
+# 当前请求用的是哪个令牌（中间件写入，调用记录读它；工具上下文按 id 分会话）。
+# 用 ContextVar 而不是传参：MCP 的调用链在 SDK 内部，没有地方能一路把身份带下去。
 _current_token: ContextVar[str] = ContextVar("mcp_token_name", default="?")
+_current_token_id: ContextVar[str] = ContextVar("mcp_token_id", default="")
 
 _HTTP_UNAUTHORIZED = 401
+
+# ---------- 工具上下文（按令牌会话复用） ----------
+#
+# 为什么必须复用：`ToolCtx.valid_refs`（「不能凭空引用证据」的白名单）与
+# `ToolCtx.raw_evidence`（原始证据 20 条上限）都是 **跨调用累积** 才有意义的。
+# 原实现每次工具调用都 `es_tools.ToolCtx()` 新建，于是：
+#   - ref 白名单校验的 `if ctx.valid_refs and ...` 永远是空集 → 校验失效；
+#   - 证据条数从 0 开始 → 上限永不生效；
+#   - `describe_data` 的 case 字段永远是 null（后来直接删了那个死字段）。
+# （2026-10 MCP QA）这里按令牌 id 缓存，带 TTL 与数量上限，避免无界增长。
+_CTX_TTL_SECONDS = 6 * 3600.0
+_CTX_MAX_SESSIONS = 64
+#: 单个会话最多记多少条 ref；超出就清空重来（宁可让模型重查，也不无界吃内存）
+_CTX_MAX_REFS = 20000
+_ctx_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _ctx_for(token_id: str) -> Any:
+    """取该令牌的工具上下文（同一个令牌的多次调用共享 refs / 证据计数）。"""
+    now = time.time()
+    for stale in [k for k, (ts, _) in _ctx_cache.items() if now - ts > _CTX_TTL_SECONDS]:
+        _ctx_cache.pop(stale, None)
+    entry = _ctx_cache.get(token_id)
+    if entry is not None:
+        _ctx_cache[token_id] = (now, entry[1])
+        return entry[1]
+    if len(_ctx_cache) >= _CTX_MAX_SESSIONS:
+        oldest = min(_ctx_cache, key=lambda k: _ctx_cache[k][0])
+        _ctx_cache.pop(oldest, None)
+    ctx = es_tools.ToolCtx()
+    _ctx_cache[token_id] = (now, ctx)
+    return ctx
+
+
+def _reset_ctx_cache() -> None:
+    """清空会话上下文（测试用）。"""
+    _ctx_cache.clear()
 
 
 def _clean(**kwargs: Any) -> dict[str, Any]:
@@ -49,10 +87,18 @@ def _clean(**kwargs: Any) -> dict[str, Any]:
 def _run(name: str, args: dict[str, Any], *, native: bool = False) -> str:
     """执行一个工具，记一笔调用，回 JSON 文本（模型只吃文本）。"""
     started = time.perf_counter()
+    # 上下文按令牌会话复用，见 `_ctx_for` 的说明（ref 白名单与证据上限靠它才生效）
+    ctx = _ctx_for(_current_token_id.get() or "anonymous")
     if native:
-        result = ndr_tools.execute(name, args)
+        result = ndr_tools.dispatch(name, args)
     else:
-        result = es_tools.execute(name, args, es_tools.ToolCtx())
+        result = execute_es_tool(name, args, ctx)
+    # 在**唯一入口**登记本次结果里的证据引用：`fetch_window` 这类 native 工具同样会带
+    # `ref`，不在这里登记的话，随后的 raw_evidence 会把它们当成「凭空引用」拒掉。
+    # （取数层工具内部也会登记一次 —— set 幂等，保留是为了它们能脱离 MCP 层直接单测。）
+    ctx.register_refs(result)
+    if len(ctx.valid_refs) > _CTX_MAX_REFS:
+        ctx.valid_refs.clear()
     elapsed = int((time.perf_counter() - started) * 1000)
     calls.record(
         tool=name,
@@ -290,6 +336,15 @@ def entity_profile(
     )
 
 
+def file_content(fuid: str = "", encoding: str = "", max_bytes: int = 0) -> str:
+    """取提取件（Zeek 落盘的明文文件）的内容或元数据（有界）。"""
+    return _run(
+        "file_content",
+        _clean(fuid=fuid, encoding=encoding, max_bytes=max_bytes),
+        native=True,
+    )
+
+
 _ES_TOOL_FUNCS = (
     describe_data,
     search_events,
@@ -312,6 +367,7 @@ _NDR_TOOL_FUNCS = (
     record_conclusion,
     baseline_lookup,
     entity_profile,
+    file_content,
 )
 
 
@@ -326,9 +382,10 @@ def build_server() -> MCPServer:
             "先调 describe_data 拿字段清单与真实时间范围，再按需 search_events /"
             " aggregate_events / timeline / net_flows / dns_queries / tls_fingerprints /"
             " web_requests / file_hashes 取证，raw_evidence 取原始文档。\n"
-            "事件ID 与指纹来自推送载荷，可用 get_event 回查投递记录与已有结论；"
+            "事件ID 与指纹来自推送载荷，可用 get_event 回查已有结论；"
             "get_rule 取规则原文；detector_status / list_networks / list_filters 看 NDR 现状；"
-            "要整批拉一段时间窗的条目自己筛（回溯）用 fetch_window。\n"
+            "要整批拉一段时间窗的条目自己筛（回溯）用 fetch_window；"
+            "事件里有 extracted/fuid 字段时用 file_content 取提取件内容（有界）。\n"
             "除 record_conclusion（写回结论）外全部只读，不提供任何管理动作。"
         ),
         version="0.1.0",
@@ -382,9 +439,11 @@ class BearerAuth:
             return
 
         reset = _current_token.set(info.name or info.prefix or "?")
+        reset_id = _current_token_id.set(info.id)
         try:
             await self.app(scope, receive, send)
         finally:
+            _current_token_id.reset(reset_id)
             _current_token.reset(reset)
 
 

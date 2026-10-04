@@ -57,6 +57,11 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "日志类型：Zeek 的 conn/http/dns/ssl/files/ssh/smtp/notice/dhcp；Wazuh 固定 wazuh",
     },
+    "log_type_known": {
+        "path": "log_type_known",
+        "kind": "bool",
+        "desc": "该类型是否在采集白名单内：false = 白名单外的流，只入 ES、不进检测与画像",
+    },
     "src_ip": {"path": "src_ip", "kind": "ip", "desc": "源地址"},
     "dst_ip": {"path": "dst_ip", "kind": "ip", "desc": "目的地址"},
     "src_port": {"path": "src_port", "kind": "num", "desc": "源端口"},
@@ -170,6 +175,11 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "tls_version": {"path": "tls_version", "kind": "keyword", "desc": "TLS 版本"},
     "cert_issuer": {"path": "cert_issuer", "kind": "text", "desc": "证书签发者"},
+    "cert_self_signed": {
+        "path": "cert_self_signed",
+        "kind": "bool",
+        "desc": "自签证书（归一化层比较 certificate.subject == certificate.issuer；引擎无法比字段，只能在这里算）",
+    },
     # ---------- DNS ----------
     # 存的是 Zeek dns.log 的原始数字码，不是类型名（实机聚合出来的就是 1/28/16/32）。
     # 别按“值是 A/AAAA/TXT”去写过滤条件——那样永远查不到。

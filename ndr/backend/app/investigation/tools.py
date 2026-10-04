@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.ingestion.es_config import current as es_config_current
 from app.investigation import catalog, es_query
 from app.workers.log import get_logger
 
@@ -34,13 +35,12 @@ RAW_EVIDENCE_MAX = 20
 class ToolCtx:
     """一次调查的运行时上下文（工具共享）。
 
-    只留**真的被读**的字段：``case``（describe_data 带上案件上下文）、``raw_evidence``
-    与 ``valid_refs``（原始证据与引用核对）。NDR 侧没有 agent 侧的
-    ``record_finding`` / ``note_gap``（那是智能体自己的调查流程），所以
-    ``scope_cidrs`` / ``findings`` / ``gaps`` / ``notes`` 在这里没有任何读写者，已删。
+    只留**真的被读**的字段：``raw_evidence``（已取回的证据）与 ``valid_refs``
+    （引用白名单）。NDR 侧没有 agent 侧的 ``record_finding`` / ``note_gap``
+    （那是智能体自己的调查流程）；原来的 ``case`` 字段在 MCP 层永远是空的
+    （``describe_data`` 不接受参数、拿不到案件），属于死字段，已删（2026-10 MCP QA）。
     """
 
-    case: dict[str, Any] = field(default_factory=dict)
     raw_evidence: list[dict[str, Any]] = field(default_factory=list)
     valid_refs: set[str] = field(default_factory=set)
 
@@ -238,16 +238,6 @@ def _describe_data(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
         )
     return {
         "sources": sources,
-        "case": {
-            "attacker_key": ctx.case.get("attacker_key"),
-            "keys": ctx.case.get("keys"),
-            "src_ips": ctx.case.get("src_ips"),
-            "dst_ips": ctx.case.get("dst_ips"),
-            "severity": ctx.case.get("severity"),
-            "first_seen": ctx.case.get("first_seen"),
-            "last_seen": ctx.case.get("last_seen"),
-            "group_count": ctx.case.get("group_count"),
-        },
         "lookback_limit_days": es_query.max_lookback_days(),
         "hint": "时间参数用 ISO 格式；字段用 fields 里的统一字段名；未知字段会被拒绝并回传可用清单。",
     }
@@ -495,6 +485,13 @@ def _raw_evidence(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     index, _, doc_id = index_and_id.partition("/")
     if not index or not doc_id:
         raise ValueError("es: 引用格式应为 es:<索引>/<文档id>")
+    # 索引白名单：ref 里的索引是**调用方给的**，不校验等于让 MCP 令牌持有者读 ES 里
+    # 任意索引的任意文档（只允许事件索引族）。旧实现靠 ctx.valid_refs 挡，而那个校验
+    # 在 MCP 层每调用新建 ToolCtx 时是失效的（2026-10 MCP QA）。
+    pattern = str(es_config_current().get("es.events_index") or "")
+    prefix = pattern.split("*")[0] or "shentong-events-"
+    if not index.startswith(prefix):
+        raise ValueError(f"只允许读取事件索引族的文档（{prefix}*），收到：{index}")
     try:
         resp = es_query._es().get(index=index, id=doc_id, request_timeout=es_query.query_timeout())
     except Exception as exc:

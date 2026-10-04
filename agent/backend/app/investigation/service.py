@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from app.config import settings
 from app.investigation import cases, export, planner, schema
+from app.investigation.ndr_writeback import record_conclusion
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -69,6 +70,10 @@ def investigate(case_id: str, *, kind: RoundKind = "auto", instruction: str = ""
             error=budget.stop_reason if status != "succeeded" else "",
         )
         cases.apply_result(case_id, payload, status=status)
+        # 结论回写 NDR：NDR 后台「写回结论」面板与 get_event 读的是 NDR 库里的结论表，
+        # 而那张表只有 MCP 的 record_conclusion 会写。用确定性代码做，
+        # 别指望模型自己记得调（2026-10 MCP QA）。旁路：失败不影响本轮结果。
+        record_conclusion(case, payload, status)
         _publish(case_id, payload, status=status)
         report = None
         if payload.get("path"):
