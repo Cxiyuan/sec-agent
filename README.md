@@ -235,17 +235,22 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     `retry_dropped`（重发队列有 2000 条上限、单批最多试 5 次），处理异常看 `/api/detector/stats`
     的 `queue_failed`（隔离队列 `shentong:detector:failed`），归一化坏消息在 Redis
     `shentong:events:dead`（上限 1 万条）与 `shentong:collector:stats` 的累计计数里，
-    采集队列被裁剪时也记计数
+    采集队列被裁剪时也记计数。**Filebeat 的 `ndjson` 解析失败不再产生空壳文档**：能在顶层
+    `message` 里拼回完整 JSON 的照常入库，拼不回的一律进死信（以前会落成只有时间戳与
+    `log_type`、其余全空的文档，看着像"采集正常"）
 12. **专门核对 Zeek 的日志生成与协议解析**（真实网卡上线后必做一遍）：实际产出了哪些
     `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
     `log_type`/`event_type` 与内置规则的命中情况；反向代理场景的原始客户端 IP 走 `http.log` 的
     `proxied` → 归一化字段 `real_client_ip`（无代理头时为 NULL，`src_ip` 仍是 TCP 对端），
+    **只有直连对端落在 `ST_ZEEK_TRUSTED_PROXIES` 里才认这些头**（留空 = 一律不认，防伪造；
+    `X-Real-IP` 已并入 Zeek 的采集清单，四层代理的 PROXY protocol 见 `ndr/zeek/README.md`），
     响应体也采集（`resp_body` + `resp_body_len`，后者是整条响应体的字节数）。逐条清单见
     [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」。
     **轮转与清理口径**：轮转文件名带时分秒（`conn.2026-10-01-08-00-00.log`），同一天多次重启
     不再互相覆盖；清理按 `mtime` 保留 **3 天**（分钟级判定），且 **Filebeat 没在运行时跳过删除**
-    （先确保发运，再清归档）。zeek 容器现在有 `HEALTHCHECK`（只上报不重启，不和入口脚本的
-    自愈循环打架），底部状态：`docker inspect --format '{{.State.Health.Status}}' <zeek 容器>`
+    （先确保发运，再清归档；实测探针见 `ndr/zeek/README.md` 第 2 行）。zeek 容器现在有
+    `HEALTHCHECK`（只上报不重启，不和入口脚本的自愈循环打架），底部状态：
+    `docker inspect --format '{{.State.Health.Status}}' <zeek 容器>`
 13. （NDR 线路）**确认 ES 集群健康是 green**：事件索引模板在后端启动时自动下发，副本按
     `auto_expand_replicas: "0-1"`（单节点 = 0 副本，所以不会出现「副本分配不出去」的常驻 yellow）。
     后端比 ES 先起来也不会漏：后台线程前 2 分钟每 5 秒重试、之后每 5 分钟复查一次（幂等），
@@ -341,6 +346,7 @@ NDR 线路（采集与检测）：
 | `ST_ZEEK_INTERFACE` | ens224 | Zeek 抓包网卡的兜底名（界面「Zeek 抓包」保存的值优先） |
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「Zeek 抓包」写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
+| `ST_ZEEK_TRUSTED_PROXIES` | 空 | **可信代理白名单**（逗号分隔的 IP/CIDR）：只有直连对端在清单里，才承认 `X-Forwarded-For` / `X-Real-IP` 里的客户端地址（`real_client_ip`）；**留空 = 不认任何代理头**（fail-closed）。安全锚点，只从部署环境给（`.env` 的 `ZEEK_TRUSTED_PROXIES`），界面无入口 |
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
 | `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `WAZUH_API_*` 传入 |
 | `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |

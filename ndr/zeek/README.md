@@ -206,8 +206,14 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
   `HTTP::Info$proxied`（默认清单：`X-Forwarded-For` / `X-Forwarded-From` / `Forwarded` / `Client-IP` /
   `Via` / `Xroxy-Connection` / `Proxy-Connection`），值形如
   `"X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"`；本项目 normalizer 已把它解析成归一化
-  字段 `real_client_ip`（没有代理头时是 NULL，`src_ip` 仍是 TCP 对端）。注意转发头是客户端自报、
-  **可伪造**，拿它做封禁/画像必须配可信代理白名单（本项目尚未做，`real_client_ip` 只代表「头里写了什么」）。
+  字段 `real_client_ip`（没有代理头时是 NULL，`src_ip` 仍是 TCP 对端）。转发头是客户端自报、
+  **可伪造**，所以 2026-10-04 起加了**可信代理白名单**（`ST_ZEEK_TRUSTED_PROXIES`，逗号分隔的
+  IP/CIDR）：**只有直连对端（TCP 源地址）落在清单里才认这些头，否则 `real_client_ip` 一律 NULL**
+  并限量告警；清单留空 = 谁都不信（fail-closed，默认如此）。同时由 `site/shentong-httpheaders.zeek`
+  的 `redef HTTP::proxy_headers += { "X-REAL-IP" };` 把 `X-Real-IP` 补进 Zeek 的采集清单
+  （成员**必须全大写**：HTTP 分析器把请求头名统一转大写后才与清单比对）。**四层代理（只转发 TCP、
+  不写 HTTP 头）依然拿不到原始客户端 IP**：Zeek 9.0 没有 PROXY protocol 分析器（镜像内 `zeek -NN`
+  无该条目），要支持只能在外层终结 PROXY protocol 或回查 NAT/防火墙日志，本项目不做。
   其余头现在由自写的 `site/shentong-httpheaders.zeek` 落成 `req_headers` / `resp_headers` 两列
   （逐行 `Name: value`，**单头截 256 字符、同方向累计封顶 4KB**；值里含任意控制字符 —— 包括
   `\r`/`\n` 换行注入 —— 整体记成 `<binary>`），另有 `policy/protocols/http/header-names.zeek`
@@ -243,14 +249,14 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 | # | 检查项 | 怎么核 | 期望 |
 |---|---|---|---|
 | 1 | 实际产出了哪些日志 | `docker exec <zeek> ls -la /logs` | 至少 `conn.log` / `http.log` / `dns.log` / `ssl.log`；有对应流量时出现 `files.log` / `smtp.log` / `ssh.log` / `dhcp.log` / `notice.log` |
-| 2 | 轮转与保留 | `ls /logs` 顶层活动日志与轮转归档 | 每 24h **同目录平铺改名**（`conn.log` → `conn.2026-10-02-09-30-15.log`，实机核对：**不是日期子目录**；时间戳带时分秒，防同日重启覆盖）；超过 N 天（默认 3）的归档被入口清理循环删掉，**Filebeat 不在运行时这一轮不删**（活动日志不动） |
+| 2 | 轮转与保留 | `ls /logs` 顶层活动日志与轮转归档 | 每 24h **同目录平铺改名**（`conn.log` → `conn.2026-10-02-09-30-15.log`，实机核对：**不是日期子目录**；时间戳带时分秒，防同日重启覆盖）；超过 N 天（默认 3）的归档被入口清理循环删掉，**Filebeat 不在运行时这一轮不删**（活动日志不动）。**2026-10-04 实测（在跑的生产容器上，未重启）**：放一个 mtime 4 天前、轮转命名、位于两层子目录的探针 `cleanup_probe/deep/conn.2026-09-29-00-00-00.log` → 到点的清理轮把它删掉（观察任务在 `18:57Z` 命中），同一时刻活动 `conn.log` 仍在增长、Filebeat 存活 ⇒ 「保留 3 天」端到端成立（判定轮次 = 容器启动时刻 +N×3600s，`cleanup_once` 成功路径不打日志） |
 | 3 | 字段是否齐全 | 看一条 `http.log` / `dns.log` / `ssl.log` / `files.log` | http 有 `method`/`host`/`uri`/`user_agent`/`status_code`（**批 3 起还有 `req_headers`/`resp_headers` 全量头值与 `client_header_names`/`server_header_names`**）；ssl 有 `server_name`/`cipher`/`version`（**批 2 起还有 `ja3`/`ja3s`/`ja4`**，见「已知限制」）；files 有 `md5`/`sha1`/`sha256`（`source`/`is_orig` 表明方向）；**批 4 起 files 还会出现 `extracted`/`extracted_size`/`extracted_cutoff`（该文件已落盘到 `/extract/<fuid>`，`extracted` 的值就是 fuid）**；`site/shentong-extra.zeek` 加载的分析器都生效；经过代理的请求 `http.log` 的 `proxied` 会有值 |
 | 4 | 自研 HTTP 体采集 | 看 POST 请求的 `http.log` 是否有 `body`（请求体）与 `resp_body`（响应体） | 两者都有（**批 3 起上限默认 16KB/64KB 且可在界面改**，见「已知限制」；二进制块跳过、UTF-8 放行）；GET/HEAD 无 `body` 但有 `resp_body`；**响应体完整字节数看 Zeek 自带的 `response_body_len`**（不受截断影响，落库为 `resp_body_len`） |
 | 5 | 网段只放行该抓的 | `zeek` 启动命令的 BPF（`docker exec <zeek> ps -o args= -C zeek`） | 与界面「监控网段」一致（`bpf_filter` 由网段自动生成，命令里应出现 `-f net …`；`-f` 缺失会被 Zeek 当脚本名，启动即 fatal）；**未配网段时全量抓包** |
 | 6 | 是否重复告警 | 看 `notice.log` 有无内容 | **不产检测类 notice**：不加载 `policy/protocols/*` 的检测脚本（只加载 json-logs 与 `shentong-policies.zeek` 里的 ssl-log-ext / hash-all-files / stats / header-names / var-extraction-cookies），且 `shentong-policies.zeek` 显式 `Log::disable_stream(Notice::LOG)` —— 检测全由内置规则做 |
 | 7 | 归一化后的类型 | `GET /api/events` 或看运行状态/事件页 | `log_type` 分桶正确（`conn`/`http`/`dns`/`ssl`/`files`/…），`event_type` 细分正确（`http_login`/`http_upload`/`http_error`/`http_request`） |
 | 8 | 内置规则是否吃到字段 | 看规则命中与 `raw_evidence` | body/uri/query/user_agent 等字段真的进了检测（82 条内置规则里 47 处用到这些字段） |
-| 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）。**未做**：可信代理白名单（头可伪造）、`X-Real-IP`（不在 Zeek 默认清单）、四层代理（只转发 TCP 不写头）只能靠 PROXY protocol 或回查 NAT/防火墙日志 |
+| 9 | **反向代理的原始客户端 IP** | 经过 nginx/HAProxy/CDN 的请求，看 `http.log` 的 `proxied` 与归一化后的 `real_client_ip` | **已支持（2026-10-04 收口）**：Zeek 采代理头进 `proxied`，normalizer 解析最左合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是代理 IP）；**可信代理白名单已做**（`ST_ZEEK_TRUSTED_PROXIES`，只认直连对端在清单内的请求，留空即一律不认，fail-closed）；**`X-Real-IP` 已补进 Zeek 采集清单**（`site/shentong-httpheaders.zeek` 里 `redef HTTP::proxy_headers += { "X-REAL-IP" };`）。**仍不做**：四层代理（只转发 TCP 不写头）只能靠 PROXY protocol，而 Zeek 9.0 无该分析器（镜像内 `zeek -NN` 无条目）——要支持得在外层终结 PROXY protocol 或回查 NAT/防火墙日志 |
 
 | 10 | **文件提取（批 4）** | 经 HTTP 传一个白名单文件，看 `docker exec <zeek> ls -l /extract`、`files.log` 的 `extracted`/`extracted_size` 与 `GET /api/files/<fuid>` | `/extract/<fuid>` 存在且字节数与 `files.log` 的 `total_bytes` 一致（`extracted` 的值就是 fuid；**完整件的 `extracted_size` 是 NULL**）；传图片等白名单外类型 → 5 分钟内被清理助手删掉（files.log 记录仍在），下载返回 404；**只覆盖 HTTP/FTP 明文**，TLS 里的文件不会出现；超 16 MiB 的文件被截断（`extracted_cutoff=true`、`extracted_size`=上限）且响应带 `X-Extract-Cutoff: 1` |
 
@@ -303,8 +309,17 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
   跨 `conn`/`http`/`files`/`x509`/`stats`/`weird` 多种日志、时间跨批 3 部署前后，**多落在 Zeek 重启/日志轮转
   前后约半分钟内**（看门狗 07:44:47 重载后 9s 与 33s 各一次），疑为轮转窗口读到非行首片段；
   `filebeat.yml` 的 `add_error_key: true` 留下了 `raw.error`。批 3 的两条探针恰好落进这个窗口没进 ES，
-  改在静默窗口重发即正常入库（上面证据即重发所得）。**未改 Filebeat 配置**（避免动已工作的采集链路），
-  列为后续调查项。
+  改在静默窗口重发即正常入库（上面证据即重发所得）。**未改 Filebeat 配置**（避免动已工作的采集链路）。
+- **已修（2026-10-04，收口在 normalizer，仍未动 Filebeat）**：在真实容器上用探针复现了解析失败事件的
+  形态（停 normalizer → 写一行半行 `h{"ts":…}` 与一行裸数字 `17` → 直接读采集队列）：失败事件**解析出来的
+  字段一个都没有**，错误挂在 `zeek.error`（半行那条是 `{"type":"json","message":"Error decoding JSON:
+  invalid character 'h' looking for beginning of value"}`，裸数字那条是
+  `json: cannot unmarshal number into Go value of type map[string]interface {}`），而**原始那一行原样留在
+  顶层 `message`**。据此 normalizer 现在先看这个标记：能从 `message` 里再 `json.loads` 出对象的照常入库，
+  拼不回的**返回 None 进死信**（`normalize_failed` 桶、限量告警 `_MAX_FILEBEAT_PARSE_WARNINGS=5`），
+  **不再落成只有时间戳与 `log_type` 的空壳文档**；Zeek 与 Wazuh 两条来源都过同一道闸。探针取证时 6 秒内
+  采集队列从 0 涨到 **757**（≈126 事件/秒，链路本身健康），探针条目已用 Lua 精确摘除、未污染数据。
+  测试：`tests/py/test_filebeat_decode.py`（6 例，两侧都跑）。
 
 **批 4 实机复验（2026-10-02，镜像 `shentong-zeek` `716005bbe598` → `latest` 修复版；后端 `sha256:9adedfe6053d`）**
 
