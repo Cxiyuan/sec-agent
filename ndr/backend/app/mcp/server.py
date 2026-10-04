@@ -25,9 +25,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
-from app.investigation import tools as es_tools
 from app.mcp import auth as token_auth, calls, ndr_tools
-from app.workers.log import get_logger
+from app.mcpapi import es_tools, get_logger
 
 log = get_logger(__name__)
 

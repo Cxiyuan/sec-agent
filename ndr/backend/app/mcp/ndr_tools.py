@@ -16,10 +16,24 @@ import redis
 from sqlalchemy import select
 
 from app.config import settings
-from app.db.base import SessionLocal
-from app.db.models import ConclusionRecord, ExclusionFilter, IngestFilter, Rule
-from app.ingestion.es_client import build_networks, in_scope
-from app.ingestion.scope import monitored_nets, networks_status
+from app.mcpapi import (
+    ConclusionRecord,
+    ExclusionFilter,
+    IngestFilter,
+    Rule,
+    build_networks,
+    catalog,
+    detector_health,
+    es_client,
+    es_config,
+    in_scope,
+    list_profiles,
+    monitored_nets,
+    networks_status,
+    session_factory,
+    stats_lookup,
+    top_anomalies,
+)
 
 
 def _client() -> Any:
@@ -63,7 +77,7 @@ def _get_event(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "event_id 与 fingerprint 至少给一个（推送载荷里都带着）"}
 
     out: dict[str, Any] = {"event_id": event_id, "fingerprint": fingerprint}
-    with SessionLocal() as db:
+    with session_factory() as db:
         rows: list[ConclusionRecord] = []
         if fingerprint:
             rows = list(
@@ -126,7 +140,7 @@ def _get_rule(args: dict[str, Any]) -> dict[str, Any]:
     rule_id = str(args.get("rule_id") or "").strip()[:64]
     if not name and not rule_id:
         return {"error": "name 与 rule_id 至少给一个"}
-    with SessionLocal() as db:
+    with session_factory() as db:
         row = None
         if rule_id:
             row = db.get(Rule, rule_id)
@@ -214,9 +228,7 @@ def _detector_status(args: dict[str, Any]) -> dict[str, Any]:
 
     # Redis 内存：NDR 历史上被队列打满过一次，这个数字要能直接看到
     try:
-        from app.detector import health
-
-        status["redis_memory"] = health.redis_memory(client)
+        status["redis_memory"] = detector_health(client)
     except Exception as exc:  # noqa: BLE001
         status["redis_memory"] = {"error": str(exc)}
 
@@ -251,7 +263,7 @@ def _list_filters(args: dict[str, Any]) -> dict[str, Any]:
     为什么要一起给智能体看：这两类配置都会让「某条事件没有告警」，如果智能体不知道
     它们的存在，就容易把「被过滤掉」误读成「本来就没事」——漏报的锅不能扣在配置头上。
     """
-    with SessionLocal() as db:
+    with session_factory() as db:
         rows = (
             db.execute(
                 select(ExclusionFilter).order_by(ExclusionFilter.priority, ExclusionFilter.name)
@@ -423,7 +435,7 @@ def _record_conclusion(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": err}
 
     now = datetime.now(UTC)
-    with SessionLocal() as db:
+    with session_factory() as db:
         row = db.execute(
             select(ConclusionRecord).where(ConclusionRecord.dedup_key == dedup_key)
         ).scalar_one_or_none()
@@ -475,15 +487,11 @@ def _es_index() -> str:
     只读静态 `settings.es_events_index` 会出现「采集已写进新索引族、这里还在查老的」——
     表现为「明明有数据却查不到」。静态值只作兜底。
     """
-    from app.ingestion import es_config
-
-    return str(es_config.current().get("es.events_index") or settings.es_events_index)
+    return str(es_config().get("es.events_index") or settings.es_events_index)
 
 
 def _es_path(index: str, field: str) -> str:
     """统一字段名 → ES 精确匹配路径（text 字段必须走 `.keyword`）。"""
-    from app.investigation import catalog
-
     paths = catalog.term_paths(index, catalog.resolve(field) or field)
     return paths[0] if paths else field
 
@@ -510,8 +518,6 @@ def _net_clauses(
     - 单个地址（/32、/128）→ 精确 `term`；
     - 其余（如 /12、/20）→ 下推一定不准，交给调用点本地过滤并在 note 里说明。
     """
-    from app.investigation import catalog
-
     if catalog.es_type(index, "src_ip") == "ip":
         cidrs = [str(n) for n in networks]
         return (
@@ -595,9 +601,7 @@ def _fetch_window(args: dict[str, Any]) -> dict[str, Any]:
 
     query: dict[str, Any] = {"bool": {"filter": conditions}}
 
-    from app.ingestion.es_client import get_es
-
-    es = get_es()
+    es = es_client()
     try:
         total = int(es.count(index=index, query=query).get("count") or 0)
         resp = es.search(
@@ -660,11 +664,9 @@ def _baseline_lookup(args: dict[str, Any]) -> dict[str, Any]:
 
     三个维度（key 形如 `10.0.0.5:conn_count`）：连接数、不同目的端口数、不同目的 IP 数。
     """
-    from app.baseline.stats import lookup
-
     ip = str(args.get("ip") or "").strip()
     key = str(args.get("key") or "").strip()
-    result = lookup(ip=ip, key=key, limit=_cap_int(args.get("limit"), 50, 1, BASELINE_MAX))
+    result = stats_lookup(ip=ip, key=key, limit=_cap_int(args.get("limit"), 50, 1, BASELINE_MAX))
     if "error" in result:
         return result
     result["note"] = (
@@ -677,8 +679,6 @@ def _baseline_lookup(args: dict[str, Any]) -> dict[str, Any]:
 
 def _entity_profile(args: dict[str, Any]) -> dict[str, Any]:
     """查账号/会话画像（跨窗口长期基线），可按实体键指名或只看过阈值异常。"""
-    from app.baseline.profile import list_profiles, top_anomalies
-
     kind_raw = str(args.get("kind") or "").strip().lower()
     kind = kind_raw if kind_raw in ("account", "session") else None
     keys = _str_list(args.get("keys"))
