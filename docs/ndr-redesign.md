@@ -749,6 +749,12 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 **测试**：新增 `tests/py/test_zeek_interfaces.py`（6 例：physical 过滤、旧格式名字兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记）；`test_rules_quality.py` 新增「规则名与描述不得出现 Zeek/Wazuh」与「改名映射必须旧名已不在、新名确实在」两条护栏；原引用旧规则名的两处测试同步更新。
 
+**后续（同日）**：用户要求「采集接入」页不要再显示主机监控面板的标题/说明/连接信息，已按列表逐项删掉：
+卡片标题「主机监控接入」、整段说明文字（包括 `.env` 的 `WAZUH_API_*`、“日志走另外一跳”那段），
+以及连接信息行（`API 已连通 / https://wazuh-manager:55000 / 用户 wazuh-wui / 密码 已设置 / 连通`）。
+保留：刷新按钮、`API 版本 / 集群模式 / Agent 在线 / 近 24h 入库量` 汇总行、Agent 列表、自定义规则下发。
+连接是否可达与入库量在「运行状态」页仍有（那里是运维看板，不在采集配置页）。
+
 **门禁（2026-10，仓库根）**：ruff `All checks passed!`；pyright `0 errors`；`pytest tests/py --stack=ndr -q` **438 passed, 14 skipped**；`--stack=agent -q` **303 passed, 149 skipped**；`sh tests/zeek/run.sh` 全 `PASS`；两侧 `npx tsc --noEmit` 无输出。
 
 

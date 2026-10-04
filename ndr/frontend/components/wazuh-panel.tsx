@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
+import { Card, CardContent } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { PanelError, loadInto, emptyOrFailed, usePanelErrors } from "@/components/panel-error";
 
@@ -89,41 +89,15 @@ export function WazuhPanel() {
     }
   }
 
-  const cfg = data?.config;
   const st = data?.status;
   const ing = data?.ingest;
   const connected = Boolean(st?.reachable);
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">主机监控接入</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          主机监控随本项目一起部署，连接信息由部署环境固定（<span className="font-mono">.env</span>{" "}
-          的 <span className="font-mono">WAZUH_API_*</span>），这里只显示状态，不需要配置。 本页看
-          Agent 在线情况与自定义规则下发；日志本身走另外一跳（Filebeat 读{" "}
-          <span className="font-mono">alerts.json</span> /{" "}
-          <span className="font-mono">archives.json</span> 后进采集队列），所以下面同时显示
-          <b>最近 24 小时实际入库量</b>：API 通了但入库为 0，说明那一跳没配好。
-        </p>
-      </CardHeader>
       <CardContent className="space-y-3">
         {msg && <p className="text-sm text-primary">{msg}</p>}
         <PanelError errors={errs} />
-
-        {cfg && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
-            <Badge variant={connected ? "low" : cfg.configured ? "medium" : "high"}>
-              {connected ? "API 已连通" : cfg.configured ? "已配置，连不上" : "未配置"}
-            </Badge>
-            <span className="font-mono">{cfg.url || "(部署环境没给地址)"}</span>
-            <span className="text-muted-foreground">用户 {cfg.user || "—"}</span>
-            <span className="text-muted-foreground">
-              密码 {cfg.password_set ? "已设置" : "未设置"}
-            </span>
-            {st && <span className="text-muted-foreground">{st.detail}</span>}
-          </div>
-        )}
 
         <div className="flex flex-wrap gap-2">
           <Button
