@@ -34,11 +34,15 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 样本在 `samples.py`（字段名取自实机 `/logs/*.log`），含"没有 `log_type` 的旧文档"
 这条只能靠猜的路径。
 
-## 2. Zeek 脚本单测（`tests/zeek`）
+## 2. Zeek 脚本单测（`tests/zeek`）—— **只在 CI 跑，本地不跑**
 
 ```sh
 sh tests/zeek/run.sh          # 默认 zeek/zeek:9.0，与 ndr/zeek/Dockerfile 的 ZEEK_BASE 一致
 ```
+
+> ⚠️ **本地不要执行这条命令**：它用 `docker run zeek/zeek:9.0` 跑，本地没镜像时会**自动拉**
+> （实测拉进来 751MB，还会在容器里编译脚本）。按 AGENTS.md「构建规则」，本地不拉镜像、
+> 不起容器；这一步已列入 CI 的 `test` 作业，提交后用流水线结果为准。
 
 在官方 Zeek 容器里把 `ndr/zeek/site/*.zeek` 拷进去跑 `hb_test.zeek`：
 请求/响应体分块累加与截断、GET 无请求体但有响应体、NUL 二进制拦截、UTF-8 放行。

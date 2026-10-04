@@ -788,7 +788,9 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 ### 每期收尾门禁
 
-仓库根执行：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`、`sh tests/zeek/run.sh`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。构建只走 GitHub Actions（AGENTS.md 禁止本地 build）。
+**本地（仓库根，都不需要 Docker、不产生构建产物）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。
+
+**只在 CI 跑**：`sh tests/zeek/run.sh`（它用 `docker run zeek/zeek:9.0`，本地没镜像会**自动拉**，还会在容器里编译脚本）—— 已列入 CI 的 `test` 作业。构建/编译一律走 GitHub Actions；本地不 `docker pull` / `docker build` / `docker run` / `npm run build` / 装依赖（详见 AGENTS.md「构建规则」）。
 
 ## 8. 开放问题
 
