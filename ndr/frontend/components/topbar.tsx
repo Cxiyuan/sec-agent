@@ -3,15 +3,17 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, LogOut, Settings, Shield } from "lucide-react";
+import { Bell, LogOut, Shield } from "lucide-react";
 import { apiFetch, clearToken, type AgentPushPayload, type AuthMe, type DetectorStats } from "@/lib/api";
 
 /**
- * 全局页头：左侧 logo（点进系统配置总览，与原来侧边栏 logo 的入口一致），
- * 右侧依次是告警铃铛 / 当前用户 / 退出登录。
+ * 全局页头：左侧 logo（**纯展示，不可点**），右侧依次是告警铃铛 / 当前用户 / 退出登录。
  *
  * 为什么把 logo 从侧边栏搬到页头：侧边栏只管「去哪个页面」，页头承担「我是谁、现在有没有事」
  * —— 告警与账号是一眼要看到的东西，固定在最上方、宽度铺满，滚动时不跟着走。
+ *
+ * 「系统配置总览」页与齿轮入口已取消（用户 2026-10 要求）：配置项都在左侧各页里，
+ * 不需要一层索引页；`/admin/settings` 不再存在。
  *
  * 铃铛的语义（本页自己聚合，不新增后端接口）：把**需要马上处理**的运行告警汇成一个数，
  * 点开每条都能跳到对应页面。数据源都是既有的只读接口，取不到就当没有（不报错、不挡住页面）。
@@ -125,15 +127,10 @@ export function TopBar() {
 
   return (
     <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b bg-card px-4">
-      <Link
-        href="/admin/settings"
-        title="系统配置总览"
-        className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-accent"
-      >
+      <div className="flex items-center gap-2 px-2 py-1">
         <Shield className="h-6 w-6 text-primary" />
         <span className="text-lg font-bold">深瞳 · NDR</span>
-        <Settings className="h-4 w-4 text-muted-foreground" />
-      </Link>
+      </div>
 
       <div className="ml-auto flex items-center gap-2">
         <div className="relative" ref={boxRef}>
