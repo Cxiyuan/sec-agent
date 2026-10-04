@@ -797,6 +797,8 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 - 旧的 `unclassified_docs`/`unclassified_percent`（“白名单外只入库不进检测”）已随本次改写删掉：它与新口径分母不同、摆在一张卡片上只会让人算不清；那个信息在「数据存储/类型分布」与 `log_type_known` 字段里本来就能看。
 - 测试（`test_stats_overview.py`）：断言白名单里**不得**出现 conn/weird/files/notice/x509/syslog/stats/reporter、必须含 http/dns/ssl/ssh/mysql/pgsql/smtp/ftp；断言 `excluded` 的 `must_not` 就是同一份白名单；新增加只排除非协议日志时的除零边界用例（协议图为空、未计入 100%）。
 
+**修订（同日，用户口径）：严重度分布与协议占比改成实心饼图**。原来两张图都是圆环（`radius: ["45%", "68%"]` / `["42%", "66%"]`），用户要求**实心圆形**显示比例。`components/status-charts.ts` 的 `severityOption` 与 `protocolPieOption` 改成单值半径（`"68%"` / `"66%"`），中心点与图例不动；圆环只留给真正该是环的图（CPU/内存/磁盘、队列/投递容量、投递覆盖率），它们表达的是「占了多少额度」，有中心数字的需求。
+
 
 ### 每期收尾门禁
 

@@ -172,7 +172,8 @@ export function severityOption(items: DetectorHistoryPoint[]): EChartsOption {
     series: [
       {
         type: "pie",
-        radius: ["45%", "68%"],
+        // 实心饼图（用户口径：严重度分布要实心圆，不要圆环）
+        radius: "68%",
         center: ["50%", "44%"],
         avoidLabelOverlap: true,
         label: { show: false },
@@ -261,7 +262,8 @@ export function protocolPieOption(share: ProtocolShare | undefined): EChartsOpti
     series: [
       {
         type: "pie",
-        radius: ["42%", "66%"],
+        // 实心饼图（用户口径：协议占比要实心圆，不要圆环）
+        radius: "66%",
         center: ["50%", "44%"],
         label: { show: false },
         data,
