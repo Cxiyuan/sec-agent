@@ -2,7 +2,9 @@
 
 来源：实机探针 —— 服务器 172.16.196.77 向 172.16.196.80:8081 发 ``POST /__xffprobe``，
 带 ``X-Forwarded-For: 198.51.100.77, 203.0.113.9``，Zeek 把代理头记进 ``HTTP::Info$proxied``。
-这条数据以前只活在 raw 里，现在进 ``real_client_ip`` 参与画像/规则/检索。
+这条数据以前只活在 raw 里，现在进 ``real_client_ip`` 参与画像/规则/检索；2026-10 起这只在
+**直连对端本身是可信代理**时成立（``ST_ZEEK_TRUSTED_PROXIES``，见
+``test_untrusted_peer_drops_proxy_headers``），否则头里的地址一律不认。
 
 两侧都跑（``--stack=ndr`` / ``--stack=agent``）。
 """
@@ -38,6 +40,16 @@ PROBE = {
     "resp_body": '{"detail":"unauthorized"}',
 }
 
+#: 探针的直连对端 —— 真实部署里这个地址就是反向代理自己
+TRUSTED_PEER = "172.16.196.77"
+
+
+@pytest.fixture(autouse=True)
+def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本文件测的是「直连对端是可信代理」时的解析口径（不可信的情形单独测）。"""
+    monkeypatch.setattr(settings, "zeek_trusted_proxies", "172.16.196.0/24")
+
+
 PROXY_CASES: list[tuple[str, dict, str | None]] = [
     ("proxied 逗号列表取最左", {"proxied": ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]}, "198.51.100.77"),
     ("RFC7239 for=", {"proxied": ["FORWARDED -> for=10.1.2.3;proto=https"]}, "10.1.2.3"),
@@ -49,6 +61,9 @@ PROXY_CASES: list[tuple[str, dict, str | None]] = [
     ("单值", {"proxied": ["X-FORWARDED-FOR -> 198.51.100.77"]}, "198.51.100.77"),
     ("裸头字段", {"x-forwarded-for": "203.0.113.7"}, "203.0.113.7"),
     ("裸头字段取最左", {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}, "203.0.113.7"),
+    ("X-Real-IP 进 proxy_headers（站点脚本补的）", {"proxied": ["X-REAL-IP -> 198.51.100.77"]}, "198.51.100.77"),
+    ("裸 X-Real-IP 单值头", {"x-real-ip": "203.0.113.9"}, "203.0.113.9"),
+    ("裸 X-Real-IP 带端口", {"x-real-ip": "203.0.113.9:443"}, "203.0.113.9"),
     ("空集合", {"proxied": []}, None),
     ("没有代理头", {}, None),
 ]
@@ -56,7 +71,32 @@ PROXY_CASES: list[tuple[str, dict, str | None]] = [
 
 @pytest.mark.parametrize(("tag", "doc", "want"), PROXY_CASES, ids=[c[0] for c in PROXY_CASES])
 def test_real_client_ip(tag: str, doc: dict, want: str | None) -> None:
-    assert normalizer._real_client_ip(doc) == want
+    assert normalizer._real_client_ip(doc, TRUSTED_PEER) == want
+
+
+def test_untrusted_peer_drops_proxy_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """对端不可信 ⇒ 代理头一律不认（fail-closed，防伪造）。"""
+    assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) == "198.51.100.77"
+    for peer in ("10.9.9.9", "172.16.197.1", None, "", "not-an-ip"):
+        assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, peer) is None
+    # 未配置可信代理 = 谁都不信（连正确的对端也不信）
+    monkeypatch.setattr(settings, "zeek_trusted_proxies", "")
+    assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) is None
+
+
+def test_trusted_proxies_accepts_host_cidr_and_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = {"proxied": PROBE["proxied"]}
+    for cfg, peer, want in (
+        ("172.16.196.77", "172.16.196.77", "198.51.100.77"),  # 单个代理写自己的 IP
+        ("172.16.196.77/32", "172.16.196.77", "198.51.100.77"),
+        ("172.16.196.0/24", "172.16.196.77", "198.51.100.77"),  # 代理是一个网段
+        ("10.0.0.0/8, 172.16.196.77", "172.16.196.77", "198.51.100.77"),  # 多项/逗号分隔
+        ("# 注释行\n172.16.196.77", "172.16.196.77", "198.51.100.77"),
+        ("172.16.196.0/24", "172.16.197.77", None),
+        ("not-a-cidr", "172.16.196.77", None),  # 非法项被忽略 ⇒ 等于没配
+    ):
+        monkeypatch.setattr(settings, "zeek_trusted_proxies", cfg)
+        assert normalizer._real_client_ip(doc, peer) == want, (cfg, peer)
 
 
 def test_probe_end_to_end() -> None:
@@ -90,6 +130,7 @@ def test_resp_body_truncation() -> None:
 
 def test_rule_matches_real_client_ip() -> None:
     log = normalizer.normalize_zeek(dict(PROBE))
+    assert log is not None
     rule = {
         "id": "unit-xff",
         "name": "unit xff",
@@ -105,7 +146,9 @@ def test_rule_matches_real_client_ip() -> None:
     assert engine.match_rule(other, log) is False
     # 无代理头（NULL）时不该命中
     plain = {k: v for k, v in PROBE.items() if k != "proxied"}
-    assert engine.match_rule(rule, normalizer.normalize_zeek(plain)) is False
+    plain_log = normalizer.normalize_zeek(plain)
+    assert plain_log is not None
+    assert engine.match_rule(rule, plain_log) is False
     # 规则要能被挂到 http 上，否则永远不会被评估
     index = engine.build_rule_index([rule])
     assert rule in engine.rules_for_log_type(index, "http")

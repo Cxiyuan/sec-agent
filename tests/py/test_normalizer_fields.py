@@ -14,6 +14,16 @@ from app.ingestion import log_types
 from app.ingestion.normalizer import normalize_wazuh, normalize_zeek
 
 
+@pytest.fixture(autouse=True)
+def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``samples.HTTP`` 的 TCP 对端是探针机 —— 真实部署里这个地址就是反向代理。
+
+    2026-10 起代理头只在**直连对端可信**时才算 ``real_client_ip``（见 normalizer）；
+    本文件其余样本不带 ``proxied``，不受影响。
+    """
+    monkeypatch.setattr(settings, "zeek_trusted_proxies", "172.16.196.0/24")
+
+
 @pytest.mark.parametrize("name", sorted(samples.DOCS))
 def test_log_type_and_known_flag(name: str) -> None:
     want_type, want_known, want_cls = samples.EXPECT[name]

@@ -396,8 +396,57 @@ def _http_event_type(method: str, path: str, content_type: str, status_code: int
 # Zeek 把「能表明请求经过代理」的请求头收进 HTTP::Info$proxied（默认清单见
 # base/protocols/http/main.zeek 的 option proxy_headers），元素形如
 # "X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"。XFF 是客户端自报、可伪造，
-# 因此只落成独立字段 real_client_ip，**不覆盖** src_ip（TCP 对端）。
-_XFF_HEADERS = ("X-FORWARDED-FOR", "X-FORWARDED-FROM", "FORWARDED", "CLIENT-IP")
+# 因此只落成独立字段 real_client_ip、**不覆盖** src_ip（TCP 对端），并且**只有直连对端
+# 本身是可信代理时才认**（见 _is_trusted_proxy / ST_ZEEK_TRUSTED_PROXIES）。
+_XFF_HEADERS = ("X-FORWARDED-FOR", "X-FORWARDED-FROM", "FORWARDED", "CLIENT-IP", "X-REAL-IP")
+#: 没有 Zeek 的 proxied 包装时退一步直接找的裸请求头（X-Real-IP 是单值头，主流反代都带）
+_RAW_PROXY_HEADERS = (
+    "x-forwarded-for",
+    "X-Forwarded-For",
+    "x_forwarded_for",
+    "x-real-ip",
+    "X-Real-IP",
+)
+
+_trusted_proxy_warnings = 0
+_MAX_TRUSTED_PROXY_WARNINGS = 5
+_untrusted_proxy_warnings = 0
+_MAX_UNTRUSTED_PROXY_WARNINGS = 5
+
+
+def _trusted_proxy_nets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """部署环境声明的可信代理网段（`ST_ZEEK_TRUSTED_PROXIES`，逗号/换行分隔）。
+
+    一个代理就写它自己的 IP（`10.0.0.5`，也接受 `10.0.0.5/32`）。**清单为空 = 不信任
+    任何代理头**（fail-closed）：转发头本来就是客户端自报的，没配就是不可信输入。
+    非法项丢弃并限量告警 —— 这是安全边界配置，写错了要能看见，不能静默放过。
+    """
+    global _trusted_proxy_warnings
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    raw = str(getattr(settings, "zeek_trusted_proxies", "") or "")
+    for chunk in raw.replace(",", "\n").splitlines():
+        value = chunk.strip()
+        if not value or value.startswith("#"):
+            continue
+        try:
+            nets.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            if _trusted_proxy_warnings < _MAX_TRUSTED_PROXY_WARNINGS:
+                _trusted_proxy_warnings += 1
+                log.warning("ST_ZEEK_TRUSTED_PROXIES 里的项不是合法 IP/CIDR，已忽略：%s", value)
+    return nets
+
+
+def _is_trusted_proxy(peer_ip: Any) -> bool:
+    """直连对端是否落在可信代理清单里；清单为空 / 对端未知 ⇒ False（fail-closed）。"""
+    text = str(peer_ip or "").strip()
+    if not text:
+        return False
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return any(addr in net for net in _trusted_proxy_nets())
 
 
 def _is_ip(value: str) -> bool:
@@ -424,11 +473,29 @@ def _first_ip(text: Any) -> str:
     return ""
 
 
-def _real_client_ip(doc: dict[str, Any]) -> str | None:
-    """解析代理头里的真实客户端 IP；没有就返回 None（落库为 NULL）。"""
+def _real_client_ip(doc: dict[str, Any], peer_ip: Any = None) -> str | None:
+    """解析代理头里的真实客户端 IP；没有（或来源不可信）就返回 None（落库为 NULL）。
+
+    `peer_ip` 是**直连对端**（Zeek 的 `id.orig_h`）：只有它本身是可信代理时才认这些头，
+    否则任何人加一个 `X-Forwarded-For` 就能把客户端地址洗成任意值（规则/画像/检索全被带
+    偏）。未配置可信代理（`ST_ZEEK_TRUSTED_PROXIES` 为空）时一律不认。
+    """
+    global _untrusted_proxy_warnings
     raw = doc.get("proxied")
     if not raw:
-        raw = _first(doc, ("x-forwarded-for", "X-Forwarded-For", "x_forwarded_for"))
+        raw = _first(doc, _RAW_PROXY_HEADERS)
+    if not raw:
+        return None
+    if not _is_trusted_proxy(peer_ip):
+        if _untrusted_proxy_warnings < _MAX_UNTRUSTED_PROXY_WARNINGS:
+            _untrusted_proxy_warnings += 1
+            log.warning(
+                "代理头未被信任：直连对端 %s 不在 ST_ZEEK_TRUSTED_PROXIES 里，"
+                "real_client_ip 置空（头值：%s）",
+                peer_ip or "未知",
+                raw,
+            )
+        return None
     values = raw if isinstance(raw, (list, tuple)) else [raw]
     for item in values:
         text = str(item or "")
@@ -446,8 +513,8 @@ def _real_client_ip(doc: dict[str, Any]) -> str | None:
     return None
 
 
-def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
-    """抽取 HTTP/TLS/DNS/文件相关的扩展字段。"""
+def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dict[str, Any]:
+    """抽取 HTTP/TLS/DNS/文件相关的扩展字段；peer_ip 见 `_real_client_ip`。"""
     body_value = _first(doc, _csv(settings.http_body_fields))
     uri = str(doc.get("uri") or "")
     path, qs = _split_uri(uri) if log_type == "http" else ("", "")
@@ -464,7 +531,7 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
         "resp_body_len": _to_int(doc.get("response_body_len")),
         "req_headers": str(doc.get("req_headers") or "")[:8192],
         "resp_headers": str(doc.get("resp_headers") or "")[:8192],
-        "real_client_ip": _real_client_ip(doc),
+        "real_client_ip": _real_client_ip(doc, peer_ip),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
         "cookie": _clip(doc.get("cookie"), settings.http_cookie_max_chars),
         "content_type": content_type[:128],
@@ -497,8 +564,68 @@ def _http_fields(doc: dict[str, Any], log_type: str) -> dict[str, Any]:
 
 # ---------- Zeek ----------
 
+_filebeat_parse_warnings = 0
+_MAX_FILEBEAT_PARSE_WARNINGS = 5
 
-def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
+
+def _filebeat_parse_error(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """取 Filebeat 的 ndjson 解析失败标记（没有则 None）。
+
+    Filebeat 的 filestream 开了 `parsers: [ndjson, add_error_key: true]`：解析失败时把错误
+    挂在解析目标下（Zeek 线目标是 `zeek`，即 `zeek.error`；其它管道多在根 `error`），形如
+    `{"type": "json", "message": "Error decoding JSON: invalid character 'h' ..."}`。
+    """
+    for holder in (doc, doc.get("zeek")):
+        if not isinstance(holder, dict):
+            continue
+        err = holder.get("error")
+        if isinstance(err, dict) and str(err.get("type") or "") == "json":
+            return err
+    return None
+
+
+def _unwrap_filebeat_parse_error(doc: dict[str, Any], source: str) -> dict[str, Any] | None:
+    """Filebeat 把日志行切碎时：用顶层 `message` 里原样保留的那一行抢救。
+
+    2026-10-03 实机取证：Zeek 日志轮转/容器重建的窗口里 Filebeat 会把某一**行从中间切开**
+    交给 ndjson 解析器，产出「一个业务字段都没有」的事件：
+    `{"zeek": {"error": {...}}, "message": "<原始那一行>", ...}`（解析成功时**没有**顶层
+    `message`）。旧行为是把它归一化成一条只有时间戳与 log_type 的空壳文档写进事件索引
+    （实测 2026-10-03 的 shentong-events 里有 3 条），既污染检索又丢掉原文。这里用 Filebeat
+    没丢的原始行再解一次：解出来就照常入库（两边 JSON 容忍度略有差异，少数行确实能救回）；
+    解不出来返回 None，上层按归一化失败计数并投 `shentong:events:dead` 死信 —— 运维能看到
+    原文，而不是拿到空壳。
+    """
+    global _filebeat_parse_warnings
+    err = _filebeat_parse_error(doc)
+    if err is None:
+        return doc
+    salvaged: Any = None
+    message = doc.get("message")
+    if isinstance(message, str) and message.strip():
+        try:
+            salvaged = json.loads(message)
+        except ValueError:
+            salvaged = None
+    if not isinstance(salvaged, dict):
+        if _filebeat_parse_warnings < _MAX_FILEBEAT_PARSE_WARNINGS:
+            _filebeat_parse_warnings += 1
+            log.warning(
+                "Filebeat JSON 解析失败（%s），原始行无法复原，整条丢弃并投死信：%s",
+                source,
+                err.get("message") or err,
+            )
+        return None
+    return salvaged
+
+
+def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
+    # Filebeat 的 ndjson 解析失败事件先抢救/丢弃（见 _unwrap_filebeat_parse_error）：
+    # 绝不落「只有 @timestamp + log_type」的空壳文档。
+    unwrapped = _unwrap_filebeat_parse_error(doc, "zeek")
+    if unwrapped is None:
+        return None
+    doc = unwrapped
     # Filebeat 采集时会把 Zeek 字段收在 zeek.* 命名空间下（避免与其元数据
     # host/agent/ecs 撞名，否则 http.log 的 host 会被覆盖）；这里解包，
     # 同时兼容旧的扁平结构（其它采集管道/历史数据）。
@@ -516,7 +643,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog:
 
     uri = str(doc.get("uri") or "")
     query = str(doc.get("query") or uri or "")
-    extra = _http_fields(doc, log_type)
+    extra = _http_fields(doc, log_type, src_ip)
     status_code = _to_int(doc.get("status_code"))
     event_type = (
         _http_event_type(
@@ -780,6 +907,11 @@ def normalize(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
     """
     global _normalize_failures
     try:
+        # Filebeat 解析失败的整行也要走同一道闸（抢救或丢弃），Zeek/Wazuh 一视同仁
+        unwrapped = _unwrap_filebeat_parse_error(doc, source)
+        if unwrapped is None:
+            return None
+        doc = unwrapped
         if source == "zeek":
             return normalize_zeek(doc)
         if source == "wazuh":

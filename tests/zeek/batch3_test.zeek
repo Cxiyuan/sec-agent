@@ -31,6 +31,10 @@ event zeek_done() {
     check("single header cap 256", ShentongHTTPHeaders::max_header_value_len == 256);
     check("direction header cap 4096", ShentongHTTPHeaders::max_headers_len == 4096);
 
+    # X-Real-IP 补进 Zeek 的代理头清单（否则 HTTP::Info$proxied 里不会有它，
+    # 后端的 real_client_ip 就永远拿不到 nginx/HAProxy 默认发的这个头）
+    check("X-Real-IP registered as proxy header", "X-REAL-IP" in HTTP::proxy_headers);
+
     # 单头截断：8 字节头名 + 256 字节值 + 换行（Zeek 没有字符串乘法，用循环拼）
     local long = "";
     local k = 0;

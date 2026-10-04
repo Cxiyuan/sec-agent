@@ -17,6 +17,19 @@
 
 @load base/protocols/http
 
+## X-Real-IP 不在 Zeek 默认的 HTTP::proxy_headers 清单里（默认只有 X-FORWARDED-FOR、
+## X-FORWARDED-FROM、FORWARDED、CLIENT-IP、VIA、XROXY-CONNECTION、PROXY-CONNECTION），
+## 而 nginx / HAProxy 这类反向代理默认就发这个头。补进清单，Zeek 才会把它记进
+## HTTP::Info$proxied，后端 normalizer 才能落 real_client_ip（X-Real-IP 是单值头）。
+##
+## 注意：`proxied` 里全是**客户端自报**的值，后端只在直连对端命中
+## ST_ZEEK_TRUSTED_PROXIES 时才采信（见 ndr/backend/app/ingestion/normalizer.py）。
+##
+## 大小写必须是**全大写**：Zeek 的 HTTP 分析器把请求头名统一转大写后再交给 http_header
+## 事件（上游 main.zeek 自己也是 `name in proxy_headers` / `name == "HOST"` 这样比的），
+## 写 "X-Real-IP" 不会命中。
+redef HTTP::proxy_headers += { "X-REAL-IP" };
+
 module ShentongHTTPHeaders;
 
 export {

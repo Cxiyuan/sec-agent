@@ -108,6 +108,10 @@ services:
       ST_ZEEK_CONF_DIR: /config
       ST_ZEEK_IFACE_CONF: /config/interface.conf
       ST_ZEEK_INTERFACES_JSON: /config/interfaces.json
+      # 可信代理白名单（逗号分隔的 IP/CIDR，如 `10.0.0.1,172.16.0.0/16`）：只有直连对端落在
+      # 清单里，才承认 X-Forwarded-For / X-Real-IP 里的客户端地址；**留空 = 一律不认**（fail-closed）。
+      # 这是安全锚点，只从部署环境给，管理面没有入口（否则等于让界面自己给自己发白名单）。
+      ST_ZEEK_TRUSTED_PROXIES: ${ZEEK_TRUSTED_PROXIES:-}
       # 第 5 期：检测器命中后经 HTTP 推给智能体（地址形如 http://<agent-host>:8000/api/push/digests）
       ST_AGENT_PUSH_URL: ${NDR_AGENT_PUSH_URL:-}
       ST_AGENT_PUSH_TOKEN: ${NDR_AGENT_PUSH_TOKEN:-}
