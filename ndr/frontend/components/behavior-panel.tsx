@@ -102,12 +102,13 @@ function changed(item: BaselineConfigItem, draft: Record<string, string | boolea
 /**
  * 生效中 / 观测中 —— 两态是运维最关心的区分（这维度/实体现在能不能出判定）。
  *
- * 两态**统一用绿色**（用户 2026-10 要求）：颜色不承载语义，语义在文字里 ——
- * 以前「观测中」用黄色会让人误读成「有问题」，其实只是没到门槛。
+ * 配色（用户 2026-10 定的口径）：**生效中=绿色、观测中=黄色**。
+ * 中途试过「两态统一绿色」，用户看过后要求观测中仍用黄色 —— 黄色表达「还在学习、没到门槛」，
+ * 与「已生效」区分开更直观。
  */
 function StateBadge({ judging, hint }: { judging: boolean; hint?: string }) {
   return (
-    <Badge variant="success" title={hint}>
+    <Badge variant={judging ? "success" : "medium"} title={hint}>
       {judging ? "生效中" : "观测中"}
     </Badge>
   );
@@ -417,7 +418,7 @@ export function BehaviorPanel() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground">观测中（只学习）</p>
-              <p className="text-lg font-semibold text-emerald-500">{stats?.learning_keys ?? "-"}</p>
+              <p className="text-lg font-semibold text-amber-500">{stats?.learning_keys ?? "-"}</p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">生效中（可判偏离）</p>
@@ -490,7 +491,7 @@ export function BehaviorPanel() {
             <span className="text-xs font-normal text-muted-foreground">
               IP + 中文维度（悬停可看原始 key，如 <span className="font-mono">源IP:conn_count</span>）；
               <span className="text-emerald-500">生效中</span>=已过观测期参与 2σ 判定，
-              <span className="text-emerald-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
+              <span className="text-amber-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
             </span>
           </CardTitle>
         </CardHeader>
@@ -592,7 +593,7 @@ export function BehaviorPanel() {
             账号 / 会话画像列表
             <span className="text-xs font-normal text-muted-foreground">
               <span className="text-emerald-500">生效中</span>=观测次数已达冷启动门槛（
-              {minObs} 次）参与打分，<span className="text-emerald-500">观测中</span>=还在学习；
+              {minObs} 次）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
               风险分按当前窗口算（本轮无理由即归零），点一行展开细节
             </span>
           </CardTitle>
