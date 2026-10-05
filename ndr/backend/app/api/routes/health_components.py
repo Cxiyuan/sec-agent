@@ -1,4 +1,4 @@
-"""组件 / 服务连接状态（总览页的 7 个呼吸灯）。
+"""组件 / 服务连接状态（总览页的 8 个呼吸灯）。
 
 **为什么是一个端点**：页面每 15 秒轮询，如果让前端打七个接口，任何一个超时都会拖慢整页，
 也让后端的连接数翻七倍。这里一次拿全部，并且**每 `ST_STATUS_PROBE_CACHE_SECONDS`（默认 30s）
@@ -47,10 +47,14 @@ NORMALIZER_DEGRADED_WITHIN = 900.0
 #: 新鲜度探测窗口：一次 ES 往返同时满足 zeek/wazuh/归一化 三个判据
 _FRESHNESS_WINDOW = "now-30m"
 
-#: 总览页的**展示顺序**（用户列的顺序：网络采集器 / 主机监控 / Redis / Logstash /
+#: 「采集质量」统计窗口（近 15 分钟的采集类协议异常）
+_CAPTURE_WINDOW = "now-15m"
+
+#: 总览页的**展示顺序**（用户列的顺序：网络采集器 / 采集质量 / 主机监控 / Redis / Logstash /
 #: Elasticsearch / 归一化 / 分析智能体）。构建顺序与展示顺序解耦，前端直接照数组渲染。
 _DISPLAY_ORDER: tuple[str, ...] = (
     "zeek",
+    "capture",
     "wazuh",
     "redis",
     "logstash",
@@ -95,7 +99,24 @@ def judge_age(age: float | None, ok_within: float, degraded_within: float) -> st
     return STATE_DOWN
 
 
+def judge_capture(count: int | None, warn: int, crit: int) -> str:
+    """采集类协议异常（镜像口丢包 / 非对称路由 / 网卡 offload 的痕迹）的数量判据。
+
+    为什么它算「健康」而不是「安全」：这类异常说明**采集在丢东西（丢包 = 漏检）**，
+    本身不是攻击信号，所以不进摘要、只在这里显示（见 `ingestion/normalizer.py` 的
+    `_capture_weird`）。数量突增 = 采集质量在退化。
+    """
+    if count is None:
+        return STATE_UNKNOWN
+    if crit > 0 and count >= crit:
+        return STATE_DOWN
+    if warn > 0 and count >= warn:
+        return STATE_DEGRADED
+    return STATE_OK
+
+
 def judge_es(status: str | None) -> str:
+    """ES 集群健康：green/yellow 都算能用，red 才是不可用。"""
     """集群健康：green 正常、yellow 注意、red/未知 不可用。"""
     value = str(status or "").strip().lower()
     if value == "green":
@@ -169,6 +190,65 @@ def _es_health() -> tuple[str | None, str]:
         return None, f"读 ES 集群健康失败：{str(exc)[:160]}"
 
 
+def _capture_stats() -> dict[str, Any]:
+    """近 15 分钟的**采集类**协议异常：条数 + 最常见的几个异常名。
+
+    数据来源是归一化已经分好类的 `event_type=capture_anomaly`（见 normalizer._capture_weird）。
+    """
+    out: dict[str, Any] = {"count": None, "top": [], "error": ""}
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        pattern = str(es_config.current().get("es.events_index") or settings.es_events_index)
+        query = {
+            "bool": {
+                "filter": [
+                    {"range": {"@timestamp": {"gte": _CAPTURE_WINDOW}}},
+                    {"term": {"event_type.keyword": "capture_anomaly"}},
+                ]
+            }
+        }
+        try:
+            resp = get_es().search(
+                index=pattern,
+                size=0,
+                query=query,
+                aggs={"names": {"terms": {"field": "weird_name.keyword", "size": 5}}},
+            )
+            names = [
+                (str(bucket.get("key")), int(bucket.get("doc_count") or 0))
+                for bucket in resp["aggregations"]["names"]["buckets"]
+            ]
+        except Exception:  # noqa: BLE001 — 字段还没建映射（首次上线的历史索引）时降级成只数条数
+            resp = get_es().search(index=pattern, size=0, query=query)
+            names = []
+        out["count"] = _int_or_none(resp["hits"]["total"]["value"])
+        out["top"] = names
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)[:160]
+    return out
+
+
+def _capture_item() -> dict[str, Any]:
+    """「采集质量」灯：采集类协议异常（丢包痕迹）当成健康指标看，而不是告警。"""
+    stats = _capture_stats()
+    count = stats.get("count")
+    state = judge_capture(
+        count, settings.capture_anomaly_warn_15m, settings.capture_anomaly_crit_15m
+    )
+    name = "采集质量（采集类协议异常）"
+    if count is None:
+        detail = f"读不到采集异常统计：{stats.get('error') or '未知原因'}"
+    else:
+        top = "、".join(f"{key} {value}" for key, value in (stats.get("top") or [])[:3])
+        detail = f"近 15 分钟采集类协议异常 {count} 条"
+        if top:
+            detail += f"（最常见：{top}）"
+        detail += "；多为镜像口丢包/非对称路由/网卡 offload —— 突增说明采集在丢包（会漏检）"
+    return {"key": "capture", "name": name, "state": state, "detail": detail}
+
+
 def _es_freshness() -> dict[str, Any]:
     """近 30 分钟：按来源的最新文档时间 + 全局最新时间（一次 ES 往返喂三盏灯）。"""
     out: dict[str, Any] = {"zeek_age": None, "wazuh_age": None, "any_age": None, "error": ""}
@@ -224,7 +304,10 @@ def _redis_item(client: Any) -> dict[str, Any]:
             "detail": f"不可达：{str(exc)[:120]}",
             "last_seen": "",
         }
-    warn = bool(mem.get("max")) and (_float_or_none(mem.get("perc")) or 0.0) >= settings.redis_memory_warn_perc
+    warn = (
+        bool(mem.get("max"))
+        and (_float_or_none(mem.get("perc")) or 0.0) >= settings.redis_memory_warn_perc
+    )
     detail = health.describe(mem) if mem else "可达（读不到内存信息）"
     return {
         "key": "redis",
@@ -255,10 +338,18 @@ def _agent_item(client: Any) -> dict[str, Any]:
     if not active:
         detail = "未配置推送地址（摘要计入未投递，不会进入分析）"
     elif last_success:
-        detail = f"最近送达 {last_success.replace('T', ' ')[:19]} · 未投递 {st.get('undelivered', 0)}"
+        detail = (
+            f"最近送达 {last_success.replace('T', ' ')[:19]} · 未投递 {st.get('undelivered', 0)}"
+        )
     else:
         detail = f"已配置但还没成功投递过（{str(st.get('last_error') or '等待首次投递')[:60]}）"
-    return {"key": "agent", "name": "分析智能体", "state": state, "detail": detail, "last_seen": last_success}
+    return {
+        "key": "agent",
+        "name": "分析智能体",
+        "state": state,
+        "detail": detail,
+        "last_seen": last_success,
+    }
 
 
 def _stub(key: str, name: str, state: str, detail: str = "") -> dict[str, Any]:
@@ -377,7 +468,9 @@ def _collect() -> dict[str, Any]:
             _guard("redis", lambda: _redis_item(client), _stub("redis", "Redis", STATE_DOWN))
         )
         items.append(
-            _guard("agent", lambda: _agent_item(client), _stub("agent", "分析智能体", STATE_UNKNOWN))
+            _guard(
+                "agent", lambda: _agent_item(client), _stub("agent", "分析智能体", STATE_UNKNOWN)
+            )
         )
 
     # 新鲜度：一次 ES 往返喂两盏灯（`_es_freshness` 自己吞异常，这里再兜一层）
@@ -418,11 +511,22 @@ def _collect() -> dict[str, Any]:
         )
     )
 
+    items.append(
+        _guard(
+            "capture",
+            _capture_item,
+            _stub("capture", "采集质量（采集类协议异常）", STATE_UNKNOWN),
+        )
+    )
+
     return {
         "checked_at": datetime.now(UTC).isoformat(),
         # 按展示顺序输出（不在表里的一律排后面，保证任何情况下都不丢项）
         "items": sorted(
-            items, key=lambda it: _DISPLAY_ORDER.index(it["key"]) if it.get("key") in _DISPLAY_ORDER else 99
+            items,
+            key=lambda it: (
+                _DISPLAY_ORDER.index(it["key"]) if it.get("key") in _DISPLAY_ORDER else 99
+            ),
         ),
         "notes": [],
         "cached": False,

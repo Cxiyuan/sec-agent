@@ -1115,3 +1115,36 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 **测试**：`tests/py/test_relay_chain.py` 扩到 30 例（两侧内容统计、侧向判定与阈值边界、手动覆盖优先、
 判据异常回退、清单变更清零、链续跳只认发送方侧的头、src 是中继时不算续跳、relay_internal 按内容判）；
 `tests/py/test_zeek_limits.py` 新增 `render_ports` 的 5 组渲染用例与 `local.zeek` 加载守卫。
+
+### 2026-10 weird 分类：采集类异常降级为健康指标（不再占摘要额度）
+
+**缘起**：用户问「weird 日志有什么意义」。逐名统计本环境 30,063 条 weird，发现 **~87% 是采集类**：
+`possible_split_routing` 13,795 / `data_before_established` 5,604 / `truncated_tcp_payload` 2,053 /
+`SYN_inside_connection` 1,447 / `window_recision` 1,416 / `data_after_reset` 935 /
+`inappropriate_FIN` 879 —— 它们的含义是**采集在丢东西（丢包 = 漏检）**，不是攻击信号。
+但归一化把它们和真正的协议异常一起标成 `protocol_anomaly`，被「内置-协议异常」一刀切命中 →
+一个 5 分钟窗口产出 **75~84 条摘要**（约占全部摘要的一半），把真该看的挤到限流丢弃。
+
+**网卡侧实测（先量再定，这一项决定「治标还是治本」）**：抓包口 `ens192` 是 vmxnet3 / 10G，
+`rx_dropped` 仅 **216,104 / 75.2 亿包 ≈ 0.003%**，`rx_errors` 与 `rx_missed_errors` 均为 0，
+`rx-gro-hw` off [fixed] → **不是网卡丢包**；这批异常是镜像口/非对称路由的固有形态。
+所以**不动网卡 offload 设置**（收益不确定、又要碰生产采集口），改为把它们当**采集质量指标**看。
+
+**改法**：
+1. 新增 `UnifiedLog.weird_name`（两侧契约 + 字段目录 + `_FIELD_TYPES` + SUMMARY/AGG 字段）：
+   异常名从此可查可聚合 —— 此前只埋在 `raw.name` 里，实测**不可聚合**（terms 聚合恒空）；
+2. `ingestion/normalizer.py` 新增 `_capture_weird()`：名单内（`ST_ZEEK_CAPTURE_WEIRD_NAMES`，
+   默认就是上面 7 个 Zeek 稳定异常名）的 weird 标成 `event_type=capture_anomaly` ——
+   **数据一条不丢**，只是不再当告警；
+3. 总览页新增第 8 盏灯「**采集质量（采集类协议异常）**」：近 15 分钟条数 + 最常见异常名，
+   阈值 `ST_CAPTURE_ANOMALY_WARN_15M` / `_CRIT_15M`（默认 5000 / 20000）；
+   读不到统计只影响它自己这盏灯（其余灯不受牵连）；
+4. 「内置-协议异常」规则不改 —— 它现在只吃真正的协议异常（`DNS_unknown_opcode` 这类），
+   采集类异常不进任何规则。
+
+**验收（部署后）**：`内置-协议异常` 的每 5 分钟摘要从 75~84 掉到个位数；总览页「采集质量」灯
+常态为绿（实测本环境约 3 千条/15 分钟）；`capture_anomaly` 文档在 ES 里照旧可查（数据不丢）。
+
+**测试**：`test_rules_quality.py`（采集类名字→capture_anomaly、大小写不敏感、异常名仅 weird 日志有）、
+`test_rules_routing.py`（`weird_name` 只路由到 weird；`capture_anomaly` 不命中「协议异常」）、
+`test_health_components.py`（八盏灯 + 采集阈值判据 5000/20000 + 单灯降级）。

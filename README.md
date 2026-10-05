@@ -397,6 +397,8 @@ NDR 线路（采集与检测）：
 | `ST_DETECTOR_HISTORY_KEY` / `ST_DETECTOR_HISTORY_MAX` | shentong:detector:history / 288 | **检测器历史采样**（总览页 24h 趋势/威胁图的数据源）：每 `ST_DETECTOR_STATS_LOG_SECONDS` 追加一条，LPUSH+LTRIM 固定条数（288 = 24h @ 5min）+ 7 天 TTL。以前 `shentong:detector:rates` 每次都被覆盖，没有历史可画 |
 | `ST_STATUS_PROBE_CACHE_SECONDS` | 30 | 总览页「组件呼吸灯」的进程内探测缓存（组件健康 + ES 新鲜度）：页面 15 秒轮询，两次里大约一次命中缓存，不每轮都打 ES/外部 API |
 | `ST_STATUS_AGG_CACHE_SECONDS` | 300 | 总览页 24h 流量/协议聚合（ES）的进程内缓存；命中直接回 `cached=true`，页面轮询不得穿透 |
+| `ST_ZEEK_CAPTURE_WEIRD_NAMES` | possible_split_routing,data_before_established,… | 归为**采集类异常**的 Zeek weird 名（逗号分隔）：镜像口丢包/非对称路由/网卡 offload 的痕迹（实测占全部 weird 的 ~87%）。归一化把它们标成 `event_type=capture_anomaly`，于是不再被「协议异常」规则告警（改由总览页「采集质量」灯统计）；**数据一条不丢**，只换分类 |
+| `ST_CAPTURE_ANOMALY_WARN_15M` / `_CRIT_15M` | 5000 / 20000 | 「采集质量」灯的阈值：近 15 分钟采集类异常条数达到黄/红（突增 = 采集在丢包，会漏检）；0 = 不判 |
 | `ST_STATS_PROTOCOL_LOG_TYPES` | dns,http,ssl,ssh,mysql,pgsql… | 总览页「24h 协议分析占比」的**协议识别类日志白名单（只影响画图）**：`conn`（流记录）/`weird`（异常）/`files`/`syslog`（主机日志）等非协议日志不上图，图上另注明「另有 X% 未计入」。**与 `ST_ZEEK_EVENT_LOG_TYPES` / `_OPS_` 不是同一口径**：那两个决定谁进检测；`ntp`/`dhcp` 属 ops 不进检测，但它们是协议，会出现在图上 |
 | `ST_SYSTEM_METRICS_CPU_SAMPLE_SECONDS` | 0.15 | 读两次 `/proc/stat` 的间隔（算 CPU 占用%；端点是同步 `def`，跑在线程池，不阻塞事件循环） |
 | `ST_AGENT_PUSH_URL` | 空 | 智能体推送地址（形如 `http://<agent>:8000/api/push/digests`）；**空 = 不投递**（不再进退役队列，会明确计 `undelivered`） |

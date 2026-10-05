@@ -20,7 +20,7 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_xff_respbody.py` | 代理头各种形态（proxied/RFC7239/裸头/IPv6+端口/非法值）、规则命中、画像取真实客户端 |
 | `test_stack_consistency.py` | **两侧一致性**：子进程分别加载两侧，逐字段比对（只改一侧会在这里炸） |
 | `test_filebeat_yml.py` | 采集配置形状：filestream 路径、排除名单、文件名→类型 JS、`queue.disk`、Redis 输出 |
-| `test_rules_quality.py` | **2026-10 规则评审回归**：`_FIELD_TYPES` 无僵尸键、规则字段名必须存在、正则可编译、路由全局 priority 有序、`_match` 收口语义（空条件/缺值/`ne` 空值/`exists` 布尔）、cookie 与 content-type 头解析、weird→protocol/tls_anomaly、x509 自签、sshd≠爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**正常流量不得命中任何逐条规则**、Wazuh 规则路由、单规则限速+严重度优先 |
+| `test_rules_quality.py` | **2026-10 规则评审回归**：`_FIELD_TYPES` 无僵尸键、规则字段名必须存在、正则可编译、路由全局 priority 有序、`_match` 收口语义（空条件/缺值/`ne` 空值/`exists` 布尔）、cookie 与 content-type 头解析、weird→protocol/tls_anomaly、**采集类 weird→capture_anomaly**（大小写不敏感、异常名仅 weird 日志有）、x509 自签、sshd≠爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**正常流量不得命中任何逐条规则**、Wazuh 规则路由、单规则限速+严重度优先 |
 | `test_deploy_exposure.py` | 部署编排暴露面：ES/Postgres/Logstash 必须回环、Redis 默认回环、不得发布到 `0.0.0.0` |
 | `test_handled_registry.py` | 已处理登记单桶上限与**告警限频**（计数不丢、窗口过后重新告警） |
 | `test_main_retention.py` | 启动下发 ES 模板的日志口径（稳态不记 info、失败后成功记一条、连续失败只一条 warning） |
@@ -28,7 +28,7 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_zeek_interfaces.py` | 监听网卡下拉只留**物理网卡**：`physical` 标志过滤、旧格式名字模式兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记；另加**硬编码审计**守卫：产品代码里不得给网卡名写死默认值（`${ZEEK_IFACE:-<非空>}` 一律红），必须留空 + `auto_iface` 自动探测物理网卡 |
 | `test_detector_history.py` | 总览页 24h 趋势的采样底座：写入有界（LPUSH+LTRIM+TTL）、读取时间正序与坏行容错、「按规则」计数用后即清、严重度区间增量不为负、统计块确实调了采样 |
 | `test_system_metrics.py` | 服务器圆环：`/proc/stat`（含 idle+iowait、计数器回退不算负载）与 `/proc/meminfo`（用 MemAvailable）解析、缺指标不 500 而是 null+notes |
-| `test_health_components.py` | 组件呼吸灯：判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置≠坏了）、七盏灯齐全、**单个探测抛异常只影响它自己**、30 秒缓存 |
+| `test_health_components.py` | 组件呼吸灯：判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置≠坏了）、**八盏灯齐全**（含「采集质量」）、采集类异常阈值判据（5000/20000、读不到=unknown）与单个探测抛异常只影响它自己、30 秒缓存 |
 | `test_stats_overview.py` | 24h 流量与协议：查询结构必须**只在流量侧过滤 `log_type=conn`**、**协议侧只算协议识别类日志**（白名单 `include` + 非协议日志单列 `excluded` 计数，conn/weird/files/syslog 不得入白名单）、逐小时字节/秒与百分比（协议类 top N + 其他为分母，**不含非协议日志**）换算、缓存命中、失败不缓存、ES 异常降级为空 |
 | `test_relay_chain.py` | 中继链路四件套：清单（只读 PG、IP/CIDR/注释解析、缓存与失效、保存不抹掉角色与侧向）、角色推算 + **两侧内容统计**、**按内容判侧向**（9:28557 → 源站侧；阈值边界 49/50 与 10 倍；运维手动覆盖优先；判据异常回退客户端侧；清单变更清零）、**链的下游续跳去重**（只认 X-Real-IP / XFF 末尾、src 是中继时不算续跳、链里无中继不算）、去重（direct / relay_internal 按内容判 / 侧向=客户端侧时沿用「前跳可见则丢后跳」/ 未见前跳则保留 / 可见期过期 / 窗口下限） |
 | `test_asset_baseline.py` | 被访问方（内网源站 / 内网 DNS）基线**口径 B2（按连接算）**：`conn`+`http` 同一 `uid` = 一次访问（**两种到达顺序**都不重复、身份归 hostname）、keep-alive 多请求 = 1 次访问 + N 次请求、纯 TCP 回落 `IP:端口`（请求数 0）、中继链路上客户端取 `real_client_ip`、多连接按资产聚合、**中继自身丢弃**（有 Host/SNI 则保留、端口 53 的 DNS 保留）、**无 `uid` 不入基线**（主机监控/files）、`ST_ASSET_MAX_UIDS` 上限、请求数口径可配、`window_values` 形状（5 特征）、落库到 `asset_stats`（换模型复用 Welford）、**口径版本迁移清空且幂等**、列表（含 `requests_mean`）/明细/概览与端点接线 |

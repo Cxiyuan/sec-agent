@@ -284,6 +284,10 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     # conn 上永不求值（真实取证路径漏报，2026-10 规则评审 P0-4）。只加不减，安全。
     "dst_ip": ("conn",),
     "conn_state": ("conn",),
+    # weird：异常名（`possible_split_routing` / `bad_HTTP_request` …）。
+    # 归一化已把采集类（镜像口丢包/非对称路由/offload）标成 `capture_anomaly`，
+    # 所以引用 `weird_name` 的规则只会看到真正的协议异常。
+    "weird_name": ("weird",),
     "bytes_out": ("conn",),
     "bytes_in": ("conn",),
     # files

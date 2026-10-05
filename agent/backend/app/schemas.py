@@ -38,6 +38,11 @@ class UnifiedLog(BaseModel):
     real_client_ip: str | None = None
     # Zeek 连接状态（S0/REJ/SF…）：用于判定“是否真的建立了会话”（探活/扫描 vs 实际连接）
     conn_state: str = ""
+    # Zeek weird.log 的异常名（如 possible_split_routing / bad_HTTP_request）。「协议异常」与
+    # 「采集类异常」的区分完全靠它：采集类（镜像口丢包/非对称路由/网卡 offload 造成的协议怪象）
+    # 由归一化标成 event_type=capture_anomaly，不再进「协议异常」规则，改由状态页的
+    # 「采集质量」灯统计（见 normalizer._capture_weird）。
+    weird_name: str = ""
     # Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（中继的前后跳是两条独立
     # 连接、uid 不同，所以它只做同一跳内的关联）。Wazuh 侧恒空。
     uid: str = ""

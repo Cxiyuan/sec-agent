@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
     zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"
     zeek_ops_log_types: str = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"
+    # Zeek weird.log 里属于「采集侧异常」的名字（逗号分隔）：镜像口丢包 / 非对称路由 / 网卡 offload
+    # 造成的协议怪象，不是攻击信号。归一化把它们标成 `event_type=capture_anomaly`，
+    # 于是「协议异常」规则不再对它们告警 —— 改由状态页的「采集质量」灯统计（丢包意味着漏检，
+    # 所以数据一条不丢，只换分类）。名单是 Zeek 自己的稳定异常名，可用环境变量改。
+    # 2026-10 实测：这批名占了全部 weird 的 ~87%，一刀切命中「协议异常」会让 5 分钟窗口
+    # 产出 75~84 条摘要（约占全部摘要一半）。
+    zeek_capture_weird_names: str = (
+        "possible_split_routing,data_before_established,truncated_tcp_payload,"
+        "syn_inside_connection,window_recision,data_after_reset,inappropriate_fin"
+    )
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
         # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。

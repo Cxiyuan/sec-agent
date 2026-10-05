@@ -3,7 +3,7 @@
 只跑 NDR 栈。全部探测都 monkeypatch 掉（不连 ES/Redis/HTTP/DB），钉住：
 
 - 判据边界（5/30 分钟、2/15 分钟、green/yellow/red、未配置 ≠ 坏了）；
-- 七个 key 一个不少，且**任一探测抛异常只影响它自己那盏灯**；
+- 八个 key 一个不少，且**任一探测抛异常只影响它自己那盏灯**；
 - 30 秒缓存生效（页面 15 秒轮询，不能每轮都真探一遍）。
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-ALL_KEYS = ("zeek", "wazuh", "redis", "logstash", "elasticsearch", "normalizer", "agent")
+ALL_KEYS = ("zeek", "capture", "wazuh", "redis", "logstash", "elasticsearch", "normalizer", "agent")
 
 
 @pytest.fixture(scope="module")
@@ -126,6 +126,11 @@ def _patch_all(hc: ModuleType, monkeypatch: pytest.MonkeyPatch, **overrides: Any
     defaults = {
         "_es_health": lambda: ("green", "green · 1 节点 · 未分配 0"),
         "_es_freshness": lambda: {"zeek_age": 10.0, "wazuh_age": 60.0, "any_age": 5.0, "error": ""},
+        "_capture_stats": lambda: {
+            "count": 100,
+            "top": [("possible_split_routing", 60), ("data_before_established", 40)],
+            "error": "",
+        },
         "_redis_client": lambda: _FakeRedis(),
     }
     defaults.update(overrides)
@@ -137,12 +142,30 @@ def _patch_all(hc: ModuleType, monkeypatch: pytest.MonkeyPatch, **overrides: Any
         hc.health, "redis_memory", lambda _c: {"used": 100, "max": 1000, "perc": 10.0}
     )
     monkeypatch.setattr(hc.health, "describe", lambda _m: "100/1000（10%）")
-    monkeypatch.setattr(hc.logstash_route, "pipeline_runtime", lambda: {"alive": True, "reloads_failures": 0, "events_in": 5, "events_out": 5})
-    monkeypatch.setattr(hc.wazuh_route, "probe_status", lambda: {"reachable": True, "version": "v4.14.8", "detail": "连通"})
+    monkeypatch.setattr(
+        hc.logstash_route,
+        "pipeline_runtime",
+        lambda: {"alive": True, "reloads_failures": 0, "events_in": 5, "events_out": 5},
+    )
+    monkeypatch.setattr(
+        hc.wazuh_route,
+        "probe_status",
+        lambda: {"reachable": True, "version": "v4.14.8", "detail": "连通"},
+    )
     monkeypatch.setattr(hc.wazuh_route, "ingest_stats", lambda: {"alerts": 1187})
-    monkeypatch.setattr(hc.push, "load_config", lambda _db=None: {"url": "http://agent:8000/x", "enabled": True})
+    monkeypatch.setattr(
+        hc.push, "load_config", lambda _db=None: {"url": "http://agent:8000/x", "enabled": True}
+    )
     monkeypatch.setattr(hc.push, "is_on", lambda _cfg: True)
-    monkeypatch.setattr(hc.push, "status", lambda _c: {"last_success_at": "2026-10-04T10:00:00+00:00", "undelivered": 3, "last_error": ""})
+    monkeypatch.setattr(
+        hc.push,
+        "status",
+        lambda _c: {
+            "last_success_at": "2026-10-04T10:00:00+00:00",
+            "undelivered": 3,
+            "last_error": "",
+        },
+    )
 
 
 def test_collect_returns_all_seven_components_ok(
@@ -158,6 +181,50 @@ def test_collect_returns_all_seven_components_ok(
     assert "5 秒前" in items["normalizer"]["detail"]
     assert "1187" in items["wazuh"]["detail"]
     assert "未投递 3" in items["agent"]["detail"]
+    # 采集质量灯：条数 + 最常见的异常名都在 detail 里
+    assert "100 条" in items["capture"]["detail"]
+    assert "possible_split_routing 60" in items["capture"]["detail"]
+
+
+@pytest.mark.parametrize(
+    ("count", "want"),
+    [
+        (0, "ok"),
+        (4999, "ok"),
+        (5000, "degraded"),
+        (19999, "degraded"),
+        (20000, "down"),
+        (None, "unknown"),
+    ],
+)
+def test_judge_capture(hc: ModuleType, count: int | None, want: str) -> None:
+    """采集类协议异常的数量判据（阈值 5000/20000）：突增 = 采集在丢包（会漏检）。"""
+    assert hc.judge_capture(count, 5000, 20000) == want
+
+
+def test_capture_light_degrades_on_probe_failure(
+    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """读不到统计时只影响这盏灯（不把整页拖成不可用）。"""
+    _patch_all(
+        hc, monkeypatch, _capture_stats=lambda: {"count": None, "top": [], "error": "es 超时"}
+    )
+    items = {item["key"]: item for item in hc._collect()["items"]}
+    assert items["capture"]["state"] == "unknown"
+    assert "es 超时" in items["capture"]["detail"]
+    assert [k for k, v in items.items() if v["state"] != "ok"] == ["capture"]
+
+
+def test_capture_yellow_when_over_threshold(
+    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_all(
+        hc,
+        monkeypatch,
+        _capture_stats=lambda: {"count": 9999, "top": [], "error": ""},
+    )
+    items = {item["key"]: item for item in hc._collect()["items"]}
+    assert items["capture"]["state"] == "degraded"
 
 
 def test_one_probe_failure_only_affects_its_own_light(

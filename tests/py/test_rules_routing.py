@@ -21,7 +21,7 @@ import samples
 from app.config import settings as real_settings
 from app.ingestion.normalizer import normalize_zeek
 from app.rules import builtin
-from app.rules.engine import build_rule_index
+from app.rules.engine import build_rule_index, match_rule
 from app.schemas import UnifiedLog
 
 
@@ -31,6 +31,35 @@ def _rule(field: str, *, value: str = "x", op: str = "eq") -> dict:
         "source": "test",
         "conditions": {"logic": "and", "rules": [{"field": field, "op": op, "value": value}]},
     }
+
+
+def test_weird_name_routes_to_weird_only() -> None:
+    """`weird_name` 只挂在 weird 日志上（其它类型恒空，不该被求值）。"""
+    index = build_rule_index([_rule("weird_name")])
+    assert [r["name"] for r in index["types"]["weird"]] == ["t-weird_name"]
+    assert index["wild"] == []
+
+
+def test_capture_anomaly_not_matched_by_protocol_anomaly_rule() -> None:
+    """采集类异常不进「协议异常」规则 —— 2026-10 实测它们占全部 weird 的 ~87%。
+
+    归一化把这类名字标成 `event_type=capture_anomaly`（见 normalizer._capture_weird），
+    内置「协议异常」只认 `protocol_anomaly`，所以噪声不再占摘要额度；
+    采集质量改由状态页的「采集质量」灯统计。
+    """
+    rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-协议异常")
+    capture = UnifiedLog(
+        source_system="zeek",
+        ts=datetime.now(UTC),
+        event_type="capture_anomaly",
+        log_type="weird",
+        weird_name="possible_split_routing",
+    )
+    assert match_rule(rule, capture) is False
+    protocol = capture.model_copy(
+        update={"event_type": "protocol_anomaly", "weird_name": "bad_HTTP_request"}
+    )
+    assert match_rule(rule, protocol) is True
 
 
 def test_web_fields_route_to_http_and_wazuh() -> None:

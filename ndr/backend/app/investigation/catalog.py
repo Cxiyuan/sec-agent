@@ -76,6 +76,14 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "keyword",
         "desc": "连接状态 S0/SF/REJ…（仅 Zeek conn 日志有）",
     },
+    "weird_name": {
+        "path": "weird_name",
+        "kind": "keyword",
+        "desc": (
+            "Zeek weird.log 的异常名（如 bad_HTTP_request / possible_split_routing）；仅 weird 日志有。"
+            "采集类异常（镜像口丢包/非对称路由/offload）会被归一化标成 capture_anomaly"
+        ),
+    },
     "hostname": {
         "path": "hostname",
         "kind": "keyword",
@@ -265,6 +273,7 @@ SUMMARY_FIELDS: list[str] = [
     "dst_port",
     "protocol",
     "conn_state",
+    "weird_name",
     "hostname",
     "method",
     "query",
@@ -308,6 +317,7 @@ AGG_FIELDS: tuple[str, ...] = (
     "log_type",
     "event_type",
     "conn_state",
+    "weird_name",
     "hostname",
     "method",
     "status_code",

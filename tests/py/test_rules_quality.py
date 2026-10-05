@@ -158,6 +158,35 @@ def test_weird_maps_to_protocol_and_tls_anomaly(mods: dict[str, Any]) -> None:
         assert _entry(mods, {**samples.WEIRD, "name": name}, "weird").event_type == "tls_anomaly"
 
 
+def test_capture_weird_maps_to_capture_anomaly(mods: dict[str, Any]) -> None:
+    """采集类异常单列一类：不进「协议异常」规则，只做采集质量的健康指标。
+
+    2026-10 实机实测：`possible_split_routing` / `data_before_established` / `truncated_tcp_payload`
+    这类（镜像口丢包 / 非对称路由 / 网卡 offload）占全部 weird 的 ~87%，一刀切命中
+    「协议异常」会让一个 5 分钟窗口产出 75~84 条摘要（约占全部摘要一半）。
+    它们仍是采集质量的信号（丢包=漏检），所以只换分类、**数据一条不丢**。
+    """
+    for name in (
+        "possible_split_routing",
+        "data_before_established",
+        "truncated_tcp_payload",
+        "SYN_inside_connection",
+        "window_recision",
+        "data_after_reset",
+        "inappropriate_FIN",
+    ):
+        entry = _entry(mods, {**samples.WEIRD, "name": name}, "weird")
+        assert entry.event_type == "capture_anomaly", name
+        assert entry.weird_name == name
+    # 大小写不敏感（Zeek 自己就是 SYN_inside_connection 这种混合写法）
+    assert (
+        _entry(mods, {**samples.WEIRD, "name": "POSSIBLE_SPLIT_ROUTING"}, "weird").event_type
+        == "capture_anomaly"
+    )
+    # 异常名只属于 weird 日志（其它类型恒空，改名不会串到别处）
+    assert _entry(mods, samples.CONN, "conn").weird_name == ""
+
+
 def test_cert_self_signed_from_nested_x509(mods: dict[str, Any]) -> None:
     """x509 的签发者嵌套在 certificate.issuer 下；subject == issuer 判自签。"""
     doc = samples.envelope(samples.X509, "x509", "/logs/x509.log")

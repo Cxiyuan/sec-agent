@@ -696,14 +696,14 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
     query = str(doc.get("query") or uri or "")
     extra = _http_fields(doc, log_type, src_ip)
     status_code = _to_int(doc.get("status_code"))
+    # weird.log 的异常名（只在这种日志上有）：决定 event_type 是协议异常还是**采集类异常**
+    weird_name = str(doc.get("name") or "") if log_type == "weird" else ""
     event_type = (
         _http_event_type(
             str(extra["method"]), str(extra["uri_path"]), str(extra["content_type"]), status_code
         )
         if log_type == "http"
-        else _zeek_event_type(
-            log_type, note, conn_state, doc.get("name") if log_type == "weird" else None
-        )
+        else _zeek_event_type(log_type, note, conn_state, weird_name)
     )
 
     return UnifiedLog(
@@ -719,6 +719,8 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
         conn_state=str(conn_state or ""),  # 留给策略层判“是否真建立会话”（归一化时已读取）
+        # Zeek weird.log 的异常名（其它日志恒空）：「协议异常」与「采集类异常」靠它区分
+        weird_name=weird_name,
         # Zeek 连接 UID（同一跳内 http/ssl/dns/files ↔ conn 关联；中继前后跳是两条连接）
         uid=str(doc.get("uid") or ""),
         # 中继链路位置（只读中继清单，stateless；见 relay_nodes.py）
@@ -837,6 +839,27 @@ def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
     )
 
 
+@lru_cache(maxsize=4)
+def _capture_weird_names(raw: str) -> frozenset[str]:
+    """把 `ST_ZEEK_CAPTURE_WEIRD_NAMES` 解析成小写集合（按文本缓存，逐条事件都会问）。"""
+    return frozenset(part.strip().lower() for part in str(raw or "").split(",") if part.strip())
+
+
+def _capture_weird(name: str) -> bool:
+    """这条 weird 是「采集侧异常」还是「协议异常」？
+
+    为什么单列一类（2026-10 实机实测）：`possible_split_routing` / `data_before_established` /
+    `truncated_tcp_payload` 这类是**镜像口丢包 / 非对称路由 / 网卡 offload** 的痕迹，不是攻击信号，
+    但它们占全部 weird 的 ~87%；一刀切命中「协议异常」会让一个 5 分钟窗口产出 75~84 条摘要
+    （约占全部摘要一半），把真该看的挤掉。所以归成 `capture_anomaly`：**数据一条不丢**，
+    只是不再当告警 —— 改由状态页的「采集质量」灯统计（丢包=漏检，还是得看得见）。
+    """
+    text = str(name or "").strip().lower()
+    if not text:
+        return False
+    return text in _capture_weird_names(settings.zeek_capture_weird_names)
+
+
 def _zeek_event_type(
     log_type: str, note: str | None, conn_state: str | None, weird_name: str | None = None
 ) -> str:
@@ -879,6 +902,9 @@ def _zeek_event_type(
         # protocol_anomaly / tls_anomaly 只能从 weird.log 的名字里出；否则内置
         # 「协议异常」「TLS异常」两规则在本部署永不触发（2026-10 规则评审 P0-5）。
         name = str(weird_name or "").lower()
+        if _capture_weird(name):
+            # 采集侧异常：不是攻击信号，而是「镜像口丢包/非对称路由/网卡 offload」的痕迹
+            return "capture_anomaly"
         if any(k in name for k in ("ssl", "tls", "cert")):
             return "tls_anomaly"
         return "protocol_anomaly"

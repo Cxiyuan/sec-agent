@@ -112,6 +112,16 @@ class Settings(BaseSettings):
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
     zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"
     zeek_ops_log_types: str = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"
+    # Zeek weird.log 里属于「采集侧异常」的名字（逗号分隔）：镜像口丢包 / 非对称路由 / 网卡 offload
+    # 造成的协议怪象，不是攻击信号。归一化把它们标成 `event_type=capture_anomaly`，
+    # 于是「协议异常」规则不再对它们告警 —— 改由状态页的「采集质量」灯统计（丢包意味着漏检，
+    # 所以数据一条不丢，只换分类）。名单是 Zeek 自己的稳定异常名，可用环境变量改。
+    # 2026-10 实测：这批名占了全部 weird 的 ~87%，一刀切命中「协议异常」会让 5 分钟窗口
+    # 产出 75~84 条摘要（约占全部摘要一半）。
+    zeek_capture_weird_names: str = (
+        "possible_split_routing,data_before_established,truncated_tcp_payload,"
+        "syn_inside_connection,window_recision,data_after_reset,inappropriate_fin"
+    )
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
         # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
@@ -209,6 +219,11 @@ class Settings(BaseSettings):
     # 进程内缓存：页面 15 秒轮询，组件探测与 24h 聚合都不允许穿透到 ES/外部 API。
     status_probe_cache_seconds: int = 30  # 组件健康 + ES 新鲜度探测 + 基线总览（/api/baseline）
     status_agg_cache_seconds: int = 300  # 24h 流量 / 协议占比聚合
+    # 「采集质量」灯：近 15 分钟采集类协议异常（`event_type=capture_anomaly`）的条数阈值。
+    # 实测木环境常态约 3 千条/15 分钟（多为镜像口/非对称路由痕迹）；突增说明采集质量在退化
+    # （丢包 = 漏检）。0 = 该项不判黄/红。
+    capture_anomaly_warn_15m: int = 5000
+    capture_anomaly_crit_15m: int = 20000
     # 「24h 协议分析占比」只统计**协议识别类**日志（每个协议一个日志流）。
     # 为什么不直接把 log_type 全丢进去：conn/weird/files 是流记录与异常、syslog/wazuh
     # 是主机日志、x509/ocsp/pe 是产物元数据——它们混进饼图会把「协议占比」变成
