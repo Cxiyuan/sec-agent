@@ -164,9 +164,7 @@ def _ip_expr() -> Any:
     return func.regexp_replace(BaselineStat.key, ":[^:]*$", "")
 
 
-def group_rows_by_ip(
-    rows: list[Any], ips: list[str], now: datetime
-) -> list[dict[str, Any]]:
+def group_rows_by_ip(rows: list[Any], ips: list[str], now: datetime) -> list[dict[str, Any]]:
     """把一批 `源IP:维度` 行按 IP 合并（维度放进 `features`），按传入的 `ips` 顺序输出。
 
     纯函数（不碰库），所以单测能直接揿 IPv6 / 排序 / 空组这些边界。
@@ -225,9 +223,7 @@ def _list_by_ip(
             rows = (
                 list(
                     db.scalars(
-                        select(BaselineStat)
-                        .where(ip.in_(ips))
-                        .order_by(BaselineStat.count.desc())
+                        select(BaselineStat).where(ip.in_(ips)).order_by(BaselineStat.count.desc())
                     ).all()
                 )
                 if ips
@@ -329,9 +325,7 @@ def lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
     }
 
 
-def cleanup(
-    retention_days: int | None = None, *, model: Any = BaselineStat
-) -> dict[str, int]:
+def cleanup(retention_days: int | None = None, *, model: Any = BaselineStat) -> dict[str, int]:
     """按 ``updated_at`` 删除长期没再观测过的数值基线键。
 
     为什么必须有（2026-10 实机 QA）：key = ``{src_ip}:{feature}``，被扫过一次的 IP

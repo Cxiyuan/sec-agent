@@ -52,7 +52,9 @@ def _entry(**kw: Any) -> SimpleNamespace:
 
 
 def test_asset_key_prefers_hostname_and_lowercases(asset: ModuleType) -> None:
-    assert asset.asset_key(_entry(hostname="WWW.NCZY.edu.cn", dst_ip="10.0.0.1")) == "www.nczy.edu.cn"
+    assert (
+        asset.asset_key(_entry(hostname="WWW.NCZY.edu.cn", dst_ip="10.0.0.1")) == "www.nczy.edu.cn"
+    )
 
 
 def test_asset_key_falls_back_to_ip_port(asset: ModuleType) -> None:
@@ -102,7 +104,9 @@ def test_window_values_shape(asset: ModuleType) -> None:
     buckets: dict[str, dict[str, Any]] = {}
     for _ in range(4):
         asset.observe_entry(buckets, _entry(hostname="a.example", uri_path="/p"))
-    asset.observe_entry(buckets, _entry(hostname="a.example", real_client_ip="1.1.1.1", uri_path="/q"))
+    asset.observe_entry(
+        buckets, _entry(hostname="a.example", real_client_ip="1.1.1.1", uri_path="/q")
+    )
     values = asset.window_values(buckets)
     assert values["a.example:visits"] == [5.0]
     assert values["a.example:distinct_clients"] == [2.0]

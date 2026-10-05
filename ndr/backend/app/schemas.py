@@ -59,7 +59,9 @@ class UnifiedLog(BaseModel):
     req_headers: str = ""
     resp_headers: str = ""
     referer: str = ""
-    cookie: str = ""  # 截断；请求头值按既定口径原样保留（已接受的风险，见 docs/ndr-collect-plan.md）
+    cookie: str = (
+        ""  # 截断；请求头值按既定口径原样保留（已接受的风险，见 docs/ndr-collect-plan.md）
+    )
     auth_scheme: str = ""  # basic / bearer / jwt（只留方案名，凭证本体不在此字段）
     content_type: str = ""
     user_agent: str = ""

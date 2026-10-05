@@ -69,11 +69,7 @@ class RelayRoleDetector:
                 "proxy": int(counts.get("proxy", 0)),
                 "dns": int(counts.get("dns", 0)),
                 # 角色名由证据多的那类决定；两类都有就都给（同一个地址既做反代又做 DNS 很常见）
-                "roles": [
-                    role
-                    for role in ("proxy", "dns")
-                    if int(counts.get(role, 0)) > 0
-                ],
+                "roles": [role for role in ("proxy", "dns") if int(counts.get(role, 0)) > 0],
             }
         return out
 

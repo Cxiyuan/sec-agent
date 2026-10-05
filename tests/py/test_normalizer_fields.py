@@ -89,7 +89,9 @@ def test_http_xff_and_resp_body() -> None:
 
 
 def test_http_without_xff_is_null() -> None:
-    doc = samples.envelope({k: v for k, v in samples.HTTP.items() if k != "proxied"}, "http", "/logs/http.log")
+    doc = samples.envelope(
+        {k: v for k, v in samples.HTTP.items() if k != "proxied"}, "http", "/logs/http.log"
+    )
     entry = normalize_zeek(doc)
     assert entry is not None
     assert entry.real_client_ip is None

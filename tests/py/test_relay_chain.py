@@ -107,9 +107,7 @@ def test_is_relay_follows_list(relay: ModuleType, set_relays) -> None:
     assert relay.is_relay("192.0.2.77") is False
 
 
-def test_load_reads_pg_only_and_caches(
-    relay: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_reads_pg_only_and_caches(relay: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """只读 PG：库存什么就是什么；invalidate() 之后能看到新值（30 秒 TTL 的失效点）。"""
     session = _Session({relay.KEY: _Row(relay.KEY, {"value": "192.0.2.9"})})
     monkeypatch.setattr(relay, "SessionLocal", lambda: session)
@@ -124,7 +122,9 @@ def test_load_reads_pg_only_and_caches(
     assert relay.is_relay("10.9.9.9") is True
 
 
-def test_load_without_row_means_no_relay(relay: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_without_row_means_no_relay(
+    relay: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(relay, "SessionLocal", lambda: _Session())
     relay.invalidate()
     assert relay.configured() is False
@@ -134,7 +134,9 @@ def test_load_without_row_means_no_relay(relay: ModuleType, monkeypatch: pytest.
 
 def test_save_keeps_detected_roles(relay: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """改清单不能把检测器推算的角色抹掉，反之写角色也不能改清单文本。"""
-    session = _Session({relay.KEY: _Row(relay.KEY, {"value": "10.0.0.1", "roles": {"10.0.0.1": {"proxy": 3}}})})
+    session = _Session(
+        {relay.KEY: _Row(relay.KEY, {"value": "10.0.0.1", "roles": {"10.0.0.1": {"proxy": 3}}})}
+    )
     monkeypatch.setattr(relay, "SessionLocal", lambda: session)
     relay.save(session, "10.0.0.1,10.0.0.2")  # type: ignore[arg-type]
     assert session.rows[relay.KEY].value["value"] == "10.0.0.1,10.0.0.2"
@@ -214,7 +216,9 @@ def test_roles_flush_skips_when_not_configured(
 def test_dedup_passes_direct_and_drops_relay_internal(dedup_mod: ModuleType) -> None:
     dedup = dedup_mod.RelayDedup(visibility_seconds=60)
     assert dedup.decide(_entry(hop="direct")) == "pass"
-    assert dedup.decide(_entry(hop="relay_internal", src_ip="10.0.0.1", dst_ip="10.0.0.2")) == "drop"
+    assert (
+        dedup.decide(_entry(hop="relay_internal", src_ip="10.0.0.1", dst_ip="10.0.0.2")) == "drop"
+    )
     assert dedup.counts["relay_internal_dropped"] == 1
 
 

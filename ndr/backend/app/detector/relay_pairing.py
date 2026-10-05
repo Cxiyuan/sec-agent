@@ -26,7 +26,7 @@
 
 已知取舍（如实记录）：这样一条摘要的 `dst_ips` 是中继（不是源站 IP），真实源站 IP 需要到
 ES 里看同一次访问的后跳文档（`hop=back`）；被访问方基线按 **hostname** 建 key，所以资产归因不受影响。
-""" 
+"""
 
 from __future__ import annotations
 

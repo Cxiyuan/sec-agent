@@ -51,9 +51,17 @@ def _trusted_probe_peer(set_relays) -> None:
 
 
 PROXY_CASES: list[tuple[str, dict, str | None]] = [
-    ("proxied 逗号列表取最左", {"proxied": ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]}, "198.51.100.77"),
+    (
+        "proxied 逗号列表取最左",
+        {"proxied": ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]},
+        "198.51.100.77",
+    ),
     ("RFC7239 for=", {"proxied": ["FORWARDED -> for=10.1.2.3;proto=https"]}, "10.1.2.3"),
-    ("RFC7239 IPv6 带端口", {"proxied": ['FORWARDED -> for="[2001:db8::1]:4711";proto=https']}, "2001:db8::1"),
+    (
+        "RFC7239 IPv6 带端口",
+        {"proxied": ['FORWARDED -> for="[2001:db8::1]:4711";proto=https']},
+        "2001:db8::1",
+    ),
     ("CLIENT-IP", {"proxied": ["CLIENT-IP -> 10.0.0.9"]}, "10.0.0.9"),
     ("IPv4 带端口", {"proxied": ["X-FORWARDED-FOR -> 10.0.0.5:8080"]}, "10.0.0.5"),
     ("VIA 不是客户端地址", {"proxied": ["VIA -> 1.1 nginx"]}, None),
@@ -61,7 +69,11 @@ PROXY_CASES: list[tuple[str, dict, str | None]] = [
     ("单值", {"proxied": ["X-FORWARDED-FOR -> 198.51.100.77"]}, "198.51.100.77"),
     ("裸头字段", {"x-forwarded-for": "203.0.113.7"}, "203.0.113.7"),
     ("裸头字段取最左", {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}, "203.0.113.7"),
-    ("X-Real-IP 进 proxy_headers（站点脚本补的）", {"proxied": ["X-REAL-IP -> 198.51.100.77"]}, "198.51.100.77"),
+    (
+        "X-Real-IP 进 proxy_headers（站点脚本补的）",
+        {"proxied": ["X-REAL-IP -> 198.51.100.77"]},
+        "198.51.100.77",
+    ),
     ("裸 X-Real-IP 单值头", {"x-real-ip": "203.0.113.9"}, "203.0.113.9"),
     ("裸 X-Real-IP 带端口", {"x-real-ip": "203.0.113.9:443"}, "203.0.113.9"),
     ("空集合", {"proxied": []}, None),
@@ -76,7 +88,9 @@ def test_real_client_ip(tag: str, doc: dict, want: str | None) -> None:
 
 def test_untrusted_peer_drops_proxy_headers(set_relays) -> None:
     """对端不在中继清单里 ⇒ 代理头一律不认（fail-closed，防伪造）。"""
-    assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) == "198.51.100.77"
+    assert (
+        normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) == "198.51.100.77"
+    )
     for peer in ("10.9.9.9", "172.16.197.1", None, "", "not-an-ip"):
         assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, peer) is None
     # 清单为空 = 谁都不信（连正确的对端也不信）——PG 里没配就是「网络里没有中继」
@@ -136,7 +150,9 @@ def test_rule_matches_real_client_ip() -> None:
         "name": "unit xff",
         "log_type": "http",
         "severity": "low",
-        "conditions": {"rules": [{"field": "real_client_ip", "op": "eq", "value": "198.51.100.77"}]},
+        "conditions": {
+            "rules": [{"field": "real_client_ip", "op": "eq", "value": "198.51.100.77"}]
+        },
     }
     assert engine.match_rule(rule, log) is True
     other = {

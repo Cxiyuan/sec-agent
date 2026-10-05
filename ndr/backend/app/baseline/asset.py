@@ -44,6 +44,8 @@ FEATURES: tuple[str, ...] = (
 )
 #: 窗口内每个集合保留多少成员（内存优先；只影响「不同 X 数」的上限）
 _SET_LIMIT = 200
+
+
 #: 一个观测区间多少秒（界面展示「平均每区间」用）：与基线落库节奏一致，不写死。
 def window_seconds() -> int:
     return max(1, int(stats_mod.params.flush_seconds()))
@@ -225,9 +227,7 @@ def asset_detail(asset: str) -> dict[str, Any]:
             rows = list(db.scalars(select(AssetStat).where(AssetStat.key.in_(keys))).all())
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读被访问方基线失败：{exc}", "asset": target, "items": []}
-    items = [
-        {"feature": _split(row.key)[1], **stats_mod._state(row, now)} for row in rows
-    ]
+    items = [{"feature": _split(row.key)[1], **stats_mod._state(row, now)} for row in rows]
     items.sort(key=lambda item: item["feature"])
     return {
         "asset": target,
@@ -247,7 +247,9 @@ def snapshot() -> dict[str, Any]:
         with SessionLocal() as db:
             total = int(
                 db.scalar(
-                    select(func.count()).select_from(AssetStat).where(AssetStat.key.like("%:visits"))
+                    select(func.count())
+                    .select_from(AssetStat)
+                    .where(AssetStat.key.like("%:visits"))
                 )
                 or 0
             )
