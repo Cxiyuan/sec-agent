@@ -15,13 +15,14 @@ from app.ingestion.normalizer import normalize_wazuh, normalize_zeek
 
 
 @pytest.fixture(autouse=True)
-def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+def _trusted_probe_peer(set_relays) -> None:
     """``samples.HTTP`` 的 TCP 对端是探针机 —— 真实部署里这个地址就是反向代理。
 
-    2026-10 起代理头只在**直连对端可信**时才算 ``real_client_ip``（见 normalizer）；
-    本文件其余样本不带 ``proxied``，不受影响。
+    2026-10 起代理头只在**直连对端在中继清单里**时才算 ``real_client_ip``，
+    而清单现在**只读 PG**（不再有 `ST_ZEEK_TRUSTED_PROXIES`）；本文件其余样本不带
+    ``proxied``，不受影响。
     """
-    monkeypatch.setattr(settings, "zeek_trusted_proxies", "192.0.2.0/24")
+    set_relays("192.0.2.0/24")
 
 
 @pytest.mark.parametrize("name", sorted(samples.DOCS))

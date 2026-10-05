@@ -38,6 +38,14 @@ class UnifiedLog(BaseModel):
     real_client_ip: str | None = None
     # Zeek 连接状态（S0/REJ/SF…）：用于判定“是否真的建立了会话”（探活/扫描 vs 实际连接）
     conn_state: str = ""
+    # Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（中继的前后跳是两条独立
+    # 连接、uid 不同，所以它只做同一跳内的关联）。Wazuh 侧恒空。
+    uid: str = ""
+    # 中继链路位置（只读中继清单，见 ingestion/relay_nodes.py）：
+    #   direct=不涉及中继；front=目的在中继清单（客户端→中继）；back=来源在中继清单
+    #   （中继→真实目的）；relay_internal=两端都是中继（级联）。检测/画像/资产不处理 back 与
+    #   relay_internal —— 它们与 front 是同一次业务访问的另一跳。
+    hop: str = "direct"
     hostname: str | None = None
     user: str | None = None
     process: str | None = None

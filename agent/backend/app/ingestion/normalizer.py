@@ -19,7 +19,7 @@ from functools import lru_cache
 from typing import Any
 
 from app.config import settings
-from app.ingestion import conn_states, log_types
+from app.ingestion import conn_states, log_types, relay_nodes
 from app.runtime_config import get as runtime_get
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
@@ -427,45 +427,41 @@ _RAW_PROXY_HEADERS = (
     "X-Real-IP",
 )
 
-_trusted_proxy_warnings = 0
-_MAX_TRUSTED_PROXY_WARNINGS = 5
 _untrusted_proxy_warnings = 0
 _MAX_UNTRUSTED_PROXY_WARNINGS = 5
 
 
 def _trusted_proxy_nets() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    """部署环境声明的可信代理网段（`ST_ZEEK_TRUSTED_PROXIES`，逗号/换行分隔）。
+    """中继节点清单（反代/WAF/内网 DNS 转发器）：**只读 PG**，没有就是不认任何中继。
 
-    一个代理就写它自己的 IP（`10.0.0.5`，也接受 `10.0.0.5/32`）。**清单为空 = 不信任
-    任何代理头**（fail-closed）：转发头本来就是客户端自报的，没配就是不可信输入。
-    非法项丢弃并限量告警 —— 这是安全边界配置，写错了要能看见，不能静默放过。
+    解析、缓存与非法项告警全在 `app/ingestion/relay_nodes.py`（30 秒 TTL）。
+    PG 里没这份清单 = 认定网络里没有中继 ⇒ 不信任任何代理头、`hop` 全 `direct`。
     """
-    global _trusted_proxy_warnings
-    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-    raw = str(getattr(settings, "zeek_trusted_proxies", "") or "")
-    for chunk in raw.replace(",", "\n").splitlines():
-        value = chunk.strip()
-        if not value or value.startswith("#"):
-            continue
-        try:
-            nets.append(ipaddress.ip_network(value, strict=False))
-        except ValueError:
-            if _trusted_proxy_warnings < _MAX_TRUSTED_PROXY_WARNINGS:
-                _trusted_proxy_warnings += 1
-                log.warning("ST_ZEEK_TRUSTED_PROXIES 里的项不是合法 IP/CIDR，已忽略：%s", value)
-    return nets
+    return list(relay_nodes.networks())
 
 
 def _is_trusted_proxy(peer_ip: Any) -> bool:
-    """直连对端是否落在可信代理清单里；清单为空 / 对端未知 ⇒ False（fail-closed）。"""
-    text = str(peer_ip or "").strip()
-    if not text:
-        return False
-    try:
-        addr = ipaddress.ip_address(text)
-    except ValueError:
-        return False
-    return any(addr in net for net in _trusted_proxy_nets())
+    """直连对端是否在中继清单里；清单为空 / 对端未知 ⇒ False（fail-closed）。"""
+    return relay_nodes.is_relay(peer_ip)
+
+
+def _relay_hop(src_ip: Any, dst_ip: Any) -> str:
+    """这一跳在中继链路上的位置（stateless，只读中继清单，**不看 XFF**）。
+
+    - `front`：目的在中继清单里 →「客户端 → 中继」这一跳（带客户端原始请求/指纹）
+    - `back` ：来源在中继清单里 →「中继 → 真实目的」这一跳（HTTP/SSL 这类才有 XFF）
+    - `relay_internal`：两端都是中继（级联/中继之间），检测与基线一律不处理
+    - `direct`：与中继无关
+    """
+    src_relay = relay_nodes.is_relay(src_ip)
+    dst_relay = relay_nodes.is_relay(dst_ip)
+    if src_relay and dst_relay:
+        return "relay_internal"
+    if dst_relay:
+        return "front"
+    if src_relay:
+        return "back"
+    return "direct"
 
 
 def _is_ip(value: str) -> bool:
@@ -714,6 +710,10 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
         conn_state=str(conn_state or ""),  # 留给策略层判“是否真建立会话”（归一化时已读取）
+        # Zeek 连接 UID（同一跳内 http/ssl/dns/files ↔ conn 关联；中继前后跳是两条连接）
+        uid=str(doc.get("uid") or ""),
+        # 中继链路位置（只读中继清单，stateless；见 relay_nodes.py）
+        hop=_relay_hop(src_ip, dst_ip),
         hostname=_str_or_none(doc.get("host")) or _str_or_none(doc.get("server_name")),
         user=doc.get("user") or doc.get("uid_owner"),
         query=query,

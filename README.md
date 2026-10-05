@@ -251,8 +251,10 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     `log_type`、各协议分析器字段是否齐全、HTTP 请求体有没有落进 http.log、归一化后的
     `log_type`/`event_type` 与内置规则的命中情况；反向代理场景的原始客户端 IP 走 `http.log` 的
     `proxied` → 归一化字段 `real_client_ip`（无代理头时为 NULL，`src_ip` 仍是 TCP 对端），
-    **只有直连对端落在 `ST_ZEEK_TRUSTED_PROXIES` 里才认这些头**（留空 = 一律不认，防伪造；
-    `X-Real-IP` 已并入 Zeek 的采集清单，四层代理的 PROXY protocol 见 `ndr/zeek/README.md`），
+    **只有直连对端落在「中继节点清单」里才认这些头**（清单在**界面「监控网段」页**维护、存 PG，
+    逗号/换行分隔的 IP/CIDR；**没配 = 一律不认**，防伪造。2026-10 起不再用 `ZEEK_TRUSTED_PROXIES`
+    环境变量，升级后要在界面重新录入）；`X-Real-IP` 已并入 Zeek 的采集清单，四层代理的
+    PROXY protocol 见 `ndr/zeek/README.md`），
     响应体也采集（`resp_body` + `resp_body_len`，后者是整条响应体的字节数）。逐条清单见
     [`ndr/zeek/README.md`](ndr/zeek/README.md) 的「上线后专项检查」。
     **轮转与清理口径**：轮转文件名带时分秒（`conn.2026-10-01-08-00-00.log`），同一天多次重启
@@ -375,7 +377,7 @@ NDR 线路（采集与检测）：
 | `ST_ZEEK_INTERFACE` | 空 | 抓包网卡的兜底名。**留空 = 采集器自动取第一块物理网卡**（界面「监控网段」页保存的值优先；下拉里只列**物理网卡**）。网卡名是客户环境的东西（ens192/ens224/eth0…每家不同），所以产品不写死默认值 |
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「监控网段」页写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
-| `ST_ZEEK_TRUSTED_PROXIES` | 空 | **可信代理白名单**（逗号分隔的 IP/CIDR）：只有直连对端在清单里，才承认 `X-Forwarded-For` / `X-Real-IP` 里的客户端地址（`real_client_ip`）；**留空 = 不认任何代理头**（fail-closed）。安全锚点，只从部署环境给（`.env` 的 `ZEEK_TRUSTED_PROXIES`），界面无入口 |
+| —— | —— | 中继节点清单（反代 / WAF / 内网 DNS 转发器）**不是环境变量**：在界面「监控网段」页维护、存 PG（`SystemConfig.zeek.relay_nodes`）。它同时决定「信不信代理头（`real_client_ip`）」与「哪些跳按中继去重」；**没配 = 认定网络里没有中继**（不认代理头、`hop` 全 `direct`、不配对）|
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
 | `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `WAZUH_API_*` 传入 |
 | `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |

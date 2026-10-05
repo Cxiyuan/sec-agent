@@ -163,7 +163,21 @@ FIELDS: dict[str, dict[str, Any]] = {
         "path": "real_client_ip",
         "kind": "ip",
         "desc": "真实客户端 IP：代理头（X-Forwarded-For/Forwarded/Client-IP）解析出的最左地址；"
-        "没带代理头时为 NULL（src_ip 仍是 TCP 对端，二者可能不同）",
+        "只有直连对端在中继清单里才认（清单在界面「监控网段」页维护，存 PG），否则为 NULL"
+        "（src_ip 仍是 TCP 对端，二者可能不同）",
+    },
+    "uid": {
+        "path": "uid",
+        "kind": "keyword",
+        "desc": "Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（拿字节/连接状态/时长）；"
+        "注意它只能关联**同一跳** —— 中继的前后跳是两条独立连接、uid 不同。Wazuh 侧为空",
+    },
+    "hop": {
+        "path": "hop",
+        "kind": "keyword",
+        "desc": "中继链路位置：direct=不涉及中继；front=目的在中继清单（客户端→中继）；"
+        "back=来源在中继清单（中继→真实目的）；relay_internal=两端都是中继。"
+        "检测/画像/资产只处理 front 与 direct",
     },
     # ---------- TLS ----------
     "ja3": {"path": "ja3", "kind": "keyword", "desc": "TLS 客户端指纹"},

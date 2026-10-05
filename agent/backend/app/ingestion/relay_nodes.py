@@ -1,0 +1,193 @@
+"""中继节点清单（反向代理 / WAF / 内网 DNS 转发器）：**只读 PG，没有就是不认任何中继**。
+
+为什么只放 PG（用户 2026-10 定的口径）：这份清单同时决定两件事 ——
+1. **信不信代理头**（直连对端在清单里才认 XFF，落到 `real_client_ip`）；
+2. **哪些跳要按中继去重**（`hop=front/back`，见 `normalizer` 与检测器的中继配对层）。
+它是随网络环境变化的**数据**，该由运维在「监控网段」页随改随生效，不固化在部署环境变量里，
+也不设环境变量兜底。
+
+**fail-closed**：PG 里没有这份清单 = **认定网络里没有中继** —— 不信任任何代理头
+（`real_client_ip` 恒空）、所有事件 `hop=direct`、不做配对与去重。
+
+存储（`SystemConfig.zeek.relay_nodes`）：``{"value": "<清单文本>", "roles": {...}, "detected_at": ...}``
+- `value`：IP 或 CIDR，逗号/换行分隔，`#` 注释行；
+- `roles` / `detected_at`：**由检测器自动推算后回写**（本模块只读，不写）。
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import threading
+import time
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.db.base import SessionLocal
+from app.db.models import SystemConfig
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
+
+#: SystemConfig 键名（界面「监控网段」页维护）
+KEY = "zeek.relay_nodes"
+#: 清单缓存 TTL：逐条事件都会问「这个对端是不是中继」，必须缓存；写入时立即失效。
+CACHE_TTL_SECONDS = 30.0
+#: 非法项的告警次数上限（清单是安全边界配置，写错要看得见，但不能刷爆日志）
+_MAX_WARNINGS = 5
+
+_Net = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+_lock = threading.Lock()
+_cache: dict[str, Any] = {"at": 0.0, "text": "", "nets": (), "roles": {}, "detected_at": ""}
+_warnings = 0
+
+
+def parse(text: str) -> tuple[_Net, ...]:
+    """把清单文本解析成网段集合。非法项丢弃并限量告警（不静默、不整体失败）。"""
+    global _warnings
+    nets: list[_Net] = []
+    for chunk in str(text or "").replace(",", "\n").splitlines():
+        value = chunk.strip()
+        if not value or value.startswith("#"):
+            continue
+        try:
+            nets.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            if _warnings < _MAX_WARNINGS:
+                _warnings += 1
+                log.warning("中继清单里的项不是合法 IP/CIDR，已忽略：%s", value)
+    return tuple(nets)
+
+
+def _load() -> dict[str, Any]:
+    """真去读库（不缓存）。读不到按「没有中继」处理，绝不让归一化挂掉。"""
+    try:
+        with SessionLocal() as db:
+            row = db.get(SystemConfig, KEY)
+            payload = dict((row.value or {}) if row is not None else {})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("读取中继清单失败（按「没有中继」处理）: %s", exc)
+        payload = {}
+    text = str(payload.get("value") or "")
+    roles = payload.get("roles") if isinstance(payload.get("roles"), dict) else {}
+    return {
+        "text": text,
+        "nets": parse(text),
+        "roles": roles or {},
+        "detected_at": str(payload.get("detected_at") or ""),
+    }
+
+
+def _snapshot() -> dict[str, Any]:
+    now = time.monotonic()
+    if now - float(_cache.get("at") or 0.0) > CACHE_TTL_SECONDS:
+        fresh = _load()
+        with _lock:
+            _cache.update({**fresh, "at": now})
+    return dict(_cache)
+
+
+def invalidate() -> None:
+    """清单写入后立即失效缓存（下一次读取就重新读库）。"""
+    with _lock:
+        _cache["at"] = 0.0
+
+
+def raw_text() -> str:
+    """清单原文（界面回显用）。"""
+    return str(_snapshot().get("text") or "")
+
+
+def networks() -> tuple[_Net, ...]:
+    """清单解析后的网段集合（热路径用，带 30 秒缓存）。"""
+    return tuple(_snapshot().get("nets") or ())
+
+
+def roles() -> dict[str, Any]:
+    """检测器自动推算的角色与证据计数（界面只读展示）。"""
+    value = _snapshot().get("roles")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def detected_at() -> str:
+    return str(_snapshot().get("detected_at") or "")
+
+
+def configured() -> bool:
+    """是否配了中继清单。False = 系统认定「网络里没有中继」（不认代理头、不做去重）。"""
+    return bool(raw_text().strip())
+
+
+def is_relay(ip: Any) -> bool:
+    """这个地址是不是中继节点（直连对端可信 / 该跳需要按中继处理）。"""
+    text = str(ip or "").strip()
+    if not text:
+        return False
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks())
+
+
+# ---------- 写（界面维护 + 检测器回写角色） ----------
+
+
+def validate(text: str) -> list[dict[str, str]]:
+    """校验清单文本：每一项都必须是合法 IP 或 CIDR。返回字段错误清单（空 = 合法）。"""
+    errors: list[dict[str, str]] = []
+    for chunk in str(text or "").replace(",", "\n").splitlines():
+        value = chunk.strip()
+        if not value or value.startswith("#"):
+            continue
+        try:
+            ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            errors.append({"field": "relay_nodes", "msg": f"不是合法 IP / CIDR：{value}"})
+    return errors
+
+
+def _payload(row: SystemConfig | None) -> dict[str, Any]:
+    return dict((row.value or {}) if row is not None else {})
+
+
+def save(db: Session, text: str) -> None:
+    """保存清单文本（保留检测器回写的 roles / detected_at）。"""
+    row = db.get(SystemConfig, KEY)
+    if row is None:
+        row = SystemConfig(key=KEY, value={})
+        db.add(row)
+    payload = _payload(row)
+    payload["value"] = str(text or "")
+    row.value = payload
+    db.commit()
+    invalidate()
+
+
+def save_roles(db: Session, roles: dict[str, Any], *, detected_at_value: str) -> None:
+    """检测器把自动推算的角色写回同一个键（**不覆盖** `value`）。"""
+    row = db.get(SystemConfig, KEY)
+    if row is None:
+        # 没有清单就没有推算对象；这里只建一个只带角色信息的行（value 为空）
+        row = SystemConfig(key=KEY, value={})
+        db.add(row)
+    payload = _payload(row)
+    payload["roles"] = roles
+    payload["detected_at"] = detected_at_value
+    row.value = payload
+    db.commit()
+    invalidate()
+
+
+def describe() -> dict[str, Any]:
+    """给界面用的一份快照：清单原文、解析出的数量、角色推算结果、是否已配置。"""
+    snap = _snapshot()
+    nets = tuple(snap.get("nets") or ())
+    return {
+        "text": str(snap.get("text") or ""),
+        "count": len(nets),
+        "configured": bool(str(snap.get("text") or "").strip()),
+        "roles": dict(snap.get("roles") or {}),
+        "detected_at": str(snap.get("detected_at") or ""),
+    }

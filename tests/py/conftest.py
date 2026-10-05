@@ -50,3 +50,21 @@ def stack(request: pytest.FixtureRequest) -> str:
 @pytest.fixture(scope="session")
 def backend_dir(stack: str) -> Path:
     return ROOT / stack / "backend"
+
+
+@pytest.fixture
+def set_relays(monkeypatch: pytest.MonkeyPatch):
+    """把「中继节点清单」设成给定文本（供 XFF 信任 / `hop` 判定的测试用）。
+
+    清单现在**只读 PG**（`app/ingestion/relay_nodes.py`，不再有 `ST_ZEEK_TRUSTED_PROXIES`），
+    所以测试不能再 patch settings，改为直接打补丁 `networks()`：`is_relay()` 就是靠它判定的。
+    """
+    import importlib
+
+    relay = importlib.import_module("app.ingestion.relay_nodes")
+
+    def _apply(text: str) -> None:
+        monkeypatch.setattr(relay, "networks", lambda: relay.parse(text))
+        relay.invalidate()
+
+    return _apply

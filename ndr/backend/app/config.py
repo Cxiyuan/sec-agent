@@ -112,10 +112,6 @@ class Settings(BaseSettings):
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
     zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"
     zeek_ops_log_types: str = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"
-    # 可信反向代理（逗号/换行分隔；填代理自己的 IP，或代理所在网段如 10.0.0.0/8）：
-    # 只有直连对端落在这里，代理头里的客户端地址才被认成 real_client_ip。
-    # 留空 = 不信任任何代理头（fail-closed，见 ingestion/normalizer.py）。
-    zeek_trusted_proxies: str = ""
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
         # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。

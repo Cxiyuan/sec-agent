@@ -45,9 +45,9 @@ TRUSTED_PEER = "192.0.2.77"
 
 
 @pytest.fixture(autouse=True)
-def _trusted_probe_peer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """本文件测的是「直连对端是可信代理」时的解析口径（不可信的情形单独测）。"""
-    monkeypatch.setattr(settings, "zeek_trusted_proxies", "192.0.2.0/24")
+def _trusted_probe_peer(set_relays) -> None:
+    """本文件测的是「直连对端是中继（可信代理）」时的解析口径（不可信的情形单独测）。"""
+    set_relays("192.0.2.0/24")
 
 
 PROXY_CASES: list[tuple[str, dict, str | None]] = [
@@ -74,17 +74,17 @@ def test_real_client_ip(tag: str, doc: dict, want: str | None) -> None:
     assert normalizer._real_client_ip(doc, TRUSTED_PEER) == want
 
 
-def test_untrusted_peer_drops_proxy_headers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """对端不可信 ⇒ 代理头一律不认（fail-closed，防伪造）。"""
+def test_untrusted_peer_drops_proxy_headers(set_relays) -> None:
+    """对端不在中继清单里 ⇒ 代理头一律不认（fail-closed，防伪造）。"""
     assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) == "198.51.100.77"
     for peer in ("10.9.9.9", "172.16.197.1", None, "", "not-an-ip"):
         assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, peer) is None
-    # 未配置可信代理 = 谁都不信（连正确的对端也不信）
-    monkeypatch.setattr(settings, "zeek_trusted_proxies", "")
+    # 清单为空 = 谁都不信（连正确的对端也不信）——PG 里没配就是「网络里没有中继」
+    set_relays("")
     assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) is None
 
 
-def test_trusted_proxies_accepts_host_cidr_and_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trusted_proxies_accepts_host_cidr_and_list(set_relays) -> None:
     doc = {"proxied": PROBE["proxied"]}
     for cfg, peer, want in (
         ("192.0.2.77", "192.0.2.77", "198.51.100.77"),  # 单个代理写自己的 IP
@@ -95,7 +95,7 @@ def test_trusted_proxies_accepts_host_cidr_and_list(monkeypatch: pytest.MonkeyPa
         ("192.0.2.0/24", "172.16.197.77", None),
         ("not-a-cidr", "192.0.2.77", None),  # 非法项被忽略 ⇒ 等于没配
     ):
-        monkeypatch.setattr(settings, "zeek_trusted_proxies", cfg)
+        set_relays(cfg)
         assert normalizer._real_client_ip(doc, peer) == want, (cfg, peer)
 
 

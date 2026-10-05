@@ -29,6 +29,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.base import get_db
 from app.db.models import SystemConfig, User
+from app.ingestion import relay_nodes
 from app.ingestion.scope import (
     build_bpf,
     monitored_nets,
@@ -37,6 +38,9 @@ from app.ingestion.scope import (
     parse_nets,
     validate_nets,
 )
+from app.workers.log import get_logger
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/zeek", tags=["zeek"])
 
@@ -328,3 +332,51 @@ def set_interface(
         "resp_body_max_bytes": resp_bytes,
         "note": "已下发；采集器看门狗将在约 10 秒内自动重载（期间约 1~2 秒中断抓包）",
     }
+
+
+# ---------- 中继节点清单（反代 / WAF / 内网 DNS 转发器） ----------
+#
+# 单独一个端点，**不挂在网段接口上**：改中继清单不需要动 Zeek 配置，
+# 挂在一起会白白触发一次采集器重载（1~2 秒中断抓包）。
+
+
+class RelayNodesIn(BaseModel):
+    nodes: str = ""
+
+
+@router.get("/relay-nodes")
+def get_relay_nodes(_: Annotated[User, Depends(get_current_user)]):
+    """中继节点清单：**只读 PG**，界面「监控网段」页维护。
+
+    PG 里没有 = 系统认定「网络里没有中继」：不信任任何代理头（`real_client_ip` 恒空）、
+    所有事件 `hop=direct`、不做中继配对与去重。
+    角色（反向代理 / 内网 DNS）由检测器自动推算后回写，这里只读展示（带证据计数）。
+    """
+    return relay_nodes.describe()
+
+
+@router.put("/relay-nodes")
+def set_relay_nodes(
+    body: RelayNodesIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """保存中继清单（IP/CIDR、逗号/换行分隔、`#` 注释）。校验不过 400 + `field_errors`。
+
+    这是**安全边界配置**：改它等于改「谁带来的 XFF 可信」与「哪些跳按中继去重」，
+    所以每次变更都记一条日志。
+    """
+    errors = relay_nodes.validate(body.nodes)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
+    relay_nodes.save(db, body.nodes)
+    snapshot = relay_nodes.describe()
+    log.info("中继节点清单已更新：%d 项（configured=%s）", snapshot["count"], snapshot["configured"])
+    return snapshot
