@@ -34,6 +34,7 @@ from app.detector.history import (
 )
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue, make_blocking_client
+from app.detector.relay_pairing import RelayDedup
 from app.detector.relay_roles import RelayRoleDetector
 from app.ingestion import exclusion, log_types
 from app.ingestion.es_client import build_networks, in_scope
@@ -154,6 +155,9 @@ def run() -> None:
     # 中继角色推算：按实际流量自动判定清单里的地址是「反代/WAF」还是「内网 DNS 转发器」，
     # 周期回写 PG（界面只读展示）；见 detector/relay_roles.py
     relay_roles = RelayRoleDetector()
+    # 中继去重：保留前跳（客户端侧，证据最全）、丢掉后跳（否则同一请求算两次，
+    # 且后跳的 src 是内网中继 → 告警会被归因到代理/DNS 头上）；见 detector/relay_pairing.py
+    relay_dedup = RelayDedup()
     # 判重（第 5 期起）在智能体侧：只有它知道某个事件组分析过没有。本侧只负责投递。
     # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
     leader = Leader(client)
@@ -248,7 +252,18 @@ def run() -> None:
             settings.detector_consume_batch, settings.detector_poll_timeout
         ):
             try:
-                _handle(payload, rules, scopes, freq, agg, handled, stats, engine, relay_roles)
+                _handle(
+                    payload,
+                    rules,
+                    scopes,
+                    freq,
+                    agg,
+                    handled,
+                    stats,
+                    engine,
+                    relay_roles,
+                    relay_dedup,
+                )
             except Exception:
                 # 原来这里 except 后无条件 ack：单条异常即永久丢且不计错误（QA 必修 2）。
                 # 现在转入隔离队列（有上限、可捞回）并计入 dropped.handle_failed。
@@ -294,6 +309,14 @@ def run() -> None:
         push.retry_pending(client, stats)
         # 中继角色推算回写（与统计块同节奏；写失败只记警告，不影响检测）
         relay_roles.maybe_flush()
+        # 中继去重计数也写进基线心跳（同一把 Redis 键）：「行为分析」页要展示，不静默
+        try:
+            client.hset(
+                settings.baseline_stats_key,
+                mapping={key: int(value) for key, value in relay_dedup.counts.items()},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("中继去重计数写入 Redis 失败: %s", exc)
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
@@ -751,6 +774,7 @@ def _handle(
     stats: Counter[str],
     engine: BaselineEngine,
     relay_roles: RelayRoleDetector,
+    relay_dedup: RelayDedup,
 ) -> None:
     """处理单条队列消息。"""
     try:
@@ -787,9 +811,14 @@ def _handle(
         return
     stats["scanned"] += 1
 
-    # ④ 中继角色证据（第 1 步：只看清单内的地址；http/ssl → 反代，dns → DNS 转发）
+    # ④ 中继角色证据（只看清单内的地址；http/ssl → 反代，dns → DNS 转发）
     #    放在排除过滤器之前：角色反映的是「这类协议是否经过该中继」，与用户过滤无关。
     relay_roles.observe(entry)
+    # ⑤ 中继去重（同样在用户过滤之前判定）：保留前跳、丢掉后跳；
+    #    若从未见过该中继的前跳（抓包点只在源站侧），后跳照常处理，不丢数据。
+    if relay_dedup.decide(entry) == "drop":
+        stats["relay_deduped"] += 1
+        return
 
     # ③ 用户自定义排除过滤器前置：命中即丢弃（只计数；ES 仍保留全量）
     #    为什么要前置：这些日志"注定不会被分析"，放在规则之后跑纯属浪费扫描吞吐。

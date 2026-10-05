@@ -192,6 +192,9 @@ class Settings(BaseSettings):
     # 中继角色推算的回写节奏（秒）：检测器按实际流量判定清单里的地址是「反代/WAF」还是
     # 「内网 DNS 转发器」，周期写回 PG（界面只读展示）。见 detector/relay_roles.py
     relay_role_detect_seconds: int = 300
+    # 中继去重的「前跳可见」记忆时长（秒）：后跳在这个窗口内见过该中继的前跳就当重复丢掉；
+    # 从未见过前跳（抓包点只在源站侧）则后跳照常处理，不丢数据。见 detector/relay_pairing.py
+    relay_visibility_seconds: int = 300
 
     # ---- 总览页（/admin/status）需要的采样与缓存 ----
     # 检测器历史采样：每 detector_stats_log_seconds 追加一条，LPUSH + LTRIM 固定条数。
