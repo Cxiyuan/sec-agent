@@ -491,9 +491,10 @@ def _first_ip(text: Any) -> str:
 def _real_client_ip(doc: dict[str, Any], peer_ip: Any = None) -> str | None:
     """解析代理头里的真实客户端 IP；没有（或来源不可信）就返回 None（落库为 NULL）。
 
-    `peer_ip` 是**直连对端**（Zeek 的 `id.orig_h`）：只有它本身是可信代理时才认这些头，
+    `peer_ip` 是**直连对端**（Zeek 的 `id.orig_h`）：只有它本身在**中继节点清单**里
+    （界面「监控网段」页维护、存 PG，见 `ingestion/relay_nodes.py`）时才认这些头，
     否则任何人加一个 `X-Forwarded-For` 就能把客户端地址洗成任意值（规则/画像/检索全被带
-    偏）。未配置可信代理（`ST_ZEEK_TRUSTED_PROXIES` 为空）时一律不认。
+    偏）。**清单为空 = 一律不认**（fail-closed）。
     """
     global _untrusted_proxy_warnings
     raw = doc.get("proxied")
@@ -504,12 +505,20 @@ def _real_client_ip(doc: dict[str, Any], peer_ip: Any = None) -> str | None:
     if not _is_trusted_proxy(peer_ip):
         if _untrusted_proxy_warnings < _MAX_UNTRUSTED_PROXY_WARNINGS:
             _untrusted_proxy_warnings += 1
-            log.warning(
-                "代理头未被信任：直连对端 %s 不在 ST_ZEEK_TRUSTED_PROXIES 里，"
-                "real_client_ip 置空（头值：%s）",
-                peer_ip or "未知",
-                raw,
-            )
+            # 区分两种情形（运维看日志要能直接分清是「没配」还是「配了但漏了这台」）
+            if relay_nodes.configured():
+                log.warning(
+                    "代理头未被信任：直连对端 %s 不在「中继节点清单」里，real_client_ip 置空"
+                    "（头值：%s）—— 若它确实是反向代理/WAF/内网 DNS，请到界面「监控网段」页加入清单",
+                    peer_ip or "未知",
+                    raw,
+                )
+            else:
+                log.warning(
+                    "代理头未被信任：中继节点清单**为空**（界面「监控网段」页未配置），"
+                    "real_client_ip 一律置空（头值：%s）—— 网络里有反代/WAF/内网 DNS 时请先配置清单",
+                    raw,
+                )
         return None
     values = raw if isinstance(raw, (list, tuple)) else [raw]
     for item in values:
