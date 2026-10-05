@@ -9,7 +9,10 @@
 - `visits`：被访问**连接数**（同一连接内的多条日志只算一次）；
 - `requests`：**请求数**（`ST_ASSET_REQUEST_LOG_TYPES`，默认 http,dns）—— 连接数暴增
   （扫描/探测）与请求数暴增（突发负载/CC）是两件事，必须分开看；
-- `distinct_clients`：不同**真实客户端**数（取 `real_client_ip or src_ip`，否则经中继时永远是 1）；
+- `distinct_clients`：不同**真实客户端**数（取 `real_client_ip`，没有才用 `src_ip`）。
+  **真实客户端是一组而不是一个**：WAF/反代的一条长连接会复用/承载很多个客户端 —— 实测
+  `www.nczy.edu.cn` 近 5 分钟 206 个请求只走了 11 条连接，而 XFF 里有 112 个不同客户端；
+  只记一个会把「不同客户端数」恒压成 1（2026-10 实机验收抳出来的缺陷）。
 - `distinct_client_ports`：不同客户端源端口数；
 - `distinct_targets`：不同目标数（HTTP=URI、DNS=域名）。
 
@@ -127,7 +130,11 @@ def observe_entry(records: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
             "hostname": "",
             "ip": "",
             "port": None,
-            "client": "",
+            # 客户端：**真实客户端是一组**，不是一个 —— WAF/反代的一条长连接会复用/承载很多个
+            # 客户端（实测 `www.nczy.edu.cn` 近 5 分钟：206 个请求只走了 11 条连接，而 XFF 里
+            # 有 112 个不同真实客户端）。只记一个会把「不同客户端数」恒压成 1。
+            "clients_real": set(),
+            "client_src": "",
             "client_port": None,
             "targets": set(),
             "requests": 0,
@@ -142,11 +149,14 @@ def observe_entry(records: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
     if not record["ip"]:
         record["ip"] = str(entry.dst_ip or "").strip()
         record["port"] = entry.dst_port or None
-    # 客户端：优先 real_client_ip（中继链路上 src 是代理），没有才用 src_ip
+    # 客户端：优先 real_client_ip（中继链路上 src 是代理），没有才用 src_ip；
+    # real_client_ip 收进集合（一条连接上可能有很多个真实客户端）
     real = str(entry.real_client_ip or "").strip()
+    if real and len(record["clients_real"]) < _SET_LIMIT:
+        record["clients_real"].add(real[:64])
     src = str(entry.src_ip or "").strip()
-    if real or (src and not record["client"]):
-        record["client"] = (real or src)[:64]
+    if src and not record["client_src"]:
+        record["client_src"] = src[:64]
     if record["client_port"] is None and entry.src_port:
         record["client_port"] = int(entry.src_port)
     target = _target_of(entry)
@@ -189,8 +199,12 @@ def finalize(records: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, An
             }
         bucket["visits"] += 1
         bucket["requests"] += int(record.get("requests") or 0)
-        client = str(record.get("client") or "")
-        if client and len(bucket["clients"]) < _SET_LIMIT:
+        # 真实客户端优先（有不只一个就是一组）；一个都没有才回落连接的 src
+        real_clients = record.get("clients_real") or set()
+        fallback = str(record.get("client_src") or "")
+        for client in real_clients if real_clients else ([fallback] if fallback else []):
+            if len(bucket["clients"]) >= _SET_LIMIT:
+                break
             bucket["clients"].add(client)
         client_port = record.get("client_port")
         if client_port and len(bucket["client_ports"]) < _SET_LIMIT:

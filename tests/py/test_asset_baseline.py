@@ -153,6 +153,25 @@ def test_real_client_ip_wins_over_src_ip(asset: ModuleType) -> None:
     assert buckets["a.example"]["clients"] == {"202.120.8.186"}
 
 
+def test_one_connection_can_carry_many_real_clients(asset: ModuleType) -> None:
+    """一条长连接上可以有很多个真实客户端（WAF 复用/承载）——只记一个会把客户端数压成 1。
+
+    实测：`www.nczy.edu.cn` 近 5 分钟 206 个请求只走了 11 条连接，XFF 里却有 112 个不同客户端。
+    """
+    records: dict[str, dict[str, Any]] = {}
+    for i in range(3):
+        asset.observe_entry(
+            records,
+            _entry(
+                uid="K1", log_type="http", hostname="a.example", real_client_ip=f"198.51.100.{i}"
+            ),
+        )
+    buckets, _ = asset.finalize(records)
+    assert buckets["a.example"]["visits"] == 1  # 一条连接 = 一次访问
+    assert buckets["a.example"]["requests"] == 3
+    assert buckets["a.example"]["clients"] == {"198.51.100.0", "198.51.100.1", "198.51.100.2"}
+
+
 def test_many_connections_aggregate_by_asset(asset: ModuleType) -> None:
     """多条连接落到同一资产：访问数按连接算，客户端/端口/目标各自去重。"""
     records: dict[str, dict[str, Any]] = {}
@@ -496,7 +515,7 @@ def test_migrate_asset_semantics_clears_when_version_missing(
     main_mod._migrate_asset_semantics()
     assert len(session.executed) == 1  # 清空旧口径统计
     assert session.commits == 1
-    assert session.added and session.added[0].value == {"value": 2}
+    assert session.added and session.added[0].value == {"value": main_mod._ASSET_SEMANTICS_VERSION}
 
 
 def test_migrate_asset_semantics_upgrades_old_version(
@@ -506,14 +525,16 @@ def test_migrate_asset_semantics_upgrades_old_version(
     session = _MigSession(row=row)
     monkeypatch.setattr(main_mod, "SessionLocal", lambda: session)
     main_mod._migrate_asset_semantics()
-    assert len(session.executed) == 1 and row.value == {"value": 2}
+    assert len(session.executed) == 1 and row.value == {"value": main_mod._ASSET_SEMANTICS_VERSION}
 
 
 def test_migrate_asset_semantics_is_idempotent(
     main_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """版本已到位就不再动库（可重复启动）。"""
-    row = SimpleNamespace(key="asset.semantics_version", value={"value": 2})
+    row = SimpleNamespace(
+        key="asset.semantics_version", value={"value": main_mod._ASSET_SEMANTICS_VERSION}
+    )
     session = _MigSession(row=row)
     monkeypatch.setattr(main_mod, "SessionLocal", lambda: session)
     main_mod._migrate_asset_semantics()
