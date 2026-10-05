@@ -407,7 +407,7 @@ NDR 线路（采集与检测）：
 | `ST_BASELINE_MAX_OBSERVATIONS` | 50000 | 单窗口最多攒多少条画像观测，超了提前落库 |
 | `ST_BASELINE_CACHE_MAX` | 20000 | 进程内数值基线缓存条目上限（超出丢最旧的） |
 | `ST_BASELINE_STATS_KEY` | shentong:baseline:stats | 检测器侧基线计数键（「运行状态」页看活性）。字段分两类：`observed`/`numeric_samples`/`flushes`/`profiles_*`/`anomalies_total` 是**累计**，`numeric_keys_last_round`/`anomalies_last_round` 只反映**上一轮**（名字里带 `last_round`，别当累计读） |
-| `ST_BASELINE_*` / `ST_PROFILE_*`（观测期 / σ / 风险阈值 / 时效 / 时段与路径门槛 / 路径正则 / 保留期… 共 18 项） | 见下面几行的默认值 | **这些可以在界面改**：左侧「行为分析 → 判据参数」直接编辑（写进 `SystemConfig`，后端 30 秒内生效、检测器下一个窗口就用新值，**不需要重启容器**）。环境变量仍是默认值与兜底；界面上标「已改」的就是被后台覆盖过的项 |
+| `ST_BASELINE_*` / `ST_PROFILE_*`（观测期 / σ / 风险阈值 / 时效 / 时段与路径门槛 / 路径正则 / 保留期… 共 18 项） | 见下面几行的默认值 | **这些可以在界面改**：左侧「行为分析」页右上角的 **「分析配置」** 按钮 → 右侧抽屉里编辑（写进 `SystemConfig`，后端 30 秒内生效、检测器下一个窗口就用新值，**不需要重启容器**）。环境变量仍是默认值与兜底；抽屉里标「已改」的就是被后台覆盖过的项 |
 | `ST_BASELINE_RETENTION_DAYS` | 90 | **数值基线保留期**（按 `updated_at` 清理，0 = 不清理）。key 是 `{src_ip}:{feature}`，被扫过一次的 IP（尤其外网/攻击者）会永久留 3 行 —— 以前一行清理逻辑都没有，只增不减（实测 6 小时就 486 个 IP / 1458 行） |
 | `ST_PROFILE_ENABLED` | true | 账号/会话画像开关（关掉则只算数值 2σ） |
 | `ST_PROFILE_MIN_OBS` | 5 | 观测次数不足时只学习、不打分（冷启动） |

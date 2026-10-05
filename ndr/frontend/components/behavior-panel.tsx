@@ -8,6 +8,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Drawer,
   Input,
   Table,
   TableBody,
@@ -32,17 +33,19 @@ import type {
 } from "@/lib/api";
 
 /**
- * 行为分析面板：基线（数值 2σ）与画像（账号/会话）的明细 + 判据参数编辑区。
+ * 行为分析面板（主页面只做展示，配置在右侧抽屉里改）。
  *
- * 四块：
- * 1. **学习进度 / 心跳**：观测期还剩多久、检测器有没有在落库、当前风险 TOP；
- * 2. **参数编辑区**：参数清单由后端给（`GET /api/baseline/config`，带类型/范围/默认值），
- *    前端只负责渲染与提交改动 —— 新增可调参数不用改这里；
- * 3. **画像表**：账号/会话画像（可按类型/名称/风险下限筛选、分页、展开看细节）；
- * 4. **数值基线表**：按 IP/key 浏览每个维度的均值方差与预热状态。
+ * 三块：
+ * 1. **学习进度与检测器心跳**：观测期还剩多久、检测器有没有在落库、当前风险 TOP；
+ * 2. **数值基线 IP 列表**：每个 `源IP:维度` 的均值/方差与状态（判断中 / 观测中）；
+ * 3. **画像列表**：账号/会话画像的风险、时间与状态（判断中 / 观测中）。
  *
- * 为什么页面上要标「判定时间」：风险分是**当前窗口**的值（本轮没理由就归零），
- * 不标时间的话，一条几小时前的陈旧风险看着就像刚刚发生的。
+ * 「分析配置」按钮从右侧滑出抽屉改参数 —— 参数清单由后端给（`GET /api/baseline/config`，
+ * 带类型/范围/默认值），前端只渲染与提交，新增可调参数不用改这里。
+ *
+ * 状态口径：
+ * - 数值基线：过了观测期（`warmed`）= **判断中**（参与 2σ 判定）；否则 **观测中**（只学习）；
+ * - 画像：观测次数达到冷启动门槛（`profile.min_obs`）= **判断中**（已参与打分）；否则 **观测中**。
  */
 
 const SRC = {
@@ -68,6 +71,15 @@ function changed(item: BaselineConfigItem, draft: Record<string, string | boolea
   if (raw === undefined) return false;
   if (item.kind === "bool") return Boolean(raw) !== Boolean(item.value);
   return String(raw) !== String(item.value);
+}
+
+/** 判断中 / 观测中 —— 两态是运维最关心的区分（这维度现在能不能出判定）。 */
+function StateBadge({ judging, hint }: { judging: boolean; hint?: string }) {
+  return (
+    <Badge variant={judging ? "default" : "medium"} title={hint}>
+      {judging ? "判断中" : "观测中"}
+    </Badge>
+  );
 }
 
 /** 画像的时段分布：24 格，颜色按次数深浅（一眼看出「只在上班时间活动」这类形态）。 */
@@ -104,12 +116,7 @@ function Pager({
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return (
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={page <= 0}
-        onClick={() => onPage(page - 1)}
-      >
+      <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => onPage(page - 1)}>
         上一页
       </Button>
       <span>
@@ -159,7 +166,9 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
         <span className="font-mono">{topKeys(row.user_agents, 2).join(" | ") || "-"}</span>
       </p>
       <p className="break-all">
-        <span className="text-muted-foreground">接口路径（{Object.keys(row.paths || {}).length}）：</span>
+        <span className="text-muted-foreground">
+          接口路径（{Object.keys(row.paths || {}).length}）：
+        </span>
         <span className="font-mono">{topKeys(row.paths, 6).join(", ") || "-"}</span>
       </p>
       <div>
@@ -181,6 +190,7 @@ export function BehaviorPanel() {
   const [profiles, setProfiles] = React.useState<BaselineProfilesPayload | null>(null);
   const [numeric, setNumeric] = React.useState<NumericListPayload | null>(null);
   const [auto, setAuto] = React.useState(true);
+  const [configOpen, setConfigOpen] = React.useState(false);
 
   // 画像筛选 / 分页
   const [kind, setKind] = React.useState("account");
@@ -218,14 +228,14 @@ export function BehaviorPanel() {
     ]);
   }
 
-  async function loadConfig() {
-    await loadInto(errs, SRC.config, "/api/baseline/config", applyConfig);
-  }
-
   function applyConfig(data: BaselineConfigPayload) {
     setConfig(data);
     setDraft({});
     setFieldErrs({});
+  }
+
+  async function loadConfig() {
+    await loadInto(errs, SRC.config, "/api/baseline/config", applyConfig);
   }
 
   React.useEffect(() => {
@@ -292,9 +302,7 @@ export function BehaviorPanel() {
       void load();
     } catch (e) {
       if (e instanceof ApiError) {
-        const body = e.body as
-          | { field_errors?: { field: string; msg: string }[] }
-          | undefined;
+        const body = e.body as { field_errors?: { field: string; msg: string }[] } | undefined;
         const map: Record<string, string> = {};
         for (const fe of body?.field_errors ?? []) map[fe.field] = fe.msg;
         setFieldErrs(map);
@@ -316,7 +324,9 @@ export function BehaviorPanel() {
         body: JSON.stringify({ keys }),
       });
       applyConfig(data);
-      setMsg(keys.length ? `已恢复默认：${keys.join("、")}` : `已全部恢复默认（${data.removed ?? 0} 项）`);
+      setMsg(
+        keys.length ? `已恢复默认：${keys.join("、")}` : `已全部恢复默认（${data.removed ?? 0} 项）`,
+      );
       void load();
     } catch (e) {
       setMsg(e instanceof ApiError ? errorText(e.body) : "恢复默认失败");
@@ -326,7 +336,9 @@ export function BehaviorPanel() {
   }
 
   const stats = overview?.stats;
-  const dirty = (config?.items ?? []).some((item) => changed(item, draft));
+  // 画像的「判断中」口径 = 观测次数到了冷启动门槛（后端 detect() 的同一个判据）
+  const minObs = Number(config?.effective?.["profile.min_obs"] ?? 5);
+  const dirtyItems = (config?.items ?? []).filter((item) => changed(item, draft));
   const groups: { title: string; prefix: string; hint: string }[] = [
     {
       title: "数值基线（2σ）",
@@ -344,7 +356,24 @@ export function BehaviorPanel() {
     <div className="space-y-4">
       <PanelError errors={errs} />
 
-      {/* ---------- 1. 学习进度 / 心跳 / 当前风险 ---------- */}
+      {/* 工具条：配置在右侧抽屉里改 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={() => setConfigOpen(true)}>
+          分析配置{dirtyItems.length ? `（${dirtyItems.length} 项未保存）` : ""}
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => void load()}>
+          立即刷新
+        </Button>
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+          每 {REFRESH_SECONDS} 秒自动刷新
+        </label>
+        {overview?.cached ? (
+          <span className="text-xs text-muted-foreground">（总览数据来自后端 30 秒缓存）</span>
+        ) : null}
+      </div>
+
+      {/* ---------- 1. 学习进度与检测器心跳 ---------- */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">学习进度与检测器心跳</CardTitle>
@@ -360,13 +389,17 @@ export function BehaviorPanel() {
               <p className="text-lg font-semibold text-amber-500">{stats?.learning_keys ?? "-"}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">已过观测期（可判偏离）</p>
+              <p className="text-xs text-muted-foreground">判断中（可判偏离）</p>
               <p className="text-lg font-semibold text-emerald-500">{stats?.warmed_keys ?? "-"}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">观测期（{stats?.observe_days ?? "-"} 天）后</p>
+              <p className="text-xs text-muted-foreground">
+                观测期（{stats?.observe_days ?? "-"} 天）后
+              </p>
               <p className="text-sm font-medium">
-                {stats?.next_warm_at ? `${formatDateTime(stats.next_warm_at)} 起有维度毕业` : "暂无数据"}
+                {stats?.next_warm_at
+                  ? `${formatDateTime(stats.next_warm_at)} 起有维度转入判断`
+                  : "暂无数据"}
               </p>
             </div>
           </div>
@@ -404,9 +437,7 @@ export function BehaviorPanel() {
                     <span className="font-mono text-muted-foreground">
                       {topKeys(item.dst_ips, 2).join(", ")}
                     </span>
-                    <span className="text-muted-foreground">
-                      判定 {formatDateTime(item.risk_at)}
-                    </span>
+                    <span className="text-muted-foreground">判定 {formatDateTime(item.risk_at)}</span>
                     <span className="text-muted-foreground">
                       {(item.anomalies || []).slice(0, 2).join("；")}
                     </span>
@@ -414,25 +445,279 @@ export function BehaviorPanel() {
                 ))}
               </ul>
             ) : (
-              <p className="text-xs text-muted-foreground">
-                {overview?.note || "暂无过阈值画像"}
-              </p>
+              <p className="text-xs text-muted-foreground">{overview?.note || "暂无过阈值画像"}</p>
             )}
           </div>
         </CardContent>
       </Card>
 
-      {/* ---------- 2. 参数编辑区 ---------- */}
+      {/* ---------- 2. 数值基线 IP 列表（判断中 / 观测中） ---------- */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            判据参数
+            数值基线 IP 列表
             <span className="text-xs font-normal text-muted-foreground">
-              改完即时生效（后端 30 秒内刷新），不用重启容器
+              key 形如 <span className="font-mono">源IP:维度</span>；
+              <span className="text-emerald-500">判断中</span>=已过观测期参与 2σ 判定，
+              <span className="text-amber-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="h-9 w-52"
+              placeholder="按 IP 或 key 搜（支持片段）"
+              value={nq}
+              onChange={(e) => {
+                setNq(e.target.value);
+                setNpage(0);
+              }}
+            />
+            <select
+              className="h-9 rounded-md border bg-transparent px-2 text-sm"
+              value={nfeature}
+              onChange={(e) => {
+                setNfeature(e.target.value);
+                setNpage(0);
+              }}
+            >
+              <option value="">全部维度</option>
+              <option value="conn_count">连接数</option>
+              <option value="distinct_dst_ports">目的端口数</option>
+              <option value="distinct_dst_ips">目的 IP 数</option>
+            </select>
+            <select
+              className="h-9 rounded-md border bg-transparent px-2 text-sm"
+              value={nsort}
+              onChange={(e) => {
+                setNsort(e.target.value);
+                setNpage(0);
+              }}
+            >
+              <option value="count">按观测次数</option>
+              <option value="updated">按最近更新</option>
+              <option value="key">按 key</option>
+            </select>
+            <span className="text-xs text-muted-foreground">共 {numeric?.total ?? 0} 个维度</span>
+          </div>
+          {numeric?.items?.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>IP / key</TableHead>
+                  <TableHead>维度</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>观测次数</TableHead>
+                  <TableHead>均值</TableHead>
+                  <TableHead>标准差</TableHead>
+                  <TableHead>首次观测</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {numeric.items.map((row) => (
+                  <TableRow key={row.key}>
+                    <TableCell className="font-mono text-xs">{row.key}</TableCell>
+                    <TableCell className="text-xs">{row.feature}</TableCell>
+                    <TableCell>
+                      <StateBadge
+                        judging={row.warmed}
+                        hint={
+                          row.warmed
+                            ? "已过观测期：参与 2σ 偏离判定"
+                            : row.count < 2
+                              ? "只观测过 1 次，标准差还不可靠"
+                              : `观测期未满（${numeric.observe_days} 天）`
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>{row.count}</TableCell>
+                    <TableCell>{row.mean}</TableCell>
+                    <TableCell>{row.std}</TableCell>
+                    <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {emptyOrFailed(errs, SRC.numeric, "没有符合条件的维度")}
+            </p>
+          )}
+          <Pager total={numeric?.total ?? 0} page={npage} onPage={setNpage} />
+        </CardContent>
+      </Card>
+
+      {/* ---------- 3. 画像列表（判断中 / 观测中） ---------- */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+            账号 / 会话画像列表
+            <span className="text-xs font-normal text-muted-foreground">
+              <span className="text-emerald-500">判断中</span>=观测次数已达冷启动门槛（
+              {minObs} 次）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
+              风险分按当前窗口算（本轮无理由即归零），点一行展开细节
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-9 rounded-md border bg-transparent px-2 text-sm"
+              value={kind}
+              onChange={(e) => {
+                setKind(e.target.value);
+                setPpage(0);
+              }}
+            >
+              <option value="account">只看账号</option>
+              <option value="session">只看会话</option>
+              <option value="">账号 + 会话</option>
+            </select>
+            <Input
+              className="h-9 w-40"
+              placeholder="搜账号名 / 会话哈希"
+              value={pq}
+              onChange={(e) => {
+                setPq(e.target.value);
+                setPpage(0);
+              }}
+            />
+            <select
+              className="h-9 rounded-md border bg-transparent px-2 text-sm"
+              value={minRisk}
+              onChange={(e) => {
+                setMinRisk(e.target.value);
+                setPpage(0);
+              }}
+            >
+              <option value="0">全部风险</option>
+              <option value="0.1">风险 &gt; 0</option>
+              <option value="0.3">风险 ≥ 0.3</option>
+              <option value="0.6">风险 ≥ 0.6（过阈值）</option>
+            </select>
+            <span className="text-xs text-muted-foreground">共 {profiles?.total ?? 0} 条</span>
+          </div>
+          {profiles?.items?.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>实体</TableHead>
+                  <TableHead>类型</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>风险</TableHead>
+                  <TableHead>判定时间</TableHead>
+                  <TableHead>最近出现</TableHead>
+                  <TableHead>观测</TableHead>
+                  <TableHead>服务端 IP</TableHead>
+                  <TableHead>失败/成功</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {profiles.items.map((row, i) => {
+                  const rowKey = `${row.kind}|${row.entity_key || i}`;
+                  const open = expanded === rowKey;
+                  const risk = Number(row.risk_score || 0);
+                  const obs = Number(row.obs_count ?? 0);
+                  return (
+                    <React.Fragment key={rowKey}>
+                      <TableRow
+                        className="cursor-pointer"
+                        onClick={() => setExpanded(open ? "" : rowKey)}
+                      >
+                        <TableCell className="font-medium">
+                          {open ? "▾ " : "▸ "}
+                          {row.entity_display || row.entity_key}
+                        </TableCell>
+                        <TableCell>{row.kind === "account" ? "账号" : "会话"}</TableCell>
+                        <TableCell>
+                          <StateBadge
+                            judging={obs >= minObs}
+                            hint={
+                              obs >= minObs
+                                ? "已过冷启动：参与风险打分"
+                                : `观测 ${obs}/${minObs} 次，还没到冷启动门槛`
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {risk > 0 ? (
+                            <Badge
+                              variant={
+                                risk >= (overview?.risk_threshold ?? 0.6) ? "critical" : "secondary"
+                              }
+                            >
+                              {risk.toFixed(2)}
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">0</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs">{formatDateTime(row.risk_at)}</TableCell>
+                        <TableCell className="text-xs">{formatDateTime(row.last_seen)}</TableCell>
+                        <TableCell>{row.obs_count ?? 0}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {topKeys(row.dst_ips, 2).join(", ") || "-"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {row.fail_count ?? 0}/{row.success_count ?? 0}
+                        </TableCell>
+                      </TableRow>
+                      {open ? (
+                        <TableRow>
+                          <TableCell colSpan={9} className="bg-muted/30">
+                            <ProfileDetail row={row} />
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {emptyOrFailed(errs, SRC.profiles, "没有符合条件的画像（观测期内的实体还没积累出画像）")}
+            </p>
+          )}
+          <Pager total={profiles?.total ?? 0} page={ppage} onPage={setPpage} />
+        </CardContent>
+      </Card>
+
+      {/* ---------- 分析配置（右侧抽屉） ---------- */}
+      <Drawer
+        open={configOpen}
+        onClose={() => setConfigOpen(false)}
+        widthClass="w-[720px]"
+        title={
+          <div>
+            <p className="text-sm font-semibold">分析配置</p>
+            <p className="text-xs text-muted-foreground">
+              改完即时生效（后端 30 秒内刷新、检测器下一个窗口用新值），不需要重启容器
+            </p>
+          </div>
+        }
+        footer={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" disabled={busy || !dirtyItems.length} onClick={() => void save()}>
+              保存改动{dirtyItems.length ? `（${dirtyItems.length}）` : ""}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || !(config?.items ?? []).some((i) => i.overridden)}
+              onClick={() => void resetConfig([])}
+            >
+              全部恢复默认
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void loadConfig()}>
+              重新读取
+            </Button>
+            {msg ? <span className="text-xs text-muted-foreground">{msg}</span> : null}
+          </div>
+        }
+      >
+        <div className="space-y-4">
           {groups.map((group) => {
             const items = (config?.items ?? []).filter((item) => item.key.startsWith(group.prefix));
             if (!items.length) return null;
@@ -442,7 +727,7 @@ export function BehaviorPanel() {
                   <p className="text-sm font-medium">{group.title}</p>
                   <p className="text-xs text-muted-foreground">{group.hint}</p>
                 </div>
-                <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-3">
                   {items.map((item) => {
                     const raw = draft[item.key];
                     const value = raw !== undefined ? raw : item.value;
@@ -513,248 +798,8 @@ export function BehaviorPanel() {
               </div>
             );
           })}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={busy || !dirty} onClick={() => void save()}>
-              保存改动
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy || !(config?.items ?? []).some((i) => i.overridden)}
-              onClick={() => void resetConfig([])}
-            >
-              全部恢复默认
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void loadConfig()}>
-              重新读取
-            </Button>
-            {msg ? <span className="text-xs text-muted-foreground">{msg}</span> : null}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ---------- 3. 画像表 ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            账号 / 会话画像
-            <span className="text-xs font-normal text-muted-foreground">
-              风险分按当前窗口算（本轮无理由即归零）；点一行展开细节
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={kind}
-              onChange={(e) => {
-                setKind(e.target.value);
-                setPpage(0);
-              }}
-            >
-              <option value="account">只看账号</option>
-              <option value="session">只看会话</option>
-              <option value="">账号 + 会话</option>
-            </select>
-            <Input
-              className="h-9 w-40"
-              placeholder="搜账号名 / 会话哈希"
-              value={pq}
-              onChange={(e) => {
-                setPq(e.target.value);
-                setPpage(0);
-              }}
-            />
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={minRisk}
-              onChange={(e) => {
-                setMinRisk(e.target.value);
-                setPpage(0);
-              }}
-            >
-              <option value="0">全部风险</option>
-              <option value="0.1">风险 &gt; 0</option>
-              <option value="0.3">风险 ≥ 0.3</option>
-              <option value="0.6">风险 ≥ 0.6（过阈值）</option>
-            </select>
-            <span className="text-xs text-muted-foreground">
-              共 {profiles?.total ?? 0} 条
-            </span>
-          </div>
-          {profiles?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>实体</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>风险</TableHead>
-                  <TableHead>判定时间</TableHead>
-                  <TableHead>最近出现</TableHead>
-                  <TableHead>观测</TableHead>
-                  <TableHead>服务端 IP</TableHead>
-                  <TableHead>失败/成功</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {profiles.items.map((row, i) => {
-                  const rowKey = `${row.kind}|${row.entity_key || i}`;
-                  const open = expanded === rowKey;
-                  const risk = Number(row.risk_score || 0);
-                  return (
-                    <React.Fragment key={rowKey}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() => setExpanded(open ? "" : rowKey)}
-                      >
-                        <TableCell className="font-medium">
-                          {open ? "▾ " : "▸ "}
-                          {row.entity_display || row.entity_key}
-                        </TableCell>
-                        <TableCell>{row.kind === "account" ? "账号" : "会话"}</TableCell>
-                        <TableCell>
-                          {risk > 0 ? (
-                            <Badge variant={risk >= (overview?.risk_threshold ?? 0.6) ? "critical" : "secondary"}>
-                              {risk.toFixed(2)}
-                            </Badge>
-                          ) : (
-                            <span className="text-muted-foreground">0</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-xs">{formatDateTime(row.risk_at)}</TableCell>
-                        <TableCell className="text-xs">{formatDateTime(row.last_seen)}</TableCell>
-                        <TableCell>{row.obs_count ?? 0}</TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {topKeys(row.dst_ips, 2).join(", ") || "-"}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {row.fail_count ?? 0}/{row.success_count ?? 0}
-                        </TableCell>
-                      </TableRow>
-                      {open ? (
-                        <TableRow>
-                          <TableCell colSpan={8} className="bg-muted/30">
-                            <ProfileDetail row={row} />
-                          </TableCell>
-                        </TableRow>
-                      ) : null}
-                    </React.Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {emptyOrFailed(errs, SRC.profiles, "没有符合条件的画像（观测期内的实体还没积累出画像）")}
-            </p>
-          )}
-          <Pager total={profiles?.total ?? 0} page={ppage} onPage={setPpage} />
-        </CardContent>
-      </Card>
-
-      {/* ---------- 4. 数值基线表 ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            数值基线（按维度）
-            <span className="text-xs font-normal text-muted-foreground">
-              key 形如 <span className="font-mono">源IP:维度</span>；观测次数少的维度标准差还不可靠
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="h-9 w-52"
-              placeholder="按 IP 或 key 搜（支持片段）"
-              value={nq}
-              onChange={(e) => {
-                setNq(e.target.value);
-                setNpage(0);
-              }}
-            />
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={nfeature}
-              onChange={(e) => {
-                setNfeature(e.target.value);
-                setNpage(0);
-              }}
-            >
-              <option value="">全部维度</option>
-              <option value="conn_count">连接数</option>
-              <option value="distinct_dst_ports">目的端口数</option>
-              <option value="distinct_dst_ips">目的 IP 数</option>
-            </select>
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={nsort}
-              onChange={(e) => {
-                setNsort(e.target.value);
-                setNpage(0);
-              }}
-            >
-              <option value="count">按观测次数</option>
-              <option value="updated">按最近更新</option>
-              <option value="key">按 key</option>
-            </select>
-            <span className="text-xs text-muted-foreground">共 {numeric?.total ?? 0} 个维度</span>
-          </div>
-          {numeric?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>key</TableHead>
-                  <TableHead>维度</TableHead>
-                  <TableHead>观测次数</TableHead>
-                  <TableHead>均值</TableHead>
-                  <TableHead>标准差</TableHead>
-                  <TableHead>首次观测</TableHead>
-                  <TableHead>状态</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {numeric.items.map((row) => (
-                  <TableRow key={row.key}>
-                    <TableCell className="font-mono text-xs">{row.key}</TableCell>
-                    <TableCell className="text-xs">{row.feature}</TableCell>
-                    <TableCell>{row.count}</TableCell>
-                    <TableCell>{row.mean}</TableCell>
-                    <TableCell>{row.std}</TableCell>
-                    <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>
-                    <TableCell>
-                      {row.warmed ? (
-                        <Badge variant="default">可判偏离</Badge>
-                      ) : (
-                        <Badge variant="outline">
-                          {row.count < 2 ? "样本不足" : "观测中"}
-                        </Badge>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {emptyOrFailed(errs, SRC.numeric, "没有符合条件的维度")}
-            </p>
-          )}
-          <Pager total={numeric?.total ?? 0} page={npage} onPage={setNpage} />
-        </CardContent>
-      </Card>
-
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Button size="sm" variant="outline" onClick={() => void load()}>
-          立即刷新
-        </Button>
-        <label className="flex items-center gap-1">
-          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
-          每 {REFRESH_SECONDS} 秒自动刷新
-        </label>
-        {overview?.cached ? <span>（总览数据来自后端 30 秒缓存）</span> : null}
-      </div>
+        </div>
+      </Drawer>
     </div>
   );
 }
