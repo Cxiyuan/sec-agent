@@ -155,9 +155,10 @@ def run() -> None:
     # 中继角色推算：按实际流量自动判定清单里的地址是「反代/WAF」还是「内网 DNS 转发器」，
     # 周期回写 PG（界面只读展示）；见 detector/relay_roles.py
     relay_roles = RelayRoleDetector()
-    # 中继去重：保留前跳（客户端侧，证据最全）、丢掉后跳（否则同一请求算两次，
-    # 且后跳的 src 是内网中继 → 告警会被归因到代理/DNS 头上）；见 detector/relay_pairing.py
-    relay_dedup = RelayDedup()
+    # 中继去重：保留**有明文内容**的那一侧（2026-10 实机实测：WAF 的客户端侧是 TLS 无 SNI，
+    # 只有源站侧有 Host/URI/请求体）；侧向由 relay_roles 按实测内容算，可界面手动覆盖。
+    # 见 detector/relay_pairing.py
+    relay_dedup = RelayDedup(side_of=relay_roles.side_of)
     # 判重（第 5 期起）在智能体侧：只有它知道某个事件组分析过没有。本侧只负责投递。
     # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
     leader = Leader(client)

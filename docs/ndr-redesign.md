@@ -1053,3 +1053,56 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 7. **基线与画像的真实效果（第 8 期遗留）**：默认 7 天观测期内不判异常，收敛速度与误报率只能在现场跑够时间后才知道；另外检测器主备切换时进程内缓存会重建 —— 数值基线从库里重捞、画像异常有一小段标签稀疏（不丢数据，但切换瞬间的摘要可能少标签）。
 8. **Zeek 日志生成与协议解析的专项检查（上线后必做，用户 2026-02 提出）**：本次所有 Zeek 侧改动都只在纸面与本机归一化侧验证过，真实网卡上线后要专门核一遍：① 实际产出了哪些 `log_type`（`/logs` 顶层 + 日期目录，24h 轮转与 3 天清理是否如期）；② 各协议分析器字段是否齐全（`site/shentong-extra.zeek` 加载的 conn/dns/http/ssl/files/smtp/ssh/dhcp/notice，以及自研 `shentong-httpbody.zeek` 的请求体是否落进 `http.log`）；③ 归一化后的 `log_type` / `event_type` 分桶与内置规则的字段命中（82 条内置规则里 47 处用到 body/uri/query/user_agent/ja3 等）；④ ~~反向代理场景拿不到原始客户端 IP~~ **已支持（2026-10-02）** —— 不需要自己接 `http_header`：Zeek 自带的 HTTP 分析器已把默认代理头清单（`X-Forwarded-For`/`X-Forwarded-From`/`Forwarded`/`Client-IP`/`Via`/`Xroxy-Connection`/`Proxy-Connection`）收进 `HTTP::Info$proxied`，normalizer 解析其中最左的合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是 TCP 对端）。实测探针 `X-Forwarded-For: 198.51.100.77, 203.0.113.9` → `proxied: ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]` → `real_client_ip=198.51.100.77`。**2026-10-04 收口**：可信代理白名单已做（`ST_ZEEK_TRUSTED_PROXIES`，只有直连对端落在清单里才认代理头，清单留空 = 一律不认，fail-closed）、`X-Real-IP` 已补进 Zeek 采集清单（`site/shentong-httpheaders.zeek` 的 `redef HTTP::proxy_headers += { "X-REAL-IP" };`，成员必须全大写）；**四层代理的 PROXY protocol 明确不做** —— Zeek 9.0 没有该分析器（镜像内 `zeek -NN` 无该条目），要支持只能在外层终结或回查 NAT/防火墙日志。同一批改动把响应体也采集了（`resp_body` / `resp_body_len`）。逐条清单见 `ndr/zeek/README.md` 的「上线后专项检查」与「已知限制」。
    **实机结果（2026-10，172.16.196.77，Zeek 9.0.0，`iface=ens160`）**：已按 9 项清单核过一遍，逐项证据表见 `ndr/zeek/README.md` 的「实机结果」。三条要记住的结论：① **HTTP 请求体把中文整块丢了**（检查项 4 抓出来的真 bug）—— 自研 `shentong-httpbody.zeek` 的二进制守卫 `/[^\x09\x0a\x0d\x20-\x7e]/` 只放行可打印 ASCII，UTF-8 多字节全被当二进制丢弃；同一 POST 路径对照实测：`{"probe":"ascii","n":1}` 有 `body`、`{"text":"中文请求体"}` 无 `body`。已改为只拦 NUL/C0 控制字符（`/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/`），并在容器内用 Zeek 单测四种样本验证；② **`ja3`/`ja3s` 在 Zeek 9.0 里根本不存在** —— `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`，`ssl.log` 127 条 0 处 ja3。检查项 3 与 `shentong-extra.zeek` 注释里的原期望是错的，基于 `ja3` 字段的规则（`rules/builtin.py` 那条空值模板）永不命中；要用得另装/自写 JA3 脚本，已写进 README「已知限制」；③ **监控网段仍未配**（`/config/interface.conf` 里 `monitored_nets=` / `local_nets=` 为空 → Zeek 启动命令无 BPF、全量抓包），这是上线收尾里唯一需要用户拍板的一项。其余：日志产出 conn/dhcp/dns/ssl/http/files/weird/x509 齐全、无 notice.log（符合预期）、`log_type`/`event_type` 分桶正确、内置规则已命中（扫描 17335 / 命中 60 / 投递 9）、24h 轮转当天未见日期目录。XFF（④）**已支持**（2026-10-02，`proxied` → `real_client_ip`）；HTTP 请求体与响应体都采集（`body` / `resp_body`，完整响应字节数 `response_body_len` → `resp_body_len`）。**类型分桶（③）与轮转形态**已由第 9 期改造与核对：`log_type` 改由 `log_types.py` 单一入口判定（信封 `log_type` 优先 → 17 条字段提示猜 → 都不中记 `unknown` 并保留原名，**不再兜底成 `conn`**），运维流（ntp/packet_filter/reporter/stats/ja4ssh/ja4d）只入库、不进检测；轮转实测是**同目录平铺改名**（`conn.log` → `conn.2026-10-01.log`），不是日期子目录。
+
+### 2026-10 中继去重判据修正：按「哪一侧有明文内容」判 + 链续跳去重 + 端口可配
+
+**缘起**：用户在中继清单里补了 `172.16.199.214` / `172.16.199.215`（泛域名转发设备，nginx 类，
+按 SNI/端口把 `*.nczy.edu.cn` 转到 WAF 的对应端口）后要求复核。实测数据把**判据本身的错误**暴露出来。
+
+**实测（服务器原始日志 / ES / Redis，全部可复核）**：
+
+| 事实 | 数字 |
+|---|---|
+| 客户端侧那一跳（199.214/215 → 199.203） | conn 45,183 / ssl 44,623（**SNI 0 条**）/ http **9** / weird 62,505；src 99.9% 是 199.214（另一台代理，不是客户端） |
+| 源站侧那一跳（199.203 → 196.112/125） | **http 28,557 行 / 2,431 连接**、files 20,825、Host `www.nczy.edu.cn` 16,774；XFF 真实客户端 **438 个/15 分钟** |
+| 两侧内容比 | **9 : 28,557（1 : 3172）** |
+| 现有判据的后果 | `relay_back_dropped 29,403 / back_kept 24`（99.9% 被误丢）；84 条内置规则里 **21 条**依赖 `uri_path/method/status_code/user_agent/referer/content_type` → 对 WAF 后面的站点**永不命中** |
+| 被访问方基线 | `www.nczy.edu.cn` 的「不同客户端」恒为 **1.0**（真值 438）；`njwc.nczy.edu.cn` 查不到 |
+| 假协议异常 | `bad_HTTP_request` 25,317 + `line_terminated_with_single_CR` 26,790（根因：8000/8008 在 Zeek 默认 HTTP 端口表里，实际是 TLS）；`src=199.214` 的 weird 4,167 条/5 分钟 |
+| 客户端 IP 取法 | 后跳文档里 XFF 最左值与 X-Real-IP **298/298 完全一致** → 现有取法无需加固 |
+
+**改法（三条判据，全部单条事件可判、不做两跳配对）**：
+
+1. **按内容判侧向**：`detector/relay_roles.py` 在**去重之前**累计每台中继两侧的明文内容条数
+   （`http`/`http2`/`smtp`/`dns`；**不含 ssl**），`detector/relay_pairing.py` 据此决定保留哪一侧：
+   默认客户端侧，另一侧 `≥ ST_RELAY_SIDE_MIN(50)` 且 `≥ ST_RELAY_SIDE_RATIO(10)` 倍才翻转。
+   统计在去重之前 → **丢了哪一侧都不会让判据自己锁死**；判定与角色一起回写 PG，重启无过渡期。
+   运维可在界面**手动覆盖**（auto / 保留客户端侧 / 保留源站侧，存 `SystemConfig.zeek.relay_nodes.sides`）。
+2. **链的下游续跳丢掉**：本跳 `src` 不是中继，但代理头里**发送方自己观测到的对端**
+   （`X-Real-IP` 或 `X-Forwarded-For` 末尾）是清单内中继 → 丢掉（计数 `relay_chain_continuation_dropped`）。
+   **必须限定「src 不是中继」**：证据跳的代理头里同样带着中继（它是上游，实测 XFF 末尾 1,669 条是
+   199.214），不限定就会把要保留的那条也丢掉 —— 这是纯静态分析看不出来、只有读了代理头原始值才会发现的一条。
+   用 `UnifiedLog.raw` 里已有的原始代理头，不加字段、不改 ES 结构。
+3. **`relay_internal` 不再无条件丢**：只有「发送方的内容侧就是源站侧」且本跳确实带明文内容时才留
+   （本环境的 199.214 → 199.203 是 TLS 无内容 → 照旧丢）。
+
+**端口可配**：新增采集配置项「按 TLS 解析的端口」（`interface.conf` 的 `tls_ports`，界面「采集」页维护，
+空 = 沿用采集器默认端口表），入口脚本 `render_ports` 渲染成 `redef HTTP::ports -= { ... }` 并触发重载。
+端口是环境相关的（本环境 8013 就是**真明文 HTTP**，不能一刀切），所以做成部署配置而**不写死在产品代码里**。
+
+**接口与界面**：`GET /api/zeek/relay-nodes` 回带 `nodes` / `sides` 与每台的两侧内容计数、
+生效侧向与来源（auto/manual）；新增 `PUT /api/zeek/relay-nodes/sides`；
+`GET /api/zeek/status` 与 `PUT /api/zeek/interface` 增加 `tls_ports`。
+「监控网段」页中继表格加「客户端侧内容 / 源站侧内容 / 当前保留 / 保留哪一侧（三选下拉）」；
+「采集」页加「按 TLS 解析的端口」输入；「行为分析」页徽标改为
+「客户端侧跳 保留/丢弃、源站侧跳 保留/去重、中继内部 保留/丢弃、链续跳去重」。
+
+**验收修正（实测推翻了原计划里的一条预期，如实记录）**：原以为 `内置-协议异常` 的 75-78 条/5 分钟
+摘要全部来自 WAF 前跳的假 weird；实测那批（`src=199.214` → `dst=199.203`）在用户把 199.214/215 加入清单后
+已经是 `hop=relay_internal` **被丢弃**，当前 75-78 条摘要来自**约 88 个不同内网主机**的真实/抓包类 weird
+（WAF 只占其中 1 个分组）。所以端口配置的收益是**数据卫生**（约 4,167 条/5 分钟 ≈ 120 万条/天的垃圾文档）
+与不再污染分析输入，而不是「摘要数归零」。
+
+**测试**：`tests/py/test_relay_chain.py` 扩到 30 例（两侧内容统计、侧向判定与阈值边界、手动覆盖优先、
+判据异常回退、清单变更清零、链续跳只认发送方侧的头、src 是中继时不算续跳、relay_internal 按内容判）；
+`tests/py/test_zeek_limits.py` 新增 `render_ports` 的 5 组渲染用例与 `local.zeek` 加载守卫。

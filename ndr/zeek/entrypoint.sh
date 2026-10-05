@@ -161,6 +161,33 @@ render_limits() {
   log "正文上限脚本已渲染（请求 ${body} 字节 / 响应 ${resp} 字节）"
 }
 
+render_ports() {
+  local ports list p
+  ports="$(conf_get tls_ports)"
+  {
+    echo "## 由 entrypoint.sh 自动生成（render_ports），请勿手工修改"
+    echo "# 这些端口在本环境是 TLS：不要把 HTTP 解析器挂上去（否则 TLS 字节被当成 HTTP 行，"
+    echo "# 刷出 bad_HTTP_request / line_terminated_with_single_CR 这类假协议异常）。"
+    echo "@load base/protocols/http"
+    echo ""
+    list=""
+    # 用 read 逐行读取（IFS 仅作用于该次 read，避免全局影响分词）
+    while IFS= read -r p; do
+      p="$(printf '%s' "$p" | tr -d ' ')"
+      [ -z "$p" ] && continue
+      # 只接受纯数字（防手改配置写坏脚本 / 注入）
+      case "$p" in *[!0-9]*) continue ;; esac
+      list="${list}${list:+, }${p}/tcp"
+    done < <(printf '%s\n' "$ports" | tr ',' '\n')
+    if [ -n "$list" ]; then
+      echo "redef HTTP::ports -= { ${list} };"
+    else
+      echo "# tls_ports 为空：沿用 Zeek 默认的 HTTP 端口表"
+    fi
+  } > "${SITE_DIR}/shentong-ports.zeek"
+  log "HTTP 端口排除脚本已渲染（tls_ports=${ports:-空}）"
+}
+
 render_scripts_loader() {
   {
     echo "## 由 start.sh 自动生成：加载可扩展目录 scripts.d 下的所有脚本"
@@ -385,6 +412,7 @@ start_watchdog() {
       log "检测到采集配置变化，重载 Zeek"
       render_nets
       render_limits
+      render_ports
       if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null || true
       fi
@@ -400,6 +428,7 @@ main() {
   ensure_iface_conf
   render_nets
   render_limits
+  render_ports
   render_scripts_loader
   start_filebeat
   start_filebeat_supervisor

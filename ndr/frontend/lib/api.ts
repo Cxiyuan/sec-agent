@@ -132,6 +132,8 @@ export interface ZeekStatus {
   /** HTTP 正文落库上限（字节）：Zeek 侧截正文用，后端 normalizer 用同一个数字再截一次 */
   body_max_bytes: number;
   resp_body_max_bytes: number;
+  /** 按 TLS 解析的端口（逗号分隔）：这些端口不再按 HTTP 解析；空 = 沿用采集器默认端口表 */
+  tls_ports: string;
   rotation_hours: number;
   retention_days_local: number;
 }
@@ -527,11 +529,15 @@ export interface BaselineDetector {
   anomalies_total?: number;
   anomaly_rounds?: number;
   anomalies_last_round?: number;
-  /** 中继去重计数（四个都不静默）：前跳、后跳去重、后跳保留、中继内部 */
+  /** 中继去重计数（都不静默）：前跳、后跳去重、后跳保留、中继内部 */
   relay_front?: number;
   relay_back_dropped?: number;
   relay_back_kept?: number;
   relay_internal_dropped?: number;
+  /** 按内容判侧向后新增：被丢掉的客户端侧跳 / 中继内部跳保留 / 链的下游续跳丢弃 */
+  relay_front_dropped?: number;
+  relay_internal_kept?: number;
+  relay_chain_continuation_dropped?: number;
   /** 被访问方基线：本轮观测到的资产数 / 累计 */
   assets_last_round?: number;
   assets_observed?: number;
@@ -880,9 +886,28 @@ export interface AssetDetailPayload {
 export interface RelayNodesPayload {
   text: string;
   count: number;
+  /** 清单解析出的条目（单地址 = 纯 IP；真正的网段 = CIDR 写法） */
+  nodes: string[];
   /** false = 系统认定「网络里没有中继」（不认代理头、不做去重） */
   configured: boolean;
-  /** 检测器自动推算的角色与证据计数（界面只读） */
-  roles: Record<string, { proxy?: number; dns?: number; roles?: string[] }>;
+  /** 检测器自动推算的角色、证据计数与两侧内容统计（界面只读，侧向可覆盖） */
+  roles: Record<
+    string,
+    {
+      proxy?: number;
+      dns?: number;
+      roles?: string[];
+      /** 客户端侧（该地址作目的地）的明文请求内容条数 */
+      front_content?: number;
+      /** 源站侧（该地址作来源）的明文请求内容条数 */
+      back_content?: number;
+      /** 当前生效的侧向：front = 保留客户端侧，back = 保留源站侧 */
+      side?: "front" | "back" | string;
+      /** auto = 按实测内容自动判；manual = 运维手动指定 */
+      side_source?: "auto" | "manual" | string;
+    }
+  >;
+  /** 运维的侧向设置（auto / front / back），键是清单里的地址 */
+  sides: Record<string, string>;
   detected_at: string;
 }

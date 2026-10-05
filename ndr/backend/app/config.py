@@ -195,6 +195,11 @@ class Settings(BaseSettings):
     # 中继去重的「前跳可见」记忆时长（秒）：后跳在这个窗口内见过该中继的前跳就当重复丢掉；
     # 从未见过前跳（抓包点只在源站侧）则后跳照常处理，不丢数据。见 detector/relay_pairing.py
     relay_visibility_seconds: int = 300
+    # 中继侧向判定（2026-10 实机实测新增）：实测 WAF 的客户端侧是「TLS 无 SNI」的无内容流量
+    # （http 9 条），而源站侧才是带 Host/URI/请求体的明文（http 28,557 条）—— 所以「保留哪一侧」
+    # 必须按**哪一侧有明文内容**判，不能按跳的名字判。数据得足够悬殊才翻转（默认客户端侧）。
+    relay_side_min: int = 50  # 另一侧内容条数至少这么多才考虑翻转
+    relay_side_ratio: int = 10  # 且至少是本侧的这么多倍
 
     # ---- 总览页（/admin/status）需要的采样与缓存 ----
     # 检测器历史采样：每 detector_stats_log_seconds 追加一条，LPUSH + LTRIM 固定条数。

@@ -21,7 +21,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app import runtime_config
@@ -53,6 +53,8 @@ CONF_KEYS = (
     "bpf_extra",
     "body_max_bytes",
     "resp_body_max_bytes",
+    # 这些端口在本环境是 TLS：不再按 HTTP 解析（见下面 tls_ports 的注释）
+    "tls_ports",
 )
 
 #: 只有 interface / monitored_nets / bpf_extra / 两个上限是「输入」，另两个是由它们生成的输出
@@ -66,6 +68,12 @@ DEFAULT_CONF = {
     # 经 system_config 的 http.body_max_chars / http.resp_body_max_chars 用同一个数字截断
     "body_max_bytes": str(settings.http_body_max_chars),
     "resp_body_max_bytes": str(settings.http_resp_body_max_chars),
+    # 「按 TLS 解析的端口」（逗号分隔，空 = 不改 Zeek 默认端口表）。
+    # 为什么要它（2026-10 实机实测）：Zeek 自带 HTTP 端口表含 8000/8008，而本环境这两个端口
+    # 是 TLS → TLS 字节被当成 HTTP 行，刷出 5.2 万条 `bad_HTTP_request` /
+    # `line_terminated_with_single_CR` 假协议异常。端口是**环境相关**的（本环境 8013 就是真
+    # 明文 HTTP），所以做成部署配置而不是写死在产品代码里；空值 = 不做任何改动。
+    "tls_ports": "",
 }
 
 #: 正文上限可设范围（KB）：上限 1MB——Zeek 把正文留在内存里，放太大伤内存
@@ -79,6 +87,28 @@ class ZeekIfaceIn(BaseModel):
     bpf_extra: str = ""  # 附加 BPF 条件（可选，如 not port 22）
     body_max_kb: int | None = None  # 请求正文上限（KB）；不传 = 沿用当前值
     resp_body_max_kb: int | None = None  # 响应正文上限（KB）；不传 = 沿用当前值
+    tls_ports: str | None = None  # 按 TLS 解析的端口（逗号/换行分隔）；不传 = 沿用当前值
+
+
+def parse_tls_ports(text: Any) -> tuple[list[int], list[dict[str, str]]]:
+    """解析「按 TLS 解析的端口」：返回 (端口列表, 错误列表)。容忍 `8000` 与 `8000/tcp` 两种写法。"""
+    ports: list[int] = []
+    errors: list[dict[str, str]] = []
+    for chunk in str(text or "").replace(",", " ").split():
+        token = chunk.strip()
+        if not token or token.startswith("#"):
+            continue
+        value = token.split("/")[0].strip()
+        if not value.isdigit():
+            errors.append({"field": "tls_ports", "msg": f"不是合法端口：{token}"})
+            continue
+        port = int(value)
+        if not 1 <= port <= 65535:
+            errors.append({"field": "tls_ports", "msg": f"端口超出范围（1~65535）：{token}"})
+            continue
+        if port not in ports:
+            ports.append(port)
+    return ports, errors
 
 
 def _conf_bytes(conf: dict[str, str], key: str, default: int) -> int:
@@ -217,6 +247,8 @@ def get_status(_: Annotated[User, Depends(get_current_user)]):
         "resp_body_max_bytes": _conf_bytes(
             conf, "resp_body_max_bytes", settings.http_resp_body_max_chars
         ),
+        # 按 TLS 解析的端口（空 = 沿用 Zeek 默认 HTTP 端口表）
+        "tls_ports": conf.get("tls_ports", ""),
         # 镜像内硬编码（见 zeek/README.md）
         "rotation_hours": 24,
         "retention_days_local": 3,
@@ -258,6 +290,21 @@ def set_interface(
 
     bpf_extra = body.bpf_extra.strip()
 
+    # 按 TLS 解析的端口：不传 = 沿用当前值；只接受端口号（`8000` / `8000/tcp`）
+    tls_ports = conf.get("tls_ports", "")
+    if body.tls_ports is not None:
+        parsed, port_errors = parse_tls_ports(body.tls_ports)
+        if port_errors:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "conflict": "field_error",
+                    "detail": port_errors[0]["msg"],
+                    "field_errors": port_errors,
+                },
+            )
+        tls_ports = ",".join(str(port) for port in parsed)
+
     # 正文上限：不传（None）= 沿用当前值；只接受 KB 整数，范围在这里兜住（entrypoint 只挡非数字）
     for label, kb in (
         ("请求正文上限", body.body_max_kb),
@@ -291,6 +338,7 @@ def set_interface(
         "bpf_extra": bpf_extra,
         "body_max_bytes": str(body_bytes),
         "resp_body_max_bytes": str(resp_bytes),
+        "tls_ports": tls_ports,
     }
 
     write_error = _write_conf(values)
@@ -315,6 +363,8 @@ def set_interface(
         # 正文上限：normalizer 侧经 runtime_config 读这两个键（字符数，与 Zeek 侧字节数同值）
         ("http.body_max_chars", str(body_bytes)),
         ("http.resp_body_max_chars", str(resp_bytes)),
+        # 「按 TLS 解析的端口」也落库：检测器/归一化不挂 /config 卷，读这份更一致
+        ("zeek.tls_ports", tls_ports),
     ):
         _put_config(db, key, value)
     db.commit()
@@ -330,6 +380,7 @@ def set_interface(
         "local_nets": nets_csv,
         "body_max_bytes": body_bytes,
         "resp_body_max_bytes": resp_bytes,
+        "tls_ports": tls_ports,
         "note": "已下发；采集器看门狗将在约 10 秒内自动重载（期间约 1~2 秒中断抓包）",
     }
 
@@ -342,6 +393,11 @@ def set_interface(
 
 class RelayNodesIn(BaseModel):
     nodes: str = ""
+
+
+class RelaySidesIn(BaseModel):
+    #: {中继地址: "auto" | "front" | "back"}；`auto` = 按实测内容自动判
+    sides: dict[str, str] = Field(default_factory=dict)
 
 
 @router.get("/relay-nodes")
@@ -378,5 +434,35 @@ def set_relay_nodes(
         )
     relay_nodes.save(db, body.nodes)
     snapshot = relay_nodes.describe()
-    log.info("中继节点清单已更新：%d 项（configured=%s）", snapshot["count"], snapshot["configured"])
+    log.info(
+        "中继节点清单已更新：%d 项（configured=%s）", snapshot["count"], snapshot["configured"]
+    )
+    return snapshot
+
+
+@router.put("/relay-nodes/sides")
+def set_relay_sides(
+    body: RelaySidesIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """设置每台中继「保留哪一侧」：`auto`（按实测内容自动判，默认）/ `front` / `back`。
+
+    为什么要能手动覆盖（2026-10 实机实测）：WAF/反代这类中继，客户端侧可能是「TLS 无 SNI」的
+    无内容流量，只有源站侧才有 Host/URI/请求体 —— 系统按两侧内容条数自动判（默认保留客户端侧），
+    但拓扑特殊时运维需要能直接指定；改完约 30 秒内（读取方的缓存 TTL）生效。
+    """
+    errors = relay_nodes.validate_sides(body.sides)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
+    relay_nodes.save_sides(db, body.sides)
+    snapshot = relay_nodes.describe()
+    log.info("中继侧向设置已更新：%s", snapshot["sides"])
     return snapshot

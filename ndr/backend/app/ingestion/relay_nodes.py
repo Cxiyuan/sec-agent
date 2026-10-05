@@ -33,13 +33,26 @@ log = get_logger(__name__)
 KEY = "zeek.relay_nodes"
 #: 清单缓存 TTL：逐条事件都会问「这个对端是不是中继」，必须缓存；写入时立即失效。
 CACHE_TTL_SECONDS = 30.0
+
+#: 侧向设置（界面三选）：auto = 按实测内容自动判，front/back = 强制保留客户端侧/源站侧。
+SIDE_AUTO = "auto"
+SIDE_FRONT = "front"
+SIDE_BACK = "back"
+SIDES: tuple[str, ...] = (SIDE_AUTO, SIDE_FRONT, SIDE_BACK)
 #: 非法项的告警次数上限（清单是安全边界配置，写错要看得见，但不能刷爆日志）
 _MAX_WARNINGS = 5
 
 _Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _lock = threading.Lock()
-_cache: dict[str, Any] = {"at": 0.0, "text": "", "nets": (), "roles": {}, "detected_at": ""}
+_cache: dict[str, Any] = {
+    "at": 0.0,
+    "text": "",
+    "nets": (),
+    "roles": {},
+    "sides": {},
+    "detected_at": "",
+}
 _warnings = 0
 
 
@@ -71,10 +84,12 @@ def _load() -> dict[str, Any]:
         payload = {}
     text = str(payload.get("value") or "")
     roles = payload.get("roles") if isinstance(payload.get("roles"), dict) else {}
+    sides = payload.get("sides") if isinstance(payload.get("sides"), dict) else {}
     return {
         "text": text,
         "nets": parse(text),
         "roles": roles or {},
+        "sides": sides or {},
         "detected_at": str(payload.get("detected_at") or ""),
     }
 
@@ -108,6 +123,17 @@ def roles() -> dict[str, Any]:
     """检测器自动推算的角色与证据计数（界面只读展示）。"""
     value = _snapshot().get("roles")
     return dict(value) if isinstance(value, dict) else {}
+
+
+def sides() -> dict[str, str]:
+    """运维为每台中继指定的「保留哪一侧」（`auto` / `front` / `back`）；键是清单里的地址。"""
+    value = _snapshot().get("sides")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def side_override(ip: Any) -> str:
+    """该中继的侧向设置：`auto`（默认，按实测内容自动判）/ `front` / `back`。"""
+    return sides().get(str(ip or "").strip(), SIDE_AUTO)
 
 
 def detected_at() -> str:
@@ -166,7 +192,7 @@ def save(db: Session, text: str) -> None:
 
 
 def save_roles(db: Session, roles: dict[str, Any], *, detected_at_value: str) -> None:
-    """检测器把自动推算的角色写回同一个键（**不覆盖** `value`）。"""
+    """检测器把自动推算的角色写回同一个键（**不覆盖** `value` 与 `sides`）。"""
     row = db.get(SystemConfig, KEY)
     if row is None:
         # 没有清单就没有推算对象；这里只建一个只带角色信息的行（value 为空）
@@ -180,14 +206,44 @@ def save_roles(db: Session, roles: dict[str, Any], *, detected_at_value: str) ->
     invalidate()
 
 
+def validate_sides(mapping: dict[str, Any]) -> list[dict[str, str]]:
+    """校验侧向设置：键必须是清单内地址，值必须是 auto/front/back。"""
+    errors: list[dict[str, str]] = []
+    for ip, side in dict(mapping or {}).items():
+        if not is_relay(ip):
+            errors.append({"field": "sides", "msg": f"{ip} 不在中继清单里"})
+        if str(side) not in SIDES:
+            errors.append({"field": "sides", "msg": f"{ip} 的取值只能是 auto/front/back"})
+    return errors
+
+
+def save_sides(db: Session, mapping: dict[str, Any]) -> None:
+    """保存侧向设置（**不覆盖**清单文本 `value` 与检测器回写的 `roles`）。"""
+    row = db.get(SystemConfig, KEY)
+    if row is None:
+        row = SystemConfig(key=KEY, value={})
+        db.add(row)
+    payload = _payload(row)
+    payload["sides"] = {str(k): str(v) for k, v in dict(mapping or {}).items()}
+    row.value = payload
+    db.commit()
+    invalidate()
+
+
 def describe() -> dict[str, Any]:
-    """给界面用的一份快照：清单原文、解析出的数量、角色推算结果、是否已配置。"""
+    """给界面用的一份快照：清单原文、解析出的条目、角色推算结果、侧向设置、是否已配置。"""
     snap = _snapshot()
     nets = tuple(snap.get("nets") or ())
     return {
         "text": str(snap.get("text") or ""),
         "count": len(nets),
+        # 单地址按纯 IP 展示（侧向设置的键就是它）；真正的网段条目按 CIDR 展示（侧向靠自动判）
+        "nodes": [
+            str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+            for net in nets
+        ],
         "configured": bool(str(snap.get("text") or "").strip()),
         "roles": dict(snap.get("roles") or {}),
+        "sides": dict(snap.get("sides") or {}),
         "detected_at": str(snap.get("detected_at") or ""),
     }

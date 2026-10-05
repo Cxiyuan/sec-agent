@@ -53,6 +53,67 @@ def test_local_zeek_loads_limits_after_httpbody() -> None:
     assert loads.index("@load ./shentong-limits") > loads.index("@load ./shentong-httpbody")
 
 
+def test_local_zeek_loads_ports_script() -> None:
+    """``shentong-ports`` 必须被 local.zeek 加载，且仓库里的默认版本不含生效的 redef。"""
+    loads = [
+        line.strip()
+        for line in (SITE / "local.zeek").read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("@load")
+    ]
+    assert "@load ./shentong-ports" in loads
+    default = (SITE / "shentong-ports.zeek").read_text(encoding="utf-8")
+    # 默认版本里只能有注释形式的 redef（未配置 = 沿用 Zeek 默认端口表）
+    assert not [
+        line for line in default.splitlines() if line.strip().startswith("redef HTTP::ports")
+    ]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash 执行 entrypoint 片段")
+@pytest.mark.parametrize(
+    ("conf_text", "want"),
+    [
+        ("tls_ports=8000,8008\n", "redef HTTP::ports -= { 8000/tcp, 8008/tcp };"),
+        ("tls_ports=8000, 8011,8010\n", "redef HTTP::ports -= { 8000/tcp, 8011/tcp, 8010/tcp };"),
+        # 非法项跳过（手改配置 / 注入都写不坏脚本）
+        ("tls_ports=abc,8000\n", "redef HTTP::ports -= { 8000/tcp };"),
+        # 空值 = 不排除任何端口（沿用 Zeek 默认端口表）
+        ("tls_ports=\n", None),
+        ("interface=eth0\n", None),
+    ],
+)
+def test_render_ports_writes_http_port_exclusions(
+    tmp_path: Path, conf_text: str, want: str | None
+) -> None:
+    """``render_ports``：把「按 TLS 解析的端口」渲染成 ``redef HTTP::ports -= { ... }``。
+
+    为什么要它（2026-10 实机实测）：Zeek 自带 HTTP 端口表含 8000/8008，而本环境这两个端口是
+    TLS → TLS 字节被当成 HTTP 行读，15 分钟刷出一万多条假协议异常。
+    """
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            "log() { :; }",
+            f'IFACE_CONF="{tmp_path}/interface.conf"',
+            f'SITE_DIR="{tmp_path}/site"',
+            _extract_function(script, "conf_get"),
+            _extract_function(script, "render_ports"),
+            "render_ports",
+        ]
+    )
+    (tmp_path / "site").mkdir()
+    (tmp_path / "interface.conf").write_text(conf_text, encoding="utf-8")
+    subprocess.run(["bash", "-c", harness], check=True, capture_output=True, text=True)
+
+    rendered = (tmp_path / "site" / "shentong-ports.zeek").read_text(encoding="utf-8")
+    assert "由 entrypoint.sh 自动生成（render_ports）" in rendered
+    assert "@load base/protocols/http" in rendered
+    if want is None:
+        assert "redef HTTP::ports" not in rendered
+    else:
+        assert want in rendered
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash 执行 entrypoint 片段")
 @pytest.mark.parametrize(
     ("conf_text", "want_body", "want_resp"),

@@ -44,6 +44,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
   const [bpfExtra, setBpfExtra] = React.useState("");
   const [bodyKb, setBodyKb] = React.useState("");
   const [respKb, setRespKb] = React.useState("");
+  const [tlsPorts, setTlsPorts] = React.useState("");
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const errs = usePanelErrors();
@@ -61,6 +62,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
       setBpfExtra(d.bpf_extra || "");
       setBodyKb(String(Math.round((d.body_max_bytes || 0) / 1024)));
       setRespKb(String(Math.round((d.resp_body_max_bytes || 0) / 1024)));
+      setTlsPorts(d.tls_ports || "");
     });
   }
 
@@ -84,6 +86,8 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
       const respKbNum = Number(respKb);
       if (Number.isFinite(bodyKbNum) && bodyKbNum > 0) payload.body_max_kb = bodyKbNum;
       if (Number.isFinite(respKbNum) && respKbNum > 0) payload.resp_body_max_kb = respKbNum;
+      // 按 TLS 解析的端口：整段照发（空串 = 不排除任何端口，回到采集器默认端口表）
+      payload.tls_ports = tlsPorts;
       const r = await apiFetch<{ interface: string; note: string }>("/api/zeek/interface", {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -213,6 +217,24 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               <span className="font-mono">resp_body_len</span> /{" "}
               <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
               约 10 秒内重载采集器。
+            </p>
+          </div>
+        )}
+
+        {showNets && (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              按 TLS 解析的端口（可选，如 8000, 8008）
+            </label>
+            <Input
+              value={tlsPorts}
+              onChange={(e) => setTlsPorts(e.target.value)}
+              placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              列在这里的端口**不再按 HTTP 解析**。采集器默认把 8000/8008 当 HTTP，
+              如果这两个端口实际跑的是 TLS，它会把 TLS 字节当 HTTP 文本行读，刷出大量假协议异常
+              （实测过 15 分钟一万多条）。**明文 HTTP 端口不要填进来**（例如本环境 8013 就是真 HTTP）。
             </p>
           </div>
         )}

@@ -478,16 +478,19 @@ export function BehaviorPanel() {
             </Badge>
             {/* 中继去重计数：四个数都要看得见（不静默丢数据） */}
             <Badge variant="outline">
-              中继前跳 {overview?.detector?.relay_front ?? 0}
+              客户端侧跳 保留 {overview?.detector?.relay_front ?? 0} / 丢弃{" "}
+              {overview?.detector?.relay_front_dropped ?? 0}
             </Badge>
             <Badge variant="outline">
-              后跳去重 {overview?.detector?.relay_back_dropped ?? 0}
+              源站侧跳 保留 {overview?.detector?.relay_back_kept ?? 0} / 去重{" "}
+              {overview?.detector?.relay_back_dropped ?? 0}
             </Badge>
             <Badge variant="outline">
-              后跳保留 {overview?.detector?.relay_back_kept ?? 0}
+              中继内部 保留 {overview?.detector?.relay_internal_kept ?? 0} / 丢弃{" "}
+              {overview?.detector?.relay_internal_dropped ?? 0}
             </Badge>
             <Badge variant="outline">
-              中继内部 {overview?.detector?.relay_internal_dropped ?? 0}
+              链续跳去重 {overview?.detector?.relay_chain_continuation_dropped ?? 0}
             </Badge>
             <Badge variant="outline">
               被访问方资产 本轮 {overview?.detector?.assets_last_round ?? 0} / 累计{" "}

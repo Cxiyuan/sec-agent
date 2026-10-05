@@ -48,12 +48,15 @@ export function RelayNodesPanel() {
   const errs = usePanelErrors();
   const [data, setData] = React.useState<RelayNodesPayload | null>(null);
   const [text, setText] = React.useState("");
+  const [sides, setSides] = React.useState<Record<string, string>>({});
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  const [sideMsg, setSideMsg] = React.useState("");
 
   function apply(d: RelayNodesPayload) {
     setData(d);
     setText(d.text);
+    setSides(d.sides || {});
   }
 
   async function load() {
@@ -87,8 +90,34 @@ export function RelayNodesPanel() {
     }
   }
 
-  const roles = Object.entries(data?.roles || {});
   const dirty = (data?.text || "") !== text;
+  // 清单里的条目（单地址能手动指定侧向；真正的网段条目按每条 IP 自动判）
+  const nodes = data?.nodes || [];
+  const sideDirty = nodes.some(
+    (ip) => (sides[ip] || "auto") !== ((data?.sides || {})[ip] || "auto"),
+  );
+
+  async function saveSides() {
+    setBusy(true);
+    setSideMsg("");
+    try {
+      const payload = Object.fromEntries(nodes.map((ip) => [ip, sides[ip] || "auto"]));
+      const d = await apiFetch<RelayNodesPayload>("/api/zeek/relay-nodes/sides", {
+        method: "PUT",
+        body: JSON.stringify({ sides: payload }),
+      });
+      apply(d);
+      setSideMsg("已保存侧向设置 —— 检测器约 30 秒内生效（读取方缓存 TTL）");
+    } catch (e) {
+      setSideMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function sideText(side: string | undefined): string {
+    return side === "back" ? "保留源站侧" : "保留客户端侧";
+  }
 
   return (
     <Card>
@@ -135,31 +164,64 @@ export function RelayNodesPanel() {
 
         <div>
           <p className="mb-1 text-xs text-muted-foreground">
-            角色由检测器按实际流量自动判定并回写（只读，仅供核对）——反向代理看 http/ssl，
-            DNS 转发看 dns：
-            {data?.detected_at ? ` 推算时间 ${formatDateTime(data.detected_at)}` : ""}
+            角色与两侧内容由检测器按实际流量自动统计并回写（
+            {data?.detected_at ? `推算时间 ${formatDateTime(data.detected_at)}` : "只读"}）。
+            <b>内容</b>指该侧带 Host/URI/请求体的明文日志条数（http/dns 这类）；
+            <b>TLS 加密流不算内容</b>。默认按实测自动判（哪侧有内容就保留哪侧），
+            拓扑特殊时可手动指定「保留哪一侧」：
           </p>
-          {roles.length ? (
+          {nodes.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>地址</TableHead>
                   <TableHead>推算角色</TableHead>
+                  <TableHead>客户端侧内容</TableHead>
+                  <TableHead>源站侧内容</TableHead>
+                  <TableHead>当前保留</TableHead>
+                  <TableHead>保留哪一侧</TableHead>
                   <TableHead>http/ssl 证据</TableHead>
                   <TableHead>dns 证据</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {roles.map(([ip, info]) => (
-                  <TableRow key={ip}>
-                    <TableCell className="font-mono text-xs">{ip}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{roleText(info.roles)}</Badge>
-                    </TableCell>
-                    <TableCell>{info.proxy ?? 0}</TableCell>
-                    <TableCell>{info.dns ?? 0}</TableCell>
-                  </TableRow>
-                ))}
+                {nodes.map((ip) => {
+                  const info = data?.roles?.[ip] || {};
+                  const isNet = ip.includes("/");
+                  return (
+                    <TableRow key={ip}>
+                      <TableCell className="font-mono text-xs">{ip}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{roleText(info.roles)}</Badge>
+                      </TableCell>
+                      <TableCell>{info.front_content ?? 0}</TableCell>
+                      <TableCell>{info.back_content ?? 0}</TableCell>
+                      <TableCell className="text-xs">
+                        {info.side ? sideText(info.side) : "未判定"}
+                        {info.side_source === "manual" ? "（手动）" : ""}
+                      </TableCell>
+                      <TableCell>
+                        {isNet ? (
+                          <span className="text-xs text-muted-foreground">网段条目按每条 IP 自动判</span>
+                        ) : (
+                          <select
+                            className="h-8 rounded-md border bg-transparent px-2 text-xs"
+                            value={sides[ip] || "auto"}
+                            onChange={(e) =>
+                              setSides((prev) => ({ ...prev, [ip]: e.target.value }))
+                            }
+                          >
+                            <option value="auto">自动（按实测内容）</option>
+                            <option value="front">保留客户端侧</option>
+                            <option value="back">保留源站侧</option>
+                          </select>
+                        )}
+                      </TableCell>
+                      <TableCell>{info.proxy ?? 0}</TableCell>
+                      <TableCell>{info.dns ?? 0}</TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (
@@ -167,6 +229,12 @@ export function RelayNodesPanel() {
               {data?.configured ? "还没有足够流量做判定（下一个回写周期后出现）" : "配置清单后由系统自动判定"}
             </p>
           )}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button size="sm" disabled={busy || !sideDirty} onClick={() => void saveSides()}>
+              保存侧向{sideDirty ? "（有改动）" : ""}
+            </Button>
+            {sideMsg ? <span className="text-xs text-muted-foreground">{sideMsg}</span> : null}
+          </div>
         </div>
       </CardContent>
     </Card>

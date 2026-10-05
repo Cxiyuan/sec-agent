@@ -76,6 +76,8 @@ def _entry(**kw: Any) -> SimpleNamespace:
         "dst_ip": None,
         "hop": "direct",
         "real_client_ip": None,
+        # 代理头原始文档（链续跳判据读它；默认空 = 没有代理头）
+        "raw": {},
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -179,7 +181,8 @@ def test_roles_count_evidence_by_log_type(roles_mod: ModuleType, set_relays) -> 
     det.observe(_entry(log_type="conn", src_ip="192.0.2.77"))  # 覆盖所有流量、判不出角色
     det.observe(_entry(log_type="http", src_ip="172.16.1.1"))  # 不在清单里
     snap = det.snapshot()
-    assert snap["192.0.2.77"] == {"proxy": 2, "dns": 1, "roles": ["proxy", "dns"]}
+    assert (snap["192.0.2.77"]["proxy"], snap["192.0.2.77"]["dns"]) == (2, 1)
+    assert snap["192.0.2.77"]["roles"] == ["proxy", "dns"]
     assert "172.16.1.1" not in snap
 
 
@@ -254,3 +257,190 @@ def test_dedup_minimum_visibility(dedup_mod: ModuleType) -> None:
     """窗口下限 30 秒：配了 0 或负数也不能关掉守卫（否则每次拓扑抖动都会漏丢）。"""
     assert dedup_mod.RelayDedup(visibility_seconds=0).visibility == 30
     assert dedup_mod.RelayDedup(visibility_seconds=-5).visibility == 30
+
+
+# ---------- 两侧内容统计与侧向判定（2026-10 实机实测新增）----------
+
+
+def test_auto_side_by_content(roles_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """按「哪一侧有内容」判侧向：悬殊才翻，默认保留客户端侧（= 历史行为）。
+
+    本条环境的实测值就是 9 : 28,557（WAF 客户端侧是 TLS 无 SNI，源站侧才是明文 HTTP）。
+    """
+    monkeypatch.setattr(roles_mod.settings, "relay_side_min", 50)
+    monkeypatch.setattr(roles_mod.settings, "relay_side_ratio", 10)
+    assert roles_mod.auto_side(9, 28557) == "back"
+    assert roles_mod.auto_side(5000, 10) == "front"
+    assert roles_mod.auto_side(10, 10) == "front"
+    assert roles_mod.auto_side(0, 0) == "front"
+    # 边界：49 条不翻；50 条且刚好 10 倍才翻；6 : 50 不够 10 倍也不翻
+    assert roles_mod.auto_side(0, 49) == "front"
+    assert roles_mod.auto_side(5, 50) == "back"
+    assert roles_mod.auto_side(6, 50) == "front"
+
+
+def test_roles_counts_content_per_side(roles_mod: ModuleType, set_relays: Any) -> None:
+    """内容统计：目的地是中继 → 客户端侧；来源是中继 → 源站侧；**ssl 不算内容**。"""
+    set_relays("192.0.2.77")
+    det = roles_mod.RelayRoleDetector()
+    det.observe(_entry(log_type="http", dst_ip="192.0.2.77"))
+    det.observe(_entry(log_type="dns", dst_ip="192.0.2.77"))
+    det.observe(_entry(log_type="http", src_ip="192.0.2.77"))
+    det.observe(_entry(log_type="ssl", dst_ip="192.0.2.77", raw={}))
+    snap = det.snapshot()["192.0.2.77"]
+    assert snap["front_content"] == 2
+    assert snap["back_content"] == 1
+    assert snap["side"] == "front" and snap["side_source"] == "auto"
+
+
+def test_side_of_uses_manual_override(
+    roles_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """运维手动指定的侧向优先于自动判定。"""
+    monkeypatch.setattr(roles_mod.relay_nodes, "side_override", lambda _ip: "back")
+    det = roles_mod.RelayRoleDetector()
+    assert det.side_of("192.0.2.77") == "back"
+
+
+def test_roles_content_reset_when_list_changes(
+    roles_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """换清单 → 内容统计也归零（跟角色证据同一套复位逻辑）。"""
+    monkeypatch.setattr(roles_mod.relay_nodes, "raw_text", lambda: "192.0.2.0/24")
+    monkeypatch.setattr(roles_mod.relay_nodes, "is_relay", lambda ip: str(ip) == "192.0.2.77")
+    det = roles_mod.RelayRoleDetector()
+    det.observe(_entry(log_type="http", dst_ip="192.0.2.77"))
+    assert det.snapshot()["192.0.2.77"]["front_content"] == 1
+    monkeypatch.setattr(roles_mod.relay_nodes, "raw_text", lambda: "10.0.0.0/8")
+    det._reset_if_list_changed()
+    assert det.snapshot() == {}
+
+
+def test_dedup_side_back_keeps_content_side(dedup_mod: ModuleType, set_relays: Any) -> None:
+    """侧向 = 源站侧（本环境 WAF 的实际形态）：丢客户端侧跳、保留源站侧跳。
+
+    同时覆盖「relay_internal 不再无条件丢」：源站侧有内容时，中继之间带明文的那条也要留。
+    """
+    set_relays("192.0.2.77")
+    dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "back")
+    front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77", log_type="ssl")
+    assert dedup.decide(front) == "drop"
+    assert dedup.counts["relay_front_dropped"] == 1
+    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="172.16.196.112", log_type="http")
+    assert dedup.decide(back) == "pass"
+    assert dedup.counts["relay_back_kept"] == 1
+    inner_tls = _entry(
+        hop="relay_internal", src_ip="192.0.2.77", dst_ip="192.0.2.78", log_type="ssl"
+    )
+    inner_http = _entry(
+        hop="relay_internal", src_ip="192.0.2.77", dst_ip="192.0.2.78", log_type="http"
+    )
+    assert dedup.decide(inner_tls) == "drop"
+    assert dedup.decide(inner_http) == "pass"
+    assert dedup.counts["relay_internal_kept"] == 1
+
+
+def test_dedup_side_front_keeps_today_behaviour(dedup_mod: ModuleType, set_relays: Any) -> None:
+    """侧向 = 客户端侧（默认/明文反代/DNS 转发器）：与历史行为一致。"""
+    set_relays("10.0.0.53")
+    dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "front")
+    front = _entry(hop="front", src_ip="192.0.2.9", dst_ip="10.0.0.53", log_type="dns")
+    assert dedup.decide(front) == "pass"
+    back = _entry(hop="back", src_ip="10.0.0.53", dst_ip="223.5.5.5", log_type="dns")
+    assert dedup.decide(back) == "drop"  # 前跳可见 → 后跳去重
+    assert dedup.counts["relay_back_dropped"] == 1
+
+
+def test_dedup_side_judgement_failure_falls_back_to_front(
+    dedup_mod: ModuleType, set_relays: Any
+) -> None:
+    """侧向判据出异常时不能打断检测主循环 —— 回退到「保留客户端侧」。"""
+    set_relays("192.0.2.77")
+
+    def boom(_ip: str) -> str:
+        raise RuntimeError("side judge down")
+
+    dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=boom)
+    front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77")
+    assert dedup.decide(front) == "pass"
+
+
+def test_chain_peer_ips_reads_sender_side_values(dedup_mod: ModuleType) -> None:
+    """只认「发送方自己写的」位置：X-Real-IP 与 XFF **末尾**（XFF 最左是客户端可塞的位置）。"""
+    entry = _entry(
+        raw={
+            "proxied": [
+                "X-FORWARDED-FOR -> 1.1.1.1, 2.2.2.2, 3.3.3.3",
+                "X-REAL-IP -> 9.9.9.9:8080",
+            ]
+        }
+    )
+    assert dedup_mod.chain_peer_ips(entry) == {"3.3.3.3", "9.9.9.9"}
+    # 没有 Zeek 的 proxied 包装时退回裸头
+    entry2 = _entry(raw={"x-forwarded-for": "1.1.1.1, 2.2.2.2", "x-real-ip": "3.3.3.3"})
+    assert dedup_mod.chain_peer_ips(entry2) == {"2.2.2.2", "3.3.3.3"}
+
+
+def test_dedup_drops_chain_continuation(dedup_mod: ModuleType, set_relays: Any) -> None:
+    """链的下游续跳：src 不是中继、但代理头说上一跳是清单内中继 → 丢掉（同一次访问已记）。"""
+    set_relays("172.16.199.203")
+    dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "back")
+    chain = {
+        "proxied": [
+            "X-FORWARDED-FOR -> 101.133.144.79, 172.16.199.203",
+            "X-REAL-IP -> 172.16.199.203",
+        ]
+    }
+    cont = _entry(
+        hop="direct",
+        src_ip="172.16.196.112",
+        dst_ip="172.16.196.111",
+        log_type="http",
+        raw=chain,
+    )
+    assert dedup.decide(cont) == "drop"
+    assert dedup.counts["relay_chain_continuation_dropped"] == 1
+    # 证据跳（src 就是中继）不在续跳判据范围内 —— 它的代理头里同样带着中继
+    keep = _entry(
+        hop="back", src_ip="172.16.199.203", dst_ip="172.16.196.112", log_type="http", raw=chain
+    )
+    assert dedup.decide(keep) == "pass"
+    assert dedup.counts["relay_chain_continuation_dropped"] == 1
+    # 链里没有中继 → 不是续跳
+    plain = _entry(
+        hop="direct",
+        src_ip="172.16.196.112",
+        dst_ip="172.16.196.111",
+        log_type="http",
+        raw={"proxied": ["X-REAL-IP -> 203.0.113.9"]},
+    )
+    assert dedup.decide(plain) == "pass"
+
+
+def test_validate_sides_rejects_unknown_address_and_bad_value(
+    relay: ModuleType, set_relays: Any
+) -> None:
+    set_relays("192.0.2.77")
+    assert relay.validate_sides({"192.0.2.77": "back"}) == []
+    errors = relay.validate_sides({"203.0.113.5": "back", "192.0.2.77": "sideways"})
+    assert len(errors) == 2
+
+
+def test_sides_round_trip_in_describe(relay: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """侧向设置随清单一起读回（界面据此回显下拉框）——只读快照即可。"""
+    monkeypatch.setattr(
+        relay,
+        "_snapshot",
+        lambda: {
+            "text": "192.0.2.77",
+            "nets": relay.parse("192.0.2.77"),
+            "roles": {"192.0.2.77": {"roles": ["proxy"]}},
+            "sides": {"192.0.2.77": "back"},
+            "detected_at": "2026-10-05T00:00:00+00:00",
+        },
+    )
+    out = relay.describe()
+    assert out["sides"] == {"192.0.2.77": "back"}
+    assert out["nodes"] == ["192.0.2.77"]
+    assert relay.side_override("192.0.2.77") == "back"
+    assert relay.side_override("198.51.100.1") == "auto"
