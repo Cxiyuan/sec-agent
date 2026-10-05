@@ -189,6 +189,9 @@ class Settings(BaseSettings):
     detector_poll_timeout: int = 5
     detector_scope_refresh_seconds: int = 60
     detector_stats_log_seconds: int = 300
+    # 中继角色推算的回写节奏（秒）：检测器按实际流量判定清单里的地址是「反代/WAF」还是
+    # 「内网 DNS 转发器」，周期写回 PG（界面只读展示）。见 detector/relay_roles.py
+    relay_role_detect_seconds: int = 300
 
     # ---- 总览页（/admin/status）需要的采样与缓存 ----
     # 检测器历史采样：每 detector_stats_log_seconds 追加一条，LPUSH + LTRIM 固定条数。

@@ -34,6 +34,7 @@ from app.detector.history import (
 )
 from app.detector.leader import Leader
 from app.detector.queue import ReliableQueue, make_blocking_client
+from app.detector.relay_roles import RelayRoleDetector
 from app.ingestion import exclusion, log_types
 from app.ingestion.es_client import build_networks, in_scope
 from app.ingestion.normalizer import normalize, source_of
@@ -150,6 +151,9 @@ def run() -> None:
     agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
     # 基线（第 8 期）：数值 2σ 按摘要算、账号/会话画像逐条观测，算完随摘要打标给智能体
     engine = BaselineEngine(client)
+    # 中继角色推算：按实际流量自动判定清单里的地址是「反代/WAF」还是「内网 DNS 转发器」，
+    # 周期回写 PG（界面只读展示）；见 detector/relay_roles.py
+    relay_roles = RelayRoleDetector()
     # 判重（第 5 期起）在智能体侧：只有它知道某个事件组分析过没有。本侧只负责投递。
     # 多实例选主：只有持锁实例消费队列（其余待命热备），故障后租约到期自动接管
     leader = Leader(client)
@@ -244,7 +248,7 @@ def run() -> None:
             settings.detector_consume_batch, settings.detector_poll_timeout
         ):
             try:
-                _handle(payload, rules, scopes, freq, agg, handled, stats, engine)
+                _handle(payload, rules, scopes, freq, agg, handled, stats, engine, relay_roles)
             except Exception:
                 # 原来这里 except 后无条件 ack：单条异常即永久丢且不计错误（QA 必修 2）。
                 # 现在转入隔离队列（有上限、可捞回）并计入 dropped.handle_failed。
@@ -288,6 +292,8 @@ def run() -> None:
         # 第 5 期：把上次推送失败、落在持久重试队列里的摘要在后台重发
         # （放在这里而不是另起线程：检测循环本来就是分钟级节奏，够用且不引入并发）
         push.retry_pending(client, stats)
+        # 中继角色推算回写（与统计块同节奏；写失败只记警告，不影响检测）
+        relay_roles.maybe_flush()
 
         if time.time() - last_stats >= settings.detector_stats_log_seconds:
             q_raw, q_proc = raw_q.depth()
@@ -742,6 +748,7 @@ def _handle(
     handled: HandledRegistry,
     stats: Counter[str],
     engine: BaselineEngine,
+    relay_roles: RelayRoleDetector,
 ) -> None:
     """处理单条队列消息。"""
     try:
@@ -777,6 +784,10 @@ def _handle(
         stats["prefiltered_scope"] += 1
         return
     stats["scanned"] += 1
+
+    # ④ 中继角色证据（第 1 步：只看清单内的地址；http/ssl → 反代，dns → DNS 转发）
+    #    放在排除过滤器之前：角色反映的是「这类协议是否经过该中继」，与用户过滤无关。
+    relay_roles.observe(entry)
 
     # ③ 用户自定义排除过滤器前置：命中即丢弃（只计数；ES 仍保留全量）
     #    为什么要前置：这些日志"注定不会被分析"，放在规则之后跑纯属浪费扫描吞吐。
