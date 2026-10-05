@@ -60,16 +60,25 @@ def _is_internal(ip: Any) -> bool:
     return not is_public_ip(value)
 
 
-def direction_of(src_ip: Any, dst_ips: Any) -> str:
+def direction_of(src_ip: Any, dst_ips: Any, real_client_ips: Any = None) -> str:
     """判定方向。
 
     目标集合里**只要有一个外网**就按外向处理（宁可多分析）；没有目标信息时返回
     ``unknown`` —— 不猜方向，只让证据约束生效（避免凭缺失信息把级别压下去）。
+
+    **真实客户端优先**（2026-10 用户发现的口径缺陷）：经过中继（反代/WAF/内网 DNS）时
+    ``src_ip`` 是代理自己（内网），拿它判会把「外网经代理访问」误判成 ``in→in``；
+    只要拿到了代理头解析出的真实客户端，就按真实客户端判 —— 多个真实客户端时
+    「任一为公网即按外向」（同样宁可多分析）。没有任何真实客户端则回落 ``src_ip``（直连场景）。
     """
     dst_list = [str(x) for x in (dst_ips or []) if x]
     if not dst_list:
         return DIR_UNKNOWN
-    src_internal = _is_internal(src_ip)
+    reals = [str(x) for x in (real_client_ips or []) if x]
+    if reals:
+        src_internal = all(_is_internal(ip) for ip in reals)
+    else:
+        src_internal = _is_internal(src_ip)
     dst_has_external = any(not _is_internal(d) for d in dst_list)
     if dst_has_external:
         return DIR_IN_TO_OUT if src_internal else DIR_OUT_TO_OUT

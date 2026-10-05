@@ -25,6 +25,9 @@ _MAX_SAMPLES = 3
 # **不能太小**：baseline/engine.py 拿 `len(digest["dst_ips"])` 当 distinct_dst_ips 特征，
 # 50 的上限会让 >50 扇出的目标数被截断，2σ 基线失真（2026-10 规则评审 P2）。
 _MAX_SET = 200
+# 摘要里 real_client_ips 的上限：只用于方向判定与展示（中继链路里 src_ip 是代理自己），
+# 5 个足够回答「这一组里有没有公网真实客户端」，再多只会把摘要撑大。
+_MAX_REAL_CLIENTS = 5
 # 满额降级：原来只 warning 一次就 return，命中被静默丢掉（QA 应修 6）。
 # 现在把丢弃写进 `settings.detector_drop_key` 的 agg_full 计数（跨重启可查），并限频告警。
 _DROP_TTL = 30 * 24 * 3600
@@ -97,6 +100,9 @@ class Aggregator:
                 "dst_ips": [],
                 "dst_ports": [],
                 "event_types": [],
+                # 真实客户端（可信中继带来的 XFF）与本组是否经过中继：方向判定要用
+                "real_client_ips": [],
+                "proxied": False,
                 "samples": [],
                 "first_seen": _iso(ts),
                 "first_seen_ts": ts,
@@ -112,6 +118,11 @@ class Aggregator:
         # 连接状态累计：策略层要判“这批命中里有没有真的建立过会话”
         if entry.conn_state:
             _push_unique(state, "conn_states", entry.conn_state)
+        # 真实客户端与中继标记：方向判定用 —— 中继链路里 `src_ip` 是代理/内网 DNS 自己，
+        # 拿它判方向会把「外网经代理访问」误判成 `in→in`（2026-10 用户发现的口径缺陷）
+        _push_unique(state, "real_client_ips", entry.real_client_ip, _MAX_REAL_CLIENTS)
+        if entry.hop in ("front", "back"):
+            state["proxied"] = True
         samples = state.setdefault("samples", [])
         # 样本：保留「最早 2 条 + 最新 1 条」。只留最早 3 条会让分析样本全是聚合窗开头的
         # 探活请求（评审 P2）；最后一条从第 3 条起被窗内最新命中持续覆盖。
@@ -200,12 +211,12 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
-def _push_unique(state: dict[str, Any], field: str, value: Any) -> None:
+def _push_unique(state: dict[str, Any], field: str, value: Any, limit: int = _MAX_SET) -> None:
     if value in (None, ""):
         return
     items = state.get(field)
     if not isinstance(items, list):
         items = []
         state[field] = items
-    if value not in items and len(items) < _MAX_SET:
+    if value not in items and len(items) < max(1, limit):
         items.append(value)

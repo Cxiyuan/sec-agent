@@ -430,7 +430,9 @@ def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[st
     """
     if digest.get("excluded"):
         return  # 已被排除过滤器命中，不重复判定
-    direction = triage_policy.direction_of(digest.get("src_ip"), digest.get("dst_ips"))
+    direction = triage_policy.direction_of(
+        digest.get("src_ip"), digest.get("dst_ips"), digest.get("real_client_ips")
+    )
     reason = triage_policy.internal_routine_reason(
         direction=direction,
         rule_severity=digest.get("rule_severity"),

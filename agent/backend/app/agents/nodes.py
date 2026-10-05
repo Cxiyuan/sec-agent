@@ -355,7 +355,17 @@ def _build_groups(
 
 
 def _group_direction(g: EventGroup) -> str:
-    """组的方向（按内外网判定）：取组内首个源 IP 与全部目标。"""
+    """组的方向（按内外网判定）：**真实客户端优先**，否则取组内首个源 IP。
+
+    中继（反代/WAF/内网 DNS）链路里 `src_ips` 可能是代理自己（而且排序后常常排在
+    真实客户端前面），拿它判会把「外网经代理访问」误判成 `in→in` —— 连带影响
+    `severity_critical_requires_external`（级别被压低）、`escalate_allow_external`
+    （不许升级）与「内网常规跳过」（可能被静默跳过）。
+    组内事件带 `real_client_ip`（可信中继带来的）时按它判：任一为公网即按外向处理。
+    """
+    reals = sorted({str(e.log.real_client_ip) for e in (g.events or []) if e.log.real_client_ip})
+    if reals:
+        return triage_policy.direction_of(reals[0], g.dst_ips, reals)
     return triage_policy.direction_of(g.src_ips[0] if g.src_ips else None, g.dst_ips)
 
 
