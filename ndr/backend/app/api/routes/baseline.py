@@ -22,6 +22,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.baseline import params, profile as profiles, stats as stats_mod
+from app.baseline.asset import (
+    asset_detail,
+    list_assets,
+    snapshot as assets_snapshot,
+)
 from app.config import settings
 from app.db.base import get_db
 from app.db.models import User
@@ -103,6 +108,7 @@ def _build_overview(top: int) -> dict[str, Any]:
         "risk_threshold": params.risk_threshold(),
         "flush_seconds": params.flush_seconds(),
         "stats": snap,
+        "assets": assets_snapshot(),
         "anomalies": anomalies,
         "detector": _detector_counters(),
         "note": (
@@ -172,6 +178,32 @@ def baseline_numeric(
     return stats_mod.list_stats(
         q=q, feature=feature, sort=sort, limit=limit, offset=offset, group=group
     )
+
+
+@router.get("/assets")
+def baseline_assets(
+    _: Annotated[User, Depends(get_current_user)],
+    q: str = "",
+    sort: str = "visits",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """**被访问方（内网源站 / 内网 DNS 转发器）列表**：分页 + 搜索。
+
+    与源头数值基线的区别：那份是按**发起方（源 IP）**建的，服务器被访问这件事在那里没有归属
+    （外网打内网服务器时事件都记在客户端那侧）；这份按**被访问方**建，看的是
+    「被访问次数 / 不同真实客户端数 / 不同目标数」的窗口间波动。
+    """
+    return list_assets(q=q, sort=sort, limit=limit, offset=offset)
+
+
+@router.get("/assets/stats")
+def baseline_asset_stats(
+    _: Annotated[User, Depends(get_current_user)],
+    asset: str = "",
+):
+    """单个被访问方资产的全部特征明细（均值/标准差/观测次数/是否过观测期）。"""
+    return asset_detail(asset)
 
 
 class ConfigIn(BaseModel):

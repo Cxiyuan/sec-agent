@@ -24,6 +24,7 @@ import {
 
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import type {
+  AssetListPayload,
   BaselineConfigItem,
   BaselineConfigPayload,
   BaselinePayload,
@@ -54,6 +55,7 @@ const SRC = {
   config: "可调参数",
   profiles: "画像列表",
   numeric: "数值基线",
+  assets: "被访问方基线",
 } as const;
 
 const PAGE_SIZE = 20;
@@ -227,6 +229,9 @@ export function BehaviorPanel() {
   const [config, setConfig] = React.useState<BaselineConfigPayload | null>(null);
   const [profiles, setProfiles] = React.useState<BaselineProfilesPayload | null>(null);
   const [numeric, setNumeric] = React.useState<NumericGroupedPayload | null>(null);
+  const [assets, setAssets] = React.useState<AssetListPayload | null>(null);
+  const [apage, setApage] = React.useState(0);
+  const [aq, setAq] = React.useState("");
   const [auto, setAuto] = React.useState(true);
   const [configOpen, setConfigOpen] = React.useState(false);
 
@@ -257,6 +262,9 @@ export function BehaviorPanel() {
     `/api/baseline/numeric?group=ip&q=${encodeURIComponent(nq)}` +
     `&feature=${encodeURIComponent(nfeature)}&sort=${nsort}` +
     `&limit=${PAGE_SIZE}&offset=${npage * PAGE_SIZE}`;
+  const assetsUrl =
+    `/api/baseline/assets?q=${encodeURIComponent(aq)}` +
+    `&limit=${PAGE_SIZE}&offset=${apage * PAGE_SIZE}`;
 
   async function load() {
     errs.reset();
@@ -264,6 +272,7 @@ export function BehaviorPanel() {
       loadInto(errs, SRC.overview, "/api/baseline", setOverview),
       loadInto(errs, SRC.profiles, profilesUrl, setProfiles),
       loadInto(errs, SRC.numeric, numericUrl, setNumeric),
+      loadInto(errs, SRC.assets, assetsUrl, setAssets),
     ]);
   }
 
@@ -296,11 +305,17 @@ export function BehaviorPanel() {
   }, [numericUrl]);
 
   React.useEffect(() => {
+    void loadInto(errs, SRC.assets, assetsUrl, setAssets);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetsUrl]);
+
+  React.useEffect(() => {
     if (!auto) return;
     const timer = setInterval(() => {
       void loadInto(errs, SRC.overview, "/api/baseline", setOverview);
       void loadInto(errs, SRC.profiles, profilesUrl, setProfiles);
       void loadInto(errs, SRC.numeric, numericUrl, setNumeric);
+      void loadInto(errs, SRC.assets, assetsUrl, setAssets);
     }, REFRESH_SECONDS * 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -460,6 +475,23 @@ export function BehaviorPanel() {
             </Badge>
             <Badge variant={overview?.profile_enabled ? "default" : "outline"}>
               画像{overview?.profile_enabled ? "开" : "关"}
+            </Badge>
+            {/* 中继去重计数：四个数都要看得见（不静默丢数据） */}
+            <Badge variant="outline">
+              中继前跳 {overview?.detector?.relay_front ?? 0}
+            </Badge>
+            <Badge variant="outline">
+              后跳去重 {overview?.detector?.relay_back_dropped ?? 0}
+            </Badge>
+            <Badge variant="outline">
+              后跳保留 {overview?.detector?.relay_back_kept ?? 0}
+            </Badge>
+            <Badge variant="outline">
+              中继内部 {overview?.detector?.relay_internal_dropped ?? 0}
+            </Badge>
+            <Badge variant="outline">
+              被访问方资产 本轮 {overview?.detector?.assets_last_round ?? 0} / 累计{" "}
+              {overview?.detector?.assets_observed ?? 0}
             </Badge>
           </div>
           <div>
@@ -718,6 +750,81 @@ export function BehaviorPanel() {
             </p>
           )}
           <Pager total={profiles?.total ?? 0} page={ppage} onPage={setPpage} />
+        </CardContent>
+      </Card>
+
+      {/* ---------- 4. 被访问方（内网源站 / 内网 DNS） ---------- */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+            被访问方（内网源站 / 内网 DNS）
+            <span className="text-xs font-normal text-muted-foreground">
+              按「**被访问方**」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动
+              —— 源 IP 那份基线看不出「服务器被打」。
+              <span className="text-emerald-500">生效中</span>=已过观测期，
+              <span className="text-amber-500">观测中</span>=只学习
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="h-9 w-52"
+              placeholder="按 hostname / IP:端口 搜"
+              value={aq}
+              onChange={(e) => {
+                setAq(e.target.value);
+                setApage(0);
+              }}
+            />
+            <span className="text-xs text-muted-foreground">
+              共 {assets?.total ?? 0} 个资产 · 每个观测区间 {assets?.window_seconds ?? "-"} 秒
+            </span>
+          </div>
+          {assets?.items?.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>资产</TableHead>
+                  <TableHead>类型</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>平均每区间被访问</TableHead>
+                  <TableHead>不同客户端</TableHead>
+                  <TableHead>不同目标</TableHead>
+                  <TableHead>首见</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {assets.items.map((row) => (
+                  <TableRow key={row.asset}>
+                    <TableCell className="text-xs">{row.asset}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{row.role === "dns" ? "内网 DNS" : "站点"}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <StateBadge
+                        judging={row.state === "ready"}
+                        hint={
+                          row.state === "ready"
+                            ? "已过观测期：参与 2σ 规模偏离判定"
+                            : `已攒 ${row.windows} 个观测区间，还在学习`
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>{row.visits_mean}</TableCell>
+                    <TableCell>{row.clients_mean}</TableCell>
+                    <TableCell>{row.targets_mean}</TableCell>
+                    <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {emptyOrFailed(errs, SRC.assets, "还没有被访问方数据（观测期内的资产先学习）")}
+            </p>
+          )}
+          <Pager total={assets?.total ?? 0} page={apage} onPage={setApage} />
         </CardContent>
       </Card>
 

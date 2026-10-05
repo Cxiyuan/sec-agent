@@ -527,6 +527,14 @@ export interface BaselineDetector {
   anomalies_total?: number;
   anomaly_rounds?: number;
   anomalies_last_round?: number;
+  /** 中继去重计数（四个都不静默）：前跳、后跳去重、后跳保留、中继内部 */
+  relay_front?: number;
+  relay_back_dropped?: number;
+  relay_back_kept?: number;
+  relay_internal_dropped?: number;
+  /** 被访问方基线：本轮观测到的资产数 / 累计 */
+  assets_last_round?: number;
+  assets_observed?: number;
   flush_at?: number;
 }
 
@@ -538,6 +546,15 @@ export interface BaselinePayload {
   risk_threshold: number;
   flush_seconds: number;
   stats: BaselineStats;
+  /** 被访问方（内网源站 / 内网 DNS）规模概览 */
+  assets?: {
+    total_assets: number;
+    ready_assets: number;
+    learning_assets: number;
+    observe_days: number;
+    window_seconds: number;
+    error?: string;
+  };
   anomalies: BaselineAnomalies;
   detector: BaselineDetector;
   note: string;
@@ -803,4 +820,63 @@ export interface NumericGroupedPayload {
   observe_days: number;
   items: NumericIpGroup[];
   error?: string;
+}
+
+// ---------- 被访问方（内网源站 / 内网 DNS）基线 ----------
+
+/** `GET /api/baseline/assets`：一行 = 一个被访问方资产 */
+export interface AssetRow {
+  /** 资产标识：hostname 优先（HTTP Host / SSL SNI），无则 `IP:端口`（内网 DNS 是 `IP:53`） */
+  asset: string;
+  role: "site" | "dns" | string;
+  /** ready = 已过观测期（可判偏离）；learning = 只学习 */
+  state: "ready" | "learning" | string;
+  /** 已攒了多少个观测区间 */
+  windows: number;
+  first_seen: string;
+  /** 平均每个观测区间被访问多少次 */
+  visits_mean: number;
+  /** 平均每区间不同真实客户端数 */
+  clients_mean: number;
+  /** 平均每区间不同目标数（HTTP=URI、DNS=域名） */
+  targets_mean: number;
+  window_seconds: number;
+}
+
+export interface AssetListPayload {
+  total: number;
+  returned: number;
+  items: AssetRow[];
+  window_seconds: number;
+  error?: string;
+}
+
+/** `GET /api/baseline/assets/stats?asset=`：单个资产的各特征明细 */
+export interface AssetStatItem {
+  feature: string;
+  count: number;
+  mean: number;
+  std: number;
+  first_seen: string;
+  warmed: boolean;
+}
+
+export interface AssetDetailPayload {
+  asset: string;
+  role: string;
+  observe_days: number;
+  window_seconds: number;
+  items: AssetStatItem[];
+  error?: string;
+}
+
+/** `GET /api/zeek/relay-nodes`：中继节点清单（界面「监控网段」页维护，只读 PG） */
+export interface RelayNodesPayload {
+  text: string;
+  count: number;
+  /** false = 系统认定「网络里没有中继」（不认代理头、不做去重） */
+  configured: boolean;
+  /** 检测器自动推算的角色与证据计数（界面只读） */
+  roles: Record<string, { proxy?: number; dns?: number; roles?: string[] }>;
+  detected_at: string;
 }

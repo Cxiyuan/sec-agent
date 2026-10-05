@@ -377,7 +377,9 @@ NDR 线路（采集与检测）：
 | `ST_ZEEK_INTERFACE` | 空 | 抓包网卡的兜底名。**留空 = 采集器自动取第一块物理网卡**（界面「监控网段」页保存的值优先；下拉里只列**物理网卡**）。网卡名是客户环境的东西（ens192/ens224/eth0…每家不同），所以产品不写死默认值 |
 | `ST_ZEEK_MONITORED_NETS` | 空 | 监控网段/IP（界面「监控网段」页写入的值优先） |
 | `ST_ZEEK_BPF_EXTRA` | 空 | 附加 BPF 片段，追加在网段表达式之后 |
-| —— | —— | 中继节点清单（反代 / WAF / 内网 DNS 转发器）**不是环境变量**：在界面「监控网段」页维护、存 PG（`SystemConfig.zeek.relay_nodes`）。它同时决定「信不信代理头（`real_client_ip`）」与「哪些跳按中继去重」；**没配 = 认定网络里没有中继**（不认代理头、`hop` 全 `direct`、不配对）|
+| —— | —— | 中继节点清单（反代 / WAF / 内网 DNS 转发器）**不是环境变量**：在界面「监控网段」页维护、存 PG（`SystemConfig.zeek.relay_nodes`）。它同时决定「信不信代理头（`real_client_ip`）」与「哪些跳按中继去重」；**没配 = 认定网络里没有中继**（不认代理头、`hop` 全 `direct`、不配对）。升级后需在界面重新录入（旧变量 `ZEEK_TRUSTED_PROXIES` 已废弃） |
+| `ST_RELAY_ROLE_DETECT_SECONDS` | 300 | 中继角色（反向代理 / DNS 转发）自动推算的回写节奏（秒）：检测器按实际流量（http/ssl→反代，dns→DNS）判定后写回 PG，界面只读展示 |
+| `ST_RELAY_VISIBILITY_SECONDS` | 300 | 中继去重的「前跳可见」记忆时长（秒，下限 30）：见过该中继的前跳就把后跳判为重复；从未见过则后跳照常处理（不丢数据） |
 | `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
 | `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `WAZUH_API_*` 传入 |
 | `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |

@@ -186,6 +186,30 @@ class BaselineStat(Base):
     )
 
 
+class AssetStat(Base):
+    """被访问方（内网源站 / 内网 DNS）的行为基线：与 `baseline_stats` 同结构的 Welford 统计。
+
+    为什么要单独一张表（没复用 `baseline_stats` 加前缀）：现有列表按「key 里最后一个冒号前…」
+    推 IP 做分组，`asset:host:feature` 这类键会被解析成奇怪的 IP；单表互不干扰。
+    key = `{资产标识}:{特征}`，资产标识优先 hostname（HTTP Host / SSL SNI），无则 `IP:端口`；
+    特征：visits / distinct_clients / distinct_client_ports / distinct_targets
+    （HTTP 是不同 URI 数、DNS 是不同域名数）。
+    """
+
+    __tablename__ = "asset_stats"
+
+    key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    mean: Mapped[float] = mapped_column(Float, default=0.0)
+    m2: Mapped[float] = mapped_column(Float, default=0.0)
+    first_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
+    )
+
+
 class EntityProfile(Base):
     """账号 / 会话跨窗口长期画像（UEBA 式统计基线）。
 

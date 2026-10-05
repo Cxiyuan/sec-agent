@@ -942,6 +942,67 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 读侧夹紧脏值、save/reset 只动白名单且让缓存失效、端点接线与 400）。改造后同步修了 4 个引用旧 `settings`
 打桩的旧用例（补丁改打到 `params`），并给快照的倒计时字段补了断言。
 
+### 2026-10 中继链路还原 + 被访问方基线（5 个增量，均门禁全绿后提交）
+
+**用户要解决的问题**（原话口径）：经过 WAF/反向代理/内网 DNS 转发的访问，「只看 conn 会把 dst_ip 变成代理」；
+计数与检测都**只应认「公网客户端 → 内网源站」一条数据链路**，把中继自己的「接受 + 转发」去重掉；
+可信代理清单要能在界面维护、存 PG，并自动推算它是反代还是 DNS 转发器。
+
+**实机取证（先看清再动手）**：
+- `uid` 在全量索引里 **0 条** —— 归一化把它丢了，所以「按 uid 关联 http↔conn」当时根本做不到；
+- 代理链路两跳都在抓：`src=172.16.199.203(代理) dst=172.16.196.112:80 real=47.100.132.81`
+  （后跳，带 XFF）与「客户端 → 代理」（前跳）；
+- `direction` 只算在摘要上（事件文档里没有该字段），且用 `src_ip` 判 ——
+  实测 `direction_of("172.16.199.203", ["172.16.196.112"])` = `in→in`（**外网经代理访问被误判**），
+  而 `direction_of("202.120.8.186", ["172.16.196.112"])` = `out→in`；
+- 智能体侧的方向是**从事件重算**的（`_group_direction` 取 `src_ips[0]`，排序后代理常常在前），
+  所以「改摘要 src_ip」并不能修好那一侧 —— 这直接推翻了最初设想的「把 real_client_ip 加进聚合键」方案。
+
+**1/5 中继清单改为 PG 专属**：新增 `ingestion/relay_nodes.py`（两侧栈一致，只读 `SystemConfig.zeek.relay_nodes`，
+30 秒 TTL 缓存、IP/CIDR + 逗号/换行 + `#` 注释、非法项限量告警）。**删掉** `ST_ZEEK_TRUSTED_PROXIES`
+设置项（两侧 config）、compose 透传与 README 那行；**PG 没配 = 认定网络里没有中继**（不认任何代理头、
+hop 全 direct、不配对）—— 用户确认「不迁移，升级后等人录」，所以界面与发布说明必须写明这个行为断崖。
+`uid`（Zeek 连接 UID，**只能关联同一跳**）与 `hop`（direct/front/back/relay_internal，stateless，
+**不看 XFF**）两个新字段进 `UnifiedLog` + MCP 字段目录（守卫测试要求覆盖）。新端点
+`GET/PUT /api/zeek/relay-nodes` **独立于网段接口**：改清单不该触发 Zeek 重载、不打断抓包。
+
+**2/5 角色自动推算**：新增 `detector/relay_roles.py` —— 检测器逐条累计证据（http/ssl → proxy，dns → dns；
+conn 覆盖所有流量、判不出角色），清单文本变化即清零，每 `ST_RELAY_ROLE_DETECT_SECONDS`（300s）用
+`save_roles()` 回写同一个 PG 键（**不覆盖清单文本**），界面只读展示角色与证据计数。
+
+**3/5 方向判定「真实客户端优先」（A′）**：摘要新增 `real_client_ips`（上限 5）与 `proxied`；两侧
+`triage_policy.direction_of(src, dst, real_clients)` 有真实客户端就按它判（多个时「任一为公网即外向」，
+与既有「任一目的为公网即外向」同一哲学），没有则回落 `src_ip`（直连场景行为不变）；
+智能体 `_group_direction` 同样优先用组内事件的 `real_client_ip`。修好后：外网经代理的攻击不再被
+压级/不许升级/当内网常规跳过；内网直连与内网经代理仍判 `in→in`，伪造 XFF 翻不动（对端不在清单就不认）。
+
+**4/5 中继去重（一次业务访问只算一次）**：新增 `detector/relay_pairing.py`。
+**保留前跳**（客户端→中继：src 就是真实客户端，请求头/payload/JA3 都在它上面）、**丢掉后跳**
+（中继→真实目的：否则同一请求算两次，而且它的 src 是内网中继 → 「内网主机查询可疑域名」这类告警会归因到
+DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是两条独立 TCP 连接（uid 不同），配对要挂起前跳、
+等后跳、再补源站，热路径改动面与失败模式都大；改用**可见性守卫**（与顺序无关）：最近
+`ST_RELAY_VISIBILITY_SECONDS`（默认 300，下限 30）内见过该中继的前跳 → 后跳判重复丢掉；
+从未见过（抓包点只在源站侧）→ 后跳照常处理（计数 `relay_back_kept`），**宁可多算也不丢数据**。
+四个计数（前跳 / 后跳去重 / 后跳保留 / 中继内部）写进基线心跳并在「行为分析」页展示。
+已知取舍：一条摘要的 `dst_ips` 是中继而非源站 IP（源站 IP 见同一次访问的后跳 ES 文档）。
+
+**5/5 被访问方（内网源站 / 内网 DNS）基线**：新增表 `asset_stats`（与 `baseline_stats` 同结构，
+**单表避开现有列表按 key 推 IP 的分组逻辑**；`apply_stats/load_stats/cleanup` 已参数化为可传模型）+ 
+`baseline/asset.py`。资产标识 **hostname 优先**（HTTP Host / SSL SNI —— 中继场景下前跳也带它，
+所以经代理的访问同样归到站点上），无则回落 `IP:端口`（内网 DNS = `IP:53`）。四个特征：
+`visits` / `distinct_clients`（取 `real_client_ip or src_ip`，否则经代理时永远是 1）/
+`distinct_client_ports` / `distinct_targets`（HTTP=URI、DNS=域名）。一个聚合窗口 = 一个观测点，
+复用 Welford + 观测期 + zσ；**v1 只展示与标记，不写进摘要标签**（判据先在真实流量上校准）。
+端点 `GET /api/baseline/assets`（分页/搜索）与 `/assets/stats?asset=`（特征明细），概览进 `/api/baseline`。
+
+**前端**：「监控网段」页新增「中继节点清单」卡片（textarea 编辑 + 保存 + 未配置时的醒目提示
+「当前不信任任何代理头、不做去重」+ 角色只读表含证据计数）；「行为分析」页新增「被访问方
+（内网源站 / 内网 DNS）」卡片（资产 / 类型 / 状态（生效中·绿、观测中·黄）/ 平均每区间被访问 /
+不同客户端 / 不同目标 / 首见）与中继去重四项计数徽标。
+
+**测试**：新增 `tests/py/test_relay_chain.py`（15 例）与 `tests/py/test_asset_baseline.py`（18 例）；
+`conftest.py` 新增 `set_relays` fixture（清单只读 PG，测试改为 patch `relay_nodes.networks`）。
+
 ### 每期收尾门禁
 
 **本地（仓库根，都不需要 Docker、不产生构建产物）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。

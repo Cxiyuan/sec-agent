@@ -42,7 +42,8 @@ def _warmed(first_seen: datetime | None, now: datetime) -> bool:
     return first_seen <= now - timedelta(days=days)
 
 
-def _state(row: BaselineStat, now: datetime) -> dict[str, Any]:
+def _state(row: Any, now: datetime) -> dict[str, Any]:
+    """把一行（`BaselineStat` 或 `AssetStat`，两表结构一致）转成状态字典。"""
     count = int(row.count or 0)
     m2 = float(row.m2 or 0.0)
     return {
@@ -55,8 +56,11 @@ def _state(row: BaselineStat, now: datetime) -> dict[str, Any]:
     }
 
 
-def load_stats(keys: list[str]) -> dict[str, dict[str, Any]]:
-    """批量读基线；库里没有的键不出现在结果里。"""
+def load_stats(keys: list[str], *, model: Any = BaselineStat) -> dict[str, dict[str, Any]]:
+    """批量读基线；库里没有的键不出现在结果里。
+
+    `model` 可换成 `AssetStat`（被访问方基线）—— 两张表结构一致，统计口径共用一套。
+    """
     wanted = [k for k in dict.fromkeys(keys) if k][: _BATCH * 8]
     if not wanted:
         return {}
@@ -66,7 +70,7 @@ def load_stats(keys: list[str]) -> dict[str, dict[str, Any]]:
         with SessionLocal() as db:
             for start in range(0, len(wanted), _BATCH):
                 chunk = wanted[start : start + _BATCH]
-                rows = db.scalars(select(BaselineStat).where(BaselineStat.key.in_(chunk))).all()
+                rows = db.scalars(select(model).where(model.key.in_(chunk))).all()
                 for row in rows:
                     out[row.key] = _state(row, now)
     except Exception as exc:  # noqa: BLE001
@@ -74,8 +78,13 @@ def load_stats(keys: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def apply_stats(values: dict[str, list[float]]) -> dict[str, dict[str, Any]]:
-    """把一批观测并进基线（Welford 增量），返回并入后的状态。"""
+def apply_stats(
+    values: dict[str, list[float]], *, model: Any = BaselineStat
+) -> dict[str, dict[str, Any]]:
+    """把一批观测并进基线（Welford 增量），返回并入后的状态。
+
+    `model` 可换成 `AssetStat`（被访问方基线）。
+    """
     merged: dict[str, list[float]] = {k: v for k, v in values.items() if k and v}
     if not merged:
         return {}
@@ -84,17 +93,15 @@ def apply_stats(values: dict[str, list[float]]) -> dict[str, dict[str, Any]]:
     try:
         with SessionLocal() as db:
             keys = list(merged)
-            rows: dict[str, BaselineStat] = {}
+            rows: dict[str, Any] = {}
             for start in range(0, len(keys), _BATCH):
                 chunk = keys[start : start + _BATCH]
-                for row in db.scalars(
-                    select(BaselineStat).where(BaselineStat.key.in_(chunk))
-                ).all():
+                for row in db.scalars(select(model).where(model.key.in_(chunk))).all():
                     rows[row.key] = row
             for key, samples in merged.items():
                 row = rows.get(key)
                 if row is None:
-                    row = BaselineStat(key=key, count=0, mean=0.0, m2=0.0, first_seen=now)
+                    row = model(key=key, count=0, mean=0.0, m2=0.0, first_seen=now)
                     db.add(row)
                 count = int(row.count or 0)
                 mean = float(row.mean or 0.0)
@@ -322,7 +329,9 @@ def lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:
     }
 
 
-def cleanup(retention_days: int | None = None) -> dict[str, int]:
+def cleanup(
+    retention_days: int | None = None, *, model: Any = BaselineStat
+) -> dict[str, int]:
     """按 ``updated_at`` 删除长期没再观测过的数值基线键。
 
     为什么必须有（2026-10 实机 QA）：key = ``{src_ip}:{feature}``，被扫过一次的 IP
@@ -337,7 +346,7 @@ def cleanup(retention_days: int | None = None) -> dict[str, int]:
         with SessionLocal() as db:
             result = cast(
                 CursorResult[Any],
-                db.execute(delete(BaselineStat).where(BaselineStat.updated_at < before)),
+                db.execute(delete(model).where(model.updated_at < before)),
             )
             db.commit()
             return {"deleted": result.rowcount or 0}

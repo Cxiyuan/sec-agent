@@ -18,6 +18,11 @@ from collections import Counter
 from typing import Any
 
 from app.baseline import params, profile as profiles
+from app.baseline.asset import (
+    apply_window as assets_apply_window,
+    cleanup as assets_cleanup,
+    observe_entry as assets_observe_entry,
+)
 from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
 from app.schemas import UnifiedLog
@@ -44,6 +49,7 @@ class BaselineEngine:
     def __init__(self, client: Any = None) -> None:
         self._client = client
         self._obs: dict[str, dict[str, Any]] = {}  # 画像窗口观测（key = kind|entity）
+        self._assets: dict[str, dict[str, Any]] = {}  # 被访问方窗口观测（key = 资产标识）
         self._pending: dict[str, list[float]] = {}  # 数值基线待落库样本
         self._base: dict[str, dict[str, Any]] = {}  # 数值基线缓存（键 -> 状态）
         self._wanted: set[str] = set()  # 缓存里没有、想捞的键
@@ -58,13 +64,18 @@ class BaselineEngine:
     # ---------- 逐条：画像观测 ----------
 
     def observe(self, entry: UnifiedLog) -> None:
-        """把一条（已在监控网段内、未被排除的）事件并进画像观测桶。
+        """把一条（已在监控网段内、未被排除的）事件并进观测桶。
 
-        纯内存计数，没有 I/O；攒太多就提前落库，避免长时间不落库。
+        两类观测：账号/会话画像（受 `profile.enabled` 控制）与**被访问方**（内网源站/DNS 转发器，
+        只受总开关控制 —— 它不依赖画像，关掉画像也要能看「服务器被访问」的基线）。
+        都是纯内存计数，没有 I/O；攒太多就提前落库，避免长时间不落库。
         """
-        if not params.baseline_enabled() or not params.profile_enabled():
+        if not params.baseline_enabled():
             return
-        added = profiles.observe_entry(self._obs, entry)
+        added = 0
+        if params.profile_enabled():
+            added += profiles.observe_entry(self._obs, entry)
+        added += assets_observe_entry(self._assets, entry)
         self.stats["observed"] += added
         self._obs_since_flush += added
         if self._obs_since_flush >= max(1000, int(params.max_observations())):
@@ -216,6 +227,8 @@ class BaselineEngine:
             self._flush_stats()
         if self._obs:
             self._flush_profiles()
+        if self._assets:
+            self._flush_assets()
         if now - self._last_cleanup >= max(60, int(params.cleanup_seconds())):
             self._last_cleanup = now
             if params.profile_enabled():
@@ -232,6 +245,14 @@ class BaselineEngine:
                 log.info(
                     "数值基线清理：删除 %d 个超过 %d 天没更新的键",
                     dropped["deleted"],
+                    params.retention_days(),
+                )
+            # 被访问方基线同节奏清理
+            assets_dropped = assets_cleanup()
+            if assets_dropped.get("deleted"):
+                log.info(
+                    "被访问方基线清理：删除 %d 个超过 %d 天没更新的键",
+                    assets_dropped["deleted"],
                     params.retention_days(),
                 )
         self._publish()
@@ -313,6 +334,20 @@ class BaselineEngine:
                 len(self._anomalies),
             )
 
+    def _flush_assets(self) -> None:
+        """把被访问方的窗口观测落库（Welford，复用数值基线那套）。
+
+        一个聚合窗口 = 一个观测点：`visits` 的均值就是「平均每窗口被访问多少」，标准差是窗口间波动。
+        """
+        buckets, self._assets = self._assets, {}
+        if not buckets:
+            return
+        applied = assets_apply_window(buckets)
+        self.stats["assets_observed"] = self.stats.get("assets_observed", 0) + len(buckets)
+        self.stats["assets_last_round"] = len(buckets)
+        if not applied:
+            log.warning("被访问方基线落库未成功（下一轮重试）")
+
     def _publish(self) -> None:
         """把进程内计数写进 Redis，运行状态页据此判断基线是否在跑。"""
         if self._client is None:
@@ -329,6 +364,9 @@ class BaselineEngine:
                     "profiles_updated": int(self.stats.get("profiles_updated", 0)),
                     "anomalies_total": int(self.stats.get("anomalies_total", 0)),
                     "anomaly_rounds": int(self.stats.get("anomaly_rounds", 0)),
+                    # 被访问方（源站/DNS）基线：本轮观测到多少资产 + 累计
+                    "assets_last_round": int(self.stats.get("assets_last_round", 0)),
+                    "assets_observed": int(self.stats.get("assets_observed", 0)),
                     # 上一轮的量（会被覆盖）——名字里必须带 last_round，别再让人当成累计值
                     "numeric_keys_last_round": int(self.stats.get("numeric_keys_last_round", 0)),
                     "anomalies_last_round": int(self.stats.get("anomalies_last_round", 0)),
