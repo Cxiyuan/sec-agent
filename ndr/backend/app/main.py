@@ -10,13 +10,13 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.api.deps import default_password_in_use, hash_password
 from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
-from app.db.models import Rule, User
+from app.db.models import AssetStat, Rule, SystemConfig, User
 from app.rules.builtin import BUILTIN_RULES
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,13 @@ _MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
 )
+
+#: 被访问方基线的**口径版本**：`visits` 的含义从「每条事件」改成了「每条连接（uid）」。
+#: 两种语义的样本混在同一个 Welford 里会把均值/标准差拉偏（那边是无法区分的），所以版本落后
+#: 就把 `asset_stats` 清空重学 —— 它只是统计缓存（判据用的均值/方差），不含原始事件，
+#: 清了不丢数据，只是重新攒观测期。
+_ASSET_SEMANTICS_KEY = "asset.semantics_version"
+_ASSET_SEMANTICS_VERSION = 2
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
@@ -113,6 +120,38 @@ def _migrate() -> None:
             conn.exec_driver_sql(stmt)
 
 
+def _migrate_asset_semantics() -> None:
+    """把被访问方基线的口径版本升到当前值；版本落后就清空 `asset_stats` 重学（幂等）。
+
+    幂等：版本已经到位就直接返回；并发/重复启动最多多跑一次 `DELETE`（删空表不损失什么）。
+    """
+    with SessionLocal() as db:
+        row = db.get(SystemConfig, _ASSET_SEMANTICS_KEY)
+        payload = dict(row.value or {}) if row is not None else {}
+        try:
+            version = int(payload.get("value") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version >= _ASSET_SEMANTICS_VERSION:
+            return
+        removed = int(getattr(db.execute(delete(AssetStat)), "rowcount", 0) or 0)
+        if row is None:
+            db.add(
+                SystemConfig(
+                    key=_ASSET_SEMANTICS_KEY,
+                    value={"value": _ASSET_SEMANTICS_VERSION},
+                )
+            )
+        else:
+            row.value = {"value": _ASSET_SEMANTICS_VERSION}
+        db.commit()
+        logger.info(
+            "被访问方基线口径升级到 v%d（改成按连接算）：清掉旧口径的 %d 行统计，重新学习",
+            _ASSET_SEMANTICS_VERSION,
+            removed,
+        )
+
+
 def _push_es_retention() -> None:
     """幂等下发 ILM 策略与事件索引模板；ES 没就绪就一直等，之后定期复查。
 
@@ -160,6 +199,8 @@ def _seed() -> None:
     """幂等初始化：建表、默认管理员、内置规则。"""
     Base.metadata.create_all(engine)
     _migrate()
+    # 口径变了就清空重学（幂等；必须在检测器写新数据之前跑）
+    _migrate_asset_semantics()
 
     # 自检：内置规则正则（这类问题会「静默失败」）
     from app.selfcheck import run_startup_selfcheck

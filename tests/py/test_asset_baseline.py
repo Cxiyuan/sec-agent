@@ -1,12 +1,13 @@
 """被访问方（内网源站 / 内网 DNS）基线：`ndr/backend/app/baseline/asset.py`。
 
-只跑 NDR 栈。它要回答的是用户 2026-10 选定的方案 A：
+只跑 NDR 栈。它要回答的是用户 2026-10 选定的方案 A + 口径 B2：
 
-> 按**被访问方**建基线（源 IP 那套看不出「服务器被访问」的异常），特征是被访问次数、
-> 不同真实客户端数、不同客户端源端口数、不同目标数；资产标识 **hostname 优先**（HTTP Host /
-> SSL SNI —— 中继场景下前跳也带它），无则回落 `IP:端口`（内网 DNS 就是 `IP:53`）。
-
-中继去重已在检测器入口完成（后跳不进检测），所以这一层看到的就是「一次业务访问一条」。
+> 按**被访问方**建基线（源 IP 那套看不出「服务器被访问」的异常）。
+> **口径 B2：按连接算** —— 一个 Zeek `uid` = 一次「访问」；同一条连接里的
+> `conn`（无 Host/SNI，落 `IP:端口`）与 `http`/`ssl`（有 Host/SNI，落 hostname）
+> 合成**同一个身份**；请求数（http/dns）单独记。
+> 资产标识 **hostname 优先**（中继场景下前跳也带 Host/SNI），无则回落 `IP:端口`（内网 DNS = `IP:53`）；
+> **中继自身不作为资产**（端口 53 除外）；主机监控与没有 `uid` 的日志不进基线。
 """
 
 from __future__ import annotations
@@ -33,8 +34,17 @@ def baseline_route(request: pytest.FixtureRequest) -> ModuleType:
     return importlib.import_module("app.api.routes.baseline")
 
 
+@pytest.fixture(scope="module")
+def main_mod(request: pytest.FixtureRequest) -> ModuleType:
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("启动迁移只在 NDR 侧")
+    return importlib.import_module("app.main")
+
+
 def _entry(**kw: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
+        "uid": "C1",
+        "log_type": "http",
         "hostname": None,
         "dst_ip": "10.0.0.80",
         "dst_port": 80,
@@ -48,7 +58,7 @@ def _entry(**kw: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-# ---------- 资产标识 ----------
+# ---------- 资产标识（单条事件视角） ----------
 
 
 def test_asset_key_prefers_hostname_and_lowercases(asset: ModuleType) -> None:
@@ -70,48 +80,229 @@ def test_role_of_marks_dns_by_port(asset: ModuleType) -> None:
     assert asset.role_of("172.16.196.112:443") == "site"
 
 
-# ---------- 窗口累计 ----------
+# ---------- 按连接（uid）累计 ----------
 
 
-def test_observe_counts_visits_and_dedups(asset: ModuleType) -> None:
-    buckets: dict[str, dict[str, Any]] = {}
-    entry = _entry(hostname="a.example", real_client_ip="198.51.100.7", uri_path="/api/x")
-    assert asset.observe_entry(buckets, entry) == 1
-    asset.observe_entry(buckets, entry)  # 同一客户端同一路径：访问次数 +1，集合不变
-    asset.observe_entry(
-        buckets, _entry(hostname="a.example", real_client_ip="198.51.100.8", uri_path="/api/y")
+def test_conn_then_http_same_uid_is_one_visit(asset: ModuleType) -> None:
+    """B2 的核心：`conn` 与 `http` 是同一条连接 → 一次访问，身份取 hostname。"""
+    records: dict[str, dict[str, Any]] = {}
+    assert (
+        asset.observe_entry(
+            records, _entry(uid="C1", log_type="conn", hostname=None, dst_ip="10.0.0.80")
+        )
+        == 1
     )
+    assert (
+        asset.observe_entry(
+            records,
+            _entry(uid="C1", log_type="http", hostname="a.example", uri_path="/api/x"),
+        )
+        == 0
+    )
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
+    # 只落在 hostname 上，不再另外产生一行 `10.0.0.80:80`
+    assert set(buckets) == {"a.example"}
+    assert buckets["a.example"]["visits"] == 1
+    assert buckets["a.example"]["requests"] == 1
+    assert buckets["a.example"]["targets"] == {"/api/x"}
+
+
+def test_http_then_conn_same_uid_is_one_visit(asset: ModuleType) -> None:
+    """与事件到达顺序无关：http 先到、conn 后到，身份同样归到 hostname。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="C9", log_type="http", hostname="b.example"))
+    asset.observe_entry(records, _entry(uid="C9", log_type="conn", hostname=None))
+    buckets, _ = asset.finalize(records)
+    assert set(buckets) == {"b.example"}
+    assert buckets["b.example"]["visits"] == 1
+
+
+def test_keepalive_requests_counted_but_visit_once(asset: ModuleType) -> None:
+    """一条长连接上多条请求：访问数仍是 1，请求数按应用层日志累计。"""
+    records: dict[str, dict[str, Any]] = {}
+    for path in ("/a", "/b", "/c", "/a"):
+        asset.observe_entry(
+            records, _entry(uid="C2", log_type="http", hostname="a.example", uri_path=path)
+        )
+    buckets, _ = asset.finalize(records)
+    assert buckets["a.example"]["visits"] == 1
+    assert buckets["a.example"]["requests"] == 4
+    assert buckets["a.example"]["targets"] == {"/a", "/b", "/c"}
+
+
+def test_conn_only_falls_back_to_ip_port(asset: ModuleType) -> None:
+    """纯 TCP 业务（没有应用层日志）：身份就是 `IP:端口`，请求数为 0。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="C3", log_type="conn", hostname=None))
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
+    assert buckets["10.0.0.80:80"]["visits"] == 1
+    assert buckets["10.0.0.80:80"]["requests"] == 0
+
+
+def test_real_client_ip_wins_over_src_ip(asset: ModuleType) -> None:
+    """中继链路上 src 是代理，客户端必须取 real_client_ip（否则「不同客户端数」永远是 1）。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="C4", log_type="conn", hostname=None))
+    asset.observe_entry(
+        records,
+        _entry(uid="C4", log_type="http", hostname="a.example", real_client_ip="202.120.8.186"),
+    )
+    buckets, _ = asset.finalize(records)
+    assert buckets["a.example"]["clients"] == {"202.120.8.186"}
+
+
+def test_many_connections_aggregate_by_asset(asset: ModuleType) -> None:
+    """多条连接落到同一资产：访问数按连接算，客户端/端口/目标各自去重。"""
+    records: dict[str, dict[str, Any]] = {}
+    plan = (
+        ("U1", "203.0.113.9", 40001),
+        ("U2", "203.0.113.9", 40002),
+        ("U3", "198.51.100.7", 40003),
+    )
+    for i, (uid, src, port) in enumerate(plan):
+        asset.observe_entry(
+            records,
+            _entry(
+                uid=uid,
+                log_type="http",
+                hostname="a.example",
+                src_ip=src,
+                src_port=port,
+                uri_path=f"/p{i}",
+            ),
+        )
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
     bucket = buckets["a.example"]
     assert bucket["visits"] == 3
-    assert bucket["clients"] == {"198.51.100.7", "198.51.100.8"}
-    assert bucket["targets"] == {"/api/x", "/api/y"}
+    assert bucket["requests"] == 3
+    assert bucket["clients"] == {"203.0.113.9", "198.51.100.7"}
+    assert bucket["client_ports"] == {40001, 40002, 40003}
+    assert bucket["targets"] == {"/p0", "/p1", "/p2"}
 
 
-def test_observe_uses_real_client_when_proxied(asset: ModuleType) -> None:
-    """中继链路上 src 是代理，客户端必须取 real_client_ip（否则"不同客户端数"永远是 1）。"""
-    buckets: dict[str, dict[str, Any]] = {}
-    asset.observe_entry(buckets, _entry(src_ip="172.16.199.203", real_client_ip="202.120.8.186"))
-    assert buckets["10.0.0.80:80"]["clients"] == {"202.120.8.186"}
+# ---------- 中继自身不作为资产 ----------
 
 
-def test_observe_skips_entries_without_target(asset: ModuleType) -> None:
-    buckets: dict[str, dict[str, Any]] = {}
-    assert asset.observe_entry(buckets, _entry(hostname=None, dst_ip=None)) == 0
-    assert buckets == {}
+def test_front_hop_to_relay_is_dropped(asset: ModuleType, set_relays: Any) -> None:
+    """前跳的 dst 就是中继：非 HTTP 没有 Host/SNI 时身份会落到它身上 —— 那是「代理被连接」。"""
+    set_relays("172.16.199.203")
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records,
+        _entry(uid="F1", log_type="conn", hostname=None, dst_ip="172.16.199.203", dst_port=8000),
+    )
+    buckets, dropped = asset.finalize(records)
+    assert buckets == {} and dropped == 1
+
+
+def test_relay_hop_with_hostname_is_kept(asset: ModuleType, set_relays: Any) -> None:
+    """有 Host/SNI 时身份是站点（不是中继），照常计入 —— 这正是「经代理的访问归到站点上」。"""
+    set_relays("172.16.199.203")
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records,
+        _entry(
+            uid="F2",
+            log_type="http",
+            hostname="www.nczy.edu.cn",
+            dst_ip="172.16.199.203",
+            dst_port=8000,
+        ),
+    )
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
+    assert set(buckets) == {"www.nczy.edu.cn"}
+
+
+def test_dns_relay_kept_on_port_53(asset: ModuleType, set_relays: Any) -> None:
+    """端口 53 的中继要保留：内网 DNS 被多少客户端查询正是要看的东西。"""
+    set_relays("172.16.199.211")
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records,
+        _entry(
+            uid="D1",
+            log_type="dns",
+            hostname=None,
+            dst_ip="172.16.199.211",
+            dst_port=53,
+            query="evil.example",
+        ),
+    )
+    asset.observe_entry(
+        records,
+        _entry(
+            uid="D2",
+            log_type="dns",
+            hostname=None,
+            dst_ip="172.16.199.211",
+            dst_port=53,
+            query="good.example",
+        ),
+    )
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
+    assert buckets["172.16.199.211:53"]["visits"] == 2
+    assert buckets["172.16.199.211:53"]["requests"] == 2
+    assert buckets["172.16.199.211:53"]["targets"] == {"evil.example", "good.example"}
+
+
+def test_finalize_drops_connection_without_identity(asset: ModuleType) -> None:
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="X1", hostname=None, dst_ip=None, dst_port=None))
+    buckets, dropped = asset.finalize(records)
+    assert buckets == {} and dropped == 1
+
+
+# ---------- 不进基线的输入 ----------
+
+
+def test_entries_without_uid_do_not_enter(asset: ModuleType) -> None:
+    """主机监控（Wazuh）与 files/x509 这类没有连接语义的日志：不入基线并计为丢弃。"""
+    records: dict[str, dict[str, Any]] = {}
+    assert asset.observe_entry(records, _entry(uid="", log_type="wazuh")) == -1
+    assert asset.observe_entry(records, _entry(uid="", log_type="files")) == -1
+    assert records == {}
+
+
+def test_max_uids_caps_memory(asset: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """连接记录数有上限：超出的连接不再入桶（避免突发流量把内存顶爆）。"""
+    monkeypatch.setattr(asset.settings, "asset_max_uids", 1)
+    records: dict[str, dict[str, Any]] = {}
+    assert asset.observe_entry(records, _entry(uid="U1")) == 1
+    assert asset.observe_entry(records, _entry(uid="U2")) == -1
+    assert list(records) == ["U1"]
+
+
+def test_request_log_types_configurable(asset: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """请求数口径可配：把名单清空 → 不再累计请求数（访问数仍按连接算）。"""
+    monkeypatch.setattr(asset.settings, "asset_request_log_types", "")
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="U3", log_type="http", hostname="a.example"))
+    buckets, _ = asset.finalize(records)
+    assert buckets["a.example"]["visits"] == 1
+    assert buckets["a.example"]["requests"] == 0
 
 
 def test_window_values_shape(asset: ModuleType) -> None:
-    buckets: dict[str, dict[str, Any]] = {}
-    for _ in range(4):
-        asset.observe_entry(buckets, _entry(hostname="a.example", uri_path="/p"))
-    asset.observe_entry(
-        buckets, _entry(hostname="a.example", real_client_ip="1.1.1.1", uri_path="/q")
-    )
+    buckets: dict[str, dict[str, Any]] = {
+        "a.example": {
+            "visits": 5,
+            "requests": 9,
+            "clients": {"1.1.1.1", "2.2.2.2"},
+            "client_ports": {1000},
+            "targets": {"/p", "/q"},
+        }
+    }
     values = asset.window_values(buckets)
     assert values["a.example:visits"] == [5.0]
+    assert values["a.example:requests"] == [9.0]
     assert values["a.example:distinct_clients"] == [2.0]
     assert values["a.example:distinct_targets"] == [2.0]
-    assert len(values["a.example:distinct_client_ports"]) == 1
+    assert values["a.example:distinct_client_ports"] == [1.0]
 
 
 def test_window_values_empty(asset: ModuleType) -> None:
@@ -169,6 +360,7 @@ def test_apply_window_writes_asset_stats(
         {
             "a.example": {
                 "visits": 3,
+                "requests": 7,
                 "clients": {"1.1.1.1"},
                 "client_ports": {1000},
                 "targets": {"/p"},
@@ -177,12 +369,14 @@ def test_apply_window_writes_asset_stats(
     )
     assert set(out) == {
         "a.example:visits",
+        "a.example:requests",
         "a.example:distinct_clients",
         "a.example:distinct_client_ports",
         "a.example:distinct_targets",
     }
     assert out["a.example:visits"]["count"] == 1
-    assert len(session.added) == 4  # 四个特征各新建一行
+    assert out["a.example:requests"]["mean"] == 7.0
+    assert len(session.added) == 5  # 五个特征各新建一行
     assert session.commits == 1
     assert all(type(row).__name__ == "AssetStat" for row in session.added)
 
@@ -203,6 +397,7 @@ def test_list_assets_reports_state_and_means(
     old = datetime.now(UTC) - timedelta(days=9)  # 已过观测期 → 生效中
     rows = [
         _Row("www.a.com:visits", count=3, mean=120.0, first_seen=old),
+        _Row("www.a.com:requests", count=3, mean=280.0, first_seen=old),
         _Row("www.a.com:distinct_clients", count=3, mean=42.0, first_seen=old),
         _Row("www.a.com:distinct_targets", count=3, mean=7.0, first_seen=old),
         _Row("www.a.com:distinct_client_ports", count=3, mean=50.0, first_seen=old),
@@ -210,11 +405,12 @@ def test_list_assets_reports_state_and_means(
     session = _Session(rows=rows, scalars=rows)
     monkeypatch.setattr(asset, "SessionLocal", lambda: session)
     out = asset.list_assets()
-    assert out["total"] == 4  # fake 里 total 取的是行数（真实库是 :visits 行的条数）
+    assert out["total"] == 5  # fake 里 total 取的是行数（真实库是 :visits 行的条数）
     item = out["items"][0]
     assert item["asset"] == "www.a.com" and item["role"] == "site"
     assert item["state"] == "ready"
     assert item["visits_mean"] == 120.0 and item["clients_mean"] == 42.0
+    assert item["requests_mean"] == 280.0
     assert item["window_seconds"] >= 1
 
 
@@ -225,18 +421,24 @@ def test_list_assets_learning_state(asset: ModuleType, monkeypatch: pytest.Monke
     out = asset.list_assets()
     assert out["items"][0]["state"] == "learning"
     assert out["items"][0]["role"] == "dns"
+    assert out["items"][0]["requests_mean"] == 0.0  # 没有 requests 行时给 0，不是 null
 
 
 def test_asset_detail_returns_features(asset: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     fresh = datetime.now(UTC)
     rows = [
         _Row("a.example:visits", count=2, mean=9.0, first_seen=fresh),
+        _Row("a.example:requests", count=2, mean=21.0, first_seen=fresh),
         _Row("a.example:distinct_clients", count=2, mean=3.0, first_seen=fresh),
     ]
     monkeypatch.setattr(asset, "SessionLocal", lambda: _Session(rows=rows))
     out = asset.asset_detail("a.example")
     assert out["asset"] == "a.example"
-    assert [item["feature"] for item in out["items"]] == ["distinct_clients", "visits"]
+    assert [item["feature"] for item in out["items"]] == [
+        "distinct_clients",
+        "requests",
+        "visits",
+    ]
     assert out["observe_days"] >= 0
 
 
@@ -251,6 +453,71 @@ def test_snapshot_degrades_on_db_error(asset: ModuleType, monkeypatch: pytest.Mo
     monkeypatch.setattr(asset, "SessionLocal", boom)
     out = asset.snapshot()
     assert out["total_assets"] == 0 and "pg down" in out["error"]
+
+
+# ---------- 口径版本迁移（清空旧口径统计，幂等） ----------
+
+
+class _MigSession:
+    """够 `_migrate_asset_semantics` 用的小号 Session（只读一行版本配置）。"""
+
+    def __init__(self, row: Any = None, version: int = 0) -> None:
+        self.row = row
+        self.version = version
+        self.executed: list[Any] = []
+        self.added: list[Any] = []
+        self.commits = 0
+
+    def get(self, _model: Any, _key: str) -> Any:
+        return self.row
+
+    def execute(self, stmt: Any) -> Any:
+        self.executed.append(stmt)
+        return SimpleNamespace(rowcount=1215)
+
+    def add(self, row: Any) -> None:
+        self.added.append(row)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def __enter__(self) -> Any:
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
+        return False
+
+
+def test_migrate_asset_semantics_clears_when_version_missing(
+    main_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _MigSession(row=None)
+    monkeypatch.setattr(main_mod, "SessionLocal", lambda: session)
+    main_mod._migrate_asset_semantics()
+    assert len(session.executed) == 1  # 清空旧口径统计
+    assert session.commits == 1
+    assert session.added and session.added[0].value == {"value": 2}
+
+
+def test_migrate_asset_semantics_upgrades_old_version(
+    main_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = SimpleNamespace(key="asset.semantics_version", value={"value": "1"})
+    session = _MigSession(row=row)
+    monkeypatch.setattr(main_mod, "SessionLocal", lambda: session)
+    main_mod._migrate_asset_semantics()
+    assert len(session.executed) == 1 and row.value == {"value": 2}
+
+
+def test_migrate_asset_semantics_is_idempotent(
+    main_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """版本已到位就不再动库（可重复启动）。"""
+    row = SimpleNamespace(key="asset.semantics_version", value={"value": 2})
+    session = _MigSession(row=row)
+    monkeypatch.setattr(main_mod, "SessionLocal", lambda: session)
+    main_mod._migrate_asset_semantics()
+    assert session.executed == [] and session.added == [] and session.commits == 0
 
 
 # ---------- 端点接线 ----------

@@ -4,18 +4,28 @@
 「服务器被访问」这件事在现有基线里没有归属 —— 外网打内网服务器时，事件都记在**客户端**
 那一侧，服务器本身没有基线，看不出「今天被 200 个不同外网 IP 访问、平时只有 5 个」。
 
-**建什么**：按**被访问方**记四个特征，用同一套 Welford + 观测期 + zσ 判规模偏离 ——
-- `visits`：被访问次数
-- `distinct_clients`：不同真实客户端数（中继链路上取 `real_client_ip or src_ip`）
-- `distinct_client_ports`：不同客户端源端口数
-- `distinct_targets`：不同目标数（HTTP=URI、DNS=域名）
+**怎么算**（2026-10 用户选定 B2）：按**连接**（Zeek `uid`）算 —— 一个连接 = 一次「访问」：
+
+- `visits`：被访问**连接数**（同一连接内的多条日志只算一次）；
+- `requests`：**请求数**（`ST_ASSET_REQUEST_LOG_TYPES`，默认 http,dns）—— 连接数暴增
+  （扫描/探测）与请求数暴增（突发负载/CC）是两件事，必须分开看；
+- `distinct_clients`：不同**真实客户端**数（取 `real_client_ip or src_ip`，否则经中继时永远是 1）；
+- `distinct_client_ports`：不同客户端源端口数；
+- `distinct_targets`：不同目标数（HTTP=URI、DNS=域名）。
+
+**为什么不能按事件算**（2026-10 实机数据）：同一次业务访问在抓包点会产生 `conn`（**无** Host/SNI）
+与 `http`/`ssl`（**有** Host/SNI）多条事件，按事件计就会把同一次访问同时记到 `IP:端口`
+与 hostname 两个键上 —— 实测 1215 个资产里 18 个是「中继自身」却占了 **30.6%** 的被访问量
+（第一名 `172.16.199.203:8000` 1817/区间，而真正要看的 `www.nczy.edu.cn` 只有 114/区间）。
 
 **资产标识**：`hostname` 优先（HTTP 的 Host / SSL 的 SNI —— 中继场景下**前跳也带 Host/SNI**，
-所以经代理的访问同样能归到站点上）；没有 hostname 时回落 `IP:端口`
-（内网 DNS 转发器就是 `10.0.0.53:53`）。
+所以经代理的访问同样能归到站点上）；没有 hostname 时回落 `IP:端口`（内网 DNS 转发器就是
+`IP:53`）。**中继自身不作为资产**（前跳的 dst 就是中继 —— 那是「代理被连接」，不是业务资产
+被访问），**但端口 53 的中继保留**：内网 DNS 被多少客户端查询正是要看的东西。
 
-**与中继去重的关系**：去重已在检测器入口完成（后跳不进检测），所以这一层看到的就是
-「一次业务访问一条」，不需要再处理前跳/后跳。
+**只统计 Zeek 网络事件**（有 `uid` 的）：主机监控日志（它的 dst 是主机自己，算成「资产被访问」
+是错的）以及 files/x509/dhcp/notice 这类没有 `uid` 的日志不进基线；丢了多少条在心跳里可见
+（`asset_uids_dropped`），不静默。
 
 **v1 只展示与标记，不写进摘要标签**：判据还没在真实流量上校准，先看数据、再决定要不要标签化。
 """
@@ -28,22 +38,27 @@ from typing import Any
 from sqlalchemy import func, select
 
 from app.baseline import stats as stats_mod
+from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import AssetStat
+from app.ingestion import relay_nodes
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
 
-#: 特征名（key = f"{资产}:{特征}"，读回来用 rsplit(":", 1) 切 —— 资产里可能有冒号，如 `IP:端口`）
+#: 特征名（key = f"{资产}:{特征}"，读回来用 rpartition(":") 切 —— 资产里可能有冒号，如 `IP:端口`）
 FEATURES: tuple[str, ...] = (
     "visits",
+    "requests",
     "distinct_clients",
     "distinct_client_ports",
     "distinct_targets",
 )
 #: 窗口内每个集合保留多少成员（内存优先；只影响「不同 X 数」的上限）
 _SET_LIMIT = 200
+#: DNS 端口：用来给资产标一个粗粒度角色（站点 / DNS 服务），只为界面可读，不参与判定
+_DNS_PORT = 53
 
 
 #: 一个观测区间多少秒（界面展示「平均每区间」用）：与基线落库节奏一致，不写死。
@@ -51,12 +66,23 @@ def window_seconds() -> int:
     return max(1, int(stats_mod.params.flush_seconds()))
 
 
-#: DNS 端口：用来给资产标一个粗粒度角色（站点 / DNS 服务），只为界面可读，不参与判定
-_DNS_PORT = 53
+def request_log_types() -> frozenset[str]:
+    """哪些日志类型算「一次请求」（默认 http,dns）。改成空串即不记请求数。"""
+    raw = str(getattr(settings, "asset_request_log_types", "") or "")
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def max_uids() -> int:
+    """单个观测区间内最多保留多少条连接记录（内存保护，0 = 不限制）。"""
+    return max(0, int(getattr(settings, "asset_max_uids", 0) or 0))
 
 
 def asset_key(entry: UnifiedLog) -> str:
-    """资产标识：hostname 优先，无则 `IP:端口`；拿不到目的地址返回空串（不建基线）。"""
+    """单条事件的资产标识：hostname 优先，无则 `IP:端口`；拿不到目的地址返回空串。
+
+    只用于「这条事件落在哪个资产上」的判断（单条事件视角）；**窗口定稿**用的是
+    `finalize()` —— 那里能把同一连接里 `conn` 的 `IP:端口` 与 `http/ssl` 的 hostname 合成一个身份。
+    """
     host = str(entry.hostname or "").strip().lower()
     if host:
         return host[:200]
@@ -65,10 +91,6 @@ def asset_key(entry: UnifiedLog) -> str:
         return ""
     port = entry.dst_port
     return f"{ip}:{port}" if port else ip
-
-
-def _client_of(entry: UnifiedLog) -> str:
-    return str(entry.real_client_ip or entry.src_ip or "").strip()
 
 
 def _target_of(entry: UnifiedLog) -> str:
@@ -80,40 +102,116 @@ def _target_of(entry: UnifiedLog) -> str:
     return query[:200]
 
 
-def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
-    """把一条事件并进「被访问方」观测桶（返回 0/1：并入的资产数）。无 I/O，引擎逐条调用。"""
-    key = asset_key(entry)
-    if not key:
-        return 0
-    bucket = buckets.get(key)
-    if bucket is None:
-        bucket = buckets[key] = {
-            "visits": 0,
-            "clients": set(),
-            "client_ports": set(),
+# ---------- 窗口内：按连接（uid）累计 ----------
+
+
+def observe_entry(records: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
+    """把一条事件并进**它所属连接**的记录。无 I/O，引擎逐条调用。
+
+    返回值：``1`` = 新开一条连接记录（计入「观测」）、``0`` = 并进已有连接、
+    ``-1`` = 该事件不进基线（没有 `uid`，或连接数已达 `ST_ASSET_MAX_UIDS` 上限）。
+
+    一条连接的身份是**逐步补全**的（与事件到达顺序无关）：`conn` 先到就先记 `IP:端口`，
+    `http/ssl` 到了再把 hostname 补上；最终身份在 `finalize()` 里定。
+    """
+    uid = str(getattr(entry, "uid", "") or "").strip()
+    if not uid:
+        # 主机监控（Wazuh）与 files/x509/dhcp/notice 等没有连接语义的日志：不入基线
+        return -1
+    record = records.get(uid)
+    if record is None:
+        cap = max_uids()
+        if cap and len(records) >= cap:
+            return -1
+        record = records[uid] = {
+            "hostname": "",
+            "ip": "",
+            "port": None,
+            "client": "",
+            "client_port": None,
             "targets": set(),
+            "requests": 0,
         }
-    bucket["visits"] += 1
-    client = _client_of(entry)
-    if client and len(bucket["clients"]) < _SET_LIMIT:
-        bucket["clients"].add(client)
-    if entry.src_port and len(bucket["client_ports"]) < _SET_LIMIT:
-        bucket["client_ports"].add(int(entry.src_port))
+        fresh = 1
+    else:
+        fresh = 0
+    # 身份：hostname 最强（Host/SNI），拿到就一直用；`IP:端口` 只是回落候选
+    host = str(entry.hostname or "").strip().lower()
+    if host and not record["hostname"]:
+        record["hostname"] = host[:200]
+    if not record["ip"]:
+        record["ip"] = str(entry.dst_ip or "").strip()
+        record["port"] = entry.dst_port or None
+    # 客户端：优先 real_client_ip（中继链路上 src 是代理），没有才用 src_ip
+    real = str(entry.real_client_ip or "").strip()
+    src = str(entry.src_ip or "").strip()
+    if real or (src and not record["client"]):
+        record["client"] = (real or src)[:64]
+    if record["client_port"] is None and entry.src_port:
+        record["client_port"] = int(entry.src_port)
     target = _target_of(entry)
-    if target and len(bucket["targets"]) < _SET_LIMIT:
-        bucket["targets"].add(target)
-    return 1
+    if target and len(record["targets"]) < _SET_LIMIT:
+        record["targets"].add(target)
+    if str(entry.log_type or "").strip().lower() in request_log_types():
+        record["requests"] += 1
+    return fresh
+
+
+def finalize(records: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], int]:
+    """把窗口内的连接记录定稿成「每个资产一份计数」。返回 ``(资产桶, 丢弃的连接数)``。
+
+    - 身份：有 hostname 用 hostname，否则回落 `IP:端口`；
+    - 一条连接都没有可用的身份（既无 Host/SNI 也无目的地址）→ 丢弃；
+    - **中继自身不作为资产**（端口 53 除外）：前跳的 dst 就是中继，非 HTTP 流量没有 Host/SNI，
+      身份会落到它身上 —— 按端口判而不是按「检测器推算的角色」判，免得依赖角色回写的时序。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    dropped = 0
+    for record in records.values():
+        host = str(record.get("hostname") or "")
+        ip = str(record.get("ip") or "")
+        port = record.get("port")
+        key = host or (f"{ip}:{port}" if port else ip)
+        if not key:
+            dropped += 1
+            continue
+        if not host and ip and port != _DNS_PORT and relay_nodes.is_relay(ip):
+            dropped += 1
+            continue
+        bucket = out.get(key)
+        if bucket is None:
+            bucket = out[key] = {
+                "visits": 0,
+                "requests": 0,
+                "clients": set(),
+                "client_ports": set(),
+                "targets": set(),
+            }
+        bucket["visits"] += 1
+        bucket["requests"] += int(record.get("requests") or 0)
+        client = str(record.get("client") or "")
+        if client and len(bucket["clients"]) < _SET_LIMIT:
+            bucket["clients"].add(client)
+        client_port = record.get("client_port")
+        if client_port and len(bucket["client_ports"]) < _SET_LIMIT:
+            bucket["client_ports"].add(client_port)
+        for target in record.get("targets") or ():
+            if len(bucket["targets"]) >= _SET_LIMIT:
+                break
+            bucket["targets"].add(target)
+    return out, dropped
 
 
 def window_values(buckets: dict[str, dict[str, Any]]) -> dict[str, list[float]]:
     """把本窗口各资产的计数转成 Welford 样本（每资产每特征一个样本）。
 
-    口径：一个聚合窗口 = 一个观测点。所以 `visits` 的均值就是「平均每窗口被访问多少」，
+    口径：一个聚合窗口 = 一个观测点。所以 `visits` 的均值就是「平均每窗口被访问多少条连接」，
     标准差是「窗口间波动」—— 与数值基线一致（那边的 conn_count 也是窗口值）。
     """
     out: dict[str, list[float]] = {}
     for key, bucket in buckets.items():
         out[f"{key}:visits"] = [float(bucket.get("visits") or 0)]
+        out[f"{key}:requests"] = [float(bucket.get("requests") or 0)]
         out[f"{key}:distinct_clients"] = [float(len(bucket.get("clients") or ()))]
         out[f"{key}:distinct_client_ports"] = [float(len(bucket.get("client_ports") or ()))]
         out[f"{key}:distinct_targets"] = [float(len(bucket.get("targets") or ()))]
@@ -202,6 +300,9 @@ def list_assets(
                 "windows": int(visits.count or 0),
                 "first_seen": visits.first_seen.isoformat() if visits.first_seen else "",
                 "visits_mean": visits.mean,
+                "requests_mean": (
+                    features["requests"].mean if features.get("requests") is not None else 0.0
+                ),
                 "clients_mean": (features.get("distinct_clients") or visits).mean,
                 "targets_mean": (features.get("distinct_targets") or visits).mean,
                 "window_seconds": window_seconds(),

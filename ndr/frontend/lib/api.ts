@@ -535,6 +535,10 @@ export interface BaselineDetector {
   /** 被访问方基线：本轮观测到的资产数 / 累计 */
   assets_last_round?: number;
   assets_observed?: number;
+  /** 被访问方按**连接**（Zeek uid）算：本轮多少条连接 / 累计多少条 / 多少条没进基线 */
+  asset_uids_last_round?: number;
+  asset_uids_total?: number;
+  asset_uids_dropped?: number;
   flush_at?: number;
 }
 
@@ -834,8 +838,10 @@ export interface AssetRow {
   /** 已攒了多少个观测区间 */
   windows: number;
   first_seen: string;
-  /** 平均每个观测区间被访问多少次 */
+  /** 平均每个观测区间被访问多少次（**连接数**：同一连接内的多条日志只算一次） */
   visits_mean: number;
+  /** 平均每区间请求数（应用层日志：http/dns；纯 TCP 服务为 0） */
+  requests_mean: number;
   /** 平均每区间不同真实客户端数 */
   clients_mean: number;
   /** 平均每区间不同目标数（HTTP=URI、DNS=域名） */

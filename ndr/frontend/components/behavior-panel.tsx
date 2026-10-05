@@ -493,6 +493,13 @@ export function BehaviorPanel() {
               被访问方资产 本轮 {overview?.detector?.assets_last_round ?? 0} / 累计{" "}
               {overview?.detector?.assets_observed ?? 0}
             </Badge>
+            <Badge variant="outline">
+              被访问连接 本轮 {overview?.detector?.asset_uids_last_round ?? 0} / 累计{" "}
+              {overview?.detector?.asset_uids_total ?? 0}
+            </Badge>
+            <Badge variant="outline">
+              未进基线 {overview?.detector?.asset_uids_dropped ?? 0}
+            </Badge>
           </div>
           <div>
             <p className="mb-1 text-xs text-muted-foreground">
@@ -762,7 +769,10 @@ export function BehaviorPanel() {
               按「**被访问方**」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动
               —— 源 IP 那份基线看不出「服务器被打」。
               <span className="text-emerald-500">生效中</span>=已过观测期，
-              <span className="text-amber-500">观测中</span>=只学习
+              <span className="text-amber-500">观测中</span>=只学习。
+              口径：被访问次数 = **连接数**（同一连接只算一次），
+              请求数 = 应用层请求（http/dns）；身份优先站点域名（Host/SNI），否则{" "}
+              <span className="font-mono">IP:端口</span>；中继自身不计入（内网 DNS 的 53 端口除外）
             </span>
           </CardTitle>
         </CardHeader>
@@ -789,6 +799,7 @@ export function BehaviorPanel() {
                   <TableHead>类型</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>平均每区间被访问</TableHead>
+                  <TableHead>平均每区间请求</TableHead>
                   <TableHead>不同客户端</TableHead>
                   <TableHead>不同目标</TableHead>
                   <TableHead>首见</TableHead>
@@ -812,6 +823,7 @@ export function BehaviorPanel() {
                       />
                     </TableCell>
                     <TableCell>{row.visits_mean}</TableCell>
+                    <TableCell>{row.requests_mean}</TableCell>
                     <TableCell>{row.clients_mean}</TableCell>
                     <TableCell>{row.targets_mean}</TableCell>
                     <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>

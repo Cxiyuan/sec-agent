@@ -241,6 +241,12 @@ class Settings(BaseSettings):
     # 会永久留下 3 行，不清就是只增不减（2026-10 实机 QA：6 小时就 486 个 IP / 1458 行）。
     # 必须 > baseline_observe_days，否则还没判过异常就被清掉。
     baseline_retention_days: int = 90
+    # 被访问方（内网源站 / 内网 DNS 转发器）基线：访问次数按**连接**（Zeek uid）算 ——
+    # 一个连接只算一次。为什么不能按事件算：同一次业务访问在抓包点会产生 `conn`（无 Host/SNI）
+    # 与 `http`/`ssl`（有 Host/SNI）多条事件，按事件算会把同一次访问同时记到 `IP:端口` 与
+    # hostname 两个键上（实机：中继自身那些端口行占了 30.6% 的被访问量）。见 baseline/asset.py
+    asset_max_uids: int = 20000  # 单个观测区间内最多保留多少条连接记录（超了丢弃，计入心跳）
+    asset_request_log_types: str = "http,dns"  # 哪些日志类型算「一次请求」（空 = 不记请求数）
     profile_enabled: bool = True
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
     profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）

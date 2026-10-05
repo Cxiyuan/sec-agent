@@ -1003,6 +1003,39 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 **测试**：新增 `tests/py/test_relay_chain.py`（15 例）与 `tests/py/test_asset_baseline.py`（18 例）；
 `conftest.py` 新增 `set_relays` fixture（清单只读 PG，测试改为 patch `relay_nodes.networks`）。
 
+### 2026-10 被访问方基线改口径 B2（按连接算，实机巡检驱动）
+
+**为什么改**：中继清单生效后的实机巡检发现，被访问方列表第一名是 `172.16.199.203:8000`
+（**中继自身的端口**，平均 1817/区间），而真正要看的 `www.nczy.edu.cn` 只有 114/区间 ——
+1215 个资产里 18 个是「中继自身」却占了 **30.6%** 的被访问量（DNS 2.6% + 非 DNS 28%）。
+
+**根因**：资产基线原本按**每条事件**累计，而同一次业务访问在抓包点会产生多条事件：
+`conn`（**无** Host/SNI → 只能落 `IP:端口`）与 `http`/`ssl`（**有** Host/SNI → 落 hostname）——
+于是同一次访问在两个键上**各记一次**；前跳的 dst 是中继，那些 `IP:端口` 行就全落在中继身上。
+
+**改法（B2，用户选定）**：
+- 桶键从「资产标识」改成 **Zeek `uid`**：一个连接 = 一次「访问」；一条连接的身份**逐步补全**
+  （`conn` 先到就先记 `IP:端口`，`http/ssl` 到了再补 hostname），窗口结束在 `finalize()` 里定稿 ——
+  **与事件到达顺序无关**；
+- 新增 `requests` 特征（每条 http/dns +1）：连接数暴增（扫描/探测）与请求数暴增（负载/CC）分开看；
+- **中继自身不作为资产**（端口 53 除外）：按**端口**判而不是按「推算出来的角色」判，
+  免得依赖角色回写的时序；
+- 只统计**有 `uid` 的 Zeek 事件**：主机监控（Wazuh，它的 dst 是主机自己）与
+  files/x509/dhcp/notice 这类没有连接语义的日志不进基线；丢了多少条写进心跳
+  `asset_uids_dropped`（**不静默**）；
+- 内存保护 `ST_ASSET_MAX_UIDS`（默认 20000 条连接/窗口；实机 60s 窗口只有几千条）；
+- **清空重学**：口径变了（事件→连接），两种语义的样本混在同一个 Welford 里会把均值/标准差
+  拉偏，所以 `main.py` 加 `_migrate_asset_semantics()`：`SystemConfig["asset.semantics_version"] < 2`
+  就清空 `asset_stats` 并置 2（幂等、自动；它只是统计缓存、不含原始事件，清掉不丢数据，
+  只是重新攒观测期）。
+
+**实机预期**：中继那些端口行消失（`199.211:53` / `199.186:53` 保留），`www.nczy.edu.cn` 的
+`visits_mean` 变成**连接数**（比原来的 http 事件数小），且不再同时出现「hostname」与「`IP:端口`」
+两份；`199.211:53` 的 `requests_mean` ≈ 该内网 DNS 的查询数。
+
+**前端**：「行为分析」页被访问方卡片加「平均每区间请求」列 + 口径说明（连接数/请求数/身份优先/
+中继除外），心跳徽标加「被访问连接 本轮·累计」与「未进基线」。
+
 ### 每期收尾门禁
 
 **本地（仓库根，都不需要 Docker、不产生构建产物）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`、`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`、`pytest tests/py --stack=ndr` 与 `--stack=agent`；前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`。

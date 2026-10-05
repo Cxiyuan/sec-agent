@@ -192,7 +192,8 @@ class AssetStat(Base):
     为什么要单独一张表（没复用 `baseline_stats` 加前缀）：现有列表按「key 里最后一个冒号前…」
     推 IP 做分组，`asset:host:feature` 这类键会被解析成奇怪的 IP；单表互不干扰。
     key = `{资产标识}:{特征}`，资产标识优先 hostname（HTTP Host / SSL SNI），无则 `IP:端口`；
-    特征：visits / distinct_clients / distinct_client_ports / distinct_targets
+    特征：visits（**连接数**，一条 Zeek `uid` = 一次访问）/ requests（http/dns 请求数）/
+    distinct_clients / distinct_client_ports / distinct_targets
     （HTTP 是不同 URI 数、DNS 是不同域名数）。
     """
 

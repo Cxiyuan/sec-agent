@@ -21,6 +21,7 @@ from app.baseline import params, profile as profiles
 from app.baseline.asset import (
     apply_window as assets_apply_window,
     cleanup as assets_cleanup,
+    finalize as assets_finalize,
     observe_entry as assets_observe_entry,
 )
 from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
@@ -49,7 +50,7 @@ class BaselineEngine:
     def __init__(self, client: Any = None) -> None:
         self._client = client
         self._obs: dict[str, dict[str, Any]] = {}  # 画像窗口观测（key = kind|entity）
-        self._assets: dict[str, dict[str, Any]] = {}  # 被访问方窗口观测（key = 资产标识）
+        self._assets: dict[str, dict[str, Any]] = {}  # 被访问方窗口观测（key = Zeek 连接 uid）
         self._pending: dict[str, list[float]] = {}  # 数值基线待落库样本
         self._base: dict[str, dict[str, Any]] = {}  # 数值基线缓存（键 -> 状态）
         self._wanted: set[str] = set()  # 缓存里没有、想捞的键
@@ -69,13 +70,20 @@ class BaselineEngine:
         两类观测：账号/会话画像（受 `profile.enabled` 控制）与**被访问方**（内网源站/DNS 转发器，
         只受总开关控制 —— 它不依赖画像，关掉画像也要能看「服务器被访问」的基线）。
         都是纯内存计数，没有 I/O；攒太多就提前落库，避免长时间不落库。
+
+        被访问方按**连接**（Zeek `uid`）累计：没有 uid 的事件（主机日志、files/x509 等）
+        不进基线，计入 `asset_uids_dropped`（可见，不静默）。
         """
         if not params.baseline_enabled():
             return
         added = 0
         if params.profile_enabled():
             added += profiles.observe_entry(self._obs, entry)
-        added += assets_observe_entry(self._assets, entry)
+        merged = assets_observe_entry(self._assets, entry)
+        if merged < 0:
+            self.stats["asset_uids_dropped"] = self.stats.get("asset_uids_dropped", 0) + 1
+        else:
+            added += merged
         self.stats["observed"] += added
         self._obs_since_flush += added
         if self._obs_since_flush >= max(1000, int(params.max_observations())):
@@ -335,17 +343,26 @@ class BaselineEngine:
             )
 
     def _flush_assets(self) -> None:
-        """把被访问方的窗口观测落库（Welford，复用数值基线那套）。
+        """把被访问方的窗口观测定稿并落库（Welford，复用数值基线那套）。
 
-        一个聚合窗口 = 一个观测点：`visits` 的均值就是「平均每窗口被访问多少」，标准差是窗口间波动。
+        `self._assets` 里是**按连接**（uid）累计的记录；这里先把同一连接里 `conn` 的
+        `IP:端口` 与 `http/ssl` 的 hostname 合成一个身份（并丢掉「中继自身」那些），
+        再按资产聚合成一个观测点 —— 一个聚合窗口 = 一个观测点。
         """
-        buckets, self._assets = self._assets, {}
-        if not buckets:
+        records, self._assets = self._assets, {}
+        if not records:
             return
+        buckets, dropped = assets_finalize(records)
         applied = assets_apply_window(buckets)
+        links = max(0, len(records) - dropped)
+        self.stats["asset_uids_last_round"] = links
+        self.stats["asset_uids_total"] = self.stats.get("asset_uids_total", 0) + links
+        if dropped:
+            # 「有连接但没进基线」的量必须看得见：无 uid / 中继非 DNS 前跳 / 超上限
+            self.stats["asset_uids_dropped"] = self.stats.get("asset_uids_dropped", 0) + dropped
         self.stats["assets_observed"] = self.stats.get("assets_observed", 0) + len(buckets)
         self.stats["assets_last_round"] = len(buckets)
-        if not applied:
+        if buckets and not applied:
             log.warning("被访问方基线落库未成功（下一轮重试）")
 
     def _publish(self) -> None:
@@ -367,6 +384,10 @@ class BaselineEngine:
                     # 被访问方（源站/DNS）基线：本轮观测到多少资产 + 累计
                     "assets_last_round": int(self.stats.get("assets_last_round", 0)),
                     "assets_observed": int(self.stats.get("assets_observed", 0)),
+                    # 被访问方按连接（uid）算：本轮多少条连接 / 累计多少条 / 有多少条没进基线
+                    "asset_uids_last_round": int(self.stats.get("asset_uids_last_round", 0)),
+                    "asset_uids_total": int(self.stats.get("asset_uids_total", 0)),
+                    "asset_uids_dropped": int(self.stats.get("asset_uids_dropped", 0)),
                     # 上一轮的量（会被覆盖）——名字里必须带 last_round，别再让人当成累计值
                     "numeric_keys_last_round": int(self.stats.get("numeric_keys_last_round", 0)),
                     "anomalies_last_round": int(self.stats.get("anomalies_last_round", 0)),
