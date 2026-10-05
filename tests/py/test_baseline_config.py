@@ -249,8 +249,16 @@ def test_numeric_route_passes_filters(
         return {"total": 0, "returned": 0, "observe_days": 7, "items": []}
 
     monkeypatch.setattr(baseline_route.stats_mod, "list_stats", fake_list)
-    baseline_route.baseline_numeric(_=None, q="10.0.0", feature="conn_count", sort="count", limit=5, offset=10)
-    assert seen == {"q": "10.0.0", "feature": "conn_count", "sort": "count", "limit": 5, "offset": 10}
+    baseline_route.baseline_numeric(
+        _=None, q="10.0.0", feature="conn_count", sort="count", limit=5, offset=10
+    )
+    assert seen == {
+        "q": "10.0.0",
+        "feature": "conn_count",
+        "sort": "count",
+        "limit": 5,
+        "offset": 10,
+    }
 
 
 def test_profiles_route_passes_search(
@@ -263,7 +271,9 @@ def test_profiles_route_passes_search(
         return {"total": 0, "items": []}
 
     monkeypatch.setattr(baseline_route.profiles, "list_profiles", fake_list)
-    baseline_route.baseline_profiles(_=None, kind="account", q="zhang", min_risk=0.3, limit=10, offset=0)
+    baseline_route.baseline_profiles(
+        _=None, kind="account", q="zhang", min_risk=0.3, limit=10, offset=0
+    )
     assert seen["kind"] == "account"
     assert seen["q"] == "zhang"
     assert seen["min_risk"] == pytest.approx(0.3)

@@ -374,7 +374,18 @@ def validate(values: dict[str, Any]) -> list[dict[str, str]]:
             continue
         if knob.kind == "bool":
             if isinstance(raw, str):
-                if raw.strip().lower() not in ("1", "0", "true", "false", "yes", "no", "on", "off", "是", "否"):
+                if raw.strip().lower() not in (
+                    "1",
+                    "0",
+                    "true",
+                    "false",
+                    "yes",
+                    "no",
+                    "on",
+                    "off",
+                    "是",
+                    "否",
+                ):
                     errors.append({"field": key, "msg": "布尔值只能是 true/false"})
             elif not isinstance(raw, bool):
                 errors.append({"field": key, "msg": "布尔值只能是 true/false"})
@@ -402,9 +413,14 @@ def validate(values: dict[str, Any]) -> list[dict[str, str]]:
     # 跨字段约束：数值基线保留期必须大于观测期，否则还没判过就被清掉
     merged = {**effective(), **{k: v for k, v in values.items() if k in _BY_KEY}}
     try:
-        if int(float(merged["baseline.retention_days"])) <= int(float(merged["baseline.observe_days"])):
+        if int(float(merged["baseline.retention_days"])) <= int(
+            float(merged["baseline.observe_days"])
+        ):
             errors.append(
-                {"field": "baseline.retention_days", "msg": "保留期必须大于观测期（否则还没判过就被清）"}
+                {
+                    "field": "baseline.retention_days",
+                    "msg": "保留期必须大于观测期（否则还没判过就被清）",
+                }
             )
     except (KeyError, TypeError, ValueError):
         pass
