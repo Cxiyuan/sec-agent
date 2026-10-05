@@ -29,7 +29,8 @@ import type {
   BaselinePayload,
   BaselineProfile,
   BaselineProfilesPayload,
-  NumericListPayload,
+  NumericGroupedPayload,
+  NumericStat,
 } from "@/lib/api";
 
 /**
@@ -80,15 +81,20 @@ function featureLabel(feature: string): string {
 }
 
 /**
- * 拆数值基线的 key（`源IP:维度`）。
+ * 维度标签的悬停提示：均值 / 标准差 / 观测次数 / 状态。
  *
- * 按**最后一个**冒号切：IPv6 地址里也有冒号（`2409:8962:…:conn_count`），
- * `split(":")` 会把地址切碎（后端也是用 `rsplit(":", 1)` 同一个理由）。
+ * 用户要求把「均值」「标准差」两列挪进悬停（列表从 3×IP 行降到 1×IP 行，再加两列数字就浪费地方了）。
  */
-function splitKey(key: string): { ip: string; feature: string } {
-  const at = key.lastIndexOf(":");
-  if (at <= 0) return { ip: key, feature: "" };
-  return { ip: key.slice(0, at), feature: key.slice(at + 1) };
+function featureTip(feature: NumericStat, observeDays: number): string {
+  const state = feature.warmed
+    ? "生效中（已过观测期，参与 2σ 判定）"
+    : feature.count < 2
+      ? "观测中（只观测过 1 次，标准差还不可靠）"
+      : `观测中（观测期未满 ${observeDays} 天）`;
+  return (
+    `${featureLabel(feature.feature)}：均值 ${feature.mean} · 标准差 ${feature.std} · 观测 ${feature.count} 次` +
+    `\n状态：${state}\n首见 ${formatDateTime(feature.first_seen)}`
+  );
 }
 
 /** 这个参数在草稿里被改过吗（类型感知的比较）。 */
@@ -220,7 +226,7 @@ export function BehaviorPanel() {
   const [overview, setOverview] = React.useState<BaselinePayload | null>(null);
   const [config, setConfig] = React.useState<BaselineConfigPayload | null>(null);
   const [profiles, setProfiles] = React.useState<BaselineProfilesPayload | null>(null);
-  const [numeric, setNumeric] = React.useState<NumericListPayload | null>(null);
+  const [numeric, setNumeric] = React.useState<NumericGroupedPayload | null>(null);
   const [auto, setAuto] = React.useState(true);
   const [configOpen, setConfigOpen] = React.useState(false);
 
@@ -248,8 +254,9 @@ export function BehaviorPanel() {
     `&q=${encodeURIComponent(pq)}&min_risk=${Number(minRisk) || 0}` +
     `&limit=${PAGE_SIZE}&offset=${ppage * PAGE_SIZE}`;
   const numericUrl =
-    `/api/baseline/numeric?q=${encodeURIComponent(nq)}&feature=${encodeURIComponent(nfeature)}` +
-    `&sort=${nsort}&limit=${PAGE_SIZE}&offset=${npage * PAGE_SIZE}`;
+    `/api/baseline/numeric?group=ip&q=${encodeURIComponent(nq)}` +
+    `&feature=${encodeURIComponent(nfeature)}&sort=${nsort}` +
+    `&limit=${PAGE_SIZE}&offset=${npage * PAGE_SIZE}`;
 
   async function load() {
     errs.reset();
@@ -489,9 +496,9 @@ export function BehaviorPanel() {
           <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
             数值基线 IP 列表
             <span className="text-xs font-normal text-muted-foreground">
-              IP + 中文维度（悬停可看原始 key，如 <span className="font-mono">源IP:conn_count</span>）；
+              一行一个 IP，维度用标签列（**悬停标签**看均值/标准差/观测次数）；
               <span className="text-emerald-500">生效中</span>=已过观测期参与 2σ 判定，
-              <span className="text-amber-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
+              <span className="text-amber-500">观测中</span>=还在学习
             </span>
           </CardTitle>
         </CardHeader>
@@ -533,46 +540,38 @@ export function BehaviorPanel() {
               <option value="updated">按最近更新</option>
               <option value="key">按 key</option>
             </select>
-            <span className="text-xs text-muted-foreground">共 {numeric?.total ?? 0} 个维度</span>
+            <span className="text-xs text-muted-foreground">
+              共 {numeric?.total ?? 0} 个 IP · {numeric?.total_keys ?? 0} 个维度
+            </span>
           </div>
           {numeric?.items?.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>IP</TableHead>
-                  <TableHead>维度</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>观测次数</TableHead>
-                  <TableHead>均值</TableHead>
-                  <TableHead>标准差</TableHead>
+                  <TableHead>维度（悬停看均值/标准差）</TableHead>
                   <TableHead>首次观测</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {numeric.items.map((row) => (
-                  <TableRow key={row.key}>
-                    <TableCell className="font-mono text-xs" title={row.key}>
-                      {splitKey(row.key).ip}
-                    </TableCell>
-                    <TableCell className="text-xs" title={row.feature}>
-                      {featureLabel(row.feature)}
-                    </TableCell>
+                {numeric.items.map((group) => (
+                  <TableRow key={group.ip}>
+                    <TableCell className="font-mono text-xs">{group.ip}</TableCell>
                     <TableCell>
-                      <StateBadge
-                        judging={row.warmed}
-                        hint={
-                          row.warmed
-                            ? "已过观测期：参与 2σ 偏离判定"
-                            : row.count < 2
-                              ? "只观测过 1 次，标准差还不可靠"
-                              : `观测期未满（${numeric.observe_days} 天）`
-                        }
-                      />
+                      <div className="flex flex-wrap gap-1">
+                        {group.features.map((f) => (
+                          <Badge
+                            key={f.feature}
+                            variant={f.warmed ? "success" : "medium"}
+                            title={featureTip(f, numeric.observe_days)}
+                            className="cursor-help"
+                          >
+                            {featureLabel(f.feature)}
+                          </Badge>
+                        ))}
+                      </div>
                     </TableCell>
-                    <TableCell>{row.count}</TableCell>
-                    <TableCell>{row.mean}</TableCell>
-                    <TableCell>{row.std}</TableCell>
-                    <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>
+                    <TableCell className="text-xs">{formatDateTime(group.first_seen)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

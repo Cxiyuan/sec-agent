@@ -778,6 +778,29 @@ export interface NumericListPayload {
   total: number;
   returned: number;
   observe_days: number;
+  /** key = 一行一个 `源IP:维度`；ip = 一行一个 IP（维度在 features 里） */
+  group?: "key" | "ip";
   items: NumericStat[];
+  error?: string;
+}
+
+/** `GET /api/baseline/numeric?group=ip`：一行 = 一个 IP（页面就按这个模式展示） */
+export interface NumericIpGroup {
+  ip: string;
+  /** 该 IP 各维度里最早的首次观测时间 */
+  first_seen: string;
+  /** 各维度（含各自的均值/标准差/观测次数/是否生效） */
+  features: NumericStat[];
+}
+
+export interface NumericGroupedPayload {
+  group: "ip";
+  /** IP 数（分页总数就是它） */
+  total: number;
+  /** 同一筛选下的维度数（同一 IP 最多 3 个） */
+  total_keys: number;
+  returned: number;
+  observe_days: number;
+  items: NumericIpGroup[];
   error?: string;
 }

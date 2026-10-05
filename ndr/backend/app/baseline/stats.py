@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, distinct, func, select
 
 from app.baseline import params
 from app.db.base import SessionLocal
@@ -138,6 +138,107 @@ _SORTS: dict[str, Any] = {
 }
 
 
+def _numeric_conds(q: str, feature: str) -> list[Any]:
+    """「行为分析」页的数值基线过滤条件：`q` 匹配 key 子串，`feature` 匹配维度后缀。"""
+    conds: list[Any] = []
+    if (q or "").strip():
+        conds.append(BaselineStat.key.like(like_pattern(q), escape="\\"))
+    if (feature or "").strip():
+        conds.append(BaselineStat.key.like(like_pattern(f":{feature.strip()}"), escape="\\"))
+    return conds
+
+
+def _ip_expr() -> Any:
+    """key 去掉末尾的 `:维度` → IP。
+
+    为什么用正则而不是 `split_part(key, ':', 1)`：IPv6 地址里全是冒号
+    （`2409:1::2:conn_count`），按第一个冒号切会把地址切碎；`:[^:]*$` 只吃最后一段。
+    """
+    return func.regexp_replace(BaselineStat.key, ":[^:]*$", "")
+
+
+def group_rows_by_ip(
+    rows: list[Any], ips: list[str], now: datetime
+) -> list[dict[str, Any]]:
+    """把一批 `源IP:维度` 行按 IP 合并（维度放进 `features`），按传入的 `ips` 顺序输出。
+
+    纯函数（不碰库），所以单测能直接揿 IPv6 / 排序 / 空组这些边界。
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        addr, _, feat = str(row.key).rpartition(":")
+        grouped.setdefault(addr or str(row.key), []).append({"feature": feat, **_state(row, now)})
+    items: list[dict[str, Any]] = []
+    for addr in ips:
+        feats = grouped.get(addr) or []
+        if not feats:
+            continue
+        # `count` 降序已经在 SQL 里排过，这里只算 IP 级的首次观测
+        feats.sort(key=lambda f: -int(f.get("count") or 0))
+        seen = [str(f["first_seen"]) for f in feats if f.get("first_seen")]
+        items.append(
+            {
+                "ip": addr,
+                "first_seen": min(seen) if seen else "",
+                "features": feats,
+            }
+        )
+    return items
+
+
+def _list_by_ip(
+    conds: list[Any], *, sort: str, cap: int, start: int, now: datetime
+) -> dict[str, Any]:
+    """按 IP 分组浏览（一行一个 IP，维度放进 features）。分页按 **IP** 走。
+
+    为什么必须在后端分组：前端分组会把同一个 IP 的维度切到相邻两页去，
+    「一行一个 IP」就成了假的。
+    """
+    ip = _ip_expr()
+    order = {
+        "count": func.max(BaselineStat.count).desc(),
+        "updated": func.max(BaselineStat.updated_at).desc(),
+        "key": ip.asc(),
+    }.get((sort or "count").strip(), func.max(BaselineStat.count).desc())
+    try:
+        with SessionLocal() as db:
+            total = int(db.scalar(select(func.count(distinct(ip))).where(*conds)) or 0)
+            total_keys = int(
+                db.scalar(select(func.count()).select_from(BaselineStat).where(*conds)) or 0
+            )
+            page = db.execute(
+                select(ip.label("ip"))
+                .where(*conds)
+                .group_by(ip)
+                .order_by(order)
+                .limit(cap)
+                .offset(start)
+            ).all()
+            ips = [str(row[0]) for row in page]
+            rows = (
+                list(
+                    db.scalars(
+                        select(BaselineStat)
+                        .where(ip.in_(ips))
+                        .order_by(BaselineStat.count.desc())
+                    ).all()
+                )
+                if ips
+                else []
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读数值基线失败：{exc}", "total": 0, "items": []}
+    items = group_rows_by_ip(rows, ips, now)
+    return {
+        "group": "ip",
+        "total": total,  # 多少个 IP
+        "total_keys": total_keys,  # 多少个维度（同一筛选下）
+        "returned": len(items),
+        "observe_days": params.observe_days(),
+        "items": items,
+    }
+
+
 def list_stats(
     *,
     q: str = "",
@@ -145,21 +246,25 @@ def list_stats(
     sort: str = "count",
     limit: int = 50,
     offset: int = 0,
+    group: str = "key",
 ) -> dict[str, Any]:
     """浏览数值基线（后台「行为分析」页用）。
 
     为什么要有它：`lookup()` 必须指名 IP 或完整 key，页面根本没法「翻着看」。
     过滤：`q` 匹配 key 子串（填 IP 前缀就等于看那个 IP 的维度）；`feature` 按维度后缀匹配。
     排序：count（观测次数，默认）/ updated（最近更新）/ key。
+
+    `group`：
+    - `"key"`（默认）：一行一个 `源IP:维度`；
+    - `"ip"`：**一行一个 IP**，各维度放进 `features`（页面按这个模式展示 ——
+      同一 IP 的三个维度合成一行，列表从 3×IP 行降到 1×IP 行）。
     """
     cap = max(1, min(int(limit or 50), 500))
     start = max(0, int(offset or 0))
     now = datetime.now(UTC)
-    conds = []
-    if (q or "").strip():
-        conds.append(BaselineStat.key.like(like_pattern(q), escape="\\"))
-    if (feature or "").strip():
-        conds.append(BaselineStat.key.like(like_pattern(f":{feature.strip()}"), escape="\\"))
+    conds = _numeric_conds(q, feature)
+    if (group or "").strip().lower() == "ip":
+        return _list_by_ip(conds, sort=sort, cap=cap, start=start, now=now)
     order = _SORTS.get((sort or "count").strip(), _SORTS["count"])()
     try:
         with SessionLocal() as db:
@@ -175,6 +280,7 @@ def list_stats(
         {"key": row.key, "feature": row.key.split(":")[-1], **_state(row, now)} for row in rows
     ]
     return {
+        "group": "key",
         "total": total,
         "returned": len(items),
         "observe_days": params.observe_days(),

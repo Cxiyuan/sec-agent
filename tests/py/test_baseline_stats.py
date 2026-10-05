@@ -170,3 +170,81 @@ def test_warmed_flips_after_observation_period(stats_mod: ModuleType) -> None:
     assert stats_mod._warmed(now - timedelta(days=8), now) is True
     assert stats_mod._warmed(now - timedelta(hours=1), now) is False
     assert stats_mod._warmed(None, now) is False
+
+
+# ---------- 按 IP 分组浏览（行为分析页的列表形态） ----------
+
+
+def _row(key: str, count: int, mean: float, first_seen: datetime) -> Any:
+    return SimpleNamespace(key=key, count=count, mean=mean, m2=0.0, first_seen=first_seen)
+
+
+def test_group_rows_by_ip_merges_dimensions(stats_mod: ModuleType) -> None:
+    """同一 IP 的三个维度合成一行；IPv6 地址不能被切碎（按最后一个冒号拆）。"""
+    now = datetime.now(UTC)
+    old = now - timedelta(days=9)
+    fresh = now - timedelta(hours=2)
+    rows = [
+        _row("10.0.0.5:conn_count", 10, 1.5, fresh),
+        _row("10.0.0.5:distinct_dst_ports", 3, 2.5, old),
+        _row("2409:8962:1e68:a8f::2:conn_count", 7, 3.5, old),
+    ]
+    out = stats_mod.group_rows_by_ip(rows, ["10.0.0.5", "2409:8962:1e68:a8f::2"], now)
+    assert [g["ip"] for g in out] == ["10.0.0.5", "2409:8962:1e68:a8f::2"]
+    first = out[0]
+    assert [f["feature"] for f in first["features"]] == ["conn_count", "distinct_dst_ports"]
+    assert first["features"][0]["mean"] == 1.5
+    assert first["features"][0]["count"] == 10
+    # IP 级首次观测 = 各维度里最早的那个
+    assert first["first_seen"] == old.isoformat()
+    # IPv6 组也要拆对
+    assert out[1]["features"][0]["feature"] == "conn_count"
+
+
+def test_group_rows_by_ip_orders_features_by_count(stats_mod: ModuleType) -> None:
+    """维度按观测次数降序（次数多的在前面，和表格的排序一致）。"""
+    now = datetime.now(UTC)
+    rows = [
+        _row("10.0.0.9:distinct_dst_ips", 2, 1.0, now),
+        _row("10.0.0.9:conn_count", 50, 1.0, now),
+        _row("10.0.0.9:distinct_dst_ports", 20, 1.0, now),
+    ]
+    out = stats_mod.group_rows_by_ip(rows, ["10.0.0.9"], now)
+    assert [f["feature"] for f in out[0]["features"]] == [
+        "conn_count",
+        "distinct_dst_ports",
+        "distinct_dst_ips",
+    ]
+
+
+def test_group_rows_by_ip_skips_ips_without_rows(stats_mod: ModuleType) -> None:
+    """分页拿到的 IP 如果一行都没匹配（并发删除/过滤变化），就跳过而不是给个空行。"""
+    now = datetime.now(UTC)
+    out = stats_mod.group_rows_by_ip([], ["10.0.0.1", "10.0.0.2"], now)
+    assert out == []
+
+
+def test_list_stats_group_ip_dispatches(
+    stats_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`group="ip"` 必须走按 IP 的那个分支（分页按 IP 走）；默认仍是按 key 一行一条。"""
+    calls: list[dict[str, Any]] = []
+
+    def fake_by_ip(conds: Any, **kw: Any) -> dict[str, Any]:
+        calls.append({"conds": conds, **kw})
+        return {"group": "ip", "total": 0, "total_keys": 0, "returned": 0, "items": []}
+
+    monkeypatch.setattr(stats_mod, "_list_by_ip", fake_by_ip)
+    out = stats_mod.list_stats(q="10.0.0", feature="conn_count", group="IP", limit=5, offset=10)
+    assert out["group"] == "ip"
+    assert len(calls) == 1
+    assert calls[0]["cap"] == 5 and calls[0]["start"] == 10
+    assert len(calls[0]["conds"]) == 2  # q + feature 两个过滤都传下去了
+
+
+def test_numeric_conds_escapes_like(stats_mod: ModuleType) -> None:
+    """q 里的 `%`/`_` 是通配符，必须转义（不能让别人用 `%` 扫全表）。"""
+    conds = stats_mod._numeric_conds("10%_", "")
+    assert len(conds) == 1
+    compiled = str(conds[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "ESCAPE" in compiled.upper()

@@ -161,13 +161,17 @@ def baseline_numeric(
     sort: str = "count",
     limit: int = 50,
     offset: int = 0,
+    group: str = "key",
 ):
     """数值基线浏览（「行为分析」页的表格）：按 key 子串 / 维度过滤，排序 + 分页。
 
-    与 `/stats` 的区别：`/stats` 要指名 IP 或完整 key（适合精确查），这个能「翻着看」
-    （默认按观测次数降序 —— 次数多的就是活跃维度）。
+    `group=ip` 时**一行一个 IP**（各维度放进 `features`）且**分页按 IP 走** —— 页面用这个模式，
+    列表从 3×IP 行降到 1×IP 行；`group=key`（默认）是一行一个 `源IP:维度`。
+    与 `/stats` 的区别：`/stats` 要指名 IP 或完整 key（适合精确查），这个能「翻着看」。
     """
-    return stats_mod.list_stats(q=q, feature=feature, sort=sort, limit=limit, offset=offset)
+    return stats_mod.list_stats(
+        q=q, feature=feature, sort=sort, limit=limit, offset=offset, group=group
+    )
 
 
 class ConfigIn(BaseModel):

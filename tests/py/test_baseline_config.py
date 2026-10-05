@@ -258,7 +258,12 @@ def test_numeric_route_passes_filters(
         "sort": "count",
         "limit": 5,
         "offset": 10,
+        "group": "key",  # 默认一行一个 key；页面传 group=ip 时一行一个 IP
     }
+    # 页面用的分组模式要能透传下去（分组时**分页按 IP 走**，后端实现）
+    seen.clear()
+    baseline_route.baseline_numeric(_=None, group="ip", limit=5, offset=0)
+    assert seen["group"] == "ip"
 
 
 def test_profiles_route_passes_search(
