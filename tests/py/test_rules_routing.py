@@ -41,13 +41,21 @@ def test_weird_name_routes_to_weird_only() -> None:
 
 
 def test_capture_anomaly_not_matched_by_protocol_anomaly_rule() -> None:
-    """采集类异常不进「协议异常」规则 —— 2026-10 实测它们占全部 weird 的 ~87%。
+    """「协议异常」只管真正的协议异常，而且已加**同源频次门槛**（2026-10 实机实测）。
 
-    归一化把这类名字标成 `event_type=capture_anomaly`（见 normalizer._capture_weird），
-    内置「协议异常」只认 `protocol_anomaly`，所以噪声不再占摘要额度；
-    采集质量改由状态页的「采集质量」灯统计。
+    两件事一起钉住：
+    1. 归一化把采集类名字标成 `event_type=capture_anomaly`（见 normalizer._capture_weird），
+       规则只认 `protocol_anomaly` —— 这类噪声不再占摘要额度；
+    2. 该规则改成 `mode=count`（同源窗口内 ≥5 次）：摘要按「源 IP × 规则」分组，
+       一次单发的怪象也会各占一条摘要 —— 实测残留的 ~52 个源每 5 分钟就吃掉 52~68 条额度。
     """
     rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-协议异常")
+    conditions = rule["conditions"]
+    assert conditions["mode"] == "count"
+    assert conditions["key"] == ["src_ip"]
+    assert conditions["min_count"] >= 5
+    assert conditions["rules"] == [{"field": "event_type", "op": "eq", "value": "protocol_anomaly"}]
+    # count 模式不参与逐条匹配（由 frequency 窗口聚合触发）；采集类异常根本不在条件里
     capture = UnifiedLog(
         source_system="zeek",
         ts=datetime.now(UTC),
@@ -56,10 +64,6 @@ def test_capture_anomaly_not_matched_by_protocol_anomaly_rule() -> None:
         weird_name="possible_split_routing",
     )
     assert match_rule(rule, capture) is False
-    protocol = capture.model_copy(
-        update={"event_type": "protocol_anomaly", "weird_name": "bad_HTTP_request"}
-    )
-    assert match_rule(rule, protocol) is True
 
 
 def test_web_fields_route_to_http_and_wazuh() -> None:

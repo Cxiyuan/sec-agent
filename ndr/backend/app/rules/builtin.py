@@ -1594,11 +1594,18 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-协议异常",
-        "description": "网络采集器：weird/协议异常",
+        "description": "网络采集器：weird/协议异常（同源窗口内 ≥5 次；采集类异常已单列，见状态页「采集质量」灯）",
         "source": "builtin",
         "priority": 30,
         "severity": "medium",
+        # 为什么加同源频次门槛（2026-10 实机实测）：摘要按「源 IP × 规则」分组，
+        # 一次单发的怪象（DNS_unknown_opcode / bad_HTTP_request 各几条）也会各占一条摘要 ——
+        # 实测残留的 ~52 个源每 5 分钟就吃 52~68 条额度（每个源只出 1 次）。
+        # 同源 ≥5 次才算「成规模的协议异常」，单发留在 ES 里供回溯/MCP 查。
         "conditions": {
+            "mode": "count",
+            "key": ["src_ip"],
+            "min_count": 5,
             "logic": "and",
             "rules": [{"field": "event_type", "op": "eq", "value": "protocol_anomaly"}],
         },
