@@ -208,9 +208,7 @@ def _trim_queue(client: Any, key: str, limit: int) -> int:
     return dropped
 
 
-def _maybe_log(
-    stats: Counter[str], last: float, queue: ReliableQueue, client: Any
-) -> float:
+def _maybe_log(stats: Counter[str], last: float, queue: ReliableQueue, client: Any) -> float:
     """周期性汇报（每 `collector_stats_log_seconds` 一次，不刷屏）。"""
     now = time.monotonic()
     if now - last < settings.collector_stats_log_seconds:
@@ -291,7 +289,9 @@ def run() -> None:
                     if name:
                         stats["filtered"] += 1
                         ingest_filter.record_hit(name, entry)
-                    elif entry.log_type == "wazuh_archive" and not settings.wazuh_archive_to_detector:
+                    elif (
+                        entry.log_type == "wazuh_archive" and not settings.wazuh_archive_to_detector
+                    ):
                         # 全量原始日志（Wazuh archives.json）：只入库，不喂检测器。
                         # 检测器跑的是告警规则，原始日志进去只会白占队列与模型容量；
                         # 需要时把 ST_WAZUH_ARCHIVE_TO_DETECTOR 打开即可（见 README 第六节）。

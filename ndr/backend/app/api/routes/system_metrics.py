@@ -62,7 +62,9 @@ def parse_cpu_totals(text: str) -> tuple[float, float] | None:
     return None
 
 
-def cpu_percent(first: tuple[float, float] | None, second: tuple[float, float] | None) -> float | None:
+def cpu_percent(
+    first: tuple[float, float] | None, second: tuple[float, float] | None
+) -> float | None:
     """两次采样的差值 → 忙碌占比（%）。差值<=0（计数器回绕/采样太近）返回 None。"""
     if not first or not second:
         return None

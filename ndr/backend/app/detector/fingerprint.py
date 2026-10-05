@@ -82,7 +82,9 @@ def digest_fingerprint(digest: dict[str, Any]) -> str | None:
     # 现在纳入 目标集合 + 端口集合 + 事件类型：完全相同才视为重复（按窗口去重、只留计数）；
     # 出现新目标/新端口/新类型 → 指纹不同 → 照旧进智能体分析。
     dsts = ",".join(sorted(str(x) for x in (digest.get("dst_ips") or []))[:20])
-    ports = ",".join(sorted({str(p) for p in (digest.get("dst_ports") or []) if p is not None})[:20])
+    ports = ",".join(
+        sorted({str(p) for p in (digest.get("dst_ports") or []) if p is not None})[:20]
+    )
     etypes = ",".join(sorted(str(x) for x in (digest.get("event_types") or []))[:10])
     raw = f"{rule}|{src_ip}|{int(bucket.timestamp())}|{dsts}|{ports}|{etypes}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]

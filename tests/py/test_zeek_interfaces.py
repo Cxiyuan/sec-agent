@@ -54,7 +54,11 @@ def test_no_hardcoded_nic_name_in_product_code() -> None:
     assert "auto_iface()" in entrypoint
     assert 'IFACE_DEFAULT="${IFACE_ENV:-$(auto_iface)}"' in entrypoint
     # 任何地方都不允许出现「ZEEK_IFACE 的非空兜底值」
-    for name in ("ndr/zeek/entrypoint.sh", "ndr/docker-compose.yml", "ndr/docker-compose.deploy.yml"):
+    for name in (
+        "ndr/zeek/entrypoint.sh",
+        "ndr/docker-compose.yml",
+        "ndr/docker-compose.deploy.yml",
+    ):
         text = (root / name).read_text(encoding="utf-8")
         bad = re.findall(r"\$\{ZEEK_IFACE:-[^}]+\}", text)
         assert bad == [], f"{name} 里还有写死的网卡默认值：{bad}"
@@ -125,8 +129,8 @@ def test_broken_json_returns_empty(
 
 def test_entrypoint_marks_physical_by_sysfs() -> None:
     """采集器入口必须按 sysfs 写 physical 字段（后端只做过滤，不做探测）。"""
-    script = (
-        Path(__file__).resolve().parents[2] / "ndr" / "zeek" / "entrypoint.sh"
-    ).read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "ndr" / "zeek" / "entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
     assert '[ -e "$dev/device" ]' in script, "write_interfaces 没有按 sysfs 判定物理网卡"
     assert '"physical":%s' in script, "interfaces.json 没有写 physical 字段"

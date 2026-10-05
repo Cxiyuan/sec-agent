@@ -344,9 +344,7 @@ def test_retry_pending_noop_when_push_off(
 # ---------- 状态口径 ----------
 
 
-def test_status_separates_cumulative_counters_from_backlog(
-    push: Any, client: FakeRedis
-) -> None:
+def test_status_separates_cumulative_counters_from_backlog(push: Any, client: FakeRedis) -> None:
     push.record(client, "undelivered", 3, "未配置推送地址或已关闭")
     push.record(client, "retry_lost", 2, "连续 5 次永久失败：HTTP 400: bad payload")
     _queued(push, client, [_digest(1)])

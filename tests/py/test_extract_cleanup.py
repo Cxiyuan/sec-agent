@@ -118,9 +118,7 @@ def test_cleanup_keeps_allowed_and_drops_others(tmp_path: Path) -> None:
         ],
     )
 
-    stats = helper.cleanup(
-        extract, helper.load_fuid_mime(logs), max_bytes=0, min_age=0, now=NOW
-    )
+    stats = helper.cleanup(extract, helper.load_fuid_mime(logs), max_bytes=0, min_age=0, now=NOW)
 
     assert (extract / "FxKeep").exists()
     assert not (extract / "FxExe").exists()  # 白名单外
@@ -163,9 +161,7 @@ def test_evicts_oldest_when_over_capacity(tmp_path: Path) -> None:
         ],
     )
 
-    stats = helper.cleanup(
-        extract, helper.load_fuid_mime(logs), max_bytes=150, min_age=0, now=NOW
-    )
+    stats = helper.cleanup(extract, helper.load_fuid_mime(logs), max_bytes=150, min_age=0, now=NOW)
 
     assert not (extract / "FxOld").exists()
     assert not (extract / "FxMid").exists()

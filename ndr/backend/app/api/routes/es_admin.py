@@ -235,9 +235,7 @@ def ensure_retention(days: int | None = None) -> None:
     real_days = days if days is not None else es_config.retention_days()
     real_days = max(real_days, settings.lookback_max_days)
     es = get_es()
-    es.ilm.put_lifecycle(
-        name=settings.es_ilm_policy, policy=_ilm_policy(real_days)["policy"]
-    )
+    es.ilm.put_lifecycle(name=settings.es_ilm_policy, policy=_ilm_policy(real_days)["policy"])
     for pattern, name in TEMPLATES.items():
         es.indices.put_index_template(
             name=name,

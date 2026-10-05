@@ -154,9 +154,7 @@ def test_flattened_index_still_warns(
 ) -> None:
     """flattened 不是安全形状（单值 > 32766 字节仍整条丢），要照旧报警。"""
     flattened = {
-        "shentong-events-2026.10.04": {
-            "mappings": {"properties": {"raw": {"type": "flattened"}}}
-        }
+        "shentong-events-2026.10.04": {"mappings": {"properties": {"raw": {"type": "flattened"}}}}
     }
     with caplog.at_level(logging.WARNING, logger=mods["es_admin"].logger.name):
         _warn(mods, flattened)

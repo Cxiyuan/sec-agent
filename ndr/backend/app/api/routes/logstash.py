@@ -174,9 +174,9 @@ def _resync_es_host(db: Session) -> str | None:
     if current_host == target_host:
         return None
     params = _effective_params(_stored_params(db))
-    if template.render({**params, "es_host": current_host}, settings.logstash_http_port).strip() != (
-        text.strip()
-    ):
+    if template.render(
+        {**params, "es_host": current_host}, settings.logstash_http_port
+    ).strip() != (text.strip()):
         log.warning(
             "生成管道里除 ES 地址外还有人工编辑（文件 %s 用 %s，部署环境是 %s），"
             "不自动改写；要跟随部署环境请在「采集 → Logstash 管道」保存一次参数",

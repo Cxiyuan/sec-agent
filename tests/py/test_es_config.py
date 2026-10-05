@@ -143,7 +143,9 @@ def test_config_model_and_routes_have_no_connection_write_path(es_admin: ModuleT
         assert gone not in es_admin.EsConfigIn.model_fields
 
     routes = {
-        (method, route.path) for route in es_admin.router.routes for method in route.methods or set()
+        (method, route.path)
+        for route in es_admin.router.routes
+        for method in route.methods or set()
     }
     assert ("GET", "/api/es/config") in routes
     assert ("PUT", "/api/es/config") in routes

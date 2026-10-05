@@ -181,7 +181,9 @@ def build_items(digests: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def push_batch(cfg: dict[str, Any], digests: list[dict[str, Any]], *, timeout: float = 0.0) -> tuple[bool, str]:
+def push_batch(
+    cfg: dict[str, Any], digests: list[dict[str, Any]], *, timeout: float = 0.0
+) -> tuple[bool, str]:
     """推一批摘要：2xx 即成功。返回 (是否成功, 失败说明)。"""
     url = str(cfg.get("url") or "").strip()
     if not url:

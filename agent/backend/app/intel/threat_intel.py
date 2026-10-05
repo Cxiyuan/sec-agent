@@ -1,4 +1,5 @@
 """外部威胁情报查询：IP 信誉、地理、已知恶意。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -13,7 +14,9 @@ def lookup_ip(ip: str) -> dict[str, Any]:
     if not settings.intel_enabled or not settings.intel_api_url:
         return {}
     try:
-        headers = {"Authorization": f"Bearer {settings.intel_api_key}"} if settings.intel_api_key else {}
+        headers = (
+            {"Authorization": f"Bearer {settings.intel_api_key}"} if settings.intel_api_key else {}
+        )
         resp = httpx.get(
             settings.intel_api_url.rstrip("/") + f"/ip/{ip}",
             headers=headers,

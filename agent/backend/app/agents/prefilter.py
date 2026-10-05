@@ -160,7 +160,9 @@ def _looks_established(entry: UnifiedLog) -> bool:
     事件类型只是标签兜底：以前这里手写了第三份 conn_state 白名单，与 normalizer /
     triage_policy 各说各话（SH 明明没建立却被当成已建立），故统一收回表里。
     """
-    success = is_established(entry.conn_state) or entry.event_type in triage_policy.SUCCESS_EVENT_TYPES
+    success = (
+        is_established(entry.conn_state) or entry.event_type in triage_policy.SUCCESS_EVENT_TYPES
+    )
     return success and bool(entry.bytes_out) and bool(entry.bytes_in)
 
 

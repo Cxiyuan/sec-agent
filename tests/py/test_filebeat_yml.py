@@ -103,7 +103,9 @@ def test_unknown_filenames_are_not_dropped() -> None:
 def test_disk_backed_queue() -> None:
     conf = cfg()
     # 注意：Filebeat 的配置用点号路径，YAML 里就是字面 key "queue.disk"
-    assert "queue.spool" not in conf, "OSS 版 Filebeat 不支持 queue.spool（实测 unrecognized queue type）"
+    assert "queue.spool" not in conf, (
+        "OSS 版 Filebeat 不支持 queue.spool（实测 unrecognized queue type）"
+    )
     disk = conf["queue.disk"]
     # 队列要落在命名卷上（zeek-filebeat:/usr/local/bin/data），容器重建不丢
     assert "/usr/local/bin/data" in disk["path"], disk["path"]
@@ -133,7 +135,9 @@ def test_wazuh_inputs_and_parsers() -> None:
         ndjson = item["parsers"][0]["ndjson"]
         # Wazuh 的 rule/data/agent/full_log 在根；套 target 归一化就读不到
         assert "target" not in ndjson, "Wazuh 输入不能设 ndjson target"
-        assert ndjson["overwrite_keys"] is True, "否则 Filebeat 的 ECS agent 会盖掉 Wazuh agent.name"
+        assert ndjson["overwrite_keys"] is True, (
+            "否则 Filebeat 的 ECS agent 会盖掉 Wazuh agent.name"
+        )
         assert item["fields"]["source_system"] == "wazuh"
         assert item["fields_under_root"] is True
     # archives 默认关闭：要 .env 里 WAZUH_ARCHIVES_ENABLED=true + enable-logall.sh 两处都开

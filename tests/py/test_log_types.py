@@ -56,7 +56,9 @@ def test_classify(name: str, want: str) -> None:
     assert log_types.classify(name) == want
 
 
-@pytest.mark.parametrize(("name", "want"), [("conn", True), ("stats", True), ("ja3sfp", False), ("", False)])
+@pytest.mark.parametrize(
+    ("name", "want"), [("conn", True), ("stats", True), ("ja3sfp", False), ("", False)]
+)
 def test_is_known(name: str, want: bool) -> None:
     assert log_types.is_known(name) is want
 
@@ -74,7 +76,14 @@ def _entry(**kw: object) -> UnifiedLog:
 
 @pytest.mark.parametrize(
     ("log_type", "want"),
-    [("conn", True), ("http", True), ("ntp", False), ("stats", False), ("ja3sfp", False), ("", False)],
+    [
+        ("conn", True),
+        ("http", True),
+        ("ntp", False),
+        ("stats", False),
+        ("ja3sfp", False),
+        ("", False),
+    ],
 )
 def test_is_detectable_zeek(log_type: str, want: bool) -> None:
     assert log_types.is_detectable(_entry(log_type=log_type)) is want

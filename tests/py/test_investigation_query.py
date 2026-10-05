@@ -84,7 +84,9 @@ def test_exists_on_text_field_means_nonempty_keyword(
 
 def test_exists_false_is_the_negation(mods: dict[str, ModuleType], fake_mapping: None) -> None:
     positive = mods["es_query"].build_clause("ja4", {"exists": True})
-    assert mods["es_query"].build_clause("ja4", {"exists": False}) == {"bool": {"must_not": positive}}
+    assert mods["es_query"].build_clause("ja4", {"exists": False}) == {
+        "bool": {"must_not": positive}
+    }
 
 
 def test_exists_on_bool_field_stays_native(mods: dict[str, ModuleType], fake_mapping: None) -> None:

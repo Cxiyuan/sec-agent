@@ -182,7 +182,9 @@ def test_triage_sets_derived_from_table() -> None:
     assert "conn_http" not in policy.SUCCESS_EVENT_TYPES
 
 
-def test_unknown_state_generic_not_established_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+def test_unknown_state_generic_not_established_and_warns_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """表外状态不静默：按 generic + 未建立处理，并在进程内喊一次警告（提示补表）。"""
     unknown = "ZZ9"  # 用本文件独有的假状态，避免与其它测试的 _unknown_seen 干扰
     assert conn_states.is_known(unknown) is False
@@ -256,6 +258,4 @@ def test_skill_event_types_have_producers() -> None:
     assert referenced, "没有从技能里抽到 event_types —— 技能结构变了"
     producers = CONN_SOURCED_LABELS | OTHER_EVENT_TYPES
     unknown = sorted(referenced - producers)
-    assert not unknown, (
-        f"技能声明了没有生产者的事件类型 {unknown}：技能永远不会被这些事件触发"
-    )
+    assert not unknown, f"技能声明了没有生产者的事件类型 {unknown}：技能永远不会被这些事件触发"

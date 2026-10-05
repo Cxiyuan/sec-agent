@@ -100,4 +100,3 @@ def digest_ips(digest: dict[str, Any]) -> set[str]:
         if text:
             ips.add(text)
     return ips
-
