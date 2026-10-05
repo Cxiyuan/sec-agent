@@ -149,7 +149,7 @@ def _migrate_asset_semantics() -> None:
             row.value = {"value": _ASSET_SEMANTICS_VERSION}
         db.commit()
         logger.info(
-            "被访问方基线口径升级到 v%d（改成按连接算）：清掉旧口径的 %d 行统计，重新学习",
+            "被访问方基线口径升级到 v%d：清掉旧口径的 %d 行统计，重新学习（口径变了不混样本）",
             _ASSET_SEMANTICS_VERSION,
             removed,
         )
