@@ -37,15 +37,15 @@ import type {
  *
  * 三块：
  * 1. **学习进度与检测器心跳**：观测期还剩多久、检测器有没有在落库、当前风险 TOP；
- * 2. **数值基线 IP 列表**：每个 `源IP:维度` 的均值/方差与状态（判断中 / 观测中）；
- * 3. **画像列表**：账号/会话画像的风险、时间与状态（判断中 / 观测中）。
+ * 2. **数值基线 IP 列表**：每个 `源IP:维度` 的均值/方差与状态（生效中 / 观测中）；
+ * 3. **画像列表**：账号/会话画像的风险、时间与状态（生效中 / 观测中）。
  *
  * 「分析配置」按钮从右侧滑出抽屉改参数 —— 参数清单由后端给（`GET /api/baseline/config`，
  * 带类型/范围/默认值），前端只渲染与提交，新增可调参数不用改这里。
  *
  * 状态口径：
- * - 数值基线：过了观测期（`warmed`）= **判断中**（参与 2σ 判定）；否则 **观测中**（只学习）；
- * - 画像：观测次数达到冷启动门槛（`profile.min_obs`）= **判断中**（已参与打分）；否则 **观测中**。
+ * - 数值基线：过了观测期（`warmed`）= **生效中**（参与 2σ 判定）；否则 **观测中**（只学习）；
+ * - 画像：观测次数达到冷启动门槛（`profile.min_obs`）= **生效中**（已参与打分）；否则 **观测中**。
  */
 
 const SRC = {
@@ -65,6 +65,32 @@ function topKeys(map: Record<string, number> | undefined, n: number): string[] {
     .map(([key]) => key);
 }
 
+/**
+ * 维度的中文名：后端给的 key 后缀（`conn_count` …）只做展示映射，未知维度回落原名。
+ * 筛选下拉也用这份表，避免两处漂移。
+ */
+const FEATURE_LABELS: Record<string, string> = {
+  conn_count: "连接数",
+  distinct_dst_ports: "目的端口数",
+  distinct_dst_ips: "目的 IP 数",
+};
+
+function featureLabel(feature: string): string {
+  return FEATURE_LABELS[feature] || feature || "-";
+}
+
+/**
+ * 拆数值基线的 key（`源IP:维度`）。
+ *
+ * 按**最后一个**冒号切：IPv6 地址里也有冒号（`2409:8962:…:conn_count`），
+ * `split(":")` 会把地址切碎（后端也是用 `rsplit(":", 1)` 同一个理由）。
+ */
+function splitKey(key: string): { ip: string; feature: string } {
+  const at = key.lastIndexOf(":");
+  if (at <= 0) return { ip: key, feature: "" };
+  return { ip: key.slice(0, at), feature: key.slice(at + 1) };
+}
+
 /** 这个参数在草稿里被改过吗（类型感知的比较）。 */
 function changed(item: BaselineConfigItem, draft: Record<string, string | boolean>): boolean {
   const raw = draft[item.key];
@@ -73,11 +99,16 @@ function changed(item: BaselineConfigItem, draft: Record<string, string | boolea
   return String(raw) !== String(item.value);
 }
 
-/** 判断中 / 观测中 —— 两态是运维最关心的区分（这维度现在能不能出判定）。 */
+/**
+ * 生效中 / 观测中 —— 两态是运维最关心的区分（这维度/实体现在能不能出判定）。
+ *
+ * 两态**统一用绿色**（用户 2026-10 要求）：颜色不承载语义，语义在文字里 ——
+ * 以前「观测中」用黄色会让人误读成「有问题」，其实只是没到门槛。
+ */
 function StateBadge({ judging, hint }: { judging: boolean; hint?: string }) {
   return (
-    <Badge variant={judging ? "default" : "medium"} title={hint}>
-      {judging ? "判断中" : "观测中"}
+    <Badge variant="success" title={hint}>
+      {judging ? "生效中" : "观测中"}
     </Badge>
   );
 }
@@ -336,7 +367,7 @@ export function BehaviorPanel() {
   }
 
   const stats = overview?.stats;
-  // 画像的「判断中」口径 = 观测次数到了冷启动门槛（后端 detect() 的同一个判据）
+  // 画像的「生效中」口径 = 观测次数到了冷启动门槛（后端 detect() 的同一个判据）
   const minObs = Number(config?.effective?.["profile.min_obs"] ?? 5);
   const dirtyItems = (config?.items ?? []).filter((item) => changed(item, draft));
   const groups: { title: string; prefix: string; hint: string }[] = [
@@ -386,10 +417,10 @@ export function BehaviorPanel() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground">观测中（只学习）</p>
-              <p className="text-lg font-semibold text-amber-500">{stats?.learning_keys ?? "-"}</p>
+              <p className="text-lg font-semibold text-emerald-500">{stats?.learning_keys ?? "-"}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">判断中（可判偏离）</p>
+              <p className="text-xs text-muted-foreground">生效中（可判偏离）</p>
               <p className="text-lg font-semibold text-emerald-500">{stats?.warmed_keys ?? "-"}</p>
             </div>
             <div>
@@ -451,15 +482,15 @@ export function BehaviorPanel() {
         </CardContent>
       </Card>
 
-      {/* ---------- 2. 数值基线 IP 列表（判断中 / 观测中） ---------- */}
+      {/* ---------- 2. 数值基线 IP 列表（生效中 / 观测中） ---------- */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
             数值基线 IP 列表
             <span className="text-xs font-normal text-muted-foreground">
-              key 形如 <span className="font-mono">源IP:维度</span>；
-              <span className="text-emerald-500">判断中</span>=已过观测期参与 2σ 判定，
-              <span className="text-amber-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
+              IP + 中文维度（悬停可看原始 key，如 <span className="font-mono">源IP:conn_count</span>）；
+              <span className="text-emerald-500">生效中</span>=已过观测期参与 2σ 判定，
+              <span className="text-emerald-500">观测中</span>=还在学习（观测次数少的维度标准差不可靠）
             </span>
           </CardTitle>
         </CardHeader>
@@ -483,9 +514,11 @@ export function BehaviorPanel() {
               }}
             >
               <option value="">全部维度</option>
-              <option value="conn_count">连接数</option>
-              <option value="distinct_dst_ports">目的端口数</option>
-              <option value="distinct_dst_ips">目的 IP 数</option>
+              {Object.entries(FEATURE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
             <select
               className="h-9 rounded-md border bg-transparent px-2 text-sm"
@@ -505,7 +538,7 @@ export function BehaviorPanel() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>IP / key</TableHead>
+                  <TableHead>IP</TableHead>
                   <TableHead>维度</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>观测次数</TableHead>
@@ -517,8 +550,12 @@ export function BehaviorPanel() {
               <TableBody>
                 {numeric.items.map((row) => (
                   <TableRow key={row.key}>
-                    <TableCell className="font-mono text-xs">{row.key}</TableCell>
-                    <TableCell className="text-xs">{row.feature}</TableCell>
+                    <TableCell className="font-mono text-xs" title={row.key}>
+                      {splitKey(row.key).ip}
+                    </TableCell>
+                    <TableCell className="text-xs" title={row.feature}>
+                      {featureLabel(row.feature)}
+                    </TableCell>
                     <TableCell>
                       <StateBadge
                         judging={row.warmed}
@@ -548,14 +585,14 @@ export function BehaviorPanel() {
         </CardContent>
       </Card>
 
-      {/* ---------- 3. 画像列表（判断中 / 观测中） ---------- */}
+      {/* ---------- 3. 画像列表（生效中 / 观测中） ---------- */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
             账号 / 会话画像列表
             <span className="text-xs font-normal text-muted-foreground">
-              <span className="text-emerald-500">判断中</span>=观测次数已达冷启动门槛（
-              {minObs} 次）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
+              <span className="text-emerald-500">生效中</span>=观测次数已达冷启动门槛（
+              {minObs} 次）参与打分，<span className="text-emerald-500">观测中</span>=还在学习；
               风险分按当前窗口算（本轮无理由即归零），点一行展开细节
             </span>
           </CardTitle>
