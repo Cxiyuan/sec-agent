@@ -261,6 +261,8 @@ export interface RuleItem {
   source: string;
   enabled: boolean;
   priority: number;
+  /** 适用范围：network = 网络侧（网络采集器）、host = 主机侧（主机监控）；内置规则由后端按条件自动判定 */
+  scope: string;
 }
 
 // ---------- MCP 接入（智能体取数入口） ----------

@@ -17,7 +17,7 @@ from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import AssetStat, Rule, SystemConfig, User
-from app.rules.builtin import BUILTIN_RULES, DELETED_RULES, RETIRED_RULES
+from app.rules.builtin import BUILTIN_RULES, DELETED_RULES, RETIRED_RULES, rule_scope
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,9 @@ _MIGRATIONS: tuple[str, ...] = (
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
+    # 规则适用范围（network/host）：内置规则播种时按条件自动判定（见 rules/builtin.py::rule_scope），
+    # 自定义规则由界面选择；检测器按事件的 source_system 过滤
+    "ALTER TABLE rules ADD COLUMN IF NOT EXISTS scope VARCHAR(16) NOT NULL DEFAULT 'network'",
 )
 
 #: 被访问方基线的**口径版本**：
@@ -266,17 +269,21 @@ def _seed() -> None:
         _delete_builtin_rules(db)
         for spec in BUILTIN_RULES:
             rule_spec = _dynamic_rule_spec(spec)
+            # 适用范围（network/host）按条件自动判定：界面「检测规则」按它分「网络/主机」两组，
+            # 检测器按它过滤（见 rules/builtin.py::rule_scope）
+            scope = rule_scope(rule_spec)
             exists = db.execute(
                 select(Rule).where(Rule.name == rule_spec["name"])
             ).scalar_one_or_none()
             if exists is None:
-                db.add(Rule(**rule_spec))
+                db.add(Rule(**rule_spec, scope=scope))
             elif exists.source == "builtin":
                 # 内置规则随版本同步更新（不覆盖用户自建规则）
                 exists.description = rule_spec.get("description", "")
                 exists.conditions = rule_spec.get("conditions", {})
                 exists.severity = rule_spec.get("severity", exists.severity)
                 exists.priority = rule_spec.get("priority", exists.priority)
+                exists.scope = scope
                 if rule_spec["name"] in _CONFIG_DRIVEN_RULES:
                     # 依赖配置的规则，启用状态跟随配置
                     exists.enabled = rule_spec.get("enabled", exists.enabled)

@@ -28,6 +28,8 @@ def get_enabled_rules(db: Session) -> list[dict[str, Any]]:
             "severity": r.severity,
             "source": r.source,
             "priority": r.priority,
+            # 规则适用范围（network/host）：检测器据此只在该侧事件上求值
+            "scope": r.scope,
         }
         for r in rows
     ]

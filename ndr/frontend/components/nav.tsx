@@ -24,7 +24,7 @@ const items = [
   { href: "/admin/status", label: "总览", icon: LayoutDashboard },
   // 行为分析：基线与画像的「看得见的明细 + 可调参数」（与总览的概览图互补）
   { href: "/admin/behavior", label: "行为分析", icon: Activity },
-  { href: "/admin/rules", label: "规则配置", icon: SlidersHorizontal },
+  { href: "/admin/rules", label: "检测规则", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
   { href: "/admin/networks", label: "监控网段", icon: Network },
   { href: "/admin/storage", label: "数据存储", icon: Database },

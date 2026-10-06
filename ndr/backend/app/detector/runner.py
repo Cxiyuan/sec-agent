@@ -86,6 +86,20 @@ def rate_bucket() -> str:
     return f"{_RATE_KEY}:{_to_int(time.time() // 60, 0)}"
 
 
+def _entry_side(entry: UnifiedLog) -> str:
+    """这条事件属于哪一侧规则：主机监控（Wazuh）→ `host`，网络采集器（Zeek）→ `network`。"""
+    return "host" if str(entry.source_system) == "wazuh" else "network"
+
+
+def _same_side(rules: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
+    """只留适用于这一侧的规则（缺 `scope` 按 `network` 处理，与列默认值一致）。
+
+    候选列表本来就很短（按 log_type 路由 + 通配），所以逐事件过滤的代价可忽略；
+    不在索引里做一次性过滤是为了不改 `rules_for_log_type`（那份逻辑与 agent 栈共享）。
+    """
+    return [r for r in rules if str(r.get("scope") or "network") == side]
+
+
 def _load_rules() -> dict[str, list[dict[str, Any]]]:
     with SessionLocal() as db:
         rules = get_enabled_rules(db)
@@ -843,6 +857,9 @@ def _handle(
 
     # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
     candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
+    # 规则适用范围：主机规则只在主机事件上求值，网络规则反之
+    rule_side = _entry_side(entry)
+    candidates = _same_side(candidates, rule_side)
     stats["rules_evaluated"] += len(candidates)
     hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:
@@ -854,7 +871,7 @@ def _handle(
     # 注意：命中逐条规则后**必须继续**评估频率规则。
     # 若在此 return，内置逐条规则（如“扫描尝试连接”匹配所有 scan_attempt）会把
     # 频率规则“饿死”——18 条频率规则几乎永不触发（现场统计：9065 次命中仅触发 14 次）。
-    for rule in rules["count"]:
+    for rule in _same_side(rules["count"], rule_side):
         cond = rule.get("conditions") or {}
         if whitelisted(cond, entry) or not evaluate_conditions(cond, entry):
             continue

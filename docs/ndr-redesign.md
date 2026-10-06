@@ -439,7 +439,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    - `status/page.tsx`「运行状态」= `<StatusPanel/>`（新增，见下）
 3. **`ndr/frontend/components/zeek-panel.tsx` 按 section 复用**：签名改为 `ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "networks" })`，标题/说明/可见块随 section 切；`save()` 仍一次性 PUT `{interface, networks, bpf_extra}`，**没显示的那部分原样回传**，因此「采集接入」与「监控网段」两页互不覆盖。旧的 `section="all"` 形态保留。
 4. **`ndr/frontend/components/status-panel.tsx`（新增，运行状态页主体）**：只读既有接口、不新增后端 —— `/api/detector/stats`（队列深度 / 投递速率 / 丢弃 / 选主 / Redis 体检）、`/api/agent-push`（送达与重发）、`/api/wazuh`（API 可达性 + 近 24h 入库量）。四个块 + **每 15 秒自刷新**（可关）；Redis 用量超过告警线时显式标红「内存接近上限，整链路会卡死」—— 历史上出过 noeviction 卡死事故，这是最该被看见的前兆。
-5. **`ndr/frontend/components/nav.tsx` 七项导航**：规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；~~**配置总览（`/admin/settings`）挂在全局页头的 logo 上**（可点，带齿轮图标），不占导航行~~ → **该页与入口已取消，见「2026-10 界面口径」小节的后续说明**。
+5. **`ndr/frontend/components/nav.tsx` 七项导航**：检测规则 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；~~**配置总览（`/admin/settings`）挂在全局页头的 logo 上**（可点，带齿轮图标），不占导航行~~ → **该页与入口已取消，见「2026-10 界面口径」小节的后续说明**。
 6. **顺手修掉两处死跳转**：`ndr/frontend/app/setup/page.tsx`（首次向导保存后）与 `ndr/frontend/app/login/page.tsx`（登录后）原本都 `router.replace("/dashboard")`，而本前端没有 `/dashboard`（首页 `app/page.tsx` 即 `/`，它再 redirect 到 `/admin/rules`）→ 都改为 `"/"`。原先这两处会跳到 404。
 7. **第 6 期那条说明在拆页后保留**：`networks/page.tsx` 的页面说明里写明「这份清单只约束 Zeek 抓包，不影响 Wazuh 采到的主机日志」，`wazuh.py` 的 `HINT` 里也有一句同样的话。
 
@@ -1265,3 +1265,27 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
   `engine-semantics.md:189`），本次实现按方案 A 收口。
 预期：这一族摘要 550 → 个位数~50；保留的检出能力 = ≥50 个失败路径的宽扫描 + 同路径高频
 （暴力路径枚举）+ 特定框架特征 + 敏感文件泄露 + 未授权访问成功。代价：丢掉「30~49 次失败」那一档。
+
+
+### 2026-10 「检测规则」页重构：内置按网络/主机分组 + 自定义规则抽屉
+
+**界面**（用户口径）：
+- 导航「规则配置」改名 **「检测规则」**；
+- 页面分两个标签页：**内置规则** / **自定义规则**；
+- 内置规则按**网络（网络采集器）**与**主机（主机监控）**两组组织，点规则名**展开详情**
+  （描述 / 条件 JSON / 规则 ID / 类型阈值），每条前面有**勾选框**启停（内置规则只有启用状态会保留）；
+- 自定义规则：右上「添加规则」打开右侧抽屉，填 规则名称 / 描述 / **规则内容（网络规则 or 主机规则）**
+  / 级别 / 优先级 / 启用 / 触发条件（含频率规则）；**规则 ID 自动生成、只读不可编辑**（新增时显示
+  「保存后自动生成」）；已有自定义规则可编辑/删除。
+
+**后端（这个划分不是界面猜的，是一等公民）**：
+- `Rule` 新增 `scope VARCHAR(16) NOT NULL DEFAULT 'network'`（`main.py::_MIGRATIONS` 幂等补列，两侧栈都有）；
+- 适用范围由**规则条件**自动判定：`rules/builtin.py::rule_scope()` —— 条件引用
+  `log_type == "wazuh"` / `source_system == "wazuh"` / `wazuh_*` 事件类型 ⇒ **主机**，其余 ⇒ **网络**；
+  少数条件里看不出侧向的认证/账号类（暴力破解/主机登录失败/高频认证失败/撞库）在
+  `_SCOPE_HOST_OVERRIDES` 里手工归主机（本部署由主机监控驱动），实测分布 **网络 65 / 主机 15**；
+- 播种时把判定结果写进 `Rule.scope`（内置规则随版本同步更新该字段）；自定义规则的 scope 由界面选择，
+  更新时**不会**覆盖内置规则的自动归类；
+- 接口：`RuleIn.scope`（校验只允许 network/host）、`_rule_dict` 返回 scope；
+- **检测器按侧过滤**：`runner._entry_side()` + `_same_side()` —— 主机规则只在 `source_system=wazuh`
+  的事件上求值，网络规则反之（缺 scope 按 network），逐条规则与频率规则两条路径都过滤。

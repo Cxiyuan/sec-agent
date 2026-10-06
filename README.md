@@ -109,7 +109,7 @@ docker compose -f docker-compose.deploy.yml up -d
 | 线路 | 服务 | 作用 |
 | --- | --- | --- |
 | NDR | `elasticsearch` / `postgres` / `redis` | 存储与消息 |
-| NDR | `backend` / `frontend` | API + 管理后台（全局页头：logo 深瞳·NDR / 告警铃铛 / 当前用户 / 退出；左侧九页：**总览** / **行为分析** / 规则配置 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 账户；**`/` 默认落到「总览」**） |
+| NDR | `backend` / `frontend` | API + 管理后台（全局页头：logo 深瞳·NDR / 告警铃铛 / 当前用户 / 退出；左侧九页：**总览** / **行为分析** / 检测规则 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 账户；**`/` 默认落到「总览」**） |
 | NDR | `normalizer` | **归一化服务**（消费采集队列 → 检测器队列 + 写 ES） |
 | NDR | `detector` | 实时检测器（消费归一化队列） |
 | NDR | `ndr-mcp` | MCP 服务（`python -m app.mcp.server`，宿主 `:8090`） |

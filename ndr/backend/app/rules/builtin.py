@@ -82,6 +82,57 @@ DELETED_RULES: dict[str, str] = {
     "内置-自签或异常证书": "按用户口径删除：自签证书不需要检测（属配置事实非攻击事件）",
 }
 
+#: 规则适用范围（与 `db/models.py` 的 `Rule.scope`、界面「检测规则」里内置规则的两个分组对应）。
+SCOPE_NETWORK = "network"
+SCOPE_HOST = "host"
+
+
+#: 少数条件里看不出侧向的规则（认证/账号类）手工归到主机侧：
+#: 它们的 `brute_force` / `account` 语义在本部署由主机监控（Wazuh）驱动 —— 网络采集器关掉了
+#: Zeek 自带 notice，认不出这类事件；且运维在界面上找“登录失败/撞库”时预期它们在「主机」组。
+#: 若某环境的认证类规则来自 Web 日志，把对应条目删掉即可回到条件判定（`network`）。
+_SCOPE_HOST_OVERRIDES: frozenset[str] = frozenset(
+    {
+        "内置-暴力破解",
+        "内置-主机登录失败",
+        "内置-高频认证失败",
+        "内置-撞库(同账号多源)",
+    }
+)
+
+
+def rule_scope(spec: dict) -> str:
+    """这条内置规则属于**网络侧**还是**主机侧**（界面分组 + 检测器按侧过滤都吃它）。
+
+    为什么按条件判定、不再维护一份“规则名 → 侧别”名单：归属本来就在条件里 —— 引用
+    `log_type == "wazuh"`、`source_system == "wazuh"` 或 `wazuh_*` 事件类型的规则只能跑在
+    主机事件上；名单要手工同步，漏一条就归类错。只有少数条件里看不出的（见上方覆盖表）手工指定。
+    """
+    if str(spec.get("name") or "") in _SCOPE_HOST_OVERRIDES:
+        return SCOPE_HOST
+    host = False
+
+    def walk(node: object) -> None:
+        nonlocal host
+        if isinstance(node, dict):
+            field = str(node.get("field") or "")
+            value = node.get("value")
+            values = value if isinstance(value, list) else [value]
+            if field in ("log_type", "source_system"):
+                host = host or any(str(v).lower() == "wazuh" for v in values)
+            elif field == "event_type":
+                host = host or any(str(v).lower().startswith("wazuh") for v in values)
+            for key, child in node.items():
+                if key != "whitelist":
+                    walk(child)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(spec.get("conditions") or {})
+    return SCOPE_HOST if host else SCOPE_NETWORK
+
+
 BUILTIN_RULES: list[dict] = [
     # ================= A. 勒索 / 僵尸网络 / 挖矿 =================
     {

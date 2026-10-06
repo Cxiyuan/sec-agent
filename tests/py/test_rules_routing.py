@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -374,3 +375,75 @@ def test_fast_port_scan_counts_rejected_not_established_resets() -> None:
         window.observe(rule, entry) for entry in _conn_events(list(range(1, 13)), conn_state="REJ")
     ]
     assert any(fired)
+
+
+# ---------- 规则适用范围（network / host，2026-10 界面「检测规则」分组用）----------
+
+
+def test_builtin_rule_scope_by_conditions() -> None:
+    """内置规则的适用范围由**条件**判定：引用主机监控信号的是主机规则，其余算网络规则。
+
+    界面「检测规则」按它分「网络（网络采集器）/ 主机（主机监控）」两组，检测器按它过滤
+    （主机规则只在主机事件上求值，反之亦然）。少数条件里看不出侧向的认证/账号类规则
+    在 `builtin._SCOPE_HOST_OVERRIDES` 里手工归主机（本部署由主机监控驱动）。
+    """
+    scope = builtin.rule_scope
+    assert scope(_builtin("内置-主机文件完整性变更")) == "host"
+    assert scope(_builtin("内置-主机策略违规")) == "host"
+    assert scope(_builtin("内置-主机高危告警")) == "host"
+    assert scope(_builtin("内置-弱TLS版本")) == "network"
+    assert scope(_builtin("内置-命令注入特征")) == "network"
+    assert scope(_builtin("内置-多路径探测(漏洞挖掘)")) == "network"
+    # 条件里看不出侧向（brute_force / account），按覆盖表归主机
+    for name in (
+        "内置-暴力破解",
+        "内置-主机登录失败",
+        "内置-高频认证失败",
+        "内置-撞库(同账号多源)",
+    ):
+        assert scope(_builtin(name)) == "host", name
+
+
+@needs_freq
+def test_detector_filters_rules_by_side() -> None:
+    """检测器按事件来源过滤规则：主机事件只跑主机规则，网络事件只跑网络规则（缺 scope 按 network）。"""
+    runner = importlib.import_module("app.detector.runner")
+    z = UnifiedLog(
+        source_system="zeek", ts=datetime.now(UTC), event_type="http_request", log_type="http"
+    )
+    w = UnifiedLog(
+        source_system="wazuh",
+        ts=datetime.now(UTC),
+        event_type="wazuh_system_error",
+        log_type="wazuh",
+    )
+    assert runner._entry_side(z) == "network"
+    assert runner._entry_side(w) == "host"
+    rules = [{"name": "n", "scope": "network"}, {"name": "h", "scope": "host"}, {"name": "d"}]
+    assert [r["name"] for r in runner._same_side(rules, "network")] == ["n", "d"]
+    assert [r["name"] for r in runner._same_side(rules, "host")] == ["h"]
+
+
+@needs_freq
+def test_rules_api_carries_scope() -> None:
+    """规则接口带 scope：默认 network、非法值被拒、返回体里有它（界面靠它分组）。"""
+    route = importlib.import_module("app.api.routes.rules")
+    assert route.RuleIn(name="x").scope == "network"
+    body = route.RuleIn(
+        name="x",
+        conditions={"rules": [{"field": "event_type", "op": "eq", "value": "http_request"}]},
+        scope="bogus",
+    )
+    assert any(e["field"] == "scope" for e in route._validate(body))
+    row = SimpleNamespace(
+        id="1",
+        name="x",
+        description="",
+        conditions={},
+        severity="low",
+        source="user",
+        enabled=True,
+        priority=100,
+        scope="host",
+    )
+    assert route._rule_dict(row)["scope"] == "host"

@@ -26,6 +26,9 @@ class RuleIn(BaseModel):
     severity: str = "medium"
     enabled: bool = True
     priority: int = 100
+    # `network` = 网络侧（网络采集器/Zeek）、`host` = 主机侧（主机监控/Wazuh）——
+    # 界面「检测规则」自定义规则表单里的那个选择；内置规则以播种时按条件判定的为准。
+    scope: str = "network"
 
 
 def _name_taken(db: Session, name: str, *, ignore_id: str | None = None) -> bool:
@@ -47,6 +50,8 @@ def _validate(body: RuleIn) -> list[dict[str, str]]:
         errors.append({"field": "conditions", "msg": "规则至少需要一个条件（空条件规则不生效）"})
     for msg in validate_rule_regexes({"conditions": body.conditions}):
         errors.append({"field": "conditions", "msg": msg})
+    if str(body.scope or "") not in ("network", "host"):
+        errors.append({"field": "scope", "msg": "规则内容只能是 network（网络）或 host（主机）"})
     return errors
 
 
@@ -60,6 +65,7 @@ def _rule_dict(r: Rule) -> dict[str, Any]:
         "source": r.source,
         "enabled": r.enabled,
         "priority": r.priority,
+        "scope": r.scope,
     }
 
 
@@ -98,6 +104,7 @@ def create_rule(
         enabled=body.enabled,
         priority=body.priority,
         source="user",
+        scope=body.scope,
     )
     db.add(rule)
     try:
@@ -146,6 +153,10 @@ def update_rule(
     rule.severity = body.severity
     rule.enabled = body.enabled
     rule.priority = body.priority
+    if rule.source != "builtin":
+        # 适用范围：用户规则以界面选择为准；内置规则的 scope 由 `rule_scope()` 在播种时
+        # 按条件判定，这里不覆盖（否则界面改一次就把自动归类带偏）。
+        rule.scope = body.scope
     try:
         db.commit()
     except IntegrityError as exc:  # 并发改名到同一个名字：唯一约束兜底
