@@ -280,6 +280,9 @@ activate_staging() {
   mv "$STAGING_DIR"/* "$ACTIVE_DIR"/ 2>/dev/null || true
   bootstrap_rules
   render_config
+  # 立刻刷新状态：不然界面在后端读到的是健康循环（每 30s）刷新的旧条数（实机踩到：
+  # 切换成功后 rule_count 还显示 0、清空后还显示 1）
+  write_runtime_auto
   log "已切换到新规则（版本 ${version}，$(count_rules_in "$ACTIVE_DIR") 条）"
 }
 
@@ -291,6 +294,7 @@ reset_rules() {
   mkdir -p "$ACTIVE_DIR"
   bootstrap_rules
   render_config
+  write_runtime_auto
   log "规则已清空（回到空占位，$(count_rules_in "$ACTIVE_DIR") 条）"
 }
 
@@ -362,6 +366,16 @@ write_runtime() {
  "suricata": "$(suricata -V 2>/dev/null | head -1 || true)"}
 EOF
   mv "${RUNTIME_JSON}.tmp" "$RUNTIME_JSON" 2>/dev/null || true
+}
+
+suricata_running() {
+  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+# 按「引擎到底在不在跑」写 runtime.json：
+# 一次性模式（--handle-requests）里也得能写对 —— 那时当前进程不是引擎，但主进程的引擎可能在跑。
+write_runtime_auto() {
+  if suricata_running; then write_runtime 0; else write_runtime 1; fi
 }
 
 # ---------- Suricata 生命周期 ----------
