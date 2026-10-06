@@ -12,13 +12,43 @@
 # community-id: yes 是必须的：它是与 Zeek conn.log 关联同一条流的键。
 
 vars:
+  # 地址组：HOME_NET 用监控网段（共享配置），EXTERNAL_NET 取反。
+  # 其余 *_SERVERS 是 Suricata 自带的**引擎默认语义**（服务端在 HOME_NET），
+  # ET Open 的签名会引用它们 —— 模板里少一个变量，整个规则文件就加载失败。
   address-groups:
     HOME_NET: "%HOME_NET%"
     EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DC_SERVERS: "$HOME_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
   port-groups:
+    # 明文 HTTP 端口 = 引擎默认集 − 共享配置里「按 TLS 解析的端口」（见文件头说明）
     HTTP_PORTS: "%HTTP_PORTS%"
     SHELLCODE_PORTS: "!80"
-    SSH_PORTS: "22"
+    ORACLE_PORTS: 1521
+    SSH_PORTS: 22
+    DNP3_PORTS: 20000
+    MODBUS_PORTS: 502
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: 21
+    GENEVE_PORTS: 6081
+    VXLAN_PORTS: 4789
+    TEREDO_PORTS: 3544
+    KRB5_PORTS: 88
+    NFS_PORTS: 2049
+    SMB_PORTS: 445
+    SIP_PORTS: 5060
+    SNMP_PORTS: 161
 
 default-log-dir: /logs/suricata
 
