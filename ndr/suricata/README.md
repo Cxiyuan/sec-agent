@@ -68,3 +68,5 @@ SPAN 网卡 ─┬─ Zeek ─ conn/http/ssl/… ──────────�
   `community-id` 是否打开）。
 - 排障：`docker run --rm -v <conf>:/config:ro <镜像> --render-only`
   就等于「渲染 + `suricata -T`」，退出码即结果。
+  注意：本镜像的 ENTRYPOINT 就是入口脚本 —— 要进容器里敲 shell 得写 `--entrypoint sh`，
+  否则参数会被当成脚本参数、掉进抓包主循环不退出（CI 踩过一次）。

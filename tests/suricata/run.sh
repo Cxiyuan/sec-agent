@@ -5,6 +5,10 @@
 # 而「渲染出来的 YAML 这个版本的 Suricata 到底认不认」只有在真容器里跑 `suricata -T`
 # 才知道 —— 本地静态检查看不出配置能不能加载，更看不出 ET Open 规则有没有拉下来。
 # 与 tests/zeek/run.sh 同一做法：CI 里可以拉镜像 / 构建镜像。
+#
+# 注意：本镜像的 ENTRYPOINT 就是入口脚本，`suricata -T` 要在 6.8 万条规则上建检测引擎、
+# 很慢 —— 所以「昂贵自检」只跑**一次**，其余断言用 `--entrypoint sh` 绕过去（也正因如此，
+# 想进容器敲 shell 必须写 --entrypoint sh，否则会掉进抓包主循环不退出）。
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -29,15 +33,19 @@ EOF
 echo "== 构建签名引擎镜像（CI 里构建，本地禁止）=="
 docker build -t "$IMG" "$ROOT/ndr/suricata"
 
-echo "== 渲染配置 + suricata -T 自检 =="
+echo "== 渲染配置 + suricata -T 自检（唯一的一次昂贵步骤）=="
 docker run --rm -v "$CONF_DIR:/config:ro" "$IMG" --render-only
 
 echo "== 断言渲染结果的关键形状 =="
-RENDERED=$(docker run --rm -v "$CONF_DIR:/config:ro" "$IMG" \
-  sh -c 'mkdir -p /etc/suricata && /usr/local/bin/shentong-suricata-entrypoint.sh --render-only >/dev/null 2>&1; cat /etc/suricata/suricata.yaml')
+RENDERED=$(docker run --rm --entrypoint sh -v "$CONF_DIR:/config:ro" "$IMG" \
+  -c '/usr/local/bin/shentong-suricata-entrypoint.sh --render-config')
 echo "$RENDERED" | grep -q 'interface: ens192' || { echo "未按共享配置渲染网卡" >&2; exit 1; }
 echo "$RENDERED" | grep -q 'HOME_NET: "\[10.10.0.0/16,172.16.0.0/12\]"' \
   || { echo "HOME_NET 没有按监控网段渲染（CIDR 里的 / 有没有被 sed 切坏？）" >&2; exit 1; }
+# ET Open 的签名会引用这些引擎自带变量：少一个整个规则文件都加载不了
+for var in HTTP_SERVERS SQL_SERVERS DNS_SERVERS SMTP_SERVERS FILE_DATA_PORTS; do
+  echo "$RENDERED" | grep -q "^    ${var}:" || { echo "缺少规则变量 ${var}（ET 规则会加载失败）" >&2; exit 1; }
+done
 echo "$RENDERED" | grep -q 'community-id: yes' || { echo "community-id 没开（Zeek↔Suricata 无法关联）" >&2; exit 1; }
 # tls_ports 里的 8000/8011 必须从 HTTP 端口里剔掉
 echo "$RENDERED" | grep -q 'HTTP_PORTS: "80,81,88,8008,8010,8048,8080,8088,8888"' \
@@ -51,10 +59,12 @@ if echo "$RENDERED" | grep -A 6 'types:' | grep -Eq -- '- (flow|dns|http|tls|sta
 fi
 
 echo "== 断言规则真的拉下来了（ET Open，MIT）=="
-RULES=$(docker run --rm "$IMG" sh -c 'wc -l < /var/lib/suricata/rules/suricata.rules')
-echo "规则行数: $RULES"
-[ "$RULES" -gt 1000 ] || { echo "规则文件太小（ET Open 没拉下来？）" >&2; exit 1; }
-docker run --rm "$IMG" sh -c 'grep -q "ET " /var/lib/suricata/rules/suricata.rules' \
-  || { echo "规则文件里没有 ET 签名" >&2; exit 1; }
+RULES=$(docker run --rm --entrypoint sh "$IMG" \
+  -c 'wc -l < /var/lib/suricata/rules/suricata.rules; grep -c "msg:\"ET " /var/lib/suricata/rules/suricata.rules')
+echo "$RULES"
+LINES=$(echo "$RULES" | sed -n 1p | tr -d ' ')
+ET=$(echo "$RULES" | sed -n 2p | tr -d ' ')
+[ "$LINES" -gt 10000 ] || { echo "规则文件太小（$LINES 行，ET Open 没拉下来？）" >&2; exit 1; }
+[ "$ET" -gt 1000 ] || { echo "ET 签名太少（$ET 条）" >&2; exit 1; }
 
-echo "签名引擎自检通过"
+echo "签名引擎自检通过（$LINES 行规则 / $ET 条 ET 签名）"

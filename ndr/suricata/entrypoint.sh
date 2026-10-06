@@ -265,4 +265,15 @@ if [ "${1:-}" = "--render-only" ]; then
   exec suricata -T -c "$YAML_OUT"
 fi
 
+# 只渲染并把渲染结果打到 stdout（不做 `suricata -T` 那趟昂贵自检）：
+# CI 靠它断言渲染结果（网卡/HOME_NET/HTTP 端口/只开 alert/community-id）。
+if [ "${1:-}" = "--render-config" ]; then
+  mkdir -p "$OUT_DIR" "$ARCHIVE_DIR" /etc/suricata
+  render_config
+  cat "$YAML_OUT"
+  exit 0
+fi
+
+# 注意：本镜像的 ENTRYPOINT 就是这个脚本 —— 要进容器里敲 shell 得写 `--entrypoint sh`，
+# 否则参数会被当成脚本参数走到下面的抓包主循环（会一直不退出）。
 main
