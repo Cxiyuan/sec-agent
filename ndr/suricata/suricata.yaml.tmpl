@@ -66,13 +66,15 @@ outputs:
       types:
         # 只发告警。payload 留着（默认 4KB 截断）——智能体要靠它看到命中的原文；
         # packet（整包十六进制）不开，体积大且与 payload 重复。
+        # 注意：不要再写 `http: extended` —— 7.0 起那是**已弃用且无效果**的 flag
+        #（实测会有 `Found deprecated eve-log.alert flag "http"` 告警）；告警默认已带
+        # http/tls/dns/fileinfo 元数据。
         - alert:
             payload: yes
             payload-printable: yes
             packet: no
             metadata: yes
             tagged-packets: no
-            http: extended
             fileinfo: yes
 
 logging:

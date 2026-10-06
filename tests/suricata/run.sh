@@ -61,9 +61,9 @@ fi
 echo "== 断言规则真的拉下来了（ET Open，MIT）与裁先生效 =="
 STATS=$(docker run --rm --entrypoint sh "$IMG" -c '
   wc -l < /var/lib/suricata/rules/suricata.rules
-  grep -c "msg:\"ET " /var/lib/suricata/rules/suricata.rules \&\& true
-  grep -c "SURICATA STREAM" /var/lib/suricata/rules/suricata.rules \&\& true
-  grep -c "sid:2054407;" /var/lib/suricata/rules/suricata.rules \&\& true
+  grep -c "msg:\"ET " /var/lib/suricata/rules/suricata.rules || true
+  grep -c "SURICATA STREAM" /var/lib/suricata/rules/suricata.rules || true
+  grep -c "sid:2054407;" /var/lib/suricata/rules/suricata.rules || true
 ')
 echo "$STATS"
 LINES=$(echo "$STATS" | sed -n 1p | tr -d ' ')
