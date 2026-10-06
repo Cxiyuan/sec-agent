@@ -72,6 +72,10 @@ DELETED_RULES: dict[str, str] = {
     # 校园 App 的正常登录（status=200、579/644 个真实客户端），逐次告警只占额度。真要治理，
     # 应作为「站点该上 HTTPS」的配置类问题一次性处理，而不是当事件告警。
     "内置-明文凭证传输(HTTP登录)": "按用户口径删除：明文凭证属配置事实而非攻击事件（校园 App 正常登录逐次报）",
+    # 2026-10 方案 A：与「多路径探测」同一行为双报（评审 recon.md:38），且门槛只有「次数」
+    # 没有「不同路径」⇒ 正常用户连点 30 个 404（坏链/缺图）就会中（engine-semantics.md:189）。
+    # 检测能力由「多路径探测」（≥50 个不同路径且失败）接手，故整条删除。
+    "内置-目录/路径爆破": "与「多路径探测」重复且门槛过低（30 次 403/404、不限路径）：并入「多路径探测」",
 }
 
 BUILTIN_RULES: list[dict] = [
@@ -806,29 +810,19 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-目录/路径爆破",
-        "description": "同源在窗口内产生大量 404/403（≥30 次）",
-        "source": "builtin",
-        "priority": 26,
-        "severity": "high",
-        "conditions": {
-            "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 30,
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "http"},
-                {"field": "status_code", "op": "in", "value": [403, 404]},
-            ],
-            "whitelist": _WHITELIST_HEALTH,
-        },
-    },
-    {
         "name": "内置-多路径探测(漏洞挖掘)",
-        "description": "同源访问大量不同路径（≥40 个 distinct 路径）",
+        "description": "同源在窗口内访问 ≥50 个不同路径且均为失败（401/403/404）",
         "source": "builtin",
         "priority": 24,
         "severity": "high",
+        # 2026-10 实机数据（近 6h 按源 IP 的路径扇出）：
+        # - 原条件把 **200** 也算进来 ⇒ 主要命中「正常浏览/爬虫」：≥50 个不同路径的源有 43 个，
+        #   状态码收成 401/403/404 后只剩 **1** 个 —— 与规则自己那句注释「这里只看大量不同路径
+        #   且失败」矛盾（注释写了、条件没写）；
+        # - 原「内置-目录/路径爆破」（同源 ≥30 次 403/404，不限不同路径）与它是**同一行为双报**
+        #   （2026-10 规则评审 recon.md 第 38 行已点出），而且门槛只有“次数”没有“不同路径” ⇒
+        #   正常用户连点 30 个 404（坏链/缺图）就会中（engine-semantics.md:189 同一条结论）。
+        #   那条已删除（见 DELETED_RULES），本规则接过它的检测能力并把口径收严。
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
@@ -838,8 +832,8 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "http"},
-                # 爬虫/压测/正常浏览会访问大量 200 路径；这里只看「大量不同路径且失败」
-                {"field": "status_code", "op": "in", "value": [200, 401, 403, 404]},
+                # 只看「不同路径且失败」：200 路径是正常浏览/爬虫的形态，不计入
+                {"field": "status_code", "op": "in", "value": [401, 403, 404]},
             ],
             "whitelist": _WHITELIST_PROBE,
         },

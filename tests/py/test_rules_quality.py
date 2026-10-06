@@ -238,6 +238,23 @@ def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
     assert "内置-明文凭证传输(HTTP登录)" in builtin_mod.DELETED_RULES
 
 
+def test_multi_path_probe_statuses_exclude_200(mods: dict[str, Any]) -> None:
+    """方案 A：多路径探测只算「不同路径且失败」（去掉 200），目录/路径爆破整条删除。
+
+    实机数据（近 6h 按源 IP 的路径扇出）：≥50 个不同路径的源有 43 个（含 200），
+    状态码收成 401/403/404 后只剩 1 个 ⇒ 200 是「正常浏览/爬虫」形态，与规则注释
+    「只看大量不同路径且失败」一致；目录/路径爆破与它同一行为双报（评审 recon.md:38）
+    且门槛过低（30 次 403/404、不限不同路径）。
+    """
+    builtin_mod = mods["builtin"]
+    names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
+    assert "内置-目录/路径爆破" not in names
+    assert "内置-目录/路径爆破" in builtin_mod.DELETED_RULES
+    rule = _by_name(builtin_mod.BUILTIN_RULES, "内置-多路径探测(漏洞挖掘)")
+    statuses = [r for r in rule["conditions"]["rules"] if r["field"] == "status_code"]
+    assert statuses and set(statuses[0]["value"]) == {401, 403, 404}
+
+
 def test_self_signed_cert_rule_has_no_dead_issuer_branch(mods: dict[str, Any]) -> None:
     """「自签或异常证书」不再引用 `cert_issuer`：该字段实测 0 条非空，是死路径（2026-10）。
 
