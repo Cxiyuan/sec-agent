@@ -20,6 +20,7 @@ from typing import Any
 
 from app.config import settings
 from app.ingestion import conn_states, log_types, relay_nodes
+from app.ingestion.session_cookie import session_id_from_cookie
 from app.runtime_config import get as runtime_get
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
@@ -568,6 +569,10 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
         doc.get("cookie") or _header_value(req_headers, "cookie"),
         settings.http_cookie_max_chars,
     )
+    # 会话 id 从**未截断**的 Cookie 头里取：长 Cookie 头会把会话 cookie 截掉 ⇒ 会话判据漏报。
+    # 只认名单内的名字（精确匹配）且值非空 —— 见 ingestion/session_cookie.py 的说明。
+    raw_cookie = str(doc.get("cookie") or _header_value(req_headers, "cookie"))
+    session_id = session_id_from_cookie(raw_cookie, settings.session_cookie_names)
     cert_issuer, cert_self_signed = _cert_info(doc)
     resp_mime = _to_str_list(doc.get("resp_mime_types") or doc.get("response_content_type"))
     return {
@@ -584,6 +589,7 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
         "real_client_ip": _real_client_ip(doc, peer_ip),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
         "cookie": cookie,
+        "session_id": session_id,
         "content_type": content_type[:128],
         "resp_mime": resp_mime[:128],
         "ja3": str(doc.get("ja3") or "")[:64],

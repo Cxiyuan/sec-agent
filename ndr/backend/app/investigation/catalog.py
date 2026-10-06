@@ -84,6 +84,14 @@ FIELDS: dict[str, dict[str, Any]] = {
             "采集类异常（镜像口丢包/非对称路由/offload）会被归一化标成 capture_anomaly"
         ),
     },
+    "session_id": {
+        "path": "session_id",
+        "kind": "keyword",
+        "desc": (
+            "会话 id（按 ST_SESSION_COOKIE_NAMES 从 Cookie 头精确取名、取第一个非空值）；"
+            "「会话跨IP复用」的判据用它，不用整条 Cookie 头"
+        ),
+    },
     "hostname": {
         "path": "hostname",
         "kind": "keyword",

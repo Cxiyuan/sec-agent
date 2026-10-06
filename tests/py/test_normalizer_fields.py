@@ -12,6 +12,7 @@ import samples
 from app.config import settings
 from app.ingestion import log_types
 from app.ingestion.normalizer import normalize_wazuh, normalize_zeek
+from app.ingestion.session_cookie import session_id_from_cookie
 
 
 @pytest.fixture(autouse=True)
@@ -276,6 +277,44 @@ def test_wazuh_compliance_title_is_not_port_scan() -> None:
     }
     entry = normalize_wazuh(doc)
     assert entry is not None and entry.event_type == "port_scan"
+
+
+@pytest.mark.parametrize(
+    ("cookie", "want"),
+    [
+        ("JSESSIONID=abc; lang=zh-CN", "abc"),
+        ("lang=zh-CN; jsessionid=ABC123", "ABC123"),  # 名字大小写不敏感
+        ('ASP.NET_SessionId="quoted value"', "quoted value"),  # 带引号去引号
+        # 实测误报源（2026-10）：应用自己造的常量 cookie / 空值模板 / 不在名单里的名字
+        ("Path=/; Path=/", ""),
+        ("EPORTAL_COOKIE_PASSWORD=; EPORTAL_COOKIE_USERNAME=x", ""),
+        ("XSESSION=abc", ""),  # 名字必须**精确**匹配，不能子串
+        ("", ""),
+    ],
+)
+def test_session_id_from_cookie(cookie: str, want: str) -> None:
+    """会话 id 只能按名单**精确**取名且值非空 —— 否则常量 cookie 会让「会话跨IP复用」误报。"""
+    assert session_id_from_cookie(cookie, settings.session_cookie_names) == want
+
+
+def test_session_id_extracted_before_cookie_truncation() -> None:
+    """会话 id 从**未截断**的 Cookie 头里取：长 Cookie 头不能把会话 cookie 截掉（否则漏报）。"""
+    filler = "; ".join(f"k{i}=v" for i in range(settings.http_cookie_max_chars // 4))
+    doc = {
+        "@timestamp": "2026-10-02T05:00:00.000Z",
+        "log_type": "http",
+        "source_system": "zeek",
+        "id.orig_h": "203.0.113.9",
+        "id.resp_h": "192.0.2.77",
+        "id.resp_p": 80,
+        "method": "GET",
+        "uri": "/x",
+        "req_headers": f"COOKIE: {filler}; JSESSIONID=sess123\n",
+    }
+    entry = normalize_zeek(doc)
+    assert entry is not None
+    assert len(entry.cookie) <= settings.http_cookie_max_chars  # 字段本身照旧截断
+    assert entry.session_id == "sess123"  # 但会话 id 从原始头里取到了
 
 
 def test_wazuh_syscollector_archive_keeps_process_as_text() -> None:

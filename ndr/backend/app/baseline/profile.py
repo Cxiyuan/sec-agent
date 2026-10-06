@@ -27,6 +27,7 @@ from app.baseline.stats import like_pattern
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import EntityProfile
+from app.ingestion.session_cookie import session_id_from_cookie as _shared_session_id
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -190,17 +191,12 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def session_id_from_cookie(cookie: str) -> str:
-    """从 Cookie 串中按配置的会话 cookie 名提取会话 id 值。"""
-    if not cookie:
-        return ""
-    names = {n.lower() for n in _csv(settings.session_cookie_names)}
-    for part in cookie.split(";"):
-        if "=" not in part:
-            continue
-        name, _, value = part.partition("=")
-        if name.strip().lower() in names and value.strip():
-            return value.strip().strip('"')
-    return ""
+    """从 Cookie 串中按配置的会话 cookie 名提取会话 id 值。
+
+    实现在 `ingestion/session_cookie.py`（**唯一事实来源**）：同一份逻辑也被内置
+    「会话跨IP复用」的判据用，避免「会话实体」与「会话劫持判据」两处实现漂移。
+    """
+    return _shared_session_id(cookie, settings.session_cookie_names)
 
 
 def session_entity(cookie: str) -> tuple[str, str]:

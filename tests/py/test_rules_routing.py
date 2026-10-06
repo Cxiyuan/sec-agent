@@ -293,6 +293,50 @@ def _builtin(name: str) -> dict:
     return next(r for r in builtin.BUILTIN_RULES if r["name"] == name)
 
 
+def _http_events(cookie: str, ips: list[str]) -> list[UnifiedLog]:
+    """造一组带 Cookie 头的 http 事件（走真归一化：session_id 也从这里算出来）。"""
+    out: list[UnifiedLog] = []
+    for i, ip in enumerate(ips):
+        doc = samples.envelope(
+            {
+                **samples.HTTP,
+                "id.orig_h": ip,
+                "id.orig_p": 40000 + i,
+                "cookie": cookie,
+                "uid": f"H{i}",
+            },
+            "http",
+            "/logs/http.log",
+        )
+        entry = normalize_zeek(doc)
+        assert entry is not None
+        out.append(entry)
+    return out
+
+
+def _fires(rule: dict, events: list[UnifiedLog]) -> bool:
+    """按 runner 的口径判一轮：先过条件，再进频率窗口（与逐条规则的评审一致）。"""
+    window = _FreqWindow(_FakeRedis(), 300, 300)
+    cond = rule["conditions"]
+    return any(window.observe(rule, e) for e in events if evaluate_conditions(cond, e))
+
+
+@needs_freq
+def test_session_rule_keys_on_session_id_not_whole_cookie() -> None:
+    """「会话跨IP复用」按 session_id 判：真会话跨 IP 会中，常量 cookie 跨 IP 不再误报。
+
+    2026-10 实测：整条 Cookie 头当键时，`Path=/`（应用造的常量 cookie）跨 2 个源 IP、
+    `EPORTAL_COOKIE_PASSWORD=` 空值模板跨 164 个源 IP ⇒ 24h 337 条 critical 摘要零真命中。
+    """
+    rule = _builtin("内置-会话跨IP复用")
+    # 同一个真会话 cookie 从两个源 IP 来 → 触发
+    assert _fires(rule, _http_events("JSESSIONID=abc", ["172.16.199.1", "172.16.199.2"])) is True
+    # 常量 cookie 跨 100 个源 IP → 不触发（session_id 为空 ⇒ 条件就不成立）
+    many = [f"172.16.199.{i}" for i in range(1, 101)]
+    assert _fires(rule, _http_events("Path=/; Path=/", many)) is False
+    assert _fires(rule, _http_events("EPORTAL_COOKIE_PASSWORD=; X=1", many)) is False
+
+
 @needs_freq
 def test_fast_port_scan_fires_on_fanout_only() -> None:
     """扇出才告警：12 个不同目的端口会中；同样 3 个端口重试 300 次不会中。

@@ -297,8 +297,13 @@ class Settings(BaseSettings):
         r"html?|jsp|asp|aspx|php|do|action|cgi)(\?|$|#)"
     )
     profile_path_min_known: int = 3  # 至少已知这么多条接口路径才判「新路径」
+    # 会话 cookie 名（逗号分隔，**精确**匹配）：会话实体与「会话跨IP复用」都按它识别会话 id
+    # （见 ingestion/session_cookie.py）。默认是各 Web 框架/常见产品的会话 cookie 名；
+    # 自家业务 App 的会话 cookie 名用环境变量补（加进来就会参与 critical 级判据）。
+    # 2026-10 实机补充：`HRSSESID`（H3C 系设备的会话 cookie）—— 本环境两个业务站的会话标识。
+    # **不要**把 `EPORTAL_COOKIE_PASSWORD` 这类**存密码**的 cookie 加进来（等于把密码当会话键）。
     session_cookie_names: str = (
-        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid"
+        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid,HRSSESID"
     )
 
     # 采集侧归一化服务（Filebeat → Redis → 归一化 → Logstash → ES）

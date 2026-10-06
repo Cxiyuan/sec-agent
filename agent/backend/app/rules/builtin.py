@@ -68,6 +68,10 @@ RETIRED_RULES: dict[str, str] = {
 #: 规则本身没有任何有效命中路径，留着只会是一个“看起来在防扫描”的死条。
 DELETED_RULES: dict[str, str] = {
     "内置-端口扫描": "notice 型死规则（本部署不产生 port_scan；唯一来源是已被修正的 Wazuh 词匹配误判）",
+    # 2026-10 用户口径：明文凭证传输是「配置事实」而不是攻击事件 —— 实测 2,848 条/12h 全是
+    # 校园 App 的正常登录（status=200、579/644 个真实客户端），逐次告警只占额度。真要治理，
+    # 应作为「站点该上 HTTPS」的配置类问题一次性处理，而不是当事件告警。
+    "内置-明文凭证传输(HTTP登录)": "按用户口径删除：明文凭证属配置事实而非攻击事件（校园 App 正常登录逐次报）",
 }
 
 BUILTIN_RULES: list[dict] = [
@@ -1077,35 +1081,27 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-会话跨IP复用",
-        "description": "同一会话 cookie 出现在 ≥2 个不同源 IP（疑似会话劫持/凭证盗用）",
+        "description": (
+            "同一会话 id（按 ST_SESSION_COOKIE_NAMES 从 Cookie 头识别）出现在 ≥2 个不同源 IP"
+            "（疑似会话劫持/凭证盗用）"
+        ),
         "source": "builtin",
         "priority": 8,
         "severity": "critical",
+        # 为什么键从 `cookie` 换成 `session_id`（2026-10 实机数据）：整条 Cookie 头里含有
+        # **跨用户恒定**的值 —— `Path=/`（应用用 document.cookie 造出的常量 cookie）跨 2 个源 IP、
+        # `EPORTAL_COOKIE_PASSWORD=` 空值模板跨 164 个源 IP ⇒ 24h 337 条 critical 摘要零真命中。
+        # session_id 是「名字精确匹配 + 值非空」的会话值，这类常量 cookie 天然被排除。
         "conditions": {
             "mode": "count",
-            "key": ["cookie"],
+            "key": ["session_id"],
             "min_count": 2,
             "distinct": "src_ip",
             "min_distinct": 2,
             "logic": "and",
             "rules": [
-                {"field": "cookie", "op": "exists"},
+                {"field": "session_id", "op": "exists"},
                 {"field": "log_type", "op": "eq", "value": "http"},
-            ],
-        },
-    },
-    {
-        "name": "内置-明文凭证传输(HTTP登录)",
-        "description": "HTTP（非 TLS）端口上出现登录/凭证提交",
-        "source": "builtin",
-        "priority": 15,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "event_type", "op": "eq", "value": "http_login"},
-                {"field": "dst_port", "op": "in", "value": [80, 8000, 8080, 8081, 8888]},
-                {"field": "method", "op": "eq", "value": "POST"},
             ],
         },
     },

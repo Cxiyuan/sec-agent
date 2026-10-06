@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     http_resp_body_fields: str = "resp_body,response_body,http.response.body,http.response_body"
     http_resp_body_max_chars: int = 65536
     http_cookie_max_chars: int = 200
+    # 会话 cookie 名（逗号分隔，**精确**匹配）：归一化用它从 Cookie 头里取 `session_id`
+    # （见 ingestion/session_cookie.py；NDR 侧「会话跨IP复用」判据吃这个字段）。
+    # 两侧必须一致：同一份日志在两条栈上必须得出同一个 session_id。
+    # **不要**把 `EPORTAL_COOKIE_PASSWORD` 这类**存密码**的 cookie 加进来。
+    session_cookie_names: str = (
+        "JSESSIONID,PHPSESSID,SESSION,ASP.NET_SessionId,connect.sid,token,sid,HRSSESID"
+    )
     # Zeek 日志流分类（契约，两侧一致）：event=入库且进检测/画像；ops=只入库（当证据）。
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
     zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"

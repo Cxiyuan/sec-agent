@@ -70,6 +70,10 @@ class UnifiedLog(BaseModel):
     cookie: str = (
         ""  # 截断；请求头值按既定口径原样保留（已接受的风险，见 docs/ndr-collect-plan.md）
     )
+    # 会话 id：按 `ST_SESSION_COOKIE_NAMES` 从**未截断**的 Cookie 头里精确取名、取第一个非空值
+    # （见 ingestion/session_cookie.py）。「会话跨IP复用」用它当键 —— 用整条 Cookie 头当键会把
+    # 跨用户恒定的 cookie（`Path=/` 这类应用造的常量、空值模板）也算成同一会话，critical 级误报。
+    session_id: str = ""
     auth_scheme: str = ""  # basic / bearer / jwt（只留方案名，凭证本体不在此字段）
     content_type: str = ""
     user_agent: str = ""

@@ -232,6 +232,26 @@ def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
     names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
     assert "内置-端口扫描" not in names
     assert "内置-端口扫描" in builtin_mod.DELETED_RULES
+    # 明文凭证传输（2026-10 用户口径）同样删除：校园 App 正常登录逐次报，属配置事实不是攻击事件
+    assert "内置-明文凭证传输(HTTP登录)" not in names
+    assert "内置-明文凭证传输(HTTP登录)" in builtin_mod.DELETED_RULES
+
+
+def test_session_rule_keys_on_session_id(mods: dict[str, Any]) -> None:
+    """「会话跨IP复用」必须按 `session_id` 判（而不是整条 Cookie 头）。
+
+    2026-10 实测：用整条 Cookie 头当键时，跨用户恒定的值（`Path=/` 应用造的常量 cookie、
+    `EPORTAL_COOKIE_PASSWORD=` 空值模板）会让它产出 337 条 critical 摘要而零真命中。
+    """
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-会话跨IP复用")
+    cond = rule["conditions"]
+    assert cond["mode"] == "count"
+    assert cond["key"] == ["session_id"]
+    assert cond["distinct"] == "src_ip" and cond["min_distinct"] == 2
+    assert cond["rules"] == [
+        {"field": "session_id", "op": "exists"},
+        {"field": "log_type", "op": "eq", "value": "http"},
+    ]
 
 
 def test_delete_builtin_rules_is_idempotent() -> None:
@@ -250,7 +270,9 @@ def test_delete_builtin_rules_is_idempotent() -> None:
             return SimpleNamespace(scalar_one_or_none=lambda: self.row)
 
         def delete(self, row: Any) -> None:
+            # 模拟真实库：删过之后按名就查不到了（DELETED_RULES 可能有多条，不能重复删同一行）
             self.deleted.append(row)
+            self.row = None
 
         def flush(self) -> None:
             return None

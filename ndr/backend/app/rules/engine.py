@@ -274,6 +274,9 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "req_headers": ("http",),
     "resp_headers": ("http",),
     "real_client_ip": ("http",),
+    # 会话 id（ingestion/session_cookie.py 按名单从 Cookie 头取）：
+    # 「会话跨IP复用」是 count 规则（不走路由），登记在这里是为了口径清晰 + 将来逐条规则可用。
+    "session_id": ("http",),
     # dns：`query` 在 dns.log 里是域名，在 http / Wazuh 里是完整 URL，
     # 所以只引用 query 的规则（开放重定向、URL 里的 token）要一并挂 http / wazuh。
     "query": ("dns", "http", "wazuh"),
