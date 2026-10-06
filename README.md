@@ -425,7 +425,7 @@ NDR 线路（采集与检测）：
 | `ST_PROFILE_PATH_INCLUDE_REGEX` / `_EXCLUDE_REGEX` | 空 / 静态资源与页面后缀 | **接口路径过滤**：`paths` 只记不在 exclude 里、且（若填了 include）命中 include 的路径。**默认 include 留空**：实测真实接口不一定会带 `/api/`（如 `/seeyon/rest/…`），按字面只留 `/api/` 会把真实接口全滤掉；exclude 把 js/css/图片/字体/页面排掉，避免它们占满 30 条上限 |
 | `ST_PROFILE_PATH_MIN_KNOWN` | 3 | 已知接口路径 ≥ 这么多条才判「新接口路径」（刚建的画像第一条不算异常） |
 | `ST_PROFILE_RETENTION_DAYS` | 180 | 画像保留期（到期清理） |
-| `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,… | 会话 cookie 名单（命中才按会话建画像；**先哈希再落库**） |
+| `ST_SESSION_COOKIE_NAMES` | JSESSIONID,PHPSESSID,…,HRSSESID | 会话 cookie 名单（**精确**匹配）：既用于「会话实体」画像（先哈希再落库），也是「会话跨IP复用」的判据键（`session_id` 从这里取）。自家业务 App 的会话 cookie 名用这个环境变量补；**不要**放存密码的 cookie（如 `EPORTAL_COOKIE_PASSWORD`） |
 | `ST_EXCLUSION_CACHE_SECONDS` | 30 | 排除过滤配置缓存（跨进程生效延迟上限） |
 | `ST_INGEST_FILTER_CACHE_SECONDS` | 30 | 降噪过滤配置缓存（同上） |
 | `ST_INGEST_FILTER_DRY_RUN_HOURS` | 24 | 试运行默认回看时长（界面可改） |

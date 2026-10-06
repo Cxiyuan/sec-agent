@@ -16,7 +16,7 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | 文件 | 覆盖 |
 | --- | --- |
 | `test_log_types.py` | 类型规范化/分类/`is_detectable` 判定矩阵（含 Wazuh 不受闸门约束） |
-| `test_normalizer_fields.py` | 类型判定、`raw.log_type`/`raw.source_file` 自解释字段、XFF→`real_client_ip`、响应体截断 |
+| `test_normalizer_fields.py` | 类型判定、`raw.log_type`/`raw.source_file` 自解释字段、XFF→`real_client_ip`、响应体截断 |；**会话 id 提取**（按名单精确匹配、大小写不敏感、去引号；`Path=/` 与空值模板被排除；长 Cookie 头从**未截断**值里取 ⇒ 不因截断漏报）
 | `test_xff_respbody.py` | 代理头各种形态（proxied/RFC7239/裸头/IPv6+端口/非法值）、规则命中、画像取真实客户端 |
 | `test_stack_consistency.py` | **两侧一致性**：子进程分别加载两侧，逐字段比对（只改一侧会在这里炸） |
 | `test_filebeat_yml.py` | 采集配置形状：filestream 路径、排除名单、文件名→类型 JS、`queue.disk`、Redis 输出 |
