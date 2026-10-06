@@ -89,6 +89,7 @@ OTHER_EVENT_TYPES = {
     "wazuh_web_attack",
     "wazuh_malware",
     "wazuh_system_change",
+    "wazuh_system_error",
     "wazuh_vulnerability",
     "wazuh_network_alert",
     "wazuh_policy_violation",

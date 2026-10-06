@@ -939,8 +939,16 @@ def _wazuh_event_type(level: Any, rule_groups: str, description: Any) -> str:
         return "brute_force"
     if any(k in groups for k in ("malware", "ransomware", "virus", "rootcheck", "trojan")):
         return "wazuh_malware"
-    if any(k in groups for k in ("syscheck", "ossec", "sysmon", "windows")):
+    # 系统变更只认 FIM（syscheck）与 Wazuh 自身（ossec）。2026-10 实机数据：rule_groups=
+    # windows,system_error 占近 6h 1,981 条 Wazuh 告警里的 1,573 条（79%），其实是「Windows
+    # 错误事件」；原实现把任何含 windows/sysmon 的组都归成 wazuh_system_change，于是修好范围
+    # 闸门后「内置-主机文件完整性变更」（event_type == wazuh_system_change）会把这些错误事件
+    # 误报成文件完整性变更。收紧：windows 系（含 windows_application）错误事件单列
+    # wazuh_system_error；高等级仍由「内置-主机高危告警」按 severity 接住。
+    if any(k in groups for k in ("syscheck", "ossec")):
         return "wazuh_system_change"
+    if any(k in groups for k in ("windows", "sysmon", "system_error")):
+        return "wazuh_system_error"
     if any(k in groups for k in ("vulnerability", "cve")):
         return "wazuh_vulnerability"
     if any(k in groups for k in ("firewall", "ids", "ips")):

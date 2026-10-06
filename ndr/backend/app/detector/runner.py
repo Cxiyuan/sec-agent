@@ -131,7 +131,15 @@ def _to_entry(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
 
 
 def _entry_in_scope(entry: UnifiedLog, nets: list[Any]) -> bool:
-    """按归一化后的 src_ip / dst_ip 判网段：任一落在网段内即算监控范围内。"""
+    """按归一化后的 src_ip / dst_ip 判网段：任一落在网段内即算监控范围内。
+
+    例外：Wazuh（主机监控）事件不受范围闸门约束 —— 主机监控只收本单位 agent，用 IP 判范围
+    对主机侧没有意义（近 6h 1,981 条 Wazuh 告警里带 src_ip 的 0 条，全在这道闸门被丢，
+    5 条主机规则 24h 零摘要）。这与日志类型闸门的口径一致：log_types.classify_entry 对
+    Wazuh 一律按事件类处理、不套 Zeek 的运维类闸门（见 app/ingestion/log_types.py）。
+    """
+    if entry.source_system == "wazuh":
+        return True
     return in_scope(entry.src_ip, nets) or in_scope(entry.dst_ip, nets)
 
 

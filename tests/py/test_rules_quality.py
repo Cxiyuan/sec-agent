@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -329,6 +330,44 @@ def test_sshd_group_no_longer_means_brute_force(mods: dict[str, Any]) -> None:
     fn = mods["normalizer"]._wazuh_event_type
     assert fn(10, "sshd,authentication_success", "Accepted password for root") != "brute_force"
     assert fn(10, "authentication_failed,sshd", "Failed password for root") == "brute_force"
+
+
+def test_windows_error_event_not_labeled_system_change(mods: dict[str, Any]) -> None:
+    """Windows 错误事件不许归成 wazuh_system_change。
+
+    2026-10 实机：``rule_groups=windows,system_error`` 占近 6h 1,981 条 Wazuh 告警里的
+    1,573 条（79%），是「Windows 错误事件」；原实现把任何含 windows/sysmon 的组都归成
+    wazuh_system_change，修好范围闸门后会被「内置-主机文件完整性变更」误报。
+    """
+    fn = mods["normalizer"]._wazuh_event_type
+    for groups in ("windows,system_error", "windows_application", "system_error", "windows"):
+        assert fn(7, groups, "Windows 错误") != "wazuh_system_change", groups
+    # 真系统变更（FIM / Wazuh 自身）仍归 wazuh_system_change
+    assert fn(7, "ossec,syscheck", "Integrity checksum changed") == "wazuh_system_change"
+    assert fn(7, "syscheck", "File added to the system") == "wazuh_system_change"
+
+
+def test_file_integrity_rule_ignores_windows_errors(mods: dict[str, Any]) -> None:
+    """端到端：windows,system_error 事件（medium）不得命中「内置-主机文件完整性变更」。"""
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-主机文件完整性变更")
+    event_type = mods["normalizer"]._wazuh_event_type(7, "windows,system_error", "Windows 错误")
+    windows_error = mods["schemas"].UnifiedLog(
+        source_system="wazuh",
+        ts=datetime.now(UTC),
+        log_type="wazuh",
+        event_type=event_type,
+        severity="medium",
+    )
+    assert mods["engine"].match_rule(rule, windows_error) is False
+    # 真 syscheck 变更（medium）仍命中
+    real_change = mods["schemas"].UnifiedLog(
+        source_system="wazuh",
+        ts=datetime.now(UTC),
+        log_type="wazuh",
+        event_type="wazuh_system_change",
+        severity="medium",
+    )
+    assert mods["engine"].match_rule(rule, real_change) is True
 
 
 def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
