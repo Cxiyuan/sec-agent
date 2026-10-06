@@ -187,6 +187,67 @@ def test_capture_weird_maps_to_capture_anomaly(mods: dict[str, Any]) -> None:
     assert _entry(mods, samples.CONN, "conn").weird_name == ""
 
 
+def test_fast_port_scan_rule_is_fanout_gated(mods: dict[str, Any]) -> None:
+    """「内置-快速端口扫描」必须按**扇出**判定，且只认未建立的失败尝试。
+
+    2026-10 实机实测：原「内置-扫描尝试连接」（单次 S0 就告警）误报率 ≈ 100% —— 近 15 分钟
+    9,165 条 S0 / 92 个源里，不同目的端口最多的源只有 **3 个**。改成扇出后：≥10 次失败
+    且≥8 个不同目的端口才算扫描（实测正常重试的端口扇出 ≤3，有 ~2.6× 余量）。
+    """
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-快速端口扫描")
+    cond = rule["conditions"]
+    assert cond["mode"] == "count"
+    assert cond["key"] == ["src_ip"]
+    assert cond["window"] == 300
+    assert cond["min_count"] >= 10
+    assert cond["distinct"] == "dst_port"
+    assert cond["min_distinct"] >= 8
+    assert rule["severity"] == "medium"
+    fields = {r["field"]: r for r in cond["rules"]}
+    assert fields["log_type"]["value"] == "conn"
+    # 同时认「无回应」与「RST 回应」；不含已建立后的 RST（RSTO/RSTR 是正常业务断连）
+    assert set(fields["event_type"]["value"]) == {"scan_attempt", "rejected_connection"}
+
+
+def test_retired_scan_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
+    """退役的「内置-扫描尝试连接」不能再回到规则表，且必须在 RETIRED_RULES 里备案。"""
+    names = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
+    assert "内置-扫描尝试连接" not in names
+    retired = mods["builtin"].RETIRED_RULES
+    assert "内置-扫描尝试连接" in retired
+    assert "已停用" in retired["内置-扫描尝试连接"]
+    # 接手它的扇出型规则必须都在
+    for name in ("内置-快速端口扫描", "内置-高频扫描连接", "内置-内网慢速服务枚举"):
+        assert name in names, name
+
+
+def test_retire_builtin_rules_is_idempotent() -> None:
+    """退役步骤幂等：首跑置停用 + 记说明；再跑不动它（不把用户后来打开的开关按回去）。"""
+    import importlib
+    from types import SimpleNamespace
+
+    main_mod = importlib.import_module("app.main")
+
+    class _Session:
+        def __init__(self, row: Any) -> None:
+            self.row = row
+            self.flushed = False
+
+        def execute(self, _stmt: Any) -> Any:
+            return SimpleNamespace(scalar_one_or_none=lambda: self.row)
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    row = SimpleNamespace(name="内置-扫描尝试连接", enabled=True, description="原描述")
+    main_mod._retire_builtin_rules(_Session(row))
+    assert row.enabled is False
+    assert "已停用" in row.description and "原描述" in row.description
+    before = row.description
+    main_mod._retire_builtin_rules(_Session(row))
+    assert row.description == before
+
+
 def test_cert_self_signed_from_nested_x509(mods: dict[str, Any]) -> None:
     """x509 的签发者嵌套在 certificate.issuer 下；subject == issuer 判自签。"""
     doc = samples.envelope(samples.X509, "x509", "/logs/x509.log")

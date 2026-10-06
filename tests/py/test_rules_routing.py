@@ -14,15 +14,30 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 import samples
 from app.config import settings as real_settings
 from app.ingestion.normalizer import normalize_zeek
 from app.rules import builtin
-from app.rules.engine import build_rule_index, match_rule
+from app.rules.engine import build_rule_index, evaluate_conditions, match_rule
 from app.schemas import UnifiedLog
+
+
+# 实时频次窗口只在 NDR 侧（agent 侧没有 detector：它分析摘要、不逐条看事件）。
+# 惰性取模块（而不是 try/except 里 import 再置 None）—— 后者会让类型检查报「可空对象不可调用」。
+def _load_freq_window() -> Any:
+    try:
+        return importlib.import_module("app.detector.frequency").FreqWindow
+    except ImportError:  # pragma: no cover - agent 栈
+        return None
+
+
+_FreqWindow = _load_freq_window()
+needs_freq = pytest.mark.skipif(_FreqWindow is None, reason="频次规则只在 NDR 侧")
 
 
 def _rule(field: str, *, value: str = "x", op: str = "eq") -> dict:
@@ -194,3 +209,124 @@ def test_baseline_observe_threshold_uses_window_not_cumulative(monkeypatch) -> N
     # 但只在攒够 1000 条时落了一次库，而不是越过阈值后每条都落（那会是 101 次）。
     assert len(flushes) == 1
     assert eng._obs_since_flush == 200
+
+
+# ---------- 频次规则：扇出判定（2026-10 扫描规则改造）----------
+
+
+class _FakeRedis:
+    """够 `FreqWindow` 用的小号 Redis：ZSET（zadd/zremrangebyscore/zcard/expire）+ SET NX。"""
+
+    def __init__(self) -> None:
+        self.zsets: dict[str, dict[str, float]] = {}
+        self.flags: dict[str, str] = {}
+
+    def pipeline(self) -> Any:
+        return _FakePipe(self)
+
+    def zcard(self, key: str) -> int:
+        return len(self.zsets.get(key) or {})
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> Any:
+        # 频率窗口对 distinct 成员是直接 zadd 的（不走 pipeline），所以这里也要有。
+        self.zsets.setdefault(key, {}).update(mapping)
+        return len(mapping)
+
+    def set(self, key: str, value: str, nx: bool = False, ex: int | None = None) -> Any:
+        if nx and key in self.flags:
+            return None
+        self.flags[key] = value
+        return True
+
+
+class _FakePipe:
+    def __init__(self, redis: _FakeRedis) -> None:
+        self.r = redis
+
+    def zremrangebyscore(self, key: str, _min: Any, max_score: float) -> Any:
+        for member, score in list((self.r.zsets.get(key) or {}).items()):
+            if score <= max_score:
+                self.r.zsets[key].pop(member, None)
+        return self
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> Any:
+        self.r.zsets.setdefault(key, {}).update(mapping)
+        return self
+
+    def expire(self, *_a: Any, **_k: Any) -> Any:
+        return self
+
+    def execute(self) -> list[Any]:
+        return []
+
+
+def _conn_events(
+    ports: list[int],
+    *,
+    conn_state: str = "S0",
+    dst: str = "172.16.196.111",
+    src: str = "172.16.199.50",
+) -> list[UnifiedLog]:
+    """造一组 conn 事件（走真归一化，连 event_type/虚拟字段一起验）。"""
+    out: list[UnifiedLog] = []
+    for i, port in enumerate(ports):
+        doc = samples.envelope(
+            {
+                **samples.CONN,
+                "id.orig_h": src,
+                "id.orig_p": 40000 + i,
+                "id.resp_h": dst,
+                "id.resp_p": port,
+                "conn_state": conn_state,
+                "uid": f"C{i}",
+            },
+            "conn",
+            "/logs/conn.log",
+        )
+        entry = normalize_zeek(doc)
+        assert entry is not None
+        out.append(entry)
+    return out
+
+
+def _builtin(name: str) -> dict:
+    return next(r for r in builtin.BUILTIN_RULES if r["name"] == name)
+
+
+@needs_freq
+def test_fast_port_scan_fires_on_fanout_only() -> None:
+    """扇出才告警：12 个不同目的端口会中；同样 3 个端口重试 300 次不会中。
+
+    依据（2026-10 实测）：被退役的「扫描尝试连接」误报 ≈ 100% —— 近 15 分钟 92 个源里
+    不同目的端口最多的只有 **3 个**；所以 ≥8 个不同端口这个门槛有 ~2.6× 余量。
+    """
+    rule = _builtin("内置-快速端口扫描")
+    window = _FreqWindow(_FakeRedis(), 300, 300)
+    fired = [window.observe(rule, entry) for entry in _conn_events(list(range(1, 13)))]
+    assert any(fired), "12 个不同目的端口应当触发"
+
+    retry = _FreqWindow(_FakeRedis(), 300, 300)
+    hits = [retry.observe(rule, entry) for entry in _conn_events([80, 443, 8000] * 100)]
+    assert not any(hits), "固定 3 个端口反复重试不该触发"
+
+
+@needs_freq
+def test_fast_port_scan_counts_rejected_not_established_resets() -> None:
+    """失败判据 = 无回应（S0）+ RST 回应（REJ/RSTOS0/RSTRH）；**不含**已建立后的 RST。
+
+    `RSTO`/`RSTR` 是「握手已建立、随后一方 RST 断开」= 正常业务断连（见 conn_states 表），
+    把它们算进来会立刻引入新一批误报。
+    """
+    rule = _builtin("内置-快速端口扫描")
+    cond = rule["conditions"]
+    assert evaluate_conditions(cond, _conn_events([443])[0]) is True
+    assert evaluate_conditions(cond, _conn_events([443], conn_state="REJ")[0]) is True
+    assert evaluate_conditions(cond, _conn_events([443], conn_state="SF")[0]) is False
+    assert evaluate_conditions(cond, _conn_events([443], conn_state="RSTO")[0]) is False
+
+    # 收到 RST 的失败尝试同样计入扇出（补上「扫活主机关闭端口」的检出）
+    window = _FreqWindow(_FakeRedis(), 300, 300)
+    fired = [
+        window.observe(rule, entry) for entry in _conn_events(list(range(1, 13)), conn_state="REJ")
+    ]
+    assert any(fired)

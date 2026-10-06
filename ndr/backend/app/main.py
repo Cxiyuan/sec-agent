@@ -17,7 +17,7 @@ from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import AssetStat, Rule, SystemConfig, User
-from app.rules.builtin import BUILTIN_RULES
+from app.rules.builtin import BUILTIN_RULES, RETIRED_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,28 @@ _RENAMED_BUILTINS: dict[str, str] = {
     "内置-Wazuh MITRE映射命中": "内置-主机MITRE映射命中",
     "内置-Wazuh策略违规": "内置-主机策略违规",
 }
+
+
+def _retire_builtin_rules(db: Any) -> None:
+    """把已**退役**的内置规则置为停用（幂等，每次启动都跑）。
+
+    为什么要专门走一步（2026-10）：内置规则是**按名 upsert** 的，名字从 `BUILTIN_RULES`
+    里拿掉只会“不再更新它”，库里那行还在、还是启用的 → 会继续出摘要。而启用状态又故意
+    不跟随种子（否则用户手动的启用/停用会被盖掉，见 `_seed` 里对 `_CONFIG_DRIVEN_RULES`
+    的例外）—— 所以退役只能显式置停用。
+
+    **不删行**：① 运维在规则页看得到「它为什么没了」；② 随时能手动启用回去（回滚一条开关）。
+    已经停用的不动（避免把用户后来又打开的开关按回去）；用户改过条件的也照样停 —— 名字退役
+    是产品层面的语义变更，写在说明里（`RETIRED_RULES`）供人核对。
+    """
+    for name, reason in RETIRED_RULES.items():
+        row = db.execute(select(Rule).where(Rule.name == name)).scalar_one_or_none()
+        if row is None or not row.enabled:
+            continue
+        row.enabled = False
+        row.description = f"{reason}（原描述：{row.description}）"[:500]
+        logger.info("内置规则已退役并停用：%s", name)
+    db.flush()
 
 
 def _rename_builtin_rules(db: Any) -> None:
@@ -224,6 +246,7 @@ def _seed() -> None:
                 )
             )
         _rename_builtin_rules(db)
+        _retire_builtin_rules(db)
         for spec in BUILTIN_RULES:
             rule_spec = _dynamic_rule_spec(spec)
             exists = db.execute(

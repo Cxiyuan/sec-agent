@@ -72,9 +72,10 @@ class Settings(BaseSettings):
     # 误报治理（策略级）：判据集中在 triage_policy，全部环境无关、可后台调；两侧一致
     policy_internal_routine_skip: bool = True
     # 按名跳过（名字必须与 app/rules/builtin.py 的 `Rule.name` 逐字一致，写错会静默无效）。
-    policy_skip_rules: list[str] = [
-        "内置-扫描尝试连接"
-    ]  # 只能放 severity < policy_internal_routine_min_severity 的规则
+    # 只能放 severity < policy_internal_routine_min_severity 的规则。
+    # 2026-10 默认清空：原来放的「内置-扫描尝试连接」已退役（单次失败尝试不再告警 —— 实测
+    # 误报率≈100%，改由扇出型规则「内置-快速端口扫描/高频扫描连接/慢速服务枚举/慢速横向」判定）。
+    policy_skip_rules: list[str] = []
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
     policy_internal_routine_require_failed: bool = True

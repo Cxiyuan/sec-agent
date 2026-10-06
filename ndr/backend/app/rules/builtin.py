@@ -40,6 +40,25 @@ _WHITELIST_PROBE = _WHITELIST_HEALTH + [
     },
 ]
 
+#: 已**退役**的内置规则：名字从 `BUILTIN_RULES` 里拿掉了，但库里那行要保留并置停用。
+#:
+#: 为什么不删行：① 运维在规则页能看到「它为什么没了」；② 随时可以手动启用回去（回滚一条开关）。
+#: 为什么退役「内置-扫描尝试连接」（2026-10 实机实测）：它的判据只有 `event_type=scan_attempt`
+#: （conn_state S0 = 只发 SYN 无回应），**没有任何规模要求** → 一次失败 SYN 就告警。实测近 15 分钟
+#: 9,165 条 S0 / 92 个源，其中不同目的端口最多的源只有 **3 个**（全是「服务没起/防火墙静默丢」
+#: 的固定端口重试与「443→Google 0 回应」的出站被丢）→ 误报率 ≈ 100%，且吃掉 66~71 条摘要/5 分钟
+#: （全部摘要的 55~79%），还会把频率规则饿死（见 detector/runner.py 的那段注释）。
+#: 覆盖面由已有的扇出型规则接手：`内置-高频扫描连接`（30 分钟 ≥30 次且 ≥8 个不同端口）、
+#: `内置-内网慢速服务枚举`（6h 内同源同目的 ≥25 个不同端口）、`内置-内网慢速横向`
+#: （6h 内 ≥10 个不同内网目的）；新增的 `内置-快速端口扫描` 补齐「窄端口扫描（8~29 个端口）」
+#: 这最后一个口子。
+RETIRED_RULES: dict[str, str] = {
+    "内置-扫描尝试连接": (
+        "已停用：单次失败连接不再告警（实测误报率≈100%）。改由「内置-快速端口扫描」"
+        "「内置-高频扫描连接」「内置-内网慢速服务枚举」「内置-内网慢速横向」按扇出判定。"
+    ),
+}
+
 BUILTIN_RULES: list[dict] = [
     # ================= A. 勒索 / 僵尸网络 / 挖矿 =================
     {
@@ -908,14 +927,33 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-扫描尝试连接",
-        "description": "网络采集器记录的扫描尝试（conn_state = S0：只发 SYN、没有任何回应）",
+        "name": "内置-快速端口扫描",
+        "description": (
+            "同源 5 分钟内 ≥10 次失败连接、且摸到 ≥8 个不同目的端口（窄端口扫描的典型形态）"
+        ),
         "source": "builtin",
-        "priority": 30,
-        "severity": "low",
+        "priority": 25,
+        "severity": "medium",
         "conditions": {
+            "mode": "count",
+            "key": ["src_ip"],
+            "window": 300,
+            "min_count": 10,
+            "distinct": "dst_port",
+            "min_distinct": 8,
             "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "scan_attempt"}],
+            # 为什么是这两个事件类型（2026-10 实机实测）：`scan_attempt`（S0：只发 SYN 无回应）
+            # 单靠自己既误报（防火墙静默丢/服务没起）又漏报 —— 经典 connect 扫描打「活主机的
+            # 关闭端口」会收到 RST，Zeek 记的是 `rejected_connection`（REJ/RSTOS0/RSTRH）。
+            # **不能**把已建立后的 RST（RSTO/RSTR）算进来：那是正常业务断连（conn_states 表）。
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "conn"},
+                {
+                    "field": "event_type",
+                    "op": "in",
+                    "value": ["scan_attempt", "rejected_connection"],
+                },
+            ],
         },
     },
     # ================= D. 凭证 / 会话 =================

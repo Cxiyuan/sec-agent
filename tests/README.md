@@ -20,7 +20,8 @@ Filebeat 配置键名不对、类型判定兜底成 conn……）。现在分成
 | `test_xff_respbody.py` | 代理头各种形态（proxied/RFC7239/裸头/IPv6+端口/非法值）、规则命中、画像取真实客户端 |
 | `test_stack_consistency.py` | **两侧一致性**：子进程分别加载两侧，逐字段比对（只改一侧会在这里炸） |
 | `test_filebeat_yml.py` | 采集配置形状：filestream 路径、排除名单、文件名→类型 JS、`queue.disk`、Redis 输出 |
-| `test_rules_quality.py` | **2026-10 规则评审回归**：`_FIELD_TYPES` 无僵尸键、规则字段名必须存在、正则可编译、路由全局 priority 有序、`_match` 收口语义（空条件/缺值/`ne` 空值/`exists` 布尔）、cookie 与 content-type 头解析、weird→protocol/tls_anomaly、**采集类 weird→capture_anomaly**（大小写不敏感、异常名仅 weird 日志有）、x509 自签、sshd≠爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**正常流量不得命中任何逐条规则**、Wazuh 规则路由、单规则限速+严重度优先 |
+| `test_rules_quality.py` | **2026-10 规则评审回归**：`_FIELD_TYPES` 无僵尸键、规则字段名必须存在、正则可编译、路由全局 priority 有序、`_match` 收口语义（空条件/缺值/`ne` 空值/`exists` 布尔）、cookie 与 content-type 头解析、weird→protocol/tls_anomaly、**采集类 weird→capture_anomaly**（大小写不敏感、异常名仅 weird 日志有）、x509 自签、sshd≠爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**正常流量不得命中任何逐条规则**、Wazuh 规则路由、单规则限速+严重度优先、**快速端口扫描的扇出判据**（mode/key/window/min_count/distinct/min_distinct、只认未建立）**退役规则备案**（旧名不在规则表 + 在 `RETIRED_RULES`）、**退役步骤幂等** |
+| `test_rules_routing.py` | 字段归属与求值范围：Web 字段同时挂 http/wazuh（Wazuh 也填这些字段）、`weird_name` 只挂 weird、`capture_anomaly` 不命中「协议异常」；**频次/扇出规则的行为**（内存假 Redis 驱动 `FreqWindow`）：同源 12 个不同端口→中、固定 3 个端口×300 次→**不中**、RST 回应计入而 `RSTO/RSTR`（已建立后 RST）不计入 |
 | `test_deploy_exposure.py` | 部署编排暴露面：ES/Postgres/Logstash 必须回环、Redis 默认回环、不得发布到 `0.0.0.0` |
 | `test_handled_registry.py` | 已处理登记单桶上限与**告警限频**（计数不丢、窗口过后重新告警） |
 | `test_main_retention.py` | 启动下发 ES 模板的日志口径（稳态不记 info、失败后成功记一条、连续失败只一条 warning） |

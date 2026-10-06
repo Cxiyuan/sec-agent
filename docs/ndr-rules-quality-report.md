@@ -179,3 +179,21 @@ query 的反引号分支同时过宽。
 ---
 
 _原始车道报告：`docs/review/ndr-rules/{injection-core,injection-web,recon,auth-session,network-threat,wazuh-misc,engine-semantics}.md`_
+
+---
+
+## 后续处置（2026-10，评审后第 16 条的落地）
+
+评审第 105 行「三条同行为规则打架、只认 `S0` 漏 `REJ/RSTOS0/RSTRH`」与建议第 16 条
+（合并扫描规则、补齐失败判据）已落地：
+
+- **退役 `内置-扫描尝试连接`**：实测误报率 ≈ 100%（近 15 分钟 9,165 条 S0 / 92 个源，
+  不同目的端口最多的源只有 3 个）、占全部摘要的 55~79%。名字进 `builtin.RETIRED_RULES`，
+  播种时**幂等置停用**（保留行、可一键回滚）。
+- **新增 `内置-快速端口扫描`**（5 分钟、同源 ≥10 次失败且 ≥8 个不同目的端口，
+  `event_type in [scan_attempt, rejected_connection]`）：补齐评审指出的 RST 型漏报，
+  并把「窄端口扫描（8~29 个端口）」这个既有规则打不中的区间补上。
+  `RSTO`/`RSTR`（握手已建立后的 RST）**不计入** —— 那是正常业务断连。
+- **未动**：`内置-端口扫描`（notice 型 `port_scan`）在本部署是死规则（采集面关掉了 notice）；
+  `内置-高频扫描连接`（30 分钟/30 次/8 端口）与两条 6h 慢速规则按评审建议保留，与此形成分工。
+- 详见 `docs/ndr-redesign.md` 文末「2026-10 扫描规则改「扇出判据」」一节。
