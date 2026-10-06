@@ -50,10 +50,13 @@ echo "$RENDERED" | grep -q 'community-id: yes' || { echo "community-id 没开（
 # tls_ports 里的 8000/8011 必须从 HTTP 端口里剔掉
 echo "$RENDERED" | grep -q 'HTTP_PORTS: "80,81,88,8008,8010,8048,8080,8088,8888"' \
   || { echo "HTTP 端口没有按 tls_ports 剔除" >&2; exit 1; }
-# 只发 alert：其它类型（flow/dns/http/tls/stats）不应该出现在 eve-log 的 types 里
-echo "$RENDERED" | grep -A 3 'types:' | grep -q -- '- alert:' \
+# 只发 alert：把 `types:` 整块取出来（块会以顶格的新键结束；中间可能夹注释），
+# 断言里面有 alert、且没有其它类型（flow/dns/http/tls/stats/files…）
+TYPES_BLOCK=$(printf '%s\n' "$RENDERED" | awk '/^ *types:/{f=1; next} f && /^[A-Za-z]/{f=0} f{print}')
+[ -n "$TYPES_BLOCK" ] || { echo "配置里找不到 eve-log 的 types 块" >&2; exit 1; }
+printf '%s\n' "$TYPES_BLOCK" | grep -q -- '- alert:' \
   || { echo "eve-log 的 types 里没有 alert" >&2; exit 1; }
-if echo "$RENDERED" | grep -A 6 'types:' | grep -Eq -- '- (flow|dns|http|tls|stats|files):'; then
+if printf '%s\n' "$TYPES_BLOCK" | grep -Eq -- '- (flow|dns|http|tls|stats|files):'; then
   echo "eve-log 打开了 alert 以外的类型（只应输出命中规则的事件）" >&2
   exit 1
 fi
