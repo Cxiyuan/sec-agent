@@ -143,16 +143,61 @@ export interface ZeekStatus {
   retention_days_local: number;
 }
 
-/** 签名引擎（Suricata）自报状态（见 ndr/suricata/entrypoint.sh 的 write_status） */
+/**
+ * 签名引擎（Suricata）自报状态（容器写在共享规则卷 /rules/runtime.json，后端只读转出来）。
+ * 字段可缺：容器还没写过（未部署/刚启动）时是空对象。
+ */
 export interface SuricataStatus {
   alive: boolean;
   updated_at: string;
   iface: string;
   home_net: string;
   http_ports: string;
-  /** 已加载的签名规则行数（ET Open，构建镜像时固化进镜像） */
-  rule_lines: number;
-  version: string;
+  /** 生效中的规则文件名（入口按 active/ 目录渲染进 rule-files） */
+  rule_files?: string[];
+  /** 生效规则条数：0 = 当前没有任何签名（不产生告警） */
+  rule_count?: number;
+  /** 生效版本（取自 active/manifest.json；空 = 空占位规则） */
+  active_version?: string;
+  /** 引擎版本（suricata -V） */
+  suricata?: string;
+}
+
+/** 签名规则集：更新来源配置 */
+export interface SuricataRulesSource {
+  url: string;
+  token_set: boolean;
+  enabled: boolean;
+}
+
+/** 签名规则集：一次检查/更新的结果（也用于历史列表） */
+export interface SuricataRulesCheck {
+  at?: string;
+  version?: string;
+  has_update?: boolean;
+  validated?: boolean;
+  error?: string;
+  added?: string[];
+  updated?: string[];
+  removed?: string[];
+  scheduled?: boolean;
+}
+
+/** 签名规则集：界面状态（/api/suricata/rules） */
+export interface SuricataRulesStatus {
+  source: SuricataRulesSource;
+  active: { version: string; files: string[]; rule_count: number };
+  pending: {
+    version: string;
+    files: string[];
+    downloaded_at: string;
+    validated: boolean;
+    validation_error: string;
+  } | null;
+  runtime: SuricataStatus | Record<string, never>;
+  last_check: SuricataRulesCheck | null;
+  last_check_at: string;
+  history: SuricataRulesCheck[];
 }
 
 /**

@@ -1329,3 +1329,37 @@ file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、
 「服务端 banner 版本」类（每条 SSH 连接报一次，属配置事实）；理由与实测数字写在
 `ndr/suricata/disable.conf` 里）。不裁的后果是真实的：摘要通道全局 24 条/分钟，
 被噪音占满后真正的签名命中就挤不进来。
+
+### 2026-10 签名引擎规则集改为「开发人员提供的 rules 文件 + manifest 在线更新」
+
+**为什么改**（用户口径）：内置的 ET Open 五万多条规则既不由我们维护、量级也不受控 ——
+上线当天实测 345~660 条告警/分钟，其中 93.5% 是引擎自身的流异常噪音（`SURICATA STREAM *`），
+而且它是「别人的规则、别人的命名」。规则来源应当单一、由项目自己维护。
+
+**改成什么**：
+
+- 镜像**不再带任何规则集**、也不再联网自动更新：去掉 `suricata-update`、ET Open 下载、
+  `disable.conf` / `modify.conf`；自带一个**空占位规则文件** ⇒ 开箱 0 条规则、**不产生任何告警**；
+  引擎自带事件（`SURICATA *`、`*-events.rules`）按口径一律**不加载**。
+- 规则集放共享卷 `/rules`：**后端**写 `staging/` 与三个请求标记（validate / activate / reset），
+  **容器**跑 `suricata -T` 校验、切 `active/`、`suricatasc -c reload-rules` 热重载，两边各写自己的
+  状态文件（`source.json` / `runtime.json` / `validation.json`）——沿用「后端写共享文件、容器执行」
+  的既有架构，后端不碰 docker socket。
+- 在线更新走 **manifest（文件列表 + sha256）**：界面「检测规则 → 签名规则」配置地址与令牌；
+  手动「立即检查更新」或**每 12 小时自动检查**（只拉取 + 下载差异文件 + 校验）；
+  **校验通过也不自动生效** —— 弹确认框、人工点「立即更新」才切换（规则属检测口径变更）。
+- 界面显示当前版本/文件/条数、待确认版本与校验结果、最近检查与最近 10 次历史；
+  空规则时明确提示「不会产生任何告警」。
+
+**踩过的坑与定下的口径**（都写进 `ndr/suricata/README.md`）：
+
+- 基础镜像把 `/var/lib/suricata` 与 `/etc/suricata` 声明成 `VOLUME`，**匿名卷在容器重建时被保留**
+  ⇒ 升级镜像后容器里可能还是上一版文件（ET 时代踩过：镜像内 69028 行、容器里仍 69096 行）。
+  现在规则与配置都在我们自己的 `/rules` 卷 + 每次启动重新渲染的 `/etc/suricata/suricata.yaml`，
+  结构上不受影响。
+- 该镜像**没有 `cmp`**（实测 `MISSING cmp`），比较文件用 `sha256sum`。
+- 规则约定：SID 段 `1000000-1999999`（不撞上游 2xxxxxx）、必填 `msg`/`sid`/`rev`、
+  `classtype` 或 `priority: 1|2|3` 决定 EVE `alert.severity`（⇒ 我们摘要的高/中/低三档）；
+  可用 `$HOME_NET` / `$EXTERNAL_NET` / `$HTTP_PORTS`。
+- 引擎事件在「事件类型」这一层与 Zeek 的 `weird.log` 重复，而后者已经覆盖（且我们按「采集类异常」
+  降级为健康指标）；这也是关掉引擎事件的一个理由。

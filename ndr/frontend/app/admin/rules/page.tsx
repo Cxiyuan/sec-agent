@@ -24,6 +24,7 @@ import {
 } from "@shentong/ui";
 
 import type { RuleItem } from "@/lib/api";
+import { SuricataRulesPanel } from "@/components/suricata-rules-panel";
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
   ConditionEditor,
@@ -72,7 +73,7 @@ function severityBadge(sev: string): React.ReactElement {
 export default function RulesPage() {
   const errs = usePanelErrors();
   const [rules, setRules] = React.useState<RuleItem[]>([]);
-  const [tab, setTab] = React.useState<"builtin" | "custom">("builtin");
+  const [tab, setTab] = React.useState<"builtin" | "custom" | "signature">("builtin");
   const [openIds, setOpenIds] = React.useState<Record<string, boolean>>({});
   const [busy, setBusy] = React.useState("");
   const [msg, setMsg] = React.useState("");
@@ -369,6 +370,13 @@ export default function RulesPage() {
           >
             自定义规则（{custom.length}）
           </Button>
+          <Button
+            size="sm"
+            variant={tab === "signature" ? "default" : "outline"}
+            onClick={() => setTab("signature")}
+          >
+            签名规则（Suricata）
+          </Button>
         </div>
 
         {tab === "builtin" ? (
@@ -384,7 +392,7 @@ export default function RulesPage() {
               hostBuiltin,
             )}
           </>
-        ) : (
+        ) : tab === "custom" ? (
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
@@ -453,6 +461,8 @@ export default function RulesPage() {
               </Table>
             </CardContent>
           </Card>
+        ) : (
+          <SuricataRulesPanel />
         )}
 
         <Drawer

@@ -229,13 +229,12 @@ def _read_last_reload() -> str | None:
 
 
 def _read_suricata_status() -> dict[str, Any] | None:
-    """签名引擎（Suricata）自己写在共享日志卷里的机器可读状态。
+    """签名引擎（Suricata）自己写在共享规则卷里的运行状态。
 
-    文件由容器入口的 write_status 定期刷新（存活/网卡/网段/规则行数/版本），
-    见 ``ndr/suricata/entrypoint.sh``。读不到 = 没部署或根本没跑起来，
-    界面按「未启用」显示 —— 后端不去问容器（产品里没有 docker socket）。
+    文件是容器入口的 write_runtime 定期刷新的（存活/网卡/网段/规则文件与条数/引擎版本），
+    见 ``ndr/suricata/entrypoint.sh``。读不到 = 没部署或根本没跑起来，界面按「未启用」显示。
     """
-    path = os.path.join(settings.zeek_log_dir, "suricata", "status.json")
+    path = os.path.join(settings.suricata_rules_dir, "runtime.json")
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.loads(fh.read())

@@ -22,6 +22,7 @@ from app.api.routes import (
 # 这里刻意保持模块名可读、便于按名字定位文件）。
 from app.api.routes.health_components import router as health_components_router
 from app.api.routes.stats_overview import router as stats_overview_router
+from app.api.routes.suricata import router as suricata_router
 from app.api.routes.system_metrics import router as system_metrics_router
 
 api_router = APIRouter()
@@ -41,3 +42,4 @@ api_router.include_router(files.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)
 api_router.include_router(wazuh.router)
+api_router.include_router(suricata_router)

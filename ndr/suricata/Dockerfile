@@ -1,59 +1,34 @@
 # 深瞳 · 签名引擎（Suricata）镜像
 #
-# 基底：官方社区镜像（内含 suricata 与 suricata-update）。**tag 固定**，升级走一次提交。
-# 构建期就把 ET Open 规则拉下来固化进镜像：容器运行时**不需要外网**（客户环境常无外网），
-# 规则更新 = 重出镜像，和本仓库其它镜像一样只由 GitHub Actions 构建（本地不构建、不拉镜像）。
+# 基底：官方社区镜像（内含 suricata 与 suricatasc）。tag 固定，升级走一次提交。
 #
-# ET Open 的许可是 MIT（OISF/suricata-intel-index 里 `license: MIT`），随镜像分发无许可风险；
-# ET Pro 是商业许可，不在这里拉取。
+# 规则来源（2026-10 用户口径）：
+#   **不使用任何内置规则集，也不联网自动更新** —— 没有 suricata-update、不拉 ET Open。
+#   镜像只带一个**空占位规则文件**（0 条规则 ⇒ 开箱不产生任何告警）；真实规则由项目开发人员
+#   维护，通过界面「检测规则 → 签名规则」配置的在线地址（manifest：文件列表 + sha256）下发，
+#   校验通过且人工确认后才生效。引擎自带事件规则（SURICATA *）按口径一律不加载。
+#   因为不再需要下载规则，**镜像构建不需要外网**。
 ARG SURICATA_BASE=jasonish/suricata:7.0
 FROM ${SURICATA_BASE}
 
 USER root
 
-# 只留我们需要的规则集，并按 disable/modify 清单裁剪。
-# 注意（CI 实测 2026-10-07）：`--disable-conf` 在这个版本上**没有拦住**那两类噪音
-# （STREAM 引擎事件 67 条、ET 的 2054407 都还在里面）—— 所以后面再加一道确定性的
-# 内容级后处理（并打印前后行数），两道都保留：规则来源变了也不会静默失效。
-COPY disable.conf modify.conf /etc/suricata/
-RUN set -eux; \
-    if command -v suricata-update >/dev/null 2>&1; then \
-      suricata-update \
-        --no-test \
-        --disable-conf /etc/suricata/disable.conf \
-        --modify-conf /etc/suricata/modify.conf; \
-    else \
-      echo "镜像内没有 suricata-update：跳过规则更新（部署时需自带规则文件）" >&2; \
-    fi; \
-    RULES=/var/lib/suricata/rules/suricata.rules; \
-    test -s "$RULES"; \
-    before="$(wc -l < "$RULES")"; \
-    grep -v -e 'msg:"SURICATA STREAM' -e 'sid:2054407;' "$RULES" > "${RULES}.filtered"; \
-    mv "${RULES}.filtered" "$RULES"; \
-    after="$(wc -l < "$RULES")"; \
-    echo "规则裁剪：${before} → ${after} 行（引擎流异常 + banner 类）"; \
-    test "$after" -lt "$before"; \
-    test "$(grep -c 'SURICATA STREAM' "$RULES" || true)" = "0"; \
-    wc -l "$RULES"; \
-    # 影子副本：基础镜像把 /var/lib/suricata（还有 /etc/suricata）声明成了 **VOLUME**，
-    # Docker 会给它建匿名卷、并在容器重建时**保留**——结果升级镜像后容器里读到的还是上一版规则
-    # （实机踩到：镜像内 69028 行，容器里仍是旧的 69096 行，引擎流异常照旧刷）。
-    # 所以规则/分类在镜像里另存一份，由入口每次启动同步过去（见 entrypoint.sh 的 sync_rules）。
-    mkdir -p /usr/local/share/shentong; \
-    cp "$RULES" /usr/local/share/shentong/suricata.rules; \
-    cp /etc/suricata/classification.config /usr/local/share/shentong/classification.config; \
-    cp /etc/suricata/reference.config /usr/local/share/shentong/reference.config
-
-# 配置模板 + 入口（网卡/网段/端口由 entrypoint 从共享采集配置渲染）
+# 空占位规则 / manifest 示例 / 配置模板 / 入口（网卡、网段、HTTP 端口、规则列表都由入口渲染）
+COPY rules/ /usr/local/share/shentong/rules/
+COPY manifest.example.json /usr/local/share/shentong/manifest.example.json
 COPY suricata.yaml.tmpl /usr/local/share/shentong/suricata.yaml.tmpl
 COPY entrypoint.sh /usr/local/bin/shentong-suricata-entrypoint.sh
 COPY healthcheck.sh /usr/local/bin/shentong-suricata-healthcheck.sh
-RUN chmod +x /usr/local/bin/shentong-suricata-entrypoint.sh /usr/local/bin/shentong-suricata-healthcheck.sh
+RUN set -eux; \
+    chmod +x /usr/local/bin/shentong-suricata-entrypoint.sh /usr/local/bin/shentong-suricata-healthcheck.sh; \
+    test -f /usr/local/share/shentong/rules/shentong.rules; \
+    mkdir -p /rules/active /rules/staging /rules/previous /rules/rejected
 
-VOLUME ["/logs", "/config"]
+# /rules：规则集与状态（后端与本容器共写各自的文件，见 README 的目录约定）
+VOLUME ["/logs", "/config", "/rules"]
 
 # 采集面健康检查：Suricata 起不来（规则加载失败/网卡不可用）时容器变 unhealthy。
-# 判据由 entrypoint 写的哨兵文件提供；unhealthy 不会触发重启（重启由入口的守护循环负责）。
+# 判据由入口写的哨兵文件提供；unhealthy 不会触发重启（重启由入口的守护循环负责）。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD /usr/local/bin/shentong-suricata-healthcheck.sh
 

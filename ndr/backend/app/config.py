@@ -131,6 +131,20 @@ class Settings(BaseSettings):
         "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
     exclusion_cache_seconds: int = 30  # 过滤器配置缓存秒数（跨进程最迟这么久生效）
+
+    # ---------- 签名引擎（Suricata）规则集 ----------
+    # 规则集与状态的共享卷：后端写 staging/ 与请求标记（validate/activate/reset），
+    # 容器跑 `suricata -T` 校验后切 active/ 并写 runtime.json（两边各写自己的文件）。
+    suricata_rules_dir: str = "/rules"
+    # 自动检查间隔（小时）：只做「拉 manifest + 下载差异文件 + 容器校验」，**不自动生效**
+    # （规则属检测口径，生效必须人工在界面确认）。可设小值便于验证。
+    suricata_check_interval_hours: float = 12.0
+    suricata_fetch_timeout_seconds: float = 30.0
+    # 容器校验（suricata -T）的等待上限：给大规则集留足时间，但绝不挂死
+    suricata_validate_timeout_seconds: int = 300
+    suricata_max_files: int = 64
+    suricata_max_file_bytes: int = 8388608  # 单文件 8 MiB
+    suricata_max_total_bytes: int = 33554432  # 合计 32 MiB
     ingest_filter_cache_seconds: int = 30  # 降噪过滤（入库前）配置缓存秒数
     ingest_filter_dry_run_hours: int = 24  # 试运行默认回看时长（小时）
     ingest_filter_dry_run_max: int = 500  # 试运行最多扫多少条历史事件
@@ -150,8 +164,6 @@ class Settings(BaseSettings):
     # ---------- NDR 独有 ----------
     # Zeek 采集（镜像侧轮转 24h / 本地保留 3 天为硬编码）
     zeek_conf_dir: str = "/config"
-    # 共享采集日志卷（Zeek 写、后端只读挂）：签名引擎的 status.json 也在这里
-    zeek_log_dir: str = "/logs"
     zeek_iface_conf: str = "/config/interface.conf"
     zeek_interfaces_json: str = "/config/interfaces.json"
     zeek_interface: str = ""  # 空 = 由采集器自动取第一块物理网卡（网卡名是环境相关的，不写死）

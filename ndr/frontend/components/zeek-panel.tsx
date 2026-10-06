@@ -191,7 +191,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               这份网卡与网段配置**同时**用于网络采集器与签名引擎（Suricata）：签名引擎的 HOME_NET
               = 监控网段，抓包口 = 监听网卡，因此两者看到的范围始终一致。
               {status?.suricata
-                ? ` 签名引擎：${status.suricata.alive ? "运行中" : "未运行"}，已加载签名 ${status.suricata.rule_lines} 行`
+                ? ` 签名引擎：${status.suricata.alive ? "运行中" : "未运行"}，已加载签名 ${status.suricata.rule_count ?? 0} 条`
                 : " 签名引擎：未部署（没有收到它的状态上报）。"}
             </p>
           </div>

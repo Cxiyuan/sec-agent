@@ -1,0 +1,16 @@
+## 深瞳 · 签名引擎（Suricata）规则文件（初始为空）
+##
+## 本文件是**空占位**：镜像里必须始终有一个可加载的规则文件，否则 Suricata 起不来。
+## 真实规则由项目开发人员维护，通过界面「检测规则 → 签名规则」配置的在线地址
+## （manifest：文件列表 + sha256）下发；也可直接把 *.rules 放进 /rules/active/。
+##
+## 编写约定（详见 ndr/suricata/README.md）：
+##   - SID 段 1000000-1999999（不与上游 2xxxxxx 撞车），每行一条规则；
+##   - 必填 msg / sid / rev；必须给 classtype 或 priority: 1|2|3
+##     （它决定 EVE alert.severity ⇒ 我们摘要的「高危/中危/低危」三档）；
+##   - 可用变量：$HOME_NET / $EXTERNAL_NET / $HTTP_PORTS（模板已定义）；
+##   - 引擎自带事件（SURICATA *）按本项目口径**不加载**，不要在这里写。
+##
+## 示例（当前故意不启用，取消注释即可作为最小可用规则）：
+## alert dns any any -> any any (msg:"深瞳 TEST DNS 查询"; dns.query; content:"."; \
+##   classtype:misc-activity; sid:1000001; rev:1;)

@@ -59,15 +59,16 @@ Zeek 脚本是编译期加载的，语法/字段错误只有真跑一次才会�
 ## 3. 签名引擎（Suricata）自检（`tests/suricata`）—— **只在 CI 跑，本地不跑**
 
 ```sh
-sh tests/suricata/run.sh       # 构建 ndr/suricata 镜像并跑 suricata -T
+sh tests/suricata/run.sh       # 构建 ndr/suricata 镜像并跑配置/规则自检
 ```
 
 > ⚠️ **本地不要执行**：它会 `docker build` 并 `docker run`（会拉基底镜像）。
 > 按 AGENTS.md「构建规则」，镜像只在 GitHub Actions 构建；这一步已列入 CI 的 `test` 作业。
 
-用一份样例共享配置（`interface` / `monitored_nets` / `tls_ports`）渲染配置并断言：
-`suricata -T` 通过（渲染出的 YAML 这个版本真认）、网卡/HOME_NET 按配置渲染（CIDR 里的 `/` 不能把 `sed` 切坏）、
-`community-id: yes`、EVE 只开 `alert`、`tls_ports` 已从 HTTP 端口里剔除、ET Open 规则真的拉下来了（行数 > 1000）。
+规则来源是「开发人员提供的 rules 文件 + manifest 在线更新」，镜像里**没有**内置规则集。所以验证的是
+容易静默失效的五件事：① 空占位能启动（**0 条规则** ⇒ 不产生告警）② 开发人员写的样例规则能加载
+（`tests/suricata/sample/`）③ 渲染出的配置只引用 `active/`、**不含任何 `*-events.rules`**（引擎事件确实不加载）
+④ `staging` 校验与 `activate` 切换这套共享卷协议跑通 ⑤ 清空规则回到空占位。
 
 ## 4. 质量门（CI 与本地同一套）
 

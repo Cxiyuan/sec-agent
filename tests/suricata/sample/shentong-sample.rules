@@ -1,0 +1,7 @@
+# 深瞳 · CI 样例规则（不进镜像，只用来验证「开发人员写的规则能被加载」）
+#
+# 约定见 ndr/suricata/README.md：SID 段 1000000-1999999、每行一条、必有 msg/sid/rev，
+# 以及 classtype 或 priority（决定 EVE alert.severity ⇒ 摘要的高/中/低危三档）。
+
+alert dns any any -> any any (msg:"深瞳 CI 样例：DNS 查询"; dns.query; content:"."; classtype:misc-activity; sid:1000001; rev:1;)
+alert http any any -> any any (msg:"深瞳 CI 样例：可疑路径"; http.uri; content:"/ci-sample"; classtype:web-application-attack; priority:1; sid:1000002; rev:1;)

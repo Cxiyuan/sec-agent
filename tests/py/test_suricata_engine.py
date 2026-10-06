@@ -1,8 +1,8 @@
-"""签名引擎（Suricata）接入契约：归一化、规则、采集编排、关联键。
+"""签名引擎（Suricata）接入契约：归一化、规则、采集编排、规则集来源。
 
-这一层一次性装好的东西很多（新采集组件 + 新日志来源 + 新字段 + 删掉 48 条重叠规则），
-任何一处漏了都不会在本地“看起来”出错：容器起不来、规则没命中、Zeek 与 Suricata 的日志
-对不上，全都要等上线才发现。所以把关键形状钉在这里。
+这一层一次性装好的东西很多（新采集组件 + 新日志来源 + 新字段 + 删掉 48 条重叠规则 +
+规则集改由开发人员维护），任何一处漏了都不会在本地“看起来”出错：容器起不来、规则没命中、
+Zeek 与 Suricata 的日志对不上，全都要等上线才发现。所以把关键形状钉在这里。
 
 两侧差异：归一化/规则/引擎/编排两侧都有（除 catalog 只在 NDR），
 只在 NDR 存在的部分放 fixture 里 import，agent 轮次跳过。
@@ -138,6 +138,7 @@ def test_suricata_timestamp_without_colon_offset() -> None:
     assert entry.ts.year == 2026 and entry.ts.hour in (4, 5), entry.ts
     offset = entry.ts.utcoffset()
     assert offset is not None and offset.total_seconds() == 8 * 3600
+    assert entry.ts.year == 2026
 
 
 def test_suricata_raw_drops_bulk_payload_fields() -> None:
@@ -207,53 +208,75 @@ def test_compose_suricata_service(name: str) -> None:
     vols = svc["volumes"]
     assert "zeek-logs:/logs" in vols
     assert "zeek-config:/config:ro" in vols, "采集配置必须只读共用同一份"
+    assert "suricata-rules:/rules" in vols, "规则集必须挂共享卷（后端写、容器校验后生效）"
+    # 后端也要挂同一卷（写 staging 与请求标记）
+    backend = data["services"]["backend"]["volumes"]
+    assert "suricata-rules:/rules" in backend
+    assert "suricata-rules" in data["volumes"]
 
 
 def test_suricata_template_shape() -> None:
     text = (ROOT / "ndr" / "suricata" / "suricata.yaml.tmpl").read_text(encoding="utf-8")
-    for placeholder in ("%IFACE%", "%HOME_NET%", "%HTTP_PORTS%"):
+    for placeholder in ("%IFACE%", "%HOME_NET%", "%HTTP_PORTS%", "%RULE_DIR%", "%RULE_FILES%"):
         assert placeholder in text, f"模板缺少占位符 {placeholder}"
     assert "community-id: yes" in text
     assert "packet: no" in text
+    # 热重载规则用（suricatasc reload-rules）
+    assert "unix-command:" in text
     # 只输出 alert：其它类型一个都不能开
     types_block = text.split("types:", 1)[1]
     for kind in ("flow:", "dns:", "http:", "tls:", "stats:", "files:"):
         assert f"- {kind}" not in types_block, f"eve-log 打开了 {kind}"
+    # 引擎自带事件规则（SURICATA *）不加载：模板里绝不能引用 *-events.rules
+    assert "events.rules" not in text
 
 
-def test_suricata_entrypoint_renders_and_self_tests() -> None:
+def test_suricata_has_no_builtin_ruleset_anymore() -> None:
+    """规则集来源已改为「开发人员提供的 rules 文件」：镜像里不能再有 ET Open / 自动更新。
+
+    只看**功能行**（RUN/COPY 等）：注释里会提到「不再使用 suricata-update」这类说明。
+    """
+    dockerfile = (ROOT / "ndr" / "suricata" / "Dockerfile").read_text(encoding="utf-8")
+    functional = "\n".join(
+        ln.strip()
+        for ln in dockerfile.splitlines()
+        if ln.strip().startswith(("RUN", "COPY", "ADD"))
+    )
+    assert "suricata-update" not in functional, "镜像里还在跑 suricata-update"
+    assert "emerging" not in functional, "镜像里还在拉 ET Open"
+    assert "disable.conf" not in functional and "modify.conf" not in functional
+    # 空占位规则文件必须在镜像里（否则 rule-files 为空会起不来）
+    placeholder = ROOT / "ndr" / "suricata" / "rules" / "shentong.rules"
+    assert placeholder.exists()
+    body = placeholder.read_text(encoding="utf-8")
+    assert not [ln for ln in body.splitlines() if ln.lstrip().startswith("alert ")], (
+        "占位规则文件必须是空的（开箱 0 条规则、不产生告警）"
+    )
+    # 旧的两个裁剪清单已删除
+    assert not (ROOT / "ndr" / "suricata" / "disable.conf").exists()
+    assert not (ROOT / "ndr" / "suricata" / "modify.conf").exists()
+    # manifest 示例要留着（开发人员照着发规则）
+    manifest = (ROOT / "ndr" / "suricata" / "manifest.example.json").read_text(encoding="utf-8")
+    assert "sha256" in manifest and "version" in manifest
+
+
+def test_suricata_entrypoint_handles_requests_and_renders() -> None:
     text = (ROOT / "ndr" / "suricata" / "entrypoint.sh").read_text(encoding="utf-8")
-    # 三个占位符都要被渲染（网段里有 /，所以必须用非 / 的分隔符）
-    assert "s|%IFACE%|" in text
-    assert "s|%HOME_NET%|" in text
-    assert "s|%HTTP_PORTS%|" in text
-    # 共享配置看门狗 + 自检模式（CI 靠它跑 suricata -T）
+    # 五个占位符都要被渲染（网段里有 /，所以必须用非 / 的分隔符）
+    for placeholder in ("%IFACE%", "%HOME_NET%", "%HTTP_PORTS%", "%RULE_DIR%", "%RULE_FILES%"):
+        assert f"s|{placeholder}|" in text, f"入口没有渲染 {placeholder}"
+    # 共享采集配置 + 规则卷 + 三种请求标记（后端写、容器执行）
     assert "interface.conf" in text
-    assert "--render-only" in text
+    assert "validate.request" in text
+    assert "activate.request" in text
+    assert "reset.request" in text
+    # 校验与热重载
     assert "suricata -T" in text
-    # 规则必须从镜像同步到运行目录：基础镜像把 /var/lib/suricata 声明成 VOLUME，
-    # 匿名卷在容器重建时被保留 ⇒ 不同步的话升级镜像后容器里还是旧规则（实机踩到过）。
-    assert "sync_rules" in text
-    # 镜像里没有 cmp（实测 MISSING cmp），只能用 sha256 比
-    assert "same_file" in text
+    assert "reload-rules" in text
+    # 空占位兜底（保证 rule-files 不为空）
+    assert "bootstrap_rules" in text
+    # 镜像里没有 cmp（实测），比较文件必须走 sha256
     assert "sha256sum" in text
-
-
-def test_suricata_disable_list_keeps_measured_trim() -> None:
-    """裁剪清单不能被子孙后代无意清空：上线当天实测裁的两类必须还在（详见 disable.conf 注释）。"""
-    text = (ROOT / "ndr" / "suricata" / "disable.conf").read_text(encoding="utf-8")
-    assert "1:2210000-2219999" in text, "引擎流异常（占实测告警 93.5%）的裁剪不见了"
-    assert "2054407" in text, "banner 类噪音签名的裁剪不见了"
-    # 清单里的每一行“非注释非空”都必须是可识别的裁剪写法
-    for line in text.splitlines():
-        item = line.strip()
-        if not item or item.startswith("#"):
-            continue
-        assert (
-            item.startswith(("re:", "group:"))
-            or item.split(":")[0].isdigit()
-            or item.isdigit()
-        ), f"无法识别的裁剪写法：{item}"
 
 
 def test_zeek_loads_community_id_script() -> None:

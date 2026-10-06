@@ -135,10 +135,16 @@ app-layer:
     dcerpc:
       enabled: yes
 
-default-rule-path: /var/lib/suricata/rules
-rule-files:
-  - suricata.rules
+# 规则目录与规则文件列表由入口渲染（%RULE_DIR% = /rules/active，%RULE_FILES% 形如 ["a.rules"]）。
+# 镜像只带一个**空占位**规则文件 ⇒ 开箱即 0 条规则、不产生任何告警；真实规则由开发人员提供、
+# 经界面「检测规则 → 签名规则」的在线地址（manifest）下发。引擎自带事件（SURICATA *）不加载。
+default-rule-path: %RULE_DIR%
+rule-files: %RULE_FILES%
 
 classification-file: /etc/suricata/classification.config
 reference-config-file: /etc/suricata/reference.config
 threshold-file: /etc/suricata/threshold.config
+
+# 热重载规则（suricatasc -c reload-rules）：只监听容器内本地套接字，不对外暴露端口
+unix-command:
+  enabled: yes

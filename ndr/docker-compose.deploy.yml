@@ -128,9 +128,9 @@ services:
       - zeek-config:/config
       # 采集侧管道配置：后端写、Logstash 读（自动重载）
       - logstash-pipeline:/logstash
-      # 只读挂采集日志卷：签名引擎（Suricata）把自身的存活/规则条数写在
-      # /logs/suricata/status.json，界面靠它显示签名引擎状态（后端读它，不去问容器）
-      - zeek-logs:/logs:ro
+      # 签名引擎的规则集与状态：后端写 staging/ 与请求标记，容器校验后切到 active/，
+      # 两边各写自己的文件（见 ndr/suricata/README.md 的目录约定）
+      - suricata-rules:/rules
       # 管道备份单独一个卷：**不能**跟管道同目录（否则被当成第二个管道）
       - logstash-backup:/logstash-backup
       # Zeek 提取的明文文件（批 4）：zeek 写、后端只读（下载接口按 fuid 读它）
@@ -266,6 +266,8 @@ services:
       - zeek-logs:/logs
       # 只读挂共享采集配置：网卡/网段/按 TLS 解析的端口都来自这一份
       - zeek-config:/config:ro
+      # 规则集与状态（见 README：后端写 staging/ 与请求标记，本容器校验后切 active/）
+      - suricata-rules:/rules
     restart: unless-stopped
 
   # NDR 管理台（规则/网段/排除/采集配置）
@@ -289,6 +291,8 @@ volumes:
   zeek-config:
   zeek-filebeat:
   zeek-extract:
+  # 签名引擎规则集与状态（后端 rw + 容器 rw，各写自己的文件）
+  suricata-rules:
   logstash-pipeline:
   logstash-backup:
   logstash-queue:
