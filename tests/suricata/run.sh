@@ -27,15 +27,10 @@ RUN() {
   docker run --rm -v "$WORK/config:/config:ro" -v "$WORK/rules:/rules" "$@"
 }
 
-count_loaded() {
-  # 实测（Suricata 7.0.17）：
-  #   0 条规则 → 只打 "W: detect: 1 rule files specified, but no rules were loaded!"（没有统计行）
-  #   N 条规则 → "... N rules successfully loaded, 0 rules failed"
-  if printf '%s\n' "$1" | grep -q 'no rules were loaded'; then
-    echo 0
-    return
-  fi
-  printf '%s\n' "$1" | sed -n 's/.* \([0-9][0-9]*\) rules successfully loaded.*/\1/p' | tail -1
+count_from_entry() {
+  # 取入口自己打的条数（我们的日志格式，稳定；Suricata 7.0.17 的 -T 输出**不可靠**：
+  # 实测 0 条时只打一条 warning、有规则时连统计行都不打，日志级别一变就解析不到）
+  printf '%s\n' "$1" | sed -n 's/.*规则=\([0-9][0-9]*\) 条.*/\1/p' | tail -1
 }
 
 echo "== 构建签名引擎镜像（CI 里构建，本地禁止）=="
@@ -47,14 +42,15 @@ OUT=$(RUN "$IMG" --render-only 2>&1) || {
   echo "空规则状态下 suricata -T 就失败了" >&2
   exit 1
 }
-N=$(count_loaded "$OUT")
+N=$(count_from_entry "$OUT")
 if [ -z "$N" ]; then
   printf '%s\n' "$OUT" | tail -20 >&2
-  echo "没能从自检输出里解析出规则条数（Suricata 输出格式变了？）" >&2
+  echo "没能从入口日志里解析出规则条数" >&2
   exit 1
 fi
 [ "$N" = "0" ] || { echo "空占位状态下加载了 $N 条规则，应为 0" >&2; exit 1; }
-echo "空占位：0 条规则 ✓"
+# 0 条规则时 Suricata 会打一条 warning，但不能因为 warning 就判失败（退出码才是结果）
+echo "空占位：0 条规则，suricata -T 通过 ✓"
 
 echo "== ② 渲染结果的关键形状 =="
 RENDERED=$(RUN --entrypoint sh "$IMG" -c '/usr/local/bin/shentong-suricata-entrypoint.sh --render-config')
@@ -80,14 +76,18 @@ echo "渲染形状 ✓"
 
 echo "== ③ 开发人员写的规则：能加载（样例断言 2 条）=="
 cp "$ROOT/tests/suricata/sample/shentong-sample.rules" "$WORK/rules/active/"
-OUT=$(RUN "$IMG" --render-only 2>&1)
-N=$(count_loaded "$OUT")
-[ "$N" = "2" ] || {
+OUT=$(RUN "$IMG" --render-only 2>&1) || {
   printf '%s\n' "$OUT" | tail -30 >&2
-  echo "样例规则加载条数是 $N，应为 2" >&2
+  echo "样例规则让 suricata -T 失败了（语法/变量/字段有问题）" >&2
   exit 1
 }
-echo "样例规则：2 条 ✓"
+N=$(count_from_entry "$OUT")
+[ "$N" = "2" ] || {
+  printf '%s\n' "$OUT" | tail -30 >&2
+  echo "入口统计的样例规则条数是 $N，应为 2" >&2
+  exit 1
+}
+echo "样例规则：2 条，suricata -T 通过 ✓"
 
 echo "== ④ staging 校验 + activate 切换（共享卷协议）=="
 # 校验：把新版本放进 staging 并下发 validate.request
