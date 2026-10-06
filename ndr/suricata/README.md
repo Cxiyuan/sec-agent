@@ -70,7 +70,8 @@ SPAN 网卡 ─┬─ Zeek ─ conn/http/ssl/… ──────────�
 引擎流异常照旧刷）。所以：
 
 - 构建时把规则/分类另存到 `/usr/local/share/shentong/`（不在任何卷里）；
-- 入口每次启动 `sync_rules`：以镜像副本为准同步到运行目录（`cmp` 不同才拷）。
+- 入口每次启动 `sync_rules`：以镜像副本为准同步到运行目录（先比大小、再比 sha256，不同才拷 ——
+  镜像里没有 `cmp`，实测 MISSING cmp）。
 
 验证方法：`docker exec <容器> wc -l /var/lib/suricata/rules/suricata.rules`
 应与镜像内一致（`docker run --rm --entrypoint sh <镜像> -c 'wc -l /var/lib/suricata/rules/suricata.rules'`）。

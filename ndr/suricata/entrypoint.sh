@@ -101,24 +101,33 @@ http_ports() {
   echo "$out"
 }
 
+# 镜像里**没有 cmp**（实测 MISSING cmp），用 sha256 比：先比大小（不同即定），再比哈希。
+same_file() {
+  [ -f "$1" ] || return 1
+  [ -f "$2" ] || return 1
+  [ "$(wc -c < "$1")" = "$(wc -c < "$2")" ] || return 1
+  [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$(sha256sum < "$2" | cut -d' ' -f1)" ]
+}
+
+
 # 把镜像里的规则/分类同步到运行目录。
 #
 # 为什么需要：基础镜像把 /var/lib/suricata 与 /etc/suricata 声明成了 **VOLUME**，
 # Docker 会为它们建匿名卷、并在容器重建时**保留**（即使镜像换了）—— 于是「升级镜像」
 # 后容器里仍然是上一版的规则文件（实机踩到：镜像内 69028 行，容器里还是旧的 69096 行，
-# 被裁掉的引擎流异常照旧刷）。这里每次启动都以镜像里的副本为准同步一次，幂等且便宜（cmp 不同才拷）。
+# 被裁掉的引擎流异常照旧刷）。这里每次启动都以镜像里的副本为准同步一次，幂等且便宜。
 sync_rules() {
   local dst_dir=/var/lib/suricata/rules
   local src=/usr/local/share/shentong/suricata.rules
   mkdir -p "$dst_dir" /etc/suricata
-  if [ -f "$src" ] && ! cmp -s "$src" "${dst_dir}/suricata.rules"; then
+  if ! same_file "$src" "${dst_dir}/suricata.rules"; then
     cp -f "$src" "${dst_dir}/suricata.rules"
     log "签名规则已同步到运行目录（$(wc -l < "${dst_dir}/suricata.rules" | tr -d ' ') 行）"
   fi
   # 分类/引用文件同理（匿名卷里可能是上一版镜像的）
   local f
   for f in classification.config reference.config; do
-    if [ -f "/usr/local/share/shentong/${f}" ] && ! cmp -s "/usr/local/share/shentong/${f}" "/etc/suricata/${f}"; then
+    if ! same_file "/usr/local/share/shentong/${f}" "/etc/suricata/${f}"; then
       cp -f "/usr/local/share/shentong/${f}" "/etc/suricata/${f}"
     fi
   done

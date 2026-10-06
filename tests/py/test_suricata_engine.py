@@ -234,7 +234,9 @@ def test_suricata_entrypoint_renders_and_self_tests() -> None:
     # 规则必须从镜像同步到运行目录：基础镜像把 /var/lib/suricata 声明成 VOLUME，
     # 匿名卷在容器重建时被保留 ⇒ 不同步的话升级镜像后容器里还是旧规则（实机踩到过）。
     assert "sync_rules" in text
-    assert "cmp -s" in text
+    # 镜像里没有 cmp（实测 MISSING cmp），只能用 sha256 比
+    assert "same_file" in text
+    assert "sha256sum" in text
 
 
 def test_suricata_disable_list_keeps_measured_trim() -> None:
