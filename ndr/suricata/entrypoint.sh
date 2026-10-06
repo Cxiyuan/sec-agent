@@ -218,6 +218,10 @@ EOF
 # 对 staging 跑一次 `suricata -T`（用临时配置指向 staging 目录）
 validate_staging() {
   local version="$1" list rc=0 out_file="/tmp/suricata-validate.log"
+  # Suricata 启动前会检查 `default-log-dir` 是否存在（`-T` 也一样）：先建出来。
+  # CI 里没挂 /logs，缺这一步会得到 “The logging directory "/logs/suricata" ... doesn't exist”，
+  # 校验路变成永假（实机踩到）。
+  mkdir -p "$OUT_DIR" "$ARCHIVE_DIR"
   rule_files_in "$STAGING_DIR" > /tmp/suricata-staging-files.txt
   if [ ! -s /tmp/suricata-staging-files.txt ]; then
     write_validation "$version" false "暂存目录里没有规则文件"

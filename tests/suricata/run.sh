@@ -12,7 +12,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 IMG="${SURICATA_TEST_IMAGE:-shentong-suricata-ci:test}"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" 2>/dev/null || true' EXIT
 mkdir -p "$WORK/config" "$WORK/rules/active" "$WORK/rules/staging" "$WORK/rules/previous" "$WORK/rules/rejected"
 
 # 样例共享采集配置：网卡名是假的（CI 里没有那块网卡），网段与 tls_ports 用真实形态，
