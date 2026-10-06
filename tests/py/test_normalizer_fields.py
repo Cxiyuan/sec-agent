@@ -11,8 +11,14 @@ import pytest
 import samples
 from app.config import settings
 from app.ingestion import log_types
-from app.ingestion.normalizer import normalize_wazuh, normalize_zeek
+from app.ingestion.normalizer import normalize, normalize_wazuh, normalize_zeek
 from app.ingestion.session_cookie import session_id_from_cookie
+from app.schemas import UnifiedLog
+
+
+def _entry(doc: dict) -> UnifiedLog | None:
+    """按来源分发归一化（Zeek / 签名引擎各自的分支；口径见 samples.doc_source）。"""
+    return normalize(samples.doc_source(doc), doc)
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +35,7 @@ def _trusted_probe_peer(set_relays) -> None:
 @pytest.mark.parametrize("name", sorted(samples.DOCS))
 def test_log_type_and_known_flag(name: str) -> None:
     want_type, want_known, want_cls = samples.EXPECT[name]
-    entry = normalize_zeek(samples.DOCS[name])
+    entry = _entry(samples.DOCS[name])
     assert entry is not None
     assert entry.log_type == want_type
     assert entry.log_type_known is want_known
@@ -41,7 +47,7 @@ def test_log_type_and_known_flag(name: str) -> None:
 def test_raw_is_self_describing(name: str) -> None:
     """raw 里必须带类型与来源文件名 —— MCP 的 raw_evidence 靠它自解释。"""
     doc = samples.DOCS[name]
-    entry = normalize_zeek(doc)
+    entry = _entry(doc)
     assert entry is not None
     assert entry.raw["log_type"] == entry.log_type
     path = ((doc.get("log") or {}).get("file") or {}).get("path", "")

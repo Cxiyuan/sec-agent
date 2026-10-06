@@ -45,8 +45,11 @@ def cfg() -> dict[str, Any]:
 
 def test_filestream_input() -> None:
     inputs = cfg()["filebeat.inputs"]
-    assert len(inputs) == 1
-    item = inputs[0]
+    # 两个输入：Zeek 的 *.log 与签名引擎的 eve.json（各带自己的字段与解析目标，
+    # 汇到同一个 Redis 采集队列）。合成一个输入会让 log_type/source_system 串味。
+    assert len(inputs) == 2
+    by_id = {item.get("id"): item for item in inputs}
+    item = by_id["zeek-logs"]
     assert item["type"] == "filestream"
     assert item["enabled"] is True
     paths = item["paths"]
@@ -57,10 +60,24 @@ def test_filestream_input() -> None:
     assert item["parsers"][0]["ndjson"]["target"] == "zeek"
     assert item["fields"]["source_system"] == "zeek"
     assert item["fields_under_root"] is True
+    # 签名引擎的输入：只扫 /logs/suricata/*.json（不递归 → archive/ 不被重读）
+    sig = by_id["suricata-alerts"]
+    assert sig["paths"] == ["${ZEEK_LOG_DIR:/logs}/suricata/*.json"]
+    assert sig["parsers"][0]["ndjson"]["target"] == "suricata"
+    assert sig["fields"]["source_system"] == "suricata"
+    assert sig["fields"]["log_type"] == "suricata"
+
+
+def test_log_type_processor_skips_non_log_files() -> None:
+    """取文件名的处理器只作用于 *.log：否则 eve.json 的 log_type 会被改成 “eve”。"""
+    processors = cfg()["processors"]
+    scripts = [p["script"] for p in processors if "script" in p]
+    assert len(scripts) == 1
+    assert r"if (!/\.log$/i.test(p)) { return; }" in scripts[0]["source"]
 
 
 def test_non_event_files_excluded() -> None:
-    item = cfg()["filebeat.inputs"][0]
+    item = {i.get("id"): i for i in cfg()["filebeat.inputs"]}["zeek-logs"]
     # 必须写在 prospector.scanner 下：顶层 exclude_files 是旧 log 输入的选项，
     # filestream 会把它当无关字段收下但不生效（8.15.3 实机探针验证过）。
     assert "exclude_files" not in item, "filestream 的排除名单不能写在输入顶层（不生效）"

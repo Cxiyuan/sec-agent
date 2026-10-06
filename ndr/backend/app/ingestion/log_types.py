@@ -99,3 +99,15 @@ def classify_entry(entry: UnifiedLog) -> str:
 def is_detectable(entry: UnifiedLog) -> bool:
     """是否允许进入检测/画像（只有事件类可以）。"""
     return classify_entry(entry) == EVENT
+
+
+def is_baseline_eligible(entry: UnifiedLog) -> bool:
+    """是否允许进行为基线/画像/资产统计。
+
+    签名引擎（Suricata）的告警是**派生产物**：它说的是「某条签名命中了某条流」，不是「这个
+    实体干了什么」。喂给基线等于把告警当成正常行为学进去——内网 IP 的常规画像里会多出一堆
+    告警事件，数值统计的均值/方差也跟着被带偏。所以签名命中只进检测与入库、不进基线。
+    """
+    if entry.source_system == "suricata":
+        return False
+    return is_detectable(entry)

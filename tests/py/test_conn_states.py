@@ -78,6 +78,7 @@ OTHER_EVENT_TYPES = {
     "tls_anomaly",
     "dns_anomaly",
     "protocol_anomaly",
+    "signature_hit",  # 签名引擎（Suricata）告警：normalizer.normalize_suricata 产出
     "dns_query",
     "tls_session",
     "file_transfer",

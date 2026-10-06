@@ -56,7 +56,20 @@ sh tests/zeek/run.sh          # 默认 zeek/zeek:9.0，与 ndr/zeek/Dockerfile �
 Zeek 脚本是编译期加载的，语法/字段错误只有真跑一次才会暴露。
 脚本输出以 `FAILS=0` 为通过标记（Zeek 的 `print` 会把中文打成 `\xNN` 转义，故标签用 ASCII）。
 
-## 3. 质量门（CI 与本地同一套）
+## 3. 签名引擎（Suricata）自检（`tests/suricata`）—— **只在 CI 跑，本地不跑**
+
+```sh
+sh tests/suricata/run.sh       # 构建 ndr/suricata 镜像并跑 suricata -T
+```
+
+> ⚠️ **本地不要执行**：它会 `docker build` 并 `docker run`（会拉基底镜像）。
+> 按 AGENTS.md「构建规则」，镜像只在 GitHub Actions 构建；这一步已列入 CI 的 `test` 作业。
+
+用一份样例共享配置（`interface` / `monitored_nets` / `tls_ports`）渲染配置并断言：
+`suricata -T` 通过（渲染出的 YAML 这个版本真认）、网卡/HOME_NET 按配置渲染（CIDR 里的 `/` 不能把 `sed` 切坏）、
+`community-id: yes`、EVE 只开 `alert`、`tls_ports` 已从 HTTP 端口里剔除、ET Open 规则真的拉下来了（行数 > 1000）。
+
+## 4. 质量门（CI 与本地同一套）
 
 ```sh
 .venv/bin/ruff check ndr/backend/app agent/backend/app tests/py

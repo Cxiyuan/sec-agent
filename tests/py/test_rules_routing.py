@@ -391,8 +391,8 @@ def test_builtin_rule_scope_by_conditions() -> None:
     assert scope(_builtin("内置-主机文件完整性变更")) == "host"
     assert scope(_builtin("内置-主机策略违规")) == "host"
     assert scope(_builtin("内置-主机高危告警")) == "host"
-    assert scope(_builtin("内置-弱TLS版本")) == "network"
-    assert scope(_builtin("内置-命令注入特征")) == "network"
+    assert scope(_builtin("内置-协议异常")) == "network"
+    assert scope(_builtin("内置-签名命中(高危)")) == "network"
     assert scope(_builtin("内置-多路径探测(漏洞挖掘)")) == "network"
     # 条件里看不出侧向（brute_force / account），按覆盖表归主机
     for name in (

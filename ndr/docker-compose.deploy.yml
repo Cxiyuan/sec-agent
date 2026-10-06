@@ -128,6 +128,9 @@ services:
       - zeek-config:/config
       # 采集侧管道配置：后端写、Logstash 读（自动重载）
       - logstash-pipeline:/logstash
+      # 只读挂采集日志卷：签名引擎（Suricata）把自身的存活/规则条数写在
+      # /logs/suricata/status.json，界面靠它显示签名引擎状态（后端读它，不去问容器）
+      - zeek-logs:/logs:ro
       # 管道备份单独一个卷：**不能**跟管道同目录（否则被当成第二个管道）
       - logstash-backup:/logstash-backup
       # Zeek 提取的明文文件（批 4）：zeek 写、后端只读（下载接口按 fuid 读它）
@@ -240,6 +243,29 @@ services:
       - zeek-filebeat:/usr/local/bin/data
       # 明文文件提取件（批 4）：Zeek 写入，后端只读挂载下载
       - zeek-extract:/extract
+    restart: unless-stopped
+
+  # 签名引擎（Suricata）：与 Zeek 并列的采集/检测组件，只输出命中规则的事件（EVE alert）。
+  # 共用同一份网卡/网段配置（界面「监控网段」页维护）与同一个 zeek-logs 卷，
+  # 告警由 Zeek 容器里的 Filebeat 一起投递，走同一条归一化/入库/检测链路。
+  # 无端口发布：只抓包、写文件，不对外提供服务。
+  suricata:
+    image: ${SURICATA_IMAGE:-ghcr.io/cxiyuan/sec-agent/shentong-suricata:latest}
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      TZ: Asia/Shanghai
+      SURICATA_CONF_DIR: /config
+      SURICATA_LOG_DIR: /logs
+      # 缺省留空 = 用共享配置 interface.conf 里的 interface；要单独指定网卡就在 .env 里
+      # 设 SURICATA_IFACE=<宿主网卡名>。
+      SURICATA_IFACE: ${SURICATA_IFACE:-}
+    volumes:
+      - zeek-logs:/logs
+      # 只读挂共享采集配置：网卡/网段/按 TLS 解析的端口都来自这一份
+      - zeek-config:/config:ro
     restart: unless-stopped
 
   # NDR 管理台（规则/网段/排除/采集配置）

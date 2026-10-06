@@ -64,6 +64,9 @@ services:
     volumes:
       - zeek-config:/config
       - logstash-pipeline:/logstash
+      # 只读挂采集日志卷：签名引擎（Suricata）把自身的存活/规则条数写在
+      # /logs/suricata/status.json，界面靠它显示签名引擎状态（后端读它，不去问容器）
+      - zeek-logs:/logs:ro
       - logstash-backup:/logstash-backup
       # Zeek 提取的明文文件（批 4）：zeek 写、后端只读（下载接口按 fuid 读它）
       - zeek-extract:/extract:ro
@@ -162,6 +165,29 @@ services:
       # （入口的 render_scripts_loader 启动时重新生成加载器）。deploy 线没有源码目录，
       # 只能把脚本提交进仓库、走 GitHub Actions 出镜像。
       - ./zeek/scripts.d:/usr/local/zeek/share/zeek/site/scripts.d
+    restart: unless-stopped
+
+  # 签名引擎（Suricata）：只输出命中规则的事件（EVE alert），与 Zeek 共用同一份网卡/网段
+  # 配置（界面「监控网段」页维护的那份），告警落在同一个 zeek-logs 卷的 suricata/ 子目录里，
+  # 由 Zeek 容器里的 Filebeat 一起投递 → 同一条归一化/入库/检测链路。
+  # 不发布任何端口：它只抓包、写文件，不对外提供服务（deploy 侧的暴露检查会盯着这一点）。
+  suricata:
+    image: ${SURICATA_IMAGE:-ghcr.io/cxiyuan/sec-agent/shentong-suricata:latest}
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      TZ: Asia/Shanghai
+      SURICATA_CONF_DIR: /config
+      SURICATA_LOG_DIR: /logs
+      # 缺省留空 = 用共享配置 interface.conf 里的 interface；要单独指定网卡就在 .env 里
+      # 设 SURICATA_IFACE=<宿主网卡名>（网卡名属客户环境，不写死在代码里）。
+      SURICATA_IFACE: ${SURICATA_IFACE:-}
+    volumes:
+      - zeek-logs:/logs
+      # 只读挂共享采集配置：网卡/网段/按 TLS 解析的端口都来自这一份
+      - zeek-config:/config:ro
     restart: unless-stopped
 
 volumes:

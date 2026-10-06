@@ -125,7 +125,8 @@ class Settings(BaseSettings):
     )
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
-        # /user/sign_in —— 漏了它们会让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
+        # /user/sign_in —— 漏了它们会让「密码喷洒」这类登录类判据漏报（主机侧的登录失败
+        # 统计走 Wazuh 自己的规则，不依赖这里）。
         "(?i)(^|/)(login|signin|sign-in|sign_in|wp-login|auth|authorize|authenticate"
         "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
@@ -149,6 +150,8 @@ class Settings(BaseSettings):
     # ---------- NDR 独有 ----------
     # Zeek 采集（镜像侧轮转 24h / 本地保留 3 天为硬编码）
     zeek_conf_dir: str = "/config"
+    # 共享采集日志卷（Zeek 写、后端只读挂）：签名引擎的 status.json 也在这里
+    zeek_log_dir: str = "/logs"
     zeek_iface_conf: str = "/config/interface.conf"
     zeek_interfaces_json: str = "/config/interfaces.json"
     zeek_interface: str = ""  # 空 = 由采集器自动取第一块物理网卡（网卡名是环境相关的，不写死）
@@ -185,7 +188,7 @@ class Settings(BaseSettings):
     # 单**规则名**每分钟最多投递多少条摘要（0 = 不限）。
     # 为什么需要：per-event 规则自身没有任何抑制手段，一条噪声规则（例：横向移动管理端口
     # 命中企业里海量正常 445/3389 会话）可在几分钟内吃满 24 条/分钟的总额度，
-    # 把勒索/WebShell 这类高价值摘要挤到 30 分钟超龄丢弃（2026-10 规则评审 P1）。
+    # 把「签名命中（Suricata）」这类高价值摘要挤到 30 分钟超龄丢弃（2026-10 规则评审 P1）。
     # 超限的摘要并不静默：计入 dropped.rule_capped（Redis 可查）。
     detector_max_digests_per_rule_minute: int = 8
     # 规则级摘要限速的 Redis 键前缀（每分钟一个桶，TTL 180s）

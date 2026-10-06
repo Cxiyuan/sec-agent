@@ -44,6 +44,28 @@ filebeat.inputs:
     clean_removed: true
     close_removed: true
 
+  # 签名引擎（Suricata）的 EVE 告警：只扫 /logs/suricata/*.json（**不递归**，归档目录
+  # archive/ 里的历史文件不会被重读）。静态字段把来源与类型钉死：归一化层按内层 `alert`
+  # 块把事件标成 event_type=signature_hit（见 ingestion/normalizer.py 的 normalize_suricata）。
+  # 与 Zeek 输入共用同一个 Redis 采集队列 → 归一化、入库、检测完全同一条链路。
+  - type: filestream
+    id: suricata-alerts
+    enabled: true
+    paths:
+      - ${ZEEK_LOG_DIR:/logs}/suricata/*.json
+    parsers:
+      # EVE 字段收进 suricata.* 命名空间（对齐 Zeek 的 zeek.*，避免与 Filebeat 元数据撞名）
+      - ndjson:
+          target: "suricata"
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      source_system: suricata
+      log_type: suricata
+    fields_under_root: true
+    clean_removed: true
+    close_removed: true
+
 processors:
   # 从文件名取类型：/logs/conn.log → conn；/logs/conn.2026-10-02-09-30-15.log → conn（去掉轮转时间戳）。
   # 认不出的文件名也照样发（log_type 用它自己的名字），由归一化层标 log_type_known=false
@@ -55,6 +77,9 @@ processors:
       source: >
         function process(event) {
           var p = event.Get("log.file.path") || "";
+          // 只对 Zeek 的 *.log 推类型名：签名引擎的 eve.json 由它自己的输入带了静态 log_type，
+          // 没有这道判断会被这里按文件名改写成 "eve"（错类型）。
+          if (!/\.log$/i.test(p)) { return; }
           var parts = p.split("/");
           var nm = parts[parts.length - 1] || "";
           var t = nm.replace(/\.log$/i, "")

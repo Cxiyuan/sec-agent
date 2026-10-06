@@ -15,3 +15,9 @@
 @load ./shentong-nets
 @load ./shentong-ports
 @load ./shentong-scripts-d
+
+## Community ID（社区流标识，CIS 标准）
+## 为什么需要：签名引擎（Suricata）的告警里带 `community_id`，这里让 conn.log 也带上同值，
+## 两个采集器的事实就能按「同一条流」对上（比五元组稳：不受 NAT、端口复用影响，加密流量也能对）。
+## 加载失败也不会拖垮采集：本行只是多产出一个字段，Zeek 起不来才是大事故。
+@load policy/protocols/conn/community-id-logging

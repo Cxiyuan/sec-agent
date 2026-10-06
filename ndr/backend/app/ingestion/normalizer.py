@@ -632,7 +632,7 @@ def _filebeat_parse_error(doc: dict[str, Any]) -> dict[str, Any] | None:
     挂在解析目标下（Zeek 线目标是 `zeek`，即 `zeek.error`；其它管道多在根 `error`），形如
     `{"type": "json", "message": "Error decoding JSON: invalid character 'h' ..."}`。
     """
-    for holder in (doc, doc.get("zeek")):
+    for holder in (doc, doc.get("zeek"), doc.get("suricata")):
         if not isinstance(holder, dict):
             continue
         err = holder.get("error")
@@ -729,6 +729,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         weird_name=weird_name,
         # Zeek 连接 UID（同一跳内 http/ssl/dns/files ↔ conn 关联；中继前后跳是两条连接）
         uid=str(doc.get("uid") or ""),
+        # Community ID（Zeek 的 community-id-logging 脚本在 conn.log 上产出）：
+        # 与签名引擎（Suricata）告警里的同名字段可以对齐到同一条流。
+        community_id=str(doc.get("community_id") or ""),
         # 中继链路位置（只读中继清单，stateless；见 relay_nodes.py）
         hop=_relay_hop(src_ip, dst_ip),
         hostname=_str_or_none(doc.get("host")) or _str_or_none(doc.get("server_name")),
@@ -747,6 +750,151 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         severity="info",
         summary=str(note or doc.get("msg") or f"zeek {log_type} {conn_state or ''}").strip(),
         raw=_raw_with_type(doc, log_type, source_file),
+        **extra,
+    )
+
+
+# ---------- Suricata（签名引擎） ----------
+
+#: EVE 里体积大又没有检索价值的原始载荷字段：`packet` 是整包十六进制、`payload` 是本包载荷的
+#  base64。两者内容与 `payload_printable`（可读形式）重复，落库只会把 raw 撑大，所以在写 raw
+#  之前去掉；`payload_printable` 保留，智能体能直接看到命中的原文。
+_EVE_RAW_DROP = ("packet", "payload")
+
+#: EVE 的时间戳是 `2026-10-04T10:00:00.123456+0800` 这种**无冒号**时区写法，`fromisoformat`
+#  在部分 Python 版本上直接拒收；而解析失败会静默回退成 now()，时间线跟着一起错。这里先补
+#  冒号再交给 `_to_dt`。
+_EVE_TZ_RE = re.compile(r"([+-]\d{2})(\d{2})$")
+
+
+#: Suricata 自己的告警级别 → 我们的事件级 severity（1=高 / 2=中 / 3=低）。
+#  这只是**事件**上的展示值；摘要级别由三条内置「签名命中」规则定（见 rules/builtin.py）。
+_EVE_SEVERITY: dict[int, Severity] = {1: "high", 2: "medium", 3: "low"}
+
+
+def _eve_ts(value: Any) -> Any:
+    if isinstance(value, str):
+        return _EVE_TZ_RE.sub(r"\1:\2", value.strip())
+    return value
+
+
+def _eve_http_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """把 EVE 的 http/dns/tls/fileinfo 块映射成 `_http_fields` 认得的（Zeek 口径）字段名。
+
+    映射而不是另写一份：URI 拆分、Cookie 截断、会话 id 取名这些口径在两条采集线上必须是同一
+    套代码，否则同一件事会出两种结果。
+    """
+    http = _as_dict(doc.get("http"))
+    dns = _as_dict(doc.get("dns"))
+    tls = _as_dict(doc.get("tls"))
+    fileinfo = _as_dict(doc.get("fileinfo"))
+    out: dict[str, Any] = {}
+    if http:
+        out.update(
+            {
+                "host": http.get("hostname"),
+                "uri": http.get("url"),
+                "method": http.get("http_method"),
+                "user_agent": http.get("http_user_agent"),
+                "referrer": http.get("http_refer"),
+                "status_code": http.get("status"),
+                "content_type": http.get("http_content_type"),
+                "response_body_len": http.get("length"),
+                "req_headers": http.get("request_headers") or http.get("req_headers"),
+                "cookie": http.get("http_cookie") or http.get("cookie"),
+            }
+        )
+    if dns:
+        out["query"] = dns.get("rrname")
+        # 口径同 Zeek：优先数字码（dns.log 的 qtype），只在没有数字码时用名字
+        out["qtype"] = (
+            _as_dict(dns.get("rrtype")).get("code") or dns.get("rrtype") or dns.get("qtype")
+        )
+        out["qtype_name"] = dns.get("rrtype")
+    if tls:
+        out["server_name"] = tls.get("sni")
+        out["version"] = tls.get("version")
+        ja3 = _as_dict(tls.get("ja3")).get("hash") or tls.get("fingerprint")
+        if ja3:
+            out["ja3"] = ja3
+    if fileinfo:
+        out["filename"] = fileinfo.get("filename")
+        out["md5"] = fileinfo.get("md5")
+        out["sha1"] = fileinfo.get("sha1")
+        out["sha256"] = fileinfo.get("sha256")
+    return out
+
+
+def _raw_suricata(doc: dict[str, Any], source_file: str) -> dict[str, Any]:
+    """持久化的 raw：去掉原始载荷大字段后再套统一的 raw 规则。"""
+    trimmed = {k: v for k, v in doc.items() if k not in _EVE_RAW_DROP}
+    return _raw_with_type(trimmed, "suricata", source_file)
+
+
+def normalize_suricata(doc: dict[str, Any]) -> UnifiedLog | None:
+    """Suricata EVE 告警 → 统一结构（只处理 alert）。
+
+    与 Zeek 线的差别：
+    - `event_type` 恒为 `signature_hit`：它是「签名命中」这件事本身，不是某种协议日志；
+    - 告警元数据（签名名/SID/类别/severity）进独立字段，摘要样本里直接可见；
+    - `community_id` 与 Zeek 的 conn.log 同源 → 这是两边日志关联同一条流的键；
+    - **不映射字节数**：流量体积类规则由 Zeek 的 conn 记录负责，两边都算会重复计数。
+    """
+    unwrapped = _unwrap_filebeat_parse_error(doc, "suricata")
+    if unwrapped is None:
+        return None
+    outer = unwrapped
+    nested = outer.get("suricata")
+    inner = nested if isinstance(nested, dict) else outer
+    alert = _as_dict(inner.get("alert"))
+    if not alert:
+        # 不是告警（配置漂移 / 人工重放）：不猜成某种事件，交给上层计失败数
+        return None
+    ts = _to_dt(_eve_ts(inner.get("timestamp")) or outer.get("@timestamp"))
+    source_file = _source_file(outer)
+    src_ip = inner.get("src_ip")
+    dst_ip = inner.get("dest_ip")
+    http = _as_dict(inner.get("http"))
+    # 有 http 块才按 http 拆 URI（与 Zeek 的 log_type=“http” 行为对齐）
+    extra = _http_fields(_eve_http_doc(inner), "http" if http else "suricata", src_ip)
+    # 体积类规则只认 Zeek 的 conn 记录（见 docstring）
+    extra["bytes_in"] = None
+    sig_sev = _to_int(alert.get("severity"))
+    signature = str(alert.get("signature") or "")
+    signature_id = str(alert.get("signature_id") or "")
+    return UnifiedLog(
+        source_system="suricata",
+        ts=ts,
+        event_type="signature_hit",
+        log_type="suricata",
+        log_type_known=True,
+        source_file=source_file,
+        src_ip=str(src_ip) if src_ip else None,
+        dst_ip=str(dst_ip) if dst_ip else None,
+        src_port=_to_int(inner.get("src_port")),
+        dst_port=_to_int(inner.get("dest_port")),
+        protocol=_str_or_none(inner.get("proto")),
+        # 位置照实算（中继清单只读）：它决定界面/智能体看到的是哪一跳。
+        # 注意：签名命中**不做中继去重**（见 detector/runner.py）——告警来自另一个引擎，
+        # 同一跳上重复上报本来就是两件事，丢掉反而丢证据。
+        hop=_relay_hop(src_ip, dst_ip),
+        hostname=_str_or_none(http.get("hostname"))
+        or _str_or_none(_as_dict(inner.get("tls")).get("sni"))
+        or _str_or_none(_as_dict(inner.get("dns")).get("rrname")),
+        query=str(http.get("url") or _as_dict(inner.get("dns")).get("rrname") or ""),
+        # UA 不在 `_http_fields` 的返回里（Zeek 侧也是单独赋值），这里显式搬过来
+        user_agent=str(http.get("http_user_agent") or ""),
+        # 响应码同理（Zeek 侧也是单独赋值）
+        status_code=_to_int(http.get("status")),
+        signature=signature,
+        signature_id=signature_id,
+        signature_severity=sig_sev,
+        signature_category=str(alert.get("category") or ""),
+        community_id=str(inner.get("community_id") or ""),
+        # 事件级 severity 跟着 Suricata 自己的分档走（摘要级别由三条内置规则定，见 rules/builtin.py）
+        severity=_EVE_SEVERITY.get(sig_sev or 0, "info"),
+        summary=f"签名命中：{signature}（SID {signature_id}）".strip(),
+        raw=_raw_suricata(inner, source_file),
         **extra,
     )
 
@@ -994,19 +1142,24 @@ def _map_wazuh_level(level: Any) -> Severity:
 _normalize_failures = 0
 _MAX_FAILURE_LOGS = 5
 
-_SOURCES = ("zeek", "wazuh")
+_SOURCES = ("zeek", "wazuh", "suricata")
 
 
 def source_of(doc: dict[str, Any]) -> str:
     """判定日志来源。
 
-    优先看显式标记 source_system（Zeek 的 Filebeat 会带）；
+    优先看显式标记 source_system（Zeek / Suricata 的 Filebeat 会带）；
     缺失时做兜底嗅探——否则一本 Zeek 文档会被当成 Wazuh 解析，
     导致 event_type 全错、规则静默不命中（隐性漏检）。
     """
     raw = str(doc.get("source_system") or "").strip().lower()
     if raw in _SOURCES:
         return raw
+    # Suricata 的 EVE 告警自带 alert 块与 flow_id（Zeek 与 Wazuh 都没有），可以安全嗅探
+    if isinstance(doc.get("suricata"), dict) or (
+        isinstance(doc.get("alert"), dict) and "flow_id" in doc
+    ):
+        return "suricata"
     if "log_type" in doc or isinstance(doc.get("zeek"), dict):
         return "zeek"
     return "wazuh"
@@ -1030,6 +1183,8 @@ def normalize(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
             return normalize_zeek(doc)
         if source == "wazuh":
             return normalize_wazuh(doc)
+        if source == "suricata":
+            return normalize_suricata(doc)
         return None
     except Exception as exc:  # noqa: BLE001
         if _normalize_failures < _MAX_FAILURE_LOGS:

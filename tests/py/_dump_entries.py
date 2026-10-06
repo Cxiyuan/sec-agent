@@ -20,11 +20,12 @@ assert SIDE in ("ndr", "agent"), SIDE
 sys.path.insert(0, str(ROOT / SIDE / "backend"))
 
 import samples
-from app.ingestion.normalizer import normalize_zeek
+from app.ingestion.normalizer import normalize
 
 out: dict[str, dict[str, object]] = {}
 for name, doc in samples.DOCS.items():
-    entry = normalize_zeek(json.loads(json.dumps(doc)))
+    payload = json.loads(json.dumps(doc))
+    entry = normalize(samples.doc_source(payload), payload)
     if entry is None:
         out[name] = {"fields": [], "values": None}
         continue

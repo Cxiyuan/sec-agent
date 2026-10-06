@@ -134,8 +134,25 @@ export interface ZeekStatus {
   resp_body_max_bytes: number;
   /** 按 TLS 解析的端口（逗号分隔）：这些端口不再按 HTTP 解析；空 = 沿用采集器默认端口表 */
   tls_ports: string;
+  /**
+   * 签名引擎（Suricata）上报的状态：null = 未部署 / 未运行。
+   * 它由签名引擎容器写在共享日志卷的 suricata/status.json 里，后端只读转出来。
+   */
+  suricata: SuricataStatus | null;
   rotation_hours: number;
   retention_days_local: number;
+}
+
+/** 签名引擎（Suricata）自报状态（见 ndr/suricata/entrypoint.sh 的 write_status） */
+export interface SuricataStatus {
+  alive: boolean;
+  updated_at: string;
+  iface: string;
+  home_net: string;
+  http_ports: string;
+  /** 已加载的签名规则行数（ET Open，构建镜像时固化进镜像） */
+  rule_lines: number;
+  version: string;
 }
 
 /**

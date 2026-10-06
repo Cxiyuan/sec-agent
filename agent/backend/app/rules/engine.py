@@ -293,6 +293,14 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "weird_name": ("weird",),
     "bytes_out": ("conn",),
     "bytes_in": ("conn",),
+    # 签名引擎（Suricata）：告警元数据挂在 "suricata" 名下，有两个作用——
+    # ① 「签名命中」三条规则只在这类日志上求值；② 其它引用这些字段的规则不会跑到别的日志上。
+    "signature": ("suricata",),
+    "signature_id": ("suricata",),
+    "signature_severity": ("suricata",),
+    "signature_category": ("suricata",),
+    # 关联键：Zeek 侧在 conn.log 上（community-id 脚本），Suricata 侧在告警上，两边同名同值。
+    "community_id": ("conn", "suricata"),
     # files
     "mime_type": ("files",),
     "filename": ("files",),

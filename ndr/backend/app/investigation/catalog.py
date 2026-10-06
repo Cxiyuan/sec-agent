@@ -92,6 +92,34 @@ FIELDS: dict[str, dict[str, Any]] = {
             "「会话跨IP复用」的判据用它，不用整条 Cookie 头"
         ),
     },
+    "community_id": {
+        "path": "community_id",
+        "kind": "keyword",
+        "desc": (
+            "Community ID（CIS 社区流标识）：Zeek conn.log 与签名引擎告警上同值，"
+            "用来把两个采集器对同一条流的事实对上（不受 NAT/端口复用影响）"
+        ),
+    },
+    "signature": {
+        "path": "signature",
+        "kind": "keyword",
+        "desc": "签名名（Suricata alert.signature）；只有 source_system=suricata 的告警有值",
+    },
+    "signature_id": {
+        "path": "signature_id",
+        "kind": "keyword",
+        "desc": "签名 SID（Suricata alert.signature_id），可回查规则集出处",
+    },
+    "signature_severity": {
+        "path": "signature_severity",
+        "kind": "num",
+        "desc": "签名的严重度 1/2/3（Suricata 自己的 alert.severity；摘要级别按它分三档）",
+    },
+    "signature_category": {
+        "path": "signature_category",
+        "kind": "keyword",
+        "desc": "签名类别（Suricata alert.category，如 Attempted Administrator Privilege Gain）",
+    },
     "hostname": {
         "path": "hostname",
         "kind": "keyword",
@@ -282,6 +310,11 @@ SUMMARY_FIELDS: list[str] = [
     "protocol",
     "conn_state",
     "weird_name",
+    "community_id",
+    "signature",
+    "signature_id",
+    "signature_severity",
+    "signature_category",
     "hostname",
     "method",
     "query",
@@ -326,6 +359,9 @@ AGG_FIELDS: tuple[str, ...] = (
     "event_type",
     "conn_state",
     "weird_name",
+    "signature",
+    "signature_id",
+    "signature_category",
     "hostname",
     "method",
     "status_code",

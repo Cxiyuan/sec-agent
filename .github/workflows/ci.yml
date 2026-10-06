@@ -91,6 +91,17 @@ jobs:
           # 基底版本可用 build-args 覆盖（默认 zeek/zeek:9.0）
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-zeek:latest
 
+      # 签名引擎（Suricata）：构建期把 ET Open（MIT）规则拉下来固化进镜像。
+      # 镜像名/tag 与 ndr/suricata/Dockerfile 的 SURICATA_BASE 对应，升级走一次提交。
+      - name: Build & push suricata
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: ./ndr/suricata
+          push: true
+          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-suricata:latest
+
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
   # 反复出现（Zeek 的 BPF 过滤器被当文件名、Filebeat 配置键名、类型判定兜底成 conn）。
@@ -143,6 +154,11 @@ jobs:
       # 用官方镜像跑单测（与 ndr/zeek/Dockerfile 的 ZEEK_BASE 一致）。
       - name: Zeek site scripts (unit test in container)
         run: sh tests/zeek/run.sh
+
+      # 签名引擎的配置是渲染出来的（网卡/网段/HTTP 端口）且要过 suricata -T 自检：
+      # 只靠本地静态检查看不出配置能不能加载。
+      - name: Suricata config & rules (self-test in container)
+        run: sh tests/suricata/run.sh
 
   # 前端类型检查（两侧 tsc --noEmit）。比 next build 快得多，且能挡住类型错。
   web:

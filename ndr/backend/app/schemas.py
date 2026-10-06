@@ -14,7 +14,7 @@ Severity = Literal["critical", "high", "medium", "low", "info"]
 class UnifiedLog(BaseModel):
     """Zeek / Wazuh 原始日志规范化后的统一结构。"""
 
-    source_system: str  # "zeek" | "wazuh"
+    source_system: str  # "zeek" | "wazuh" | "suricata"
     ts: datetime
     event_type: str  # 归一化事件类型：port_scan / brute_force / dns_query / ...
     log_type: str = (
@@ -43,6 +43,16 @@ class UnifiedLog(BaseModel):
     # Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（中继的前后跳是两条独立
     # 连接、uid 不同，所以它只做同一跳内的关联）。Wazuh 侧恒空。
     uid: str = ""
+    # 签名引擎（Suricata）命中信息：只有 source_system="suricata" 的告警事件有值。
+    # 「签名命中」三条内置规则按 signature_severity 分档（1=高 / 2=中 / 3=低，取自 EVE 的
+    # alert.severity —— 那是 Suricata 自己的语义，与我们 Severity 不是一套）。
+    signature: str = ""  # 签名名（EVE alert.signature）
+    signature_id: str = ""  # SID（EVE alert.signature_id），可回查规则集
+    signature_severity: int | None = None  # 1/2/3
+    signature_category: str = ""  # 签名类别（EVE alert.category），研判提示
+    # Community ID（社区流标识）：Zeek 的 conn.log 与 Suricata 的 alert 都会带，是**跨采集器**
+    # 关联同一条流的键（比五元组稳：不受 NAT 与端口复用影响，加密流量也能对上）。
+    community_id: str = ""
     # 中继链路位置（只读中继清单，见 ingestion/relay_nodes.py）：
     #   direct=不涉及中继；front=目的在中继清单（客户端→中继）；back=来源在中继清单
     #   （中继→真实目的）；relay_internal=两端都是中继（级联）。检测/画像/资产不处理 back 与

@@ -1289,3 +1289,39 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 - 接口：`RuleIn.scope`（校验只允许 network/host）、`_rule_dict` 返回 scope；
 - **检测器按侧过滤**：`runner._entry_side()` + `_same_side()` —— 主机规则只在 `source_system=wazuh`
   的事件上求值，网络规则反之（缺 scope 按 network），逐条规则与频率规则两条路径都过滤。
+
+### 2026-10 引入签名引擎（Suricata）：48 条重叠规则移交 + Community ID 关联
+
+**为什么（一手依据）**：把 80 条内置规则的判据逐个对照 Suricata 官方规则关键字表
+（`http.host/uri/method/user_agent/cookie/request_body/response_body`、`file.name/fileext/
+file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、`|00|` 字节匹配、
+`flowbits/xbits`、`dataset`）后分成三桶：
+
+| 桶 | 条数 | 去向 |
+| --- | --- | --- |
+| 判据全落在 Suricata 有关键字的字段上 | 48 | **删除，交给签名引擎（ET Open，MIT）** |
+| 主机监控侧 | 15 | 保留（Suricata 是纯网络引擎，看不到主机事件） |
+| 「按实体数不同值」+ 部分重叠 | 17 | 保留（`dataset` 是二值集合，数不出“几个不同账号/端口/目的”） |
+
+**做到的改动**：
+
+- 新增 `ndr/suricata/`（Dockerfile + 入口看门狗 + 配置模板 + 裁剪清单）：CI 构建镜像时用
+  `suricata-update` 固话 ET Open（运行期不需要外网），只输出命中规则的事件（EVE `alert`）；
+- 采集侧 Filebeat 加第二个输入（`/logs/suricata/*.json`，静态 `source_system/log_type`），
+  与 Zeek 共用同一个 Redis 采集队列 → 同一条归一化/入库/检测/摘要链路；
+- 归一化新增 `normalize_suricata`（两侧栈逐字一致）：`event_type=signature_hit`、
+  `log_type=suricata`，签名名/SID/类别/severity 进独立字段，`raw` 丢掉整包十六进制与载荷 base64；
+- 新增 **`内置-签名命中(高危/中危/低危)`**（按 EVE `alert.severity` 1/2/3 分档），
+  摘要样本带 `signature/signature_id/signature_category/community_id`；
+- **签名命中的两处例外**（都有实机理由）：不做中继去重 —— 本环境客户端侧是 TLS（无 SNI）、
+  有内容的恰是源站侧那跳，套「哪一侧有内容」的去重会把该保留的告警丢掉；
+  不进行为基线/画像/资产统计 —— 告警是派生产物，学进去等于把告警当正常行为；
+- **Community ID**：`UnifiedLog.community_id` + Zeek 侧 `@load policy/protocols/conn/
+  community-id-logging`（conn.log）+ Suricata 侧 `community-id: yes`；
+  两个采集器对同一条流可用同一个键对上（不受 NAT/端口复用影响，加密流量也能对）；
+- 界面：「监控网段」页加一行说明（同一份网卡/网段配置同时用于采集器与签名引擎）
+  并显示签名引擎状态（`/logs/suricata/status.json`，后端只读挂同一日志卷转出来）。
+
+**验收顺序（先保覆盖再删规则）**：部署后先确认 EVE 有 alert 写出、`log_type=suricata` 文档
+落 ES 且 `community_id` 非空、三条签名规则产出摘要 → 再确认 48 条已从规则库消失 →
+观察 48h，把与保留规则「同源同窗口双报」的上游签名逐条写进 `disable.conf`（先量再定，第一版不预裁）。

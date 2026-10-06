@@ -228,6 +228,22 @@ def _read_last_reload() -> str | None:
         return None
 
 
+def _read_suricata_status() -> dict[str, Any] | None:
+    """签名引擎（Suricata）自己写在共享日志卷里的机器可读状态。
+
+    文件由容器入口的 write_status 定期刷新（存活/网卡/网段/规则行数/版本），
+    见 ``ndr/suricata/entrypoint.sh``。读不到 = 没部署或根本没跑起来，
+    界面按「未启用」显示 —— 后端不去问容器（产品里没有 docker socket）。
+    """
+    path = os.path.join(settings.zeek_log_dir, "suricata", "status.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 @router.get("/status")
 def get_status(_: Annotated[User, Depends(get_current_user)]):
     conf = _read_conf()
@@ -249,6 +265,9 @@ def get_status(_: Annotated[User, Depends(get_current_user)]):
         ),
         # 按 TLS 解析的端口（空 = 沿用 Zeek 默认 HTTP 端口表）
         "tls_ports": conf.get("tls_ports", ""),
+        # 签名引擎（Suricata）：与网络采集器共用本页的网卡/网段配置，
+        # 这里回它自己上报的状态（无 = 未部署/未运行）
+        "suricata": _read_suricata_status(),
         # 镜像内硬编码（见 zeek/README.md）
         "rotation_hours": 24,
         "retention_days_local": 3,

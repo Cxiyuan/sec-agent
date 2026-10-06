@@ -1,0 +1,112 @@
+%YAML 1.1
+---
+# 深瞳 · 签名引擎（Suricata）配置模板
+# 由 entrypoint.sh 渲染到 /etc/suricata/suricata.yaml（容器内），占位符三处：
+#   %IFACE%      抓包网卡（来自共享采集配置 interface.conf 的 interface，界面「监控网段」页维护）
+#   %HOME_NET%   监控网段（同一份配置的 monitored_nets；与网络采集器的口径完全一致）
+#   %HTTP_PORTS% 明文 HTTP 端口 = Zeek/业界默认 Web 端口集 **减去** 同一份配置里「按 TLS 解析的端口」
+#                （tls_ports）。这就是「引擎默认值 - 运维声明」的口径，不在产品里写死客户端口。
+#
+# 输出只有一种：eve.json 的 alert（命中规则才写日志）。flow/dns/http/tls/stats 一律不开——
+# 那些元数据由 Zeek 提供，这里重复产出只会让 ES 变胖、让智能体看到两份事实。
+# community-id: yes 是必须的：它是与 Zeek conn.log 关联同一条流的键。
+
+vars:
+  address-groups:
+    HOME_NET: "%HOME_NET%"
+    EXTERNAL_NET: "!$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "%HTTP_PORTS%"
+    SHELLCODE_PORTS: "!80"
+    SSH_PORTS: "22"
+
+default-log-dir: /logs/suricata
+
+# 自身统计不要（统计类元数据由 Zeek 的 stats.log + 状态页负责）
+stats:
+  enabled: no
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      community-id: yes
+      community-id-seed: 0
+      types:
+        # 只发告警。payload 留着（默认 4KB 截断）——智能体要靠它看到命中的原文；
+        # packet（整包十六进制）不开，体积大且与 payload 重复。
+        - alert:
+            payload: yes
+            payload-printable: yes
+            packet: no
+            metadata: yes
+            tagged-packets: no
+            http: extended
+            fileinfo: yes
+
+logging:
+  default-log-level: notice
+  outputs:
+    - console:
+        enabled: yes
+        level: notice
+
+af-packet:
+  - interface: %IFACE%
+    # cluster_flow：同一条流的双向必须落在同一个线程里，否则流重组与 flow 关键字失效
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+    ring-size: 2048
+    buffer-size: 32768
+    disable-promisc: no
+    # 镜像口拿到的包校验和往往不完整，交给上层（不用 offload 修正）——校验和校验一律关掉，
+    # 否则大量包被丢在入口，签名根本看不到（与 Zeek 侧「不动 offload」同源的问题）
+    checksum-validation: no
+    bypass: no
+
+runmode: workers
+max-pending-packets: 4096
+default-packet-size: 1514
+
+# 只想看告警，不需要阻断（被动镜像口，无 inline 条件）
+action-order:
+  - pass
+  - drop
+  - reject
+  - alert
+
+app-layer:
+  protocols:
+    http:
+      enabled: yes
+      default-config:
+        ports: "%HTTP_PORTS%"
+    tls:
+      enabled: yes
+    dns:
+      # 加密 DNS 之外，明文 53 的 TCP/UDP 都要看（TXT 隧道类签名会用到）
+      tcp: yes
+      udp: yes
+      rrtype: any
+    smtp:
+      enabled: yes
+    ssh:
+      enabled: yes
+    ftp:
+      enabled: yes
+    smb:
+      enabled: yes
+    dcerpc:
+      enabled: yes
+
+default-rule-path: /var/lib/suricata/rules
+rule-files:
+  - suricata.rules
+
+classification-file: /etc/suricata/classification.config
+reference-config-file: /etc/suricata/reference.config
+threshold-file: /etc/suricata/threshold.config

@@ -187,6 +187,13 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               已识别 {nets.length} 条；BPF 过滤器与 Site::local_nets 由这份清单自动生成（源或目的
               落在其中即抓取）。不填则无法保存 —— 未配置时前端会强制进首次向导。
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              这份网卡与网段配置**同时**用于网络采集器与签名引擎（Suricata）：签名引擎的 HOME_NET
+              = 监控网段，抓包口 = 监听网卡，因此两者看到的范围始终一致。
+              {status?.suricata
+                ? ` 签名引擎：${status.suricata.alive ? "运行中" : "未运行"}，已加载签名 ${status.suricata.rule_lines} 行`
+                : " 签名引擎：未部署（没有收到它的状态上报）。"}
+            </p>
           </div>
         )}
 

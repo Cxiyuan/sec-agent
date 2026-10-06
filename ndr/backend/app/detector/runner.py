@@ -839,7 +839,10 @@ def _handle(
     relay_roles.observe(entry)
     # ⑤ 中继去重（同样在用户过滤之前判定）：保留前跳、丢掉后跳；
     #    若从未见过该中继的前跳（抓包点只在源站侧），后跳照常处理，不丢数据。
-    if relay_dedup.decide(entry) == "drop":
+    #    签名命中（Suricata）例外：它来自另一个引擎，说的是「某条签名命中了这条流」，不是
+    #    「同一个业务访问的第二跳」。去重按「哪一侧有明文内容」判前后跳，而本环境客户端侧是
+    #    TLS（无 SNI）、有内容的恰是源站侧那跳 —— 套上去会把该保留的告警丢掉。
+    if entry.source_system != "suricata" and relay_dedup.decide(entry) == "drop":
         stats["relay_deduped"] += 1
         return
 
@@ -853,7 +856,10 @@ def _handle(
 
     # ④ 基线观测（第 8 期）：账号/会话画像按「在监控网段内、未被排除」的事件持续学习。
     #    放在规则之前：画像是长期行为基线，不该只学命中规则的那部分日志。
-    engine.observe(entry)
+    #    签名命中（Suricata 告警）不进基线：它是派生产物，学进去会把告警当正常行为
+    #    （见 log_types.is_baseline_eligible）。
+    if log_types.is_baseline_eligible(entry):
+        engine.observe(entry)
 
     # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
     candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])

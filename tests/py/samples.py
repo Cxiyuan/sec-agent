@@ -29,6 +29,8 @@ CONN = {
     "history": "ShADadfF",
     "orig_pkts": 12,
     "resp_pkts": 10,
+    # Community ID（Zeek 的 community-id-logging 脚本产出）：与签名引擎告警里的同名字段一致
+    "community_id": "1:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/abc=",
 }
 
 DNS = {
@@ -266,6 +268,50 @@ UNKNOWN_STREAM = {
 }
 
 
+# 签名引擎（Suricata）EVE 告警：字段名取自 EVE JSON 的真实结构（含 payload/packet 大字段，
+# 归一化会在写 raw 前把它们丢掉）。时间戳故意用**无冒号时区**（Suricata 的写法）——
+# `fromisoformat` 在部分 Python 版本上拒收它，若静默回退成 now()，时间线就错了。
+EVE_ALERT = {
+    "timestamp": "2026-10-02T05:00:00.123456+0800",
+    "flow_id": 1234567890123,
+    "in_iface": "ens192",
+    "event_type": "alert",
+    "src_ip": "192.0.2.77",
+    "src_port": 51000,
+    "dest_ip": "192.0.2.80",
+    "dest_port": 8081,
+    "proto": "TCP",
+    "community_id": "1:AbCdEf0123456789+/abcdef==",
+    "alert": {
+        "action": "allowed",
+        "gid": 1,
+        "signature_id": 2010935,
+        "rev": 3,
+        "signature": "ET WEB_SERVER SQL Injection Attempt (SELECT)",
+        "category": "Web Application Attack",
+        "severity": 1,
+    },
+    "http": {
+        "hostname": "app.example.internal",
+        "url": "/api/v2/items?id=1%27%20OR%201%3D1",
+        "http_user_agent": "Mozilla/5.0 (compatible; probe)",
+        "http_content_type": "text/html",
+        "http_method": "GET",
+        "protocol": "HTTP/1.1",
+        "status": 200,
+        "length": 512,
+        "http_refer": "http://app.example.internal/",
+    },
+    "tls": {"sni": "app.example.internal", "version": "TLS 1.3"},
+    "dns": {"rrname": "example.internal", "rrtype": "A"},
+    # 这两个字段体积大且与 payload_printable 重复：raw 里不应该出现
+    "payload": "R0VUIC9hcGkvdjIvaXRlbXM",
+    "payload_printable": "GET /api/v2/items?id=1' OR 1=1 HTTP/1.1",
+    "packet": "AAABAAEAAAQAAAAA",
+    "flow": {"pkts_toserver": 3, "bytes_toserver": 320},
+}
+
+
 def envelope(
     fields: dict[str, Any],
     log_type: str,
@@ -279,6 +325,22 @@ def envelope(
         "source_system": source_system,
         "log": {"file": {"path": path}},
         "zeek": dict(fields),
+        "host": {"name": "ndr-sensor"},
+        "agent": {"type": "filebeat", "version": "8.15.3"},
+    }
+
+
+def suricata_envelope(
+    fields: dict[str, Any],
+    path: str = "/logs/suricata/eve.json",
+) -> dict[str, Any]:
+    """签名引擎的形态：字段在 ``suricata`` 子对象下（ndjson ``target: suricata``）。"""
+    return {
+        "@timestamp": "2026-10-02T05:00:00.000Z",
+        "log_type": "suricata",
+        "source_system": "suricata",
+        "log": {"file": {"path": path}},
+        "suricata": dict(fields),
         "host": {"name": "ndr-sensor"},
         "agent": {"type": "filebeat", "version": "8.15.3"},
     }
@@ -311,6 +373,10 @@ DOCS: dict[str, dict[str, Any]] = {
     "flat_conn": dict(CONN),
     # 子目录布局（历史部署）也要能取到文件名
     "conn_in_subdir": envelope(CONN, "conn", "/logs/2026-10-01/conn.log"),
+    # 签名引擎（Suricata）：告警事件（归一化后 source_system=suricata）
+    "suricata_alert": suricata_envelope(EVE_ALERT),
+    # 没有信封的旧形态（只有内层字段 + 无 source_system）：靠 alert/flow_id 嗅探
+    "flat_suricata": dict(EVE_ALERT),
 }
 
 # 期望的 (log_type, 是否在名单内, 分类)
@@ -338,7 +404,24 @@ EXPECT: dict[str, tuple[str, bool, str]] = {
     "flat_files": ("files", True, "event"),
     "flat_conn": ("conn", True, "event"),
     "conn_in_subdir": ("conn", True, "event"),
+    # 签名引擎：log_type 恒为 suricata，属事件类（进检测与入库）
+    "suricata_alert": ("suricata", True, "event"),
+    "flat_suricata": ("suricata", True, "event"),
 }
 
-# 只跟 zeek 线有关：一致性比较用（Wazuh 走另一套 normalize_wazuh）
-ZEEK_NAMES = tuple(DOCS)
+# 只跟 zeek 线有关：一致性比较用（Wazuh / Suricata 走各自的分支）
+ZEEK_NAMES = tuple(name for name in DOCS if not name.startswith(("suricata_", "flat_suricata")))
+
+
+def doc_source(doc: dict[str, Any]) -> str:
+    """样本的来源判定（口径与 ``app.ingestion.normalizer.source_of`` 一致）。
+
+    放这里只维护一份：两侧的包名都是 ``app``，测试侧共用同一个 samples 模块就成了。
+    显式 ``source_system`` 优先；缺失时靠「有 alert 块」认 Suricata（Zeek/Wazuh 都没有它）。
+    """
+    raw = str(doc.get("source_system") or "").strip().lower()
+    if raw in ("zeek", "wazuh", "suricata"):
+        return raw
+    if isinstance(doc.get("suricata"), dict) or isinstance(doc.get("alert"), dict):
+        return "suricata"
+    return "zeek"
