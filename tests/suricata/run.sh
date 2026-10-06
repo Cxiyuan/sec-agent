@@ -58,13 +58,22 @@ if echo "$RENDERED" | grep -A 6 'types:' | grep -Eq -- '- (flow|dns|http|tls|sta
   exit 1
 fi
 
-echo "== 断言规则真的拉下来了（ET Open，MIT）=="
-RULES=$(docker run --rm --entrypoint sh "$IMG" \
-  -c 'wc -l < /var/lib/suricata/rules/suricata.rules; grep -c "msg:\"ET " /var/lib/suricata/rules/suricata.rules')
-echo "$RULES"
-LINES=$(echo "$RULES" | sed -n 1p | tr -d ' ')
-ET=$(echo "$RULES" | sed -n 2p | tr -d ' ')
+echo "== 断言规则真的拉下来了（ET Open，MIT）与裁先生效 =="
+STATS=$(docker run --rm --entrypoint sh "$IMG" -c '
+  wc -l < /var/lib/suricata/rules/suricata.rules
+  grep -c "msg:\"ET " /var/lib/suricata/rules/suricata.rules \&\& true
+  grep -c "SURICATA STREAM" /var/lib/suricata/rules/suricata.rules \&\& true
+  grep -c "sid:2054407;" /var/lib/suricata/rules/suricata.rules \&\& true
+')
+echo "$STATS"
+LINES=$(echo "$STATS" | sed -n 1p | tr -d ' ')
+ET=$(echo "$STATS" | sed -n 2p | tr -d ' ')
+STREAM=$(echo "$STATS" | sed -n 3p | tr -d ' ')
+BANNER=$(echo "$STATS" | sed -n 4p | tr -d ' ')
 [ "$LINES" -gt 10000 ] || { echo "规则文件太小（$LINES 行，ET Open 没拉下来？）" >&2; exit 1; }
 [ "$ET" -gt 1000 ] || { echo "ET 签名太少（$ET 条）" >&2; exit 1; }
+# disable.conf 的第一条：引擎流异常（镜像口非对称流造成的 93.5% 噪音）不该还在规则里
+[ "$STREAM" = "0" ] || { echo "SURICATA STREAM 未被裁掉（还有 $STREAM 条）—— disable.conf 没生效？" >&2; exit 1; }
+[ "$BANNER" = "0" ] || { echo "2054407（banner 类）未被裁掉（还有 $BANNER 条）" >&2; exit 1; }
 
-echo "签名引擎自检通过（$LINES 行规则 / $ET 条 ET 签名）"
+echo "签名引擎自检通过（$LINES 行规则 / $ET 条 ET 签名 / 已裁掉引擎流异常）"

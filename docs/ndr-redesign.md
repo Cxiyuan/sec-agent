@@ -1324,4 +1324,8 @@ file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、
 
 **验收顺序（先保覆盖再删规则）**：部署后先确认 EVE 有 alert 写出、`log_type=suricata` 文档
 落 ES 且 `community_id` 非空、三条签名规则产出摘要 → 再确认 48 条已从规则库消失 →
-观察 48h，把与保留规则「同源同窗口双报」的上游签名逐条写进 `disable.conf`（先量再定，第一版不预裁）。
+观察真实告警量并按实测裁剪（**上线当天就裁了两类**：`SURICATA STREAM *` 引擎流异常占全部告警
+93.5%（镜像口非对称流造成的引擎抱怨，与 Zeek 侧「采集类异常」同源）、以及 ET INFO 的
+「服务端 banner 版本」类（每条 SSH 连接报一次，属配置事实）；理由与实测数字写在
+`ndr/suricata/disable.conf` 里）。不裁的后果是真实的：摘要通道全局 24 条/分钟，
+被噪音占满后真正的签名命中就挤不进来。

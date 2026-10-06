@@ -233,6 +233,23 @@ def test_suricata_entrypoint_renders_and_self_tests() -> None:
     assert "suricata -T" in text
 
 
+def test_suricata_disable_list_keeps_measured_trim() -> None:
+    """裁剪清单不能被子孙后代无意清空：上线当天实测裁的两类必须还在（详见 disable.conf 注释）。"""
+    text = (ROOT / "ndr" / "suricata" / "disable.conf").read_text(encoding="utf-8")
+    assert "1:2210000-2219999" in text, "引擎流异常（占实测告警 93.5%）的裁剪不见了"
+    assert "2054407" in text, "banner 类噪音签名的裁剪不见了"
+    # 清单里的每一行“非注释非空”都必须是可识别的裁剪写法
+    for line in text.splitlines():
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        assert (
+            item.startswith(("re:", "group:"))
+            or item.split(":")[0].isdigit()
+            or item.isdigit()
+        ), f"无法识别的裁剪写法：{item}"
+
+
 def test_zeek_loads_community_id_script() -> None:
     text = (ROOT / "ndr" / "zeek" / "site" / "local.zeek").read_text(encoding="utf-8")
     assert "@load policy/protocols/conn/community-id-logging" in text
