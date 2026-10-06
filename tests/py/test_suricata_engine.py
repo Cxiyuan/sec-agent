@@ -231,6 +231,10 @@ def test_suricata_entrypoint_renders_and_self_tests() -> None:
     assert "interface.conf" in text
     assert "--render-only" in text
     assert "suricata -T" in text
+    # 规则必须从镜像同步到运行目录：基础镜像把 /var/lib/suricata 声明成 VOLUME，
+    # 匿名卷在容器重建时被保留 ⇒ 不同步的话升级镜像后容器里还是旧规则（实机踩到过）。
+    assert "sync_rules" in text
+    assert "cmp -s" in text
 
 
 def test_suricata_disable_list_keeps_measured_trim() -> None:

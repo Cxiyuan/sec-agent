@@ -34,7 +34,15 @@ RUN set -eux; \
     echo "规则裁剪：${before} → ${after} 行（引擎流异常 + banner 类）"; \
     test "$after" -lt "$before"; \
     test "$(grep -c 'SURICATA STREAM' "$RULES" || true)" = "0"; \
-    wc -l "$RULES"
+    wc -l "$RULES"; \
+    # 影子副本：基础镜像把 /var/lib/suricata（还有 /etc/suricata）声明成了 **VOLUME**，
+    # Docker 会给它建匿名卷、并在容器重建时**保留**——结果升级镜像后容器里读到的还是上一版规则
+    # （实机踩到：镜像内 69028 行，容器里仍是旧的 69096 行，引擎流异常照旧刷）。
+    # 所以规则/分类在镜像里另存一份，由入口每次启动同步过去（见 entrypoint.sh 的 sync_rules）。
+    mkdir -p /usr/local/share/shentong; \
+    cp "$RULES" /usr/local/share/shentong/suricata.rules; \
+    cp /etc/suricata/classification.config /usr/local/share/shentong/classification.config; \
+    cp /etc/suricata/reference.config /usr/local/share/shentong/reference.config
 
 # 配置模板 + 入口（网卡/网段/端口由 entrypoint 从共享采集配置渲染）
 COPY suricata.yaml.tmpl /usr/local/share/shentong/suricata.yaml.tmpl

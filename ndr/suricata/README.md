@@ -62,6 +62,19 @@ SPAN 网卡 ─┬─ Zeek ─ conn/http/ssl/… ──────────�
 其余仍按「同源同窗口双报」继续观察：上线后看真实告警，把与保留的 32 条内置规则重复的签名
 逐条关掉，理由同样写进 `disable.conf`。
 
+## 一个必须知道的坑：基础镜像的匿名卷
+
+`jasonish/suricata` 把 `/var/lib/suricata` 与 `/etc/suricata` 声明成了 **VOLUME**：Docker 会为它们建
+**匿名卷**，而容器重建时匿名卷会被**保留** —— 于是「拉了新镜像、重建了容器」，容器里读到的仍是
+**上一版**的 `suricata.rules`（实机踩到：镜像内 69028 行，容器里还是旧的 69096 行，被裁掉的
+引擎流异常照旧刷）。所以：
+
+- 构建时把规则/分类另存到 `/usr/local/share/shentong/`（不在任何卷里）；
+- 入口每次启动 `sync_rules`：以镜像副本为准同步到运行目录（`cmp` 不同才拷）。
+
+验证方法：`docker exec <容器> wc -l /var/lib/suricata/rules/suricata.rules`
+应与镜像内一致（`docker run --rm --entrypoint sh <镜像> -c 'wc -l /var/lib/suricata/rules/suricata.rules'`）。
+
 ## 基底与验证
 
 - 基底：`ARG SURICATA_BASE`（默认 `jasonish/suricata:7.0`，官方社区镜像，内含
