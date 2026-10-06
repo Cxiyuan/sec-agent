@@ -705,7 +705,7 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 - `config.web_login_path_regex` 补常见登录形态（`/wp-login.php`、`/admin/login.do`、`/api/v2/authenticate`、`/user/sign_in`）并加词首边界：原正则漏掉它们，让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
 - `policy_skip_rules` 移除「内置-恶意文件传输」：它 `severity=high ≥ min_severity=medium`，**永远不生效**（死配置）；顺带把该规则改为只报上传方向（`file_is_orig`），不再把软件更新/内部 JAR 下载全报 high。
 
-**内置规则内容（86 条内置、其中启用 84 条：`ndr/` 与 `agent/` 两份逐字一致）**
+**内置规则内容（代码里 84 条内置、启用 83 条：`ndr/` 与 `agent/` 两份逐字一致；库里另有 1 条已退役保留行，见文末「扫描规则改扇出」）**
 
 - **P0**：`WebShell上传` 判据从「请求路径以 .php 结尾」改为「multipart + body 里真有 `filename="x.php"`」（原来 `POST /login.php→302` 报 critical、真上传却漏报）；`Log4Shell` 的 `ognl|spel` 加词边界（`/spellcheck` 曾报 critical）并补 `req_headers`/`resp_headers`（CVE-2021-44228 头向量漏报）；`命令注入` 允许分隔符后直接跟命令（`;id`/`|id`/`&&id` 曾全漏）；`大面积目标探测` 去掉恒真条件 `src_ip exists`（实为无条件按源计数）；`cookie`/`weird` 类死规则经上游修复复活。
 - **P1**：新增方向/连接状态限定（横向移动、异常外联、外传、弱 TLS、敏感端口）；账号类 count 规则 key 加 `dst_ip`、抬高阈值（密码喷洒 5→8/5 分钟、登录爆破 15→30/10 分钟、撞库 3→5/30 分钟）并修 normalizer 的 `sshd` 误判；`DNS-TXT隧道` 改为「同源多个不同 TXT 名字」（原 key 含 query，语义相反）；`横向移动管理端口`/`内网慢速横向`/`服务枚举` 补方向与失败连接限定、阈值收敛；`多路径探测`/`暴力路径枚举`/`服务端错误突变` 补状态码过滤与白名单。
@@ -1175,7 +1175,7 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 扇出。实测正常失败尝试的端口扇出 **≤3**，与扫描（≥8 个端口）天然可分。
 
 **改动**：
-1. **退役 `内置-扫描尝试连接`**（单个失败尝试不再告警）：名字从 `BUILTIN_RULES` 拿掉，
+1. **退役 `内置-扫描尝试连接`**（单个失败尝试不再告警）：名字从 `BUILTIN_RULES` 拿掉（代码里 84 条内置、启用 83 条；库里 85 行 = 84 条内置 + 这条退役保留行），
    `builtin.RETIRED_RULES` 备案说明；播种流程新增 `_retire_builtin_rules()`（**幂等**）把库里那行
    置 `enabled=False` 并追加说明 —— **不删行**（规则页看得到「它为什么没了」，可一键启用回滚）。
    两侧（`ndr/` 与 `agent/`）都加：agent 若自建库播种，旧行同样会被停用。
