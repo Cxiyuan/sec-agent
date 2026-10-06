@@ -91,20 +91,28 @@ N=$(count_from_entry "$OUT")
 echo "样例规则：2 条，suricata -T 通过 ✓"
 
 echo "== ④ staging 校验 + activate 切换（共享卷协议）=="
-# 校验：把新版本放进 staging 并下发 validate.request
+# 校验：把新版本放进 staging 并下发 validate.request（不吞容器输出，失败要能看到原因）
 cp "$ROOT/tests/suricata/sample/shentong-sample.rules" "$WORK/rules/staging/"
 printf 'ci-test-1\n' > "$WORK/rules/validate.request"
-RUN "$IMG" --handle-requests >/dev/null 2>&1 || true
-grep -q '"ok": true' "$WORK/rules/validation.json" || {
-  echo "staging 校验没有通过（validation.json 缺失或 ok!=true）" >&2
-  cat "$WORK/rules/validation.json" 2>/dev/null >&2 || true
+RUN "$IMG" --handle-requests 2>&1 | tail -15 || true
+if [ ! -f "$WORK/rules/validation.json" ]; then
+  echo "容器没有写 validation.json（请求标记没被处理？）" >&2
   exit 1
-}
+fi
+if ! grep -q '"ok": true' "$WORK/rules/validation.json"; then
+  echo "staging 校验没有通过，validation.json：" >&2
+  cat "$WORK/rules/validation.json" >&2 || true
+  echo "--- 容器里 suricata -T 的原始输出（rejected/error.txt）---" >&2
+  for f in "$WORK"/rules/rejected/*/error.txt; do
+    [ -f "$f" ] && cat "$f" >&2
+  done
+  exit 1
+fi
 # 生效：写 activate.request → 容器切 active（带 manifest.json 供界面显示版本）
 printf '{"version": "ci-test-1", "files": [{"name": "shentong-sample.rules"}]}\n' \
   > "$WORK/rules/staging/manifest.json"
 printf 'ci-test-1\n' > "$WORK/rules/activate.request"
-RUN "$IMG" --handle-requests >/dev/null 2>&1 || true
+RUN "$IMG" --handle-requests 2>&1 | tail -15 || true
 [ -f "$WORK/rules/active/manifest.json" ] || { echo "activate 没有把 staging 切到 active" >&2; exit 1; }
 grep -q '"ci-test-1"' "$WORK/rules/active/manifest.json" || { echo "生效版本不对" >&2; exit 1; }
 [ -f "$WORK/rules/active/shentong-sample.rules" ] || { echo "规则文件没切过去" >&2; exit 1; }
@@ -113,9 +121,12 @@ echo "校验与生效协议 ✓"
 
 echo "== ⑤ 清空规则：回到空占位 =="
 printf 'reset\n' > "$WORK/rules/reset.request"
-RUN "$IMG" --handle-requests >/dev/null 2>&1 || true
+RUN "$IMG" --handle-requests 2>&1 | tail -10 || true
 [ ! -f "$WORK/rules/active/manifest.json" ] || { echo "清空后 active 里还有 manifest（应为空占位）" >&2; exit 1; }
 [ -f "$WORK/rules/active/shentong.rules" ] || { echo "清空后没有回落到空占位规则" >&2; exit 1; }
 echo "清空规则 ✓"
+
+# 容器以 root 写的文件，CI 用户删不掉：收尾把权限放开（免得 trap 里 rm 报一堆 Permission denied）
+RUN --entrypoint sh "$IMG" -c 'chmod -R a+rwX /rules' >/dev/null 2>&1 || true
 
 echo "签名引擎自检通过"
