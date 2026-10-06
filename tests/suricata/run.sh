@@ -28,7 +28,13 @@ RUN() {
 }
 
 count_loaded() {
-  # 从 suricata -T 的输出里取「N rules successfully loaded」
+  # 实测（Suricata 7.0.17）：
+  #   0 条规则 → 只打 "W: detect: 1 rule files specified, but no rules were loaded!"（没有统计行）
+  #   N 条规则 → "... N rules successfully loaded, 0 rules failed"
+  if printf '%s\n' "$1" | grep -q 'no rules were loaded'; then
+    echo 0
+    return
+  fi
   printf '%s\n' "$1" | sed -n 's/.* \([0-9][0-9]*\) rules successfully loaded.*/\1/p' | tail -1
 }
 
