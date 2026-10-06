@@ -255,16 +255,16 @@ def test_multi_path_probe_statuses_exclude_200(mods: dict[str, Any]) -> None:
     assert statuses and set(statuses[0]["value"]) == {401, 403, 404}
 
 
-def test_self_signed_cert_rule_has_no_dead_issuer_branch(mods: dict[str, Any]) -> None:
-    """「自签或异常证书」不再引用 `cert_issuer`：该字段实测 0 条非空，是死路径（2026-10）。
+def test_self_signed_cert_rule_deleted(mods: dict[str, Any]) -> None:
+    """「自签或异常证书」按用户口径删除：自签证书不需要检测（属配置事实非攻击事件）。
 
-    依据：近 6 小时窗口里 `cert_issuer` 非空文档数 = 0（同批 `cert_self_signed` 有 280 万条）——
-    原条件里的 `cert_issuer regex (unknown|localhost)` 分支永不成立；删掉后判据只剩自签布尔。
+    依据：本环境实测 `cert_self_signed == true` 文档数 = 0（一个自签都没有），
+    且该规则判据只剩这一条布尔（`cert_issuer` 死分支上一步已按实机数据删除）。
     """
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-自签或异常证书")
-    fields = {r["field"] for r in rule["conditions"]["rules"]}
-    assert "cert_issuer" not in fields
-    assert "cert_self_signed" in fields
+    builtin_mod = mods["builtin"]
+    names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
+    assert "内置-自签或异常证书" not in names
+    assert "内置-自签或异常证书" in builtin_mod.DELETED_RULES
 
 
 def test_session_rule_keys_on_session_id(mods: dict[str, Any]) -> None:

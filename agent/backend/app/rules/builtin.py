@@ -76,6 +76,10 @@ DELETED_RULES: dict[str, str] = {
     # 没有「不同路径」⇒ 正常用户连点 30 个 404（坏链/缺图）就会中（engine-semantics.md:189）。
     # 检测能力由「多路径探测」（≥50 个不同路径且失败）接手，故整条删除。
     "内置-目录/路径爆破": "与「多路径探测」重复且门槛过低（30 次 403/404、不限路径）：并入「多路径探测」",
+    # 2026-10 用户口径：自签证书不需要检测。本环境实测 `cert_self_signed == true` 文档数 = 0
+    # （一个自签都没有），且该规则判据只剩这一条布尔（issuer 分支上一步已按实机数据删除）——
+    # 属“配置事实”而非攻击事件，故整条删除。
+    "内置-自签或异常证书": "按用户口径删除：自签证书不需要检测（属配置事实非攻击事件）",
 }
 
 BUILTIN_RULES: list[dict] = [
@@ -620,27 +624,6 @@ BUILTIN_RULES: list[dict] = [
                     "op": "regex",
                     "value": "(?i)(SSLv3|TLSv1\\.0|TLSv1\\.1|TLSv10|TLSv11)",
                 },
-            ],
-        },
-    },
-    {
-        "name": "内置-自签或异常证书",
-        "description": "自签证书（subject == issuer，由归一化算好）",
-        "source": "builtin",
-        "priority": 30,
-        "severity": "low",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "ssl"},
-                # 判据用 normalizer 算好的自签判定（评审 P1：`self`/`openssl`/`test` 这类
-                # 字面量几乎不会出现在真实 DN 里）。
-                # 2026-10 删掉了另一条分支 `cert_issuer regex "(?i)(unknown|localhost)"`：
-                # 实机核对 `cert_issuer` 在近 6 小时窗口内**非空文档数 = 0**（同批
-                # `cert_self_signed` 有 280 万条）⇒ 该分支永不成立，是死路径（规则名不变）。
-                # 要恢复「未知 CA」判定：先补 x509 的 issuer 采集（当前只落了 subject == issuer
-                # 这个布尔），再加回分支与测试。
-                {"field": "cert_self_signed", "op": "eq", "value": True},
             ],
         },
     },
