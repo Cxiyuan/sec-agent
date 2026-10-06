@@ -273,6 +273,9 @@ def test_suricata_entrypoint_handles_requests_and_renders() -> None:
     # 校验与热重载
     assert "suricata -T" in text
     assert "reload-rules" in text
+    # 四个一次性模式：CI 用它们跑自检与「校验 → 生效 → 清空」协议
+    for mode in ("--render-only", "--render-config", "--validate-staging", "--handle-requests"):
+        assert mode in text, f"入口缺少自检模式 {mode}"
     # 空占位兜底（保证 rule-files 不为空）
     assert "bootstrap_rules" in text
     # 镜像里没有 cmp（实测），比较文件必须走 sha256

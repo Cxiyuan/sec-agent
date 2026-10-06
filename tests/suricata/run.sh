@@ -24,7 +24,8 @@ tls_ports=8000,8011
 EOF
 
 RUN() {
-  docker run --rm -v "$WORK/config:/config:ro" -v "$WORK/rules:/rules" "$@"
+  # 加超时：一次性模式如果忘了实现，容器会掉进抓包主循环不退出（CI 上挂过 20+ 分钟）
+  timeout 600 docker run --rm -v "$WORK/config:/config:ro" -v "$WORK/rules:/rules" "$@"
 }
 
 count_from_entry() {

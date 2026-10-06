@@ -494,6 +494,18 @@ if [ "${1:-}" = "--validate-staging" ]; then
   exit $?
 fi
 
+if [ "${1:-}" = "--handle-requests" ]; then
+  # CI / 排障：立即处理一次共享卷里的请求标记（validate / activate / reset）后退出，
+  # **不进入抓包主循环** —— CI 靠它验证「校验 → 生效 → 清空」这套协议真的能跑通。
+  # 忘了实现这个模式会掉进主循环不退出（CI 上挂过一次 20 多分钟），tests/suricata/run.sh
+  # 与它配套加了 timeout。
+  mkdir -p /etc/suricata "$RULES_DIR"
+  bootstrap_rules
+  render_config
+  handle_requests
+  exit 0
+fi
+
 main() {
   mkdir -p "$OUT_DIR" "$ARCHIVE_DIR" /etc/suricata "$RULES_DIR"
   bootstrap_rules
