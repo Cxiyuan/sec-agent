@@ -621,7 +621,7 @@ BUILTIN_RULES: list[dict] = [
     },
     {
         "name": "内置-自签或异常证书",
-        "description": "证书签发者异常（自签/未知 CA）",
+        "description": "自签证书（subject == issuer，由归一化算好）",
         "source": "builtin",
         "priority": 30,
         "severity": "low",
@@ -629,15 +629,14 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "log_type", "op": "eq", "value": "ssl"},
-                # `self`/`openssl`/`test` 几乎不会出现在真实 DN 里（评审 P1），改成
-                # normalizer 算好的自签判定（subject == issuer）。
-                {
-                    "logic": "or",
-                    "rules": [
-                        {"field": "cert_self_signed", "op": "eq", "value": True},
-                        {"field": "cert_issuer", "op": "regex", "value": "(?i)(unknown|localhost)"},
-                    ],
-                },
+                # 判据用 normalizer 算好的自签判定（评审 P1：`self`/`openssl`/`test` 这类
+                # 字面量几乎不会出现在真实 DN 里）。
+                # 2026-10 删掉了另一条分支 `cert_issuer regex "(?i)(unknown|localhost)"`：
+                # 实机核对 `cert_issuer` 在近 6 小时窗口内**非空文档数 = 0**（同批
+                # `cert_self_signed` 有 280 万条）⇒ 该分支永不成立，是死路径（规则名不变）。
+                # 要恢复「未知 CA」判定：先补 x509 的 issuer 采集（当前只落了 subject == issuer
+                # 这个布尔），再加回分支与测试。
+                {"field": "cert_self_signed", "op": "eq", "value": True},
             ],
         },
     },

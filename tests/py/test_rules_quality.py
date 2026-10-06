@@ -238,6 +238,18 @@ def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
     assert "内置-明文凭证传输(HTTP登录)" in builtin_mod.DELETED_RULES
 
 
+def test_self_signed_cert_rule_has_no_dead_issuer_branch(mods: dict[str, Any]) -> None:
+    """「自签或异常证书」不再引用 `cert_issuer`：该字段实测 0 条非空，是死路径（2026-10）。
+
+    依据：近 6 小时窗口里 `cert_issuer` 非空文档数 = 0（同批 `cert_self_signed` 有 280 万条）——
+    原条件里的 `cert_issuer regex (unknown|localhost)` 分支永不成立；删掉后判据只剩自签布尔。
+    """
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-自签或异常证书")
+    fields = {r["field"] for r in rule["conditions"]["rules"]}
+    assert "cert_issuer" not in fields
+    assert "cert_self_signed" in fields
+
+
 def test_session_rule_keys_on_session_id(mods: dict[str, Any]) -> None:
     """「会话跨IP复用」必须按 `session_id` 判（而不是整条 Cookie 头）。
 
