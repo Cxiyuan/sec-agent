@@ -59,6 +59,17 @@ RETIRED_RULES: dict[str, str] = {
     ),
 }
 
+#: 要**直接删行**的内置规则（不是停用）。
+#:
+#: 为什么删而不是停用（2026-10 实机数据）：`内置-端口扫描` 的判据是 `event_type=port_scan`，
+#: 而本部署采集面关掉了 Zeek 自带 notice（`shentong-policies.zeek`）→ 这个事件类型**不会由 Zeek 产生**；
+#: 库里那 8 条 `port_scan` 全是 Wazuh 的 CIS 合规告警（"Ensure 'Turn on e-mail scanning'…"）
+#: —— 那是归一化的词匹配 bug（已在 `_wazuh_event_type` 收紧），不是扫描。
+#: 规则本身没有任何有效命中路径，留着只会是一个“看起来在防扫描”的死条。
+DELETED_RULES: dict[str, str] = {
+    "内置-端口扫描": "notice 型死规则（本部署不产生 port_scan；唯一来源是已被修正的 Wazuh 词匹配误判）",
+}
+
 BUILTIN_RULES: list[dict] = [
     # ================= A. 勒索 / 僵尸网络 / 挖矿 =================
     {
@@ -889,17 +900,6 @@ BUILTIN_RULES: list[dict] = [
                     "value": ["scan_attempt", "rejected_connection"],
                 },
             ],
-        },
-    },
-    {
-        "name": "内置-端口扫描",
-        "description": "检测到端口扫描行为（notice）",
-        "source": "builtin",
-        "priority": 28,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "port_scan"}],
         },
     },
     {

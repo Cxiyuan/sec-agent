@@ -945,7 +945,10 @@ def _wazuh_event_type(level: Any, rule_groups: str, description: Any) -> str:
     text = str(description or "").lower()
     if "brute" in text or "failed password" in text:
         return "brute_force"
-    if "scan" in text:
+    # 只认真正的扫描描述（2026-10 实机数据）：原来 `"scan" in text` 会把合规/基线告警里的
+    # "Ensure 'Turn on e-mail scanning'…"、"Scan removable drives"、"script scanning" 也算成
+    # 端口扫描 —— 库里 8 条 `event_type=port_scan` 全是 Wazuh CIS 基准合规项，属误标。
+    if any(k in text for k in ("port scan", "portscan", "port_scan", "扫描")):
         return "port_scan"
     if "sql" in text or "injection" in text:
         return "web_attack"

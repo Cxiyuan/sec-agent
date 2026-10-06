@@ -17,7 +17,7 @@ from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import AssetStat, Rule, SystemConfig, User
-from app.rules.builtin import BUILTIN_RULES, RETIRED_RULES
+from app.rules.builtin import BUILTIN_RULES, DELETED_RULES, RETIRED_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,22 @@ _RENAMED_BUILTINS: dict[str, str] = {
     "内置-Wazuh MITRE映射命中": "内置-主机MITRE映射命中",
     "内置-Wazuh策略违规": "内置-主机策略违规",
 }
+
+
+def _delete_builtin_rules(db: Any) -> None:
+    """删除已废弃的内置规则行（幂等，每次启动都跑）。
+
+    与 `_retire_builtin_rules`（保留行、只置停用）的区别：这类规则**完全没有有效命中路径**
+    （例：`内置-端口扫描` 依赖 notice，而采集面已关掉 notice），保留只会让规则页看起来
+    像在防这类事。删之前打一条 warning，把“删了什么、为什么”写进日志（可审计）。
+    """
+    for name, reason in DELETED_RULES.items():
+        row = db.execute(select(Rule).where(Rule.name == name)).scalar_one_or_none()
+        if row is None:
+            continue
+        logger.warning("删除废弃的内置规则：%s（%s）", name, reason)
+        db.delete(row)
+    db.flush()
 
 
 def _retire_builtin_rules(db: Any) -> None:
@@ -247,6 +263,7 @@ def _seed() -> None:
             )
         _rename_builtin_rules(db)
         _retire_builtin_rules(db)
+        _delete_builtin_rules(db)
         for spec in BUILTIN_RULES:
             rule_spec = _dynamic_rule_spec(spec)
             exists = db.execute(

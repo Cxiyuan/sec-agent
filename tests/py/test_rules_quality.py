@@ -221,6 +221,49 @@ def test_retired_scan_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
         assert name in names, name
 
 
+def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
+    """notice 型死规则「内置-端口扫描」必须从规则表移除，并在 DELETED_RULES 备案。
+
+    2026-10 实机数据：库里 8 条 `event_type=port_scan` 全是 Wazuh 的 CIS 合规告警
+    （"Ensure 'Turn on e-mail scanning'…"），不是扫描；采集面又已关掉 Zeek 自带 notice →
+    这条规则没有任何有效命中路径。
+    """
+    builtin_mod = mods["builtin"]
+    names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
+    assert "内置-端口扫描" not in names
+    assert "内置-端口扫描" in builtin_mod.DELETED_RULES
+
+
+def test_delete_builtin_rules_is_idempotent() -> None:
+    """删除步骤：有行就删、没行不动（幂等，每次启动都跑）。"""
+    import importlib
+    from types import SimpleNamespace
+
+    main_mod = importlib.import_module("app.main")
+
+    class _Session:
+        def __init__(self, row: Any) -> None:
+            self.row = row
+            self.deleted: list[Any] = []
+
+        def execute(self, _stmt: Any) -> Any:
+            return SimpleNamespace(scalar_one_or_none=lambda: self.row)
+
+        def delete(self, row: Any) -> None:
+            self.deleted.append(row)
+
+        def flush(self) -> None:
+            return None
+
+    row = SimpleNamespace(name="内置-端口扫描")
+    first = _Session(row)
+    main_mod._delete_builtin_rules(first)
+    assert first.deleted == [row]
+    second = _Session(None)
+    main_mod._delete_builtin_rules(second)
+    assert second.deleted == []
+
+
 def test_retire_builtin_rules_is_idempotent() -> None:
     """退役步骤幂等：首跑置停用 + 记说明；再跑不动它（不把用户后来打开的开关按回去）。"""
     import importlib
