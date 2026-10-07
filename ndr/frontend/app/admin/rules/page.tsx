@@ -6,10 +6,6 @@ import { TopBar } from "@/components/topbar";
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Drawer,
   Input,
   Table,
@@ -70,10 +66,48 @@ function severityBadge(sev: string): React.ReactElement {
   return <Badge variant={it.variant}>{it.text}</Badge>;
 }
 
+/** 树节点：可展开/收缩的容器（顶层是 网络/主机 两个分类，子节点是规则来源）。 */
+function TreeNode(props: {
+  id: string;
+  title: string;
+  hint?: string;
+  count?: number;
+  action?: React.ReactNode;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-2" data-node={props.id}>
+      <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 px-3 py-2">
+        <button
+          type="button"
+          className="flex items-center gap-2 text-left"
+          onClick={props.onToggle}
+          title={props.expanded ? "点击收起" : "点击展开"}
+        >
+          <span className="text-xs text-muted-foreground">{props.expanded ? "▾" : "▸"}</span>
+          <span className="text-sm font-medium">{props.title}</span>
+          {typeof props.count === "number" && <Badge variant="outline">{props.count} 条</Badge>}
+        </button>
+        {props.hint && (
+          <span className="text-xs font-normal text-muted-foreground">{props.hint}</span>
+        )}
+        {props.action}
+      </div>
+      {props.expanded && <div className="mt-2 pl-5">{props.children}</div>}
+    </div>
+  );
+}
+
 export default function RulesPage() {
   const errs = usePanelErrors();
   const [rules, setRules] = React.useState<RuleItem[]>([]);
-  const [tab, setTab] = React.useState<"builtin" | "custom" | "signature">("builtin");
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({
+    network: true,
+    host: true,
+    "network:builtin": true,
+  });
   const [openIds, setOpenIds] = React.useState<Record<string, boolean>>({});
   const [busy, setBusy] = React.useState("");
   const [msg, setMsg] = React.useState("");
@@ -104,10 +138,37 @@ export default function RulesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 树的展开状态记到浏览器本地：切页/刷新后保持原样（读不到就用默认值，不影响功能）
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("shentong.rules.tree");
+      if (raw) {
+        const saved = JSON.parse(raw) as Record<string, boolean>;
+        setExpanded((prev) => ({ ...prev, ...saved }));
+      }
+    } catch {
+      /* 隐私模式/存储不可用：用默认展开状态 */
+    }
+  }, []);
+
+  function toggleNode(id: string) {
+    setExpanded((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      try {
+        window.localStorage.setItem("shentong.rules.tree", JSON.stringify(next));
+      } catch {
+        /* 存不了就算了，只是不记忆 */
+      }
+      return next;
+    });
+  }
+
   const builtin = rules.filter((r) => r.source === "builtin");
   const custom = rules.filter((r) => r.source !== "builtin");
   const netBuiltin = builtin.filter((r) => (r.scope || "network") !== "host");
   const hostBuiltin = builtin.filter((r) => (r.scope || "network") === "host");
+  const netCustom = custom.filter((r) => (r.scope || "network") !== "host");
+  const hostCustom = custom.filter((r) => (r.scope || "network") === "host");
 
   function setCond(i: number, patch: Partial<Cond>) {
     setConds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -148,6 +209,12 @@ export default function RulesPage() {
     resetForm();
     setMsg("");
     setDrawer(true);
+  }
+
+  /** 从某个树节点里新建规则：预选该节点所在的一侧（网络/主机）。 */
+  function openCreateFor(nextScope: string) {
+    openCreate();
+    if (nextScope === "host") setScope("host");
   }
 
   function openEdit(r: RuleItem) {
@@ -255,18 +322,10 @@ export default function RulesPage() {
     }
   }
 
-  function builtinGroup(title: string, hint: string, items: RuleItem[]) {
+  /** 内置规则表（不含外层卡片：树节点自己就是容器）。 */
+  function builtinTable(items: RuleItem[]) {
     return (
-      <Card className="mb-4">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            {title}
-            <Badge variant="outline">{items.length} 条</Badge>
-            <span className="text-xs font-normal text-muted-foreground">{hint}</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
+      <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-8">启用</TableHead>
@@ -339,8 +398,65 @@ export default function RulesPage() {
               )}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+    );
+  }
+
+  /** 自定义规则表（同样不含外层卡片）；「添加规则」按钮在树节点标题栏上。 */
+  function customTable(items: RuleItem[]) {
+    return (
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>名称</TableHead>
+            <TableHead className="w-24">规则内容</TableHead>
+            <TableHead className="w-40">类型</TableHead>
+            <TableHead className="w-20">级别</TableHead>
+            <TableHead className="w-20">优先级</TableHead>
+            <TableHead className="w-20">状态</TableHead>
+            <TableHead className="w-32">操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((r) => (
+            <TableRow key={r.id}>
+              <TableCell>
+                <span className="text-sm font-medium">{r.name}</span>
+                <span className="ml-2 text-xs text-muted-foreground">
+                  {(r.description || "").slice(0, 50)}
+                </span>
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline">{scopedLabel(r.scope || "network")}</Badge>
+              </TableCell>
+              <TableCell className="text-xs text-muted-foreground">{ruleType(r)}</TableCell>
+              <TableCell>{severityBadge(r.severity)}</TableCell>
+              <TableCell className="text-xs">{r.priority}</TableCell>
+              <TableCell>
+                <Badge variant={r.enabled ? "success" : "medium"}>
+                  {r.enabled ? "启用" : "禁用"}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" disabled={busy === r.id} onClick={() => openEdit(r)}>
+                    编辑
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy === r.id} onClick={() => void remove(r)}>
+                    删除
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+          {items.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={7} className="text-center text-muted-foreground">
+                {emptyOrFailed(errs, SRC.list, "这一组还没有自定义规则，点本节点右侧「添加规则」新建一条")}
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
     );
   }
 
@@ -355,115 +471,88 @@ export default function RulesPage() {
           <PanelError errors={errs} />
         </div>
 
-        <div className="mb-4 flex items-center gap-2">
-          <Button
-            size="sm"
-            variant={tab === "builtin" ? "default" : "outline"}
-            onClick={() => setTab("builtin")}
+        {/* 树型结构：顶层按 网络/主机 分类，子节点是规则来源。
+            签名规则（Suricata）归网络类 —— 它只看网络流量，与内置/自定义规则并列。 */}
+        <TreeNode
+          id="network"
+          title="网络（网络采集器）"
+          hint="规则条件引用网络侧字段（http/ssl/dns/conn…）—— 检测器只在网络事件上求值"
+          count={netBuiltin.length + netCustom.length}
+          expanded={!!expanded.network}
+          onToggle={() => toggleNode("network")}
+        >
+          <TreeNode
+            id="network:builtin"
+            title="内置规则"
+            hint="版本内置定义；只有启用状态会保留（描述/条件/级别/优先级每次启动被内置定义覆盖）"
+            count={netBuiltin.length}
+            expanded={!!expanded["network:builtin"]}
+            onToggle={() => toggleNode("network:builtin")}
           >
-            内置规则（{builtin.length}）
-          </Button>
-          <Button
-            size="sm"
-            variant={tab === "custom" ? "default" : "outline"}
-            onClick={() => setTab("custom")}
-          >
-            自定义规则（{custom.length}）
-          </Button>
-          <Button
-            size="sm"
-            variant={tab === "signature" ? "default" : "outline"}
-            onClick={() => setTab("signature")}
-          >
-            签名规则（Suricata）
-          </Button>
-        </div>
+            {builtinTable(netBuiltin)}
+          </TreeNode>
 
-        {tab === "builtin" ? (
-          <>
-            {builtinGroup(
-              "网络（网络采集器）",
-              "规则条件引用网络侧字段（http/ssl/dns/conn…）—— 检测器只在网络事件上求值",
-              netBuiltin,
-            )}
-            {builtinGroup(
-              "主机（主机监控）",
-              "规则条件引用主机侧字段（主机监控事件）—— 检测器只在主机事件上求值",
-              hostBuiltin,
-            )}
-          </>
-        ) : tab === "custom" ? (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-                自定义规则
-                <span className="text-xs font-normal text-muted-foreground">
-                  自己添加/修改的规则；ID 自动生成，不可编辑。「规则内容」选网络或主机，决定它跑在哪一侧。
-                </span>
-                <Button size="sm" className="ml-auto" onClick={openCreate}>
-                  添加规则
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>名称</TableHead>
-                    <TableHead className="w-24">规则内容</TableHead>
-                    <TableHead className="w-40">类型</TableHead>
-                    <TableHead className="w-20">级别</TableHead>
-                    <TableHead className="w-20">优先级</TableHead>
-                    <TableHead className="w-20">状态</TableHead>
-                    <TableHead className="w-32">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {custom.map((r) => (
-                    <TableRow key={r.id}>
-                      <TableCell>
-                        <span className="text-sm font-medium">{r.name}</span>
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {(r.description || "").slice(0, 50)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{scopedLabel(r.scope || "network")}</Badge>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{ruleType(r)}</TableCell>
-                      <TableCell>{severityBadge(r.severity)}</TableCell>
-                      <TableCell className="text-xs">{r.priority}</TableCell>
-                      <TableCell>
-                        <Badge variant={r.enabled ? "success" : "medium"}>
-                          {r.enabled ? "启用" : "禁用"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" disabled={busy === r.id} onClick={() => openEdit(r)}>
-                            编辑
-                          </Button>
-                          <Button size="sm" variant="outline" disabled={busy === r.id} onClick={() => void remove(r)}>
-                            删除
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {custom.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground">
-                        {emptyOrFailed(errs, SRC.list, "还没有自定义规则，点右上「添加规则」新建一条")}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        ) : (
-          <SuricataRulesPanel />
-        )}
+          <TreeNode
+            id="network:custom"
+            title="自定义规则"
+            hint="自己添加/修改的规则；ID 自动生成、不可编辑"
+            count={netCustom.length}
+            expanded={!!expanded["network:custom"]}
+            onToggle={() => toggleNode("network:custom")}
+            action={
+              <Button size="sm" className="ml-auto" onClick={() => openCreateFor("network")}>
+                添加规则
+              </Button>
+            }
+          >
+            {customTable(netCustom)}
+          </TreeNode>
+
+          <TreeNode
+            id="network:signature"
+            title="签名规则（Suricata）"
+            hint="规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，校验通过后人工确认才生效"
+            expanded={!!expanded["network:signature"]}
+            onToggle={() => toggleNode("network:signature")}
+          >
+            <SuricataRulesPanel />
+          </TreeNode>
+        </TreeNode>
+
+        <TreeNode
+          id="host"
+          title="主机（主机监控）"
+          hint="规则条件引用主机侧字段（主机监控事件）—— 检测器只在主机事件上求值"
+          count={hostBuiltin.length + hostCustom.length}
+          expanded={!!expanded.host}
+          onToggle={() => toggleNode("host")}
+        >
+          <TreeNode
+            id="host:builtin"
+            title="内置规则"
+            count={hostBuiltin.length}
+            expanded={!!expanded["host:builtin"]}
+            onToggle={() => toggleNode("host:builtin")}
+          >
+            {builtinTable(hostBuiltin)}
+          </TreeNode>
+
+          <TreeNode
+            id="host:custom"
+            title="自定义规则"
+            hint="自己添加/修改的规则；ID 自动生成、不可编辑"
+            count={hostCustom.length}
+            expanded={!!expanded["host:custom"]}
+            onToggle={() => toggleNode("host:custom")}
+            action={
+              <Button size="sm" className="ml-auto" onClick={() => openCreateFor("host")}>
+                添加规则
+              </Button>
+            }
+          >
+            {customTable(hostCustom)}
+          </TreeNode>
+        </TreeNode>
 
         <Drawer
           open={drawer}
