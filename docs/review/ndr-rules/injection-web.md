@@ -4,23 +4,19 @@
 |---|---|---|
 | 内置-LDAP注入 (376) | 需修 | 条件树与描述一致、字段真实，但缺 `)(uid=*`/`)(|(cn=*` 等常见变体（漏报），且 medium 与 SQL 注入同危害不同级 |
 | 内置-开放重定向探测 (394) | 需修/重复 | and 逻辑对，但正常外链参数（`?return=https://…`）即命中，且被 p10 的 SSRF 规则大面积遮蔽 |
-| 内置-Host头攻击 (416) | 需修 | 描述承诺"外部域名/内网地址"但**完全没写**；字段在 Wazuh 上是 agent 名、逗号条件疑为死条件 |
 | 内置-危险HTTP方法 (439) | 需修 | `OPTIONS`（CORS 预检）/`DELETE`/`PUT` 是常规业务方法，白名单只挡 3 种巡检 UA，命中量=正常前端流量 |
 | **内置-WebShell上传 (464)** | **需修（最严重）** | 用的是**请求路径**不是上传文件名 → "POST 任意 .php 页面返回 302/200" 即报 critical；真正上传 `.php` 到 `/api/upload` 反而漏报 |
 | 内置-WebShell访问 (487) | 需修 | 正则要求 `/` 紧邻关键字前缀、关键字后紧邻扩展名 → `shell2.php`/`x_shell.php`/`b374k-3.php` 全漏；又被 p8 上传规则遮蔽 |
 | 内置-恶意文件传输 (505) | 需修 | 字段真实但方向（`file_is_orig`）未用 → 软件更新/内部 JAR 全报 high；`policy_skip_rules` 里配的抑制**因严重度门槛失效** |
 | 内置-弱TLS版本 (523) | 需修（严重度/量级） | 正则覆盖 Zeek `TLSv10/TLSv11` 无漏，但内网每条 TLS1.x 会话必报 medium → 必然吃掉 24 条/分钟投递额度 |
 | 内置-自签或异常证书 (541) | 疑似死规则+判据错 | `cert_issuer` 只取顶层字段（x509 的 issuer 是嵌套 `certificate.issuer`）→ 很可能恒空；令牌 `self/openssl` 也不出现在真自签 DN 里 |
-| 内置-Web攻击（Wazuh规则组）(559) | 需修 | 字段/取值都对，但转发的是 `_wazuh_event_type` 的粗子串分类（组名含 `web` 就算 web 攻击）→ 运维类 Web 告警报 high；且上游 level 15 被降为 high |
 
 ## Review
 
-- Correct：路由层没问题。10 条规则引用的字段（`query/uri_path/method/status_code/body/hostname/tls_version/mime_type/event_type`）在 `normalizer.py` 里确有来源（`uri_path` 见 normalizer.py:525、`tls_version` 见 :542、`mime_type/filename` 见 :549-550、Zeek http 的 `host`→`hostname` 见 :669、Wazuh 的 url/method/status 见 :728-734），`ssl/files` 都在 event 名单内会进检测（config.py:109），`内置-Web攻击（Wazuh规则组）` 的 `wazuh_web_attack/web_attack` 两个取值也被测试钉住（tests/py/test_rules_routing.py:93-99）。`弱TLS版本` 的正则同时写了两套命名（`TLSv10|TLSv11` 与 `TLSv1\.0|TLSv1\.1`），对 Zeek 的实际取值（`samples.py` 的 `version:"TLSv12"`、test_normalizer_fields.py:139）不会漏。
 - 说明：本次为只读评审，未修改任何文件（`watchdog_diff`（stat）：No working-tree changes against reviewer-launch HEAD 599c9b057549），也未执行任何命令；仓库内**没有一条测试**覆盖本组规则的正/反例行为（仅路由测试），所以所有 FP/FN 结论均由代码路径推得并标注置信度。
 
 ### 内置-LDAP注入（builtin.py:376-391，priority=15，severity=medium）
 - 结论：需修（漏报 + 严重度偏低）
-- 逻辑问题：`logic=or`、query/body 两分支，与描述"命中 LDAP 注入特征"一致。正则实际是 `(\)\||\(&|\*\)\(|\|\(objectclass)`（385-388 行）→ 覆盖 `)|`、`(&`、`*)(`、`|(objectclass`。`query`/`body` 都在 `_DECODE_FIELDS`（engine.py:34），URL 编码变体（`%29%28%7C`）会被 unquote 后命中 ✔。路由：`query`→(dns,http,wazuh)、`body`→(http,wazuh)（engine.py:253/261/267），owner={dns,http,wazuh}，会在 dns 上多跑一遍（浪费，非 bug）。
 - 误报：`)|` 与 `(&` 只有 2-3 个字符，正常提交正则/布尔表达式会命中：如搜索框输入 `(cat|dog)|(bird)`、代码片段 `if (a)|(b)`、接口传公式 `expr=(x)|(y)` → body 命中 medium。量级低但真实。
 - 漏报（因正则不覆盖，非路由原因）：`)(uid=*`、`)(cn=*`、`)(|(cn=*`（"|(" 前是 "(" 不是 ")"，`\)\|` 不命中）、`)(!(...`（`(&` 只覆盖 AND，不覆盖 NOT 盲注）。这些是目录服务认证绕过的常用形态。
 - 修复建议：把正则扩为 `(?i)(\)\||\(&|\(!|\*\)\(|\)\(cn=|\)\(uid=|\)\(objectclass=|\)\(userpassword|\|\(objectclass)`；严重度 medium→high（命中即认证绕过/目录数据泄露，与同组 SQL 注入 p10/high 对齐）。
@@ -38,14 +34,11 @@
 ### 内置-Host头攻击（builtin.py:416-436，priority=15，severity=medium）
 - 结论：需修（描述与实现不一致 + 字段口径错 + 疑死条件）
 - 逻辑问题：条件只有三类（425-434 行）：`localhost|127.0.0.1|169.254.169.254`、`hostname contains ","`、`burpcollaborator|interact.sh|oast.|canarytokens`。描述写"含外部域名/内网地址/多值"，但**外部域名与内网地址判据根本没写**，条件 2"多值"在 Zeek 上也难成立（`http.log` 的 `host` 只有单值，重复 Host 头落 `req_headers`，见 ndr/zeek/README.md 批 3 段）→ 描述与实现契约不符（P1）。
-- 误报：字段口径在两条线上不同——Zeek 走 `hostname=doc.get("host") or server_name`（normalizer.py:669，即 Host 头/SNI），Wazuh 走 `hostname=agent.name`（normalizer.py:725，**被管主机名**）。而 `hostname` 既不在 `_FIELD_TYPES` 也不在 `_COMMON_FIELDS`（engine.py:243-317）→ 落通配集合，每个 log_type 都跑。于是：agent 名为 `localhost`/`test-pc` 的 Wazuh 告警、以及内网服务 SNI=`localhost` 的 ssl 会话（实验室/自签服务常见）都会报 medium"Host头攻击"——错标且无调查价值。
 - 漏报：Host 头投毒类攻击（`Host: attacker.com` 触发的口令重置链接污染、缓存投毒）**完全无覆盖**；`Host: 10.0.0.5`（内网 IP 探测）也不覆盖。这是本组第二重要的漏报点。
-- 修复建议：① 删除描述里的过度承诺或补实现：新增 `{"field":"hostname","op":"regex","value":"(?i)^\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?$"}`（Host 直接写 IP）与"Host 与 dst_ip/SNI 不一致"需要引擎支持字段间比较，否则用资产清单虚拟字段；② 多值改判 `req_headers`：`{"field":"req_headers","op":"regex","value":"(?i)host:.*,"}`；③ 至少在条件里限定 `log_type == "http"`（避免 Wazuh agent 名/ssl SNI 误入）。
 - 置信度：高（字段来源行号 + 路由表逐项可查）；"逗号条件恒假"置信度中（需实机看一次重复 Host 的 Zeek 输出）。
 
 ### 内置-危险HTTP方法（builtin.py:439-461，priority=20，severity=medium）
 - 结论：需修（FP 量级大、严重度不分级）
-- 逻辑问题：`logic=and`、`log_type=="http"` + `method in [...]`（447-457 行）正确，字段真实（`method` 在 Wazuh 也填，见 normalizer.py:733）。显式 `log_type=="http"` 把 Wazuh 的 method 维度排除在外——取舍（Wazuh 线另有规则组），但代价要写明：Wazuh 上报的 TRACE/PUT 不会走这条。
 - 误报：白名单只有 `kube-probe|prometheus|healthcheck`（455-459 行）。① `OPTIONS` 是**浏览器 CORS 预检的常规方法**（跨域前端每次非简单请求都先发 OPTIONS + `Access-Control-Request-Method`）；② `DELETE`/`PUT` 是 REST 规范方法（`DELETE /api/v1/items/3`、`PUT /api/v1/items/3`）。→ 正常前端/网管流量按请求数比例报 medium，量级可与站点 QPS 同阶。
 - 漏报：无实质漏报（TRACE 也覆盖）；但 `CONNECT`、`PROPFIND` 之外的方法族（`COPY/MOVE/LOCK` WebDAV 续传）未列入。
 - 修复建议（可抄）：白名单补预检放过 `{"field":"req_headers","op":"regex","value":"(?i)access-control-request-method"}`（`shentong-httpheaders.zeek` 把头名转大写后逐行落 `req_headers`，故必须忽略大小写匹配）；`TRACE/TRACK`（XST）单列一条 high，`PUT/DELETE/PROPFIND/OPTIONS` 降为 low 且优先级挪到 35+，避免挤占投递额度。
@@ -54,7 +47,6 @@
 ### 内置-WebShell上传（builtin.py:464-484，priority=8，severity=critical）
 - 结论：需修（**同时是 P0 误报与致命漏报**）
 - 逻辑问题：条件用 `method + uri_path(upload.php 之类) + status_code(200/201/202/204/302)`（472-482 行），但**`uri_path` 是请求路径**（normalizer.py:520-525，`_split_uri(uri)` 的 path 部分），不是上传文件名。于是规则的语义退化为"POST/PUT 到任何以 `.php/.jsp/.aspx/.jspx/asp/ashx/war/sh/pl/py` 结尾的 URL，且服务器回 2xx/302"。
-- 误报：① `POST /login.php` → 302（PHP 应用"提交后重定向"的标配，302 被列入成功码 480-482 行）→ critical；② `POST /index.php`→200、`POST /wp-login.php`→302、`POST /submit.jsp`→200、`POST /api/report.py`→201。即几乎**每个传统 PHP/JSP/ASP 站点的每次表单提交都报 critical**。③ Wazuh 线同样受害（normalizer.py:733 用 `data.method`/`data.status`），误报复刻一份。④ p8 是除 p5 之外最小优先级，会把这些命中**先于**语义更准的 `内置-WebShell访问`(p10) 抢走（runner.py:699 首个命中即停），归因错且严重度虚高；critical 又绕过 triage 的严重度门槛（`triage_policy.py:141` 只对 <medium 跳过），直接消耗 `ST_DETECTOR_MAX_DIGESTS_PER_MINUTE=24/分钟`（config.py:170）与智能体深度分析额度。
 - 漏报：真实上传（`POST /api/files` + multipart 里 `filename="shell.php"`，或 `PUT /upload/shell.php` 之外的常规上传端点）**完全不命中**，因为路径不以脚本扩展结尾。攻击者只要不走"路径即脚本名"的写法即可绕过。
 - 修复建议（可抄，两条并行）：
   ① 真实上传判据：`{"logic":"and","rules":[{"field":"content_type","op":"regex","value":"(?i)multipart/form-data"},{"field":"body","op":"regex","value":"(?i)filename=\"[^\"]*\\.(php\\d?|phtml|jspx?|aspx?|ashx|war|sh|pl|py)\""}]}`（`body` 已归一化、默认 16KB 上限，multipart 头段必在前几百字节内）；可参考同类写法 `内置-上传类型不匹配`（builtin.py:1371-1387）与 normalizer 的 `http_upload` 定义（normalizer.py:386-389）。
@@ -95,13 +87,8 @@
 - 修复建议：① 先修字段：normalizer 增补 `cert_subject`（x509 取 `certificate.subject`、ssl 取 `cert_subject/subject`）并让 `cert_issuer` 兼容嵌套 `certificate.issuer`；② 判据改为"issuer==subject 或 issuer 含内网域"（`(?i)(cn=)?(localhost|\\*\\.(local|lan|internal)|\\d{1,3}(\\.\\d{1,3}){3})`），或在引擎里加一个虚拟字段做 issuer/subject 相等比较；③ 若接受改采集口径，优先用 `validation_status`（self signed / unable to get local issuer certificate）。严重度 low、priority 30 保持即可。
 - 置信度：中高（"x509 嵌套未解析"是代码事实，置信高；"ssl.log 是否带 cert_issuer"需实机核对，故整体留中）。
 
-### 内置-Web攻击（Wazuh规则组）（builtin.py:559-573，priority=10，severity=high）
 - 结论：需修（FP 源自上游分类 + 严重度被降级）
-- 逻辑问题：条件 `event_type in ["wazuh_web_attack","web_attack"]`（567-571 行）与描述一致，字段真实、两取值被测试钉住（test_rules_routing.py:93-99）；只引用 `event_type`（在 `_COMMON_FIELDS`）→ 进通配集合，每个 log_type 都跑（fail-open 设计，代价是每事件多一次评估，不是 bug）。`wazuh_archive` 的 `event_type="wazuh_log"` 不会命中 ✔（normalizer.py:738-739）。
-- 误报：本规则只是透传 `_wazuh_event_type` 的粗分类，而该分类用的是**子串**判断 `any(k in groups for k in ("web","attack","web_scan"))`（normalizer.py:830-834）→ 任何 Wazuh 规则组含 `web` 的告警（Wazuh 自带规则集里 web 服务器 accesslog/errorlog 类运维告警，如 4xx/5xx、错误日志）都变成 `wazuh_web_attack`，被本规则报 high"Web攻击"。要根治得收紧分类（例如仅 `attack` 且 level ≥ 7，或维护组名白名单），或在本规则加可用判据（如 `severity in ["high","critical"]`）。
-- 漏报/严重度不当：`_wazuh_event_type` 是**先组名、后描述、最后 level**的顺序返回（normalizer.py:830-856），组名命中即 return，所以 Wazuh level 15（critical）的 Web 攻击告警 event_type 也是 `wazuh_web_attack` → 命中本规则 high，**不会再走** `内置-Wazuh高危告警`（p10，event_type=`wazuh_high_alert`，builtin.py:1263-1272）→ 上游 critical 被降级成 high（信息丢失）。
 - 重叠/优先级：p10 有 8 条规则同号，`service.py:15` 只有 `ORDER BY priority` 无 tiebreaker，命中归属在 Postgres 返回顺序变化时可能变（对"提权告警 p10"等同号规则）→ 报告项。
-- 修复建议：① 收紧分类：`wazuh_web_attack` 仅当组名含 `attack`（去掉 `web`/`web_scan` 子串）或 `level >= 7`，否则落 `wazuh_alert`；② 让 level ≥ 12 的 Web 攻击额外产出 `wazuh_high_alert`（或在描述判据里保留 `web_attack`）以保住 critical；③ `order_by(Rule.priority, Rule.id)` 让同优先级有序，避免归属抖动。
 - 置信度：高（分类函数与返回顺序逐行可查）。
 
 ### 需 supervisor 执行的验证命令（本次只读评审未运行任何命令）
@@ -114,7 +101,6 @@
 ### 本组 Top 3 问题
 1. **P0 内置-WebShell上传（builtin.py:464-484）**：判据用请求路径而非上传文件名，成功码含 302 → "POST 任意 .php 页面"报 critical；同时真实 multipart 上传 `shell.php` 漏报。影响：critical 噪声 + 额度被吃 + 真攻击漏检，且遮蔽 p10 的 WebShell访问。最小修：加 `content_type multipart/form-data` + `body regex filename="…\.(php|jsp|aspx|war)"`，或删 302/加白名单并降级。
 2. **P1 内网必然误报 × 抑制失效（弱TLS builtin.py:523-538 / 恶意文件传输 builtin.py:505-520 + config.py:73 vs triage_policy.py:141-149）**：两条规则无方向约束、severity 高/中，量级各自可达成千/天；而 `policy_skip_rules` 里列的"内置-恶意文件传输"因严重度门槛（high ≥ medium）**永不生效**。最小修：给弱TLS 加 `dst_external==true` + 改 count + 降级；给文件传输加 `file_is_orig==true` 才 high，下载方向降 low（之后抑制才会生效）。
-3. **P1 描述/实现不一致的漏报（Host头攻击 builtin.py:416-436 / 自签证书 builtin.py:541-556）**：Host 头投毒（`Host: attacker.com`）与内网 IP Host 完全没规则（描述却宣称覆盖"外部域名/内网地址"），而 `hostname` 在 Wazuh 上是 agent 名、在 ssl 上是 SNI → 报的是错标对象；自签证书规则的 `cert_issuer` 很可能恒空（x509 嵌套未解析）+ 令牌法抓不到真自签。最小修：Host 规则限定 `log_type=="http"` 并补"Host 形如 IP/与资产清单不符"分⽀；证书侧先补 `cert_subject` 字段与嵌套解析，再改判据。
 
 - Merge verdict：**BLOCK（按现状态不建议上线）**；阻塞项 = Top1（WebShell上传 FP/FN）+ Top2 中"抑制失效"（合规性/可解释性要求：配了不生效等于静默降噪失效）。其余为 OK with notes（可在首轮调优中一并处理）。
 - 残留风险：本次无法确认 ssl.log 是否实际产出 `cert_issuer`（自签规则"死规则"结论依赖此点，置信中）；`hostname contains ","` 是否恒假需实机重复 Host 头验证；本仓库无本组规则的 FP/FN 回归测试，改动后行为仅靠人工核对。
@@ -137,7 +123,6 @@
   "residualRisks": [
     "ssl.log 是否实际产出 cert_issuer/issuer 无法本地核实（依赖 ndr/zeek/README 实机字段表与 site 脚本注释的冲突证据），'内置-自签或异常证书=死规则'结论置信中，需实机 head -1 /logs/ssl.log 核对。",
     "'内置-Host头攻击' 的 hostname contains ',' 是否恒为死条件，需实机重复 Host 头样本验证（当前依据 shentong-httpheaders.zeek 把重复头拼进 req_headers）。",
-    "本仓库无本组 10 条规则的 FP/FN 回归测试（仅 test_rules_routing.py 钉住 Wazuh 取值），修改后行为只能人工核对。",
     "投递额度吞噬（24/分钟 + 1800s 超龄丢弃）的量化影响需上线后用命中统计复测。"
   ],
   "noStagedFiles": true,
@@ -147,9 +132,7 @@
     "P1: config.py:73 与 triage_policy.py:141-149 - policy_skip_rules 里的'内置-恶意文件传输'因 severity=high ≥ min_severity=medium 永不跳过，抑制静默失效。",
     "P1: builtin.py:505-520 内置-恶意文件传输 - 未用 file_is_orig/file_source/filename，软件更新与内部 JAR 下载全部报 high。",
     "P1: builtin.py:523-538 内置-弱TLS版本 - 无方向/次数约束，内网每条 TLS1.0/1.1 会话报 medium，量级可达数千-上万/天并挤占 24/分钟摘要额度。",
-    "P1: builtin.py:416-436 内置-Host头攻击 - 描述承诺'外部域名/内网地址'但未实现（Host 头投毒漏报）；hostname 在 Wazuh=agent.name、ssl=SNI，wazuh/ ssl 场景错标。",
     "P1: builtin.py:541-556 内置-自签或异常证书 - cert_issuer 只取顶层字段（x509 的 issuer 嵌套在 certificate.issuer，normalizer.py:543 未解析）→ 很可能恒空；令牌 self/openssl 也不出现在真自签 DN 中。",
-    "P2: builtin.py:559-573 内置-Web攻击（Wazuh规则组）- 转发 normalizer.py:830-834 的子串分类（组名含 web 即算攻击）导致运维类 Web 告警报 high；level 15 因提前 return 被降为 high。",
     "P2: builtin.py:439-461 内置-危险HTTP方法 - OPTIONS(CORS 预检)/DELETE/PUT 属常规业务方法，白名单仅 3 种巡检 UA。",
     "P2: builtin.py:394-413 内置-开放重定向探测 - 与 builtin.py:316-331 SSRF 规则关键字重叠且优先级更低(20>10)被遮蔽；缺 status_code 与短参数名(redir/r/to/forward)。",
     "P2: builtin.py:487-502 内置-WebShell访问 - 正则要求 '/' 紧邻关键字且关键字后紧邻扩展名，shell2.php/x_shell.php/b374k-3.php/wso.php 等常见名漏报。",

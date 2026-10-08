@@ -16,7 +16,6 @@ import type {
   LogstashStatus,
   StatsOverview,
   SystemMetrics,
-  WazuhPayload,
 } from "@/lib/api";
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
@@ -59,7 +58,6 @@ const SRC = {
   coverage: "投递覆盖率",
   stats: "检测器队列",
   push: "摘要推送",
-  wazuh: "主机监控",
   baseline: "基线观测",
   es: "Elasticsearch",
   logstash: "Logstash",
@@ -191,7 +189,6 @@ export function StatusPanel() {
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
-  const [wazuh, setWazuh] = React.useState<WazuhPayload | null>(null);
   const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
   const [esStatus, setEsStatus] = React.useState<EsStatus | null>(null);
   const [logstash, setLogstash] = React.useState<LogstashStatus | null>(null);
@@ -210,7 +207,6 @@ export function StatusPanel() {
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
-      loadInto(errs, SRC.wazuh, "/api/wazuh", setWazuh),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
       loadInto(errs, SRC.es, "/api/es/status", setEsStatus),
       loadInto(errs, SRC.logstash, "/api/logstash", setLogstash),
@@ -553,11 +549,6 @@ export function StatusPanel() {
               <span>· 最近丢弃 {stats.last_dropped_at.replace("T", " ").slice(0, 19)}</span>
             ) : null}
             {stats?.dedup ? <span>· 判重：{stats.dedup.note || "已下放到智能体"}</span> : null}
-            {wazuh?.status?.agents ? (
-              <span>
-                · 主机监控 Agent 在线 {wazuh.status.agents.active}/{wazuh.status.agents.total}
-              </span>
-            ) : null}
             {logstash?.logstash ? (
               <span>
                 · Logstash 重载 成功 {logstash.logstash.reloads_successes ?? "—"} / 失败{" "}

@@ -7,7 +7,6 @@
 3. **有界**：单次查询文档数、超时、聚合桶数都有硬上限，绝不把 ES 打爆。
 
 与 agent 侧那版的差别只有一个维度：**索引不再是「来源」的函数**。归一化前置之后
-Zeek 与 Wazuh 都写进同一族索引（``settings.es_events_index`` = ``shentong-events-*``），
 文档是扁平统一字段。来源仍然能区分——归一化把 ``source_system`` 写进了文档，
 工具的 ``source`` 参数就转成这个字段的 term 过滤（见 ``source_clause``），
 除此之外所有字段路径都只有一份（见 ``catalog.FIELDS``）。
@@ -152,8 +151,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def index_pattern() -> str:
     """统一的 ES 索引模式（取运行时配置，后台改过索引名不用重启）。
 
-    只有一族索引（``shentong-events-*``）：Zeek 与 Wazuh 的文档结构在入库前已经统一，
-    所以不存在「按来源选索引」的逻辑，也别再拼 ``zeek-*`` / ``wazuh-alerts-*``。
 
     **必须读运行时配置**：后台「系统配置」能把 ``es.events_index`` 改掉
     （`api/routes/es_admin.py` 写 SystemConfig，`es_config.current()` 才带 30s TTL 读它）。
@@ -353,11 +350,9 @@ def build_clause(name: str, value: Any) -> dict[str, Any]:
 
 
 def source_clause(source: str) -> dict[str, Any]:
-    """来源 → ``source_system`` 过滤（工具的 source=zeek/wazuh 就落在这里）。
+    """来源过滤：按 source_system 精确过滤（不切索引）。
 
     为什么不是切索引：文档结构统一之后只有一族索引，来源不再是索引维度；归一化把
-    ``source_system`` 如实写进了文档（``normalize_zeek`` → "zeek"，``normalize_wazuh``
-    → "wazuh"），所以「只看 Zeek」= 对 source_system 精确过滤。
     """
     if source not in catalog.SOURCES:
         raise QueryError(f"来源只能是 {' / '.join(catalog.SOURCES)}，收到 {source!r}")

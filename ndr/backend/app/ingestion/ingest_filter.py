@@ -313,7 +313,6 @@ def _recent_docs(hours: int, limit: int) -> tuple[list[tuple[dict[str, Any], str
         from app.ingestion import es_config
         from app.ingestion.es_client import get_es
 
-        # 索引名走运行时配置（DB 覆盖 env），与 es_query/wazuh/ndr_tools 一致：
         # 后台改了 es.events_index 后这里必须跟着变，否则会出现「采集有数但试运行查不到」。
         cfg = es_config.current()
         resp = get_es().search(

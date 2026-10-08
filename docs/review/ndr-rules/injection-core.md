@@ -23,7 +23,6 @@
 - **操作符语义**：`regex` = `re.search`（子串匹配，无锚点）、`contains` = 区分大小写子串、`in` 精确匹配、`exists` 要求非空串；`query/query_string/uri_path/body/referer/filename` 在 contains/regex 时会**额外匹配 unquote / unquote_plus 一次**的结果（`engine.py:107-123`）；字段为空 → 候选文本为空 → regex 返回 False（`engine.py:96-105`）。
 - **命中即停**：`hit = next((r for r in candidates if match_rule(r, entry)), None)`（`runner.py:697-699`），规则按 priority 升序（`rules/service.py:15` 只 `order_by(Rule.priority)`，**同优先级没有二级排序键**）。
 - **本组 13 条全部是单层 `logic: "or"`，没有 AND 混挂多类型专有字段**，所以任务里点名的「混合专有字段 → AND 恒不成立 → 死规则」在本组**不存在**；但存在一个**分支级死条件**（反序列化的 `cookie`，见下）。
-- **路由**：本组用到的字段 `query`（dns/http/wazuh）、`body`/`user_agent`（http/wazuh）在引擎表里都有归属，`referer`/`cookie` **不在 `_FIELD_TYPES`**（`engine.py` 的 `_FIELD_TYPES`），只影响 owner 计算，不造成死规则。
 - **triage 不影响本组**：`policy_skip_rules` 默认只有 `["内置-扫描尝试连接","内置-恶意文件传输"]`（`config.py:73`），本组 13 条不在名单里，内网常规策略不会跳过它们；但 `severity_cap_internal="medium"` / `severity_critical_requires_external=True`（`config.py:77-79`）会把**内→内**的 Log4Shell / 反序列化 critical **降级到 medium**（横向移动场景的代价，属既定取舍，不算 bug，但要知道）。
 - **投递预算是共享的**：`_rate_remaining` 用 `settings.detector_max_digests_per_minute`（`runner.py` 限流函数），命中按（源IP+规则）聚合成摘要后受每分钟额度限制，超额回队/超龄丢。**任何一条高噪声规则都会挤掉真检测**——下面多个 FP 的严重性都建立在这条上。
 
@@ -178,7 +177,6 @@
 
 1. **优先级的「同号决胜」不确定**：本组 priority=10 的有 6 条（SQL基础 81、SQL元数据 103、命令注入 147、路径穿越 169、SSTI 219、SSRF 308）。`rules/service.py:15` 只 `order_by(Rule.priority)`，**没有二级键**，而内置规则每次启动都会 upsert（行会被重写），因此「同一请求命中多条同优先级规则时留下哪条名字/严重度」在实践中**不保证稳定**。例子：`?file=php://filter/convert.base64-encode/resource=/etc/passwd` 同时满足「文件包含」（12）与「路径穿越」条件 3 的 `/etc/passwd`（10）→ 归因几乎总落在**路径穿越**；`?id=1 union select … /etc/passwd` 则同号竞争 SQL基础 vs 路径穿越。两者 severity 都是 high，所以危害有限，但**分析报告里的规则名会误导人**（P2，修法：`order_by(Rule.priority, Rule.id)`）。
 2. **语义重复**：路径穿越条件 3 的 `(/etc/(passwd|shadow)|/proc/self|win\.ini|boot\.ini)` 本质是 **LFI 特征**，与「文件包含/协议流」是同一件事的两个入口；SSRF 条件 2 的 `dict://|gopher://|tftp://` 与文件包含的 `expect://`/`data://` 也属同一族「危险协议」。建议把「本地文件/危险协议」收敛成一条规则，或在描述里写清分工，避免同一攻击按目标文件不同落到不同规则名。
-3. **Wazuh 侧双报**：Wazuh 告警也会填 `query`（`normalizer.py:759` `query=url`）与 `body`，所以一条 Wazuh 的 SQL 注入告警会同时产生「内置-Web攻击（Wazuh规则组）」（559）与「内置-SQL注入-*」两个不同规则名的摘要（聚合键是源IP+规则名）→ 同一攻击两份摘要，多花一倍投递额度（P2）。
 4. **合并建议**：SQL 基础（81）+ 元数据与文件读写（103）目标一致、都是 high@10，可合成一条含两族特征的正则，减少同号竞争与重复投递；NSQL/SSTI/命令注入保持独立。
 
 ---
@@ -191,7 +189,6 @@
 
 > 需要跑但没有执行的验证（供 supervisor 在 NDR 栈执行）：
 > 1. `cd ndr/backend && python -c "import re;print(bool(re.search(r'(?i)(ognl|spel)','GET /api/spellcheck http://x')))"`（预期 `True`，即实证 `spel` 子串 FP；建议同时构造 `re.search(r'(?i)(\bognl\b|\bspel\b)',…)` 对照）
-> 2. `pytest tests/py --stack=ndr -q -k "rules_routing or normalizer_fields"`（路由/字段契约，含 `query→dns/http/wazuh` 与 Web 字段 wazuh 归属）
 > 3. 造一条 Zeek `http.log` 样本（带 `req_headers: "COOKIE: rememberMe=…"`，无 `cookie` 键）经 `normalize_zeek` 断言 `entry.cookie == ""`，即可复现「反序列化 rememberMe 分支为死条件」。
 
 ```acceptance-report
@@ -214,7 +211,6 @@
     {
       "command": "pytest tests/py --stack=ndr -q -k \"rules_routing or normalizer_fields\"",
       "result": "not-run",
-      "summary": "未运行；用于核对 query→dns/http/wazuh 路由与 Web 字段归属契约"
     },
     {
       "command": "normalize_zeek(带 req_headers=COOKIE: rememberMe=... 且无 cookie 键的 http 样本) 断言 entry.cookie == \"\"",
@@ -230,7 +226,6 @@
   "residualRisks": [
     "无运行时验证：FP/FN 结论基于正则语义与字段填充链路静态推导，未经实机/单测复现（建议 supervisor 跑上面 3 条验证命令）。",
     "优先级同号决胜顺序依赖 DB 行序（order_by(priority) 无二级键），实机归因可能与本文举例不同。",
-    "Wazuh 分支的实际字段填充（data.body/data.cookie/data.user_agent 是否存在）未逐字段实测，相关判断仅就 Zeek 主路径给出。",
     "请求体/头字段的截断边界（req_headers 单头 256、总量 4KB；cookie 200 字符）会让部分建议（用 req_headers 判 rememberMe/jndi）存在新的漏报边界，需在实现时评估。"
   ],
   "noStagedFiles": true,

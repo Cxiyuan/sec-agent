@@ -11,7 +11,7 @@ import pytest
 import samples
 from app.config import settings
 from app.ingestion import log_types
-from app.ingestion.normalizer import normalize, normalize_wazuh, normalize_zeek
+from app.ingestion.normalizer import normalize, normalize_zeek
 from app.ingestion.session_cookie import session_id_from_cookie
 from app.schemas import UnifiedLog
 
@@ -241,58 +241,6 @@ def test_dns_qtype_keeps_zeek_numeric_code() -> None:
     assert entry.qtype == "1"
 
 
-def test_wazuh_raw_is_self_describing() -> None:
-    """Wazuh 侧 raw 与 Zeek 同口径：带 log_type/source_file。
-
-    告警（alerts.json）与归档（archives.json）共用同一张表，raw 自解释尤其重要。
-    """
-    doc = {
-        "@timestamp": "2026-10-02T08:39:33.000Z",
-        "rule": {"level": 10, "description": "sshd brute force"},
-        "data": {"srcip": "203.0.113.9", "dstip": "192.0.2.77"},
-        "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
-    }
-    entry = normalize_wazuh(doc)
-    assert entry is not None
-    assert entry.log_type == "wazuh"
-    assert entry.raw["log_type"] == "wazuh"
-    assert entry.raw["source_file"] == "alerts.json"
-
-
-def test_wazuh_compliance_title_is_not_port_scan() -> None:
-    """合规/基线告警标题里的 "scanning" 不能当成端口扫描（2026-10 实机数据发现）。
-
-    库里 8 条 `event_type=port_scan` 全是 Wazuh 的 CIS 基准合规项 —— 原实现用
-    `"scan" in description` 词匹配，把 "Ensure 'Turn on e-mail scanning' is set to Enabled"、
-    "Scan removable drives"、"script scanning" 这类标题误标成端口扫描。
-    """
-    compliance = (
-        "CIS Benchmark: Ensure 'Turn on e-mail scanning' is set to Enabled",
-        "CIS Benchmark: Ensure 'Scan removable drives' is set to Enabled",
-        "Ensure 'Turn on script scanning' is set to Enabled",
-        "Ensure 'Scan all downloaded files and attachments' is set to Enabled",
-    )
-    for title in compliance:
-        doc = {
-            "@timestamp": "2026-10-02T08:39:33.000Z",
-            "rule": {"level": 5, "description": title},
-            "data": {"srcip": "203.0.113.9", "dstip": "192.0.2.77"},
-            "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
-        }
-        entry = normalize_wazuh(doc)
-        assert entry is not None
-        assert entry.event_type != "port_scan", title
-    # 真正的扫描描述仍要认（否则又把真告警改哑了）
-    doc = {
-        "@timestamp": "2026-10-02T08:39:33.000Z",
-        "rule": {"level": 10, "description": "Port scan detected from 203.0.113.9"},
-        "data": {"srcip": "203.0.113.9", "dstip": "192.0.2.77"},
-        "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
-    }
-    entry = normalize_wazuh(doc)
-    assert entry is not None and entry.event_type == "port_scan"
-
-
 @pytest.mark.parametrize(
     ("cookie", "want"),
     [
@@ -329,54 +277,3 @@ def test_session_id_extracted_before_cookie_truncation() -> None:
     assert entry is not None
     assert len(entry.cookie) <= settings.http_cookie_max_chars  # 字段本身照旧截断
     assert entry.session_id == "sess123"  # 但会话 id 从原始头里取到了
-
-
-def test_wazuh_syscollector_archive_keeps_process_as_text() -> None:
-    """syscollector/FIM 原始日志的 ``data.process`` 是对象，不能因为类型不符丢掉整条记录。
-
-    2026-10-03 实机开 archives（全量原始日志）后：正常入库 148 条，另有 **373 条进死信**
-    （``reason=normalize_failed``），pydantic 原话是
-    ``process: Input should be a valid string [input_value={'name': 'svchost.exe', ...}]``。
-    原始日志只入库供回溯，丢一个字段可以、丢整条记录不行，所以对象要收敛成可读字符串。
-    """
-    doc = {
-        "@timestamp": "2026-10-03T10:24:40.639Z",
-        "id": "1791022749.12345",
-        "decoder": {"name": "syscollector"},
-        "location": "syscheck",
-        "agent": {"id": "003", "name": "WIN-MSRG5PALH14", "ip": "172.16.199.63"},
-        "data": {
-            "checksum": "c3adc15179a17226edad8129036fc5d8ffe81dec",
-            "cmd": "C:\\Windows\\System32\\svchost.exe",
-            "name": "svchost.exe",
-            "pid": "676",
-            "process": {"name": "svchost.exe", "pid": "676", "ppid": "596"},
-            "user": {"name": "SYSTEM"},
-        },
-        "full_log": '{"data":{"checksum":"c3adc15179a17226edad8129036fc5d8ffe81dec","operation":"MODIFIED"}}',
-    }
-    entry = normalize_wazuh(doc)
-    assert entry.log_type == "wazuh_archive"
-    assert entry.event_type == "wazuh_log"
-    assert entry.process == "svchost.exe"
-    assert entry.user == "SYSTEM"
-    assert entry.account == "SYSTEM"
-
-
-def test_wazuh_object_fields_fall_back_to_compact_json() -> None:
-    """对象里没有名字类字段时退化成紧凑 JSON，列表则按逗号拼接——都不许抛异常。"""
-    doc = {
-        "@timestamp": "2026-10-03T10:24:41.000Z",
-        "decoder": {"name": "syscollector"},
-        "data": {
-            "process": {"pid": 1, "state": "R"},
-            "user": ["alice", "bob"],
-            "command": 42,
-            "protocol": None,
-        },
-    }
-    entry = normalize_wazuh(doc)
-    assert entry.process == '{"pid": 1, "state": "R"}'
-    assert entry.user == "alice, bob"
-    assert entry.command == "42"
-    assert entry.protocol is None

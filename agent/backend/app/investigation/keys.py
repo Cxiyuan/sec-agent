@@ -41,7 +41,6 @@ WEAK_KEYS: tuple[str, ...] = ("host", "domain")
 _MAX_PER_TYPE = 20
 _MAX_KEY_LEN = 200
 
-# 账号字段候选（Zeek/Wazuh/Web 表单各家叫法不同）
 _ACCOUNT_KEYS = {
     "username",
     "user",

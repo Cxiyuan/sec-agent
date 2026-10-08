@@ -257,18 +257,16 @@ def validate_rule_regexes(rule: dict[str, Any]) -> list[str]:
 # 字段 → 日志类型 的归属表：规则引用了某类型的专有字段，就只挂到该类型。
 # 任何"归属不明 / 只引用通用字段"的规则一律进通配集合（每次都会跑）——fail-open，宁可多跑不漏。
 #
-# 注意：Wazuh 的告警也会填 uri_path / query_string / method / body / status_code / user_agent /
-# query（见 ingestion/normalizer.py 的 Wazuh 分支）——只写 ("http",) 会让这些 Web/URL 规则
-# 在 Wazuh 告警上永不求值，所以这些字段与 wazuh 并列。
+# 这些 Web 字段只有 Zeek 的 http 日志会填；签名引擎（suricata）走自己的 signature_* 字段。
 _FIELD_TYPES: dict[str, tuple[str, ...]] = {
-    # http / wazuh 共有的 Web 字段
-    "uri_path": ("http", "wazuh"),
-    "query_string": ("http", "wazuh"),
-    "method": ("http", "wazuh"),
-    "status_code": ("http", "wazuh"),
-    "user_agent": ("http", "wazuh"),
-    "body": ("http", "wazuh"),
-    "content_type": ("http", "wazuh"),
+    # Zeek http 日志的 Web 字段
+    "uri_path": ("http",),
+    "query_string": ("http",),
+    "method": ("http",),
+    "status_code": ("http",),
+    "user_agent": ("http",),
+    "body": ("http",),
+    "content_type": ("http",),
     "resp_body": ("http",),
     "resp_body_len": ("http",),
     "req_headers": ("http",),
@@ -277,9 +275,8 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     # 会话 id（ingestion/session_cookie.py 按名单从 Cookie 头取）：
     # 「会话跨IP复用」是 count 规则（不走路由），登记在这里是为了口径清晰 + 将来逐条规则可用。
     "session_id": ("http",),
-    # dns：`query` 在 dns.log 里是域名，在 http / Wazuh 里是完整 URL，
-    # 所以只引用 query 的规则（开放重定向、URL 里的 token）要一并挂 http / wazuh。
-    "query": ("dns", "http", "wazuh"),
+    # dns：`query` 在 dns.log 里是域名，在 http 里是完整 URL，
+    "query": ("dns", "http"),
     "qtype": ("dns",),
     # conn：`dst_ip` 本身全来源都有（属通用字段），但把它登记成 conn 的 owner 是为了让
     # 「query/body 命中 + dst_ip 命中」这类 OR 规则**在 conn 日志上也求值** ——
@@ -377,7 +374,6 @@ def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(c, dict) and c.get("field") == "log_type" and c.get("op") == "eq"
         }
         # 显式写了 `log_type == X` 就是规则作者的明确意图，必须是**权威**的：
-        # 以前的顺序是先判通配、再看 explicit，结果「log_type eq wazuh + 通用字段」的规则
         # 反而被归进通配集合（每条日志都跑）—— 显式意图被静默忽略。
         if explicit:
             for kind in explicit:
@@ -401,7 +397,6 @@ def rules_for_log_type(index: Any, log_type: Any) -> list[dict[str, Any]]:
 
     **合并后必须按 (priority, name) 重排**：`types[kind]` 与 `wild` 是两张独立列表，
     直接拼接会把所有专有规则排在所有通配规则之前，而调用方是「首个命中即停」——
-    于是通配的 p5/p10（Wazuh 恶意软件告警、暴力破解）会被专有的 p25（参数 fuzzing）
     遮蔽。排序一次的开销可忽略（每期日志只算一次）。
     """
     if not isinstance(index, dict):

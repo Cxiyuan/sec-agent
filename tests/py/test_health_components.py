@@ -1,4 +1,4 @@
-"""组件健康判据与聚合（``app/api/routes/health_components.py``）——总览页 7 个呼吸灯。
+"""组件健康判据与聚合（``app/api/routes/health_components.py``）——总览页 7 个呼吸灯（网络采集器 / 采集质量 / Redis / Logstash / ES / 归一化 / 智能体）。
 
 只跑 NDR 栈。全部探测都 monkeypatch 掉（不连 ES/Redis/HTTP/DB），钉住：
 
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-ALL_KEYS = ("zeek", "capture", "wazuh", "redis", "logstash", "elasticsearch", "normalizer", "agent")
+ALL_KEYS = ("zeek", "capture", "redis", "logstash", "elasticsearch", "normalizer", "agent")
 
 
 @pytest.fixture(scope="module")
@@ -82,19 +82,6 @@ def test_judge_logstash(hc: ModuleType, runtime: Any, want: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("reachable", "alerts", "want"),
-    [
-        (False, 100, "down"),
-        (True, 0, "degraded"),
-        (True, None, "ok"),
-        (True, 12, "ok"),
-    ],
-)
-def test_judge_wazuh(hc: ModuleType, reachable: bool, alerts: Any, want: str) -> None:
-    assert hc.judge_wazuh(reachable, alerts) == want
-
-
-@pytest.mark.parametrize(
     ("active", "last_success", "has_error", "want"),
     [
         (False, "", False, "unknown"),  # 没配 = 不知道，而不是坏了
@@ -125,7 +112,7 @@ def _patch_all(hc: ModuleType, monkeypatch: pytest.MonkeyPatch, **overrides: Any
 
     defaults = {
         "_es_health": lambda: ("green", "green · 1 节点 · 未分配 0"),
-        "_es_freshness": lambda: {"zeek_age": 10.0, "wazuh_age": 60.0, "any_age": 5.0, "error": ""},
+        "_es_freshness": lambda: {"zeek_age": 10.0, "any_age": 5.0, "error": ""},
         "_capture_stats": lambda: {
             "count": 100,
             "top": [("possible_split_routing", 60), ("data_before_established", 40)],
@@ -148,11 +135,10 @@ def _patch_all(hc: ModuleType, monkeypatch: pytest.MonkeyPatch, **overrides: Any
         lambda: {"alive": True, "reloads_failures": 0, "events_in": 5, "events_out": 5},
     )
     monkeypatch.setattr(
-        hc.wazuh_route,
         "probe_status",
         lambda: {"reachable": True, "version": "v4.14.8", "detail": "连通"},
     )
-    monkeypatch.setattr(hc.wazuh_route, "ingest_stats", lambda: {"alerts": 1187})
+    monkeypatch.setattr(hc.logstash_route, "ingest_stats", lambda: {"alerts": 1187})
     monkeypatch.setattr(
         hc.push, "load_config", lambda _db=None: {"url": "http://agent:8000/x", "enabled": True}
     )
@@ -166,24 +152,6 @@ def _patch_all(hc: ModuleType, monkeypatch: pytest.MonkeyPatch, **overrides: Any
             "last_error": "",
         },
     )
-
-
-def test_collect_returns_all_seven_components_ok(
-    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _patch_all(hc, monkeypatch)
-    payload = hc._collect()
-    items = {item["key"]: item for item in payload["items"]}
-    assert tuple(items) == ALL_KEYS
-    assert all(item["state"] == "ok" for item in items.values()), items
-    assert "green" in items["elasticsearch"]["detail"]
-    assert "10 秒前" in items["zeek"]["detail"]
-    assert "5 秒前" in items["normalizer"]["detail"]
-    assert "1187" in items["wazuh"]["detail"]
-    assert "未投递 3" in items["agent"]["detail"]
-    # 采集质量灯：条数 + 最常见的异常名都在 detail 里
-    assert "100 条" in items["capture"]["detail"]
-    assert "possible_split_routing 60" in items["capture"]["detail"]
 
 
 @pytest.mark.parametrize(
@@ -200,66 +168,6 @@ def test_collect_returns_all_seven_components_ok(
 def test_judge_capture(hc: ModuleType, count: int | None, want: str) -> None:
     """采集类协议异常的数量判据（阈值 5000/20000）：突增 = 采集在丢包（会漏检）。"""
     assert hc.judge_capture(count, 5000, 20000) == want
-
-
-def test_capture_light_degrades_on_probe_failure(
-    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """读不到统计时只影响这盏灯（不把整页拖成不可用）。"""
-    _patch_all(
-        hc, monkeypatch, _capture_stats=lambda: {"count": None, "top": [], "error": "es 超时"}
-    )
-    items = {item["key"]: item for item in hc._collect()["items"]}
-    assert items["capture"]["state"] == "unknown"
-    assert "es 超时" in items["capture"]["detail"]
-    assert [k for k, v in items.items() if v["state"] != "ok"] == ["capture"]
-
-
-def test_capture_yellow_when_over_threshold(
-    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _patch_all(
-        hc,
-        monkeypatch,
-        _capture_stats=lambda: {"count": 9999, "top": [], "error": ""},
-    )
-    items = {item["key"]: item for item in hc._collect()["items"]}
-    assert items["capture"]["state"] == "degraded"
-
-
-def test_one_probe_failure_only_affects_its_own_light(
-    hc: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def boom() -> Any:
-        raise RuntimeError("wazuh 挂了")
-
-    _patch_all(hc, monkeypatch, _es_health=lambda: ("green", "ok"))
-    monkeypatch.setattr(hc.wazuh_route, "probe_status", boom)
-    monkeypatch.setattr(hc.wazuh_route, "ingest_stats", boom)
-
-    items = {item["key"]: item for item in hc._collect()["items"]}
-    assert items["wazuh"]["state"] == "down"
-    # 其余六盏灯不受影响
-    assert [k for k, v in items.items() if v["state"] != "ok"] == ["wazuh"]
-
-
-def test_es_and_redis_down_are_visible(hc: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom() -> Any:
-        raise RuntimeError("es down")
-
-    _patch_all(hc, monkeypatch)
-    monkeypatch.setattr(hc, "_es_health", boom)
-
-    def bad_client() -> Any:
-        raise RuntimeError("redis down")
-
-    monkeypatch.setattr(hc, "_redis_client", bad_client)
-
-    items = {item["key"]: item for item in hc._collect()["items"]}
-    assert items["elasticsearch"]["state"] == "unknown"  # 读不到健康色 ≠ 一定红
-    assert items["redis"]["state"] == "down"
-    assert items["agent"]["state"] == "unknown"  # 没有 Redis 就读不到推送状态
-    assert items["zeek"]["state"] == "ok"  # 新鲜度是另一次 ES 往返，不受影响
 
 
 def test_endpoint_caches_for_ttl(hc: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:

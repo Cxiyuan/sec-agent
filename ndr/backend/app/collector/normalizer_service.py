@@ -1,10 +1,8 @@
 """采集侧归一化服务：原始日志 → 统一结构 → 检测器队列 + Elasticsearch。
 
 为什么要单独一个服务：改造前 Logstash 把原始文档原样写进 ES（Zeek 落在 `zeek.*`、
-Wazuh 落在 `data.*`），检测器与智能体各自再归一化一遍，结构还不一致。现在归一化
 只做一次、只在这里做：
 
-    Filebeat(Zeek/Wazuh) --RPUSH--> shentong:events:collect
       └ RPOPLPUSH（从右端取 = 最新优先）--> shentong:events:collect:processing
           ├ 降噪过滤（命中 → 跳过①，②照走）
           ├ ① LPUSH 归一化文档 --> shentong:events:raw（检测器 BRPOPLPUSH 从右端取最旧
@@ -289,13 +287,6 @@ def run() -> None:
                     if name:
                         stats["filtered"] += 1
                         ingest_filter.record_hit(name, entry)
-                    elif (
-                        entry.log_type == "wazuh_archive" and not settings.wazuh_archive_to_detector
-                    ):
-                        # 全量原始日志（Wazuh archives.json）：只入库，不喂检测器。
-                        # 检测器跑的是告警规则，原始日志进去只会白占队列与模型容量；
-                        # 需要时把 ST_WAZUH_ARCHIVE_TO_DETECTOR 打开即可（见 README 第六节）。
-                        stats["archive_es_only"] += 1
                     elif not log_types.is_detectable(entry):
                         # 日志类型闸门（批 1）：运维类（ntp/packet_filter/reporter/stats/ja4ssh/ja4d）
                         # 与白名单外的未知类型只入库当证据——进了检测只会污染画像与规则命中率。

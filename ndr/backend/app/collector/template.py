@@ -3,7 +3,6 @@
 管道语义（归一化前置之后）：
   归一化服务 --HTTP POST(JSON)--> Logstash http(:8080) → ES 统一索引 shentong-events-<日期>
 
-注意：**原始日志不再经过 Logstash**。Zeek/Wazuh 的 Filebeat 直接把原始文档写进
 Redis List（`shentong:events:collect`），由归一化服务取出、拍平后再 POST 到这里。
 所以本管道没有「按 log_type 分索引」的分流，只有一族索引。
 """
@@ -20,7 +19,6 @@ HEADER = """# 深瞳 · 采集侧入库管道（由 Web 后台维护，请勿手
 #
 #   归一化服务 --POST(JSON)--> Logstash http(:{port}) → Elasticsearch 统一索引
 #
-# Zeek 与 Wazuh 落同一族索引：原始文档在进 ES 之前已被拍平成统一结构（src_ip/dst_ip/...）。
 # 因此这里既没有 filter 分流，也没有第二个输出。
 #
 # 本文件由后台「系统配置 → Logstash 采集」生成/保存；保存后 Logstash 会自动重载（约 10s）。

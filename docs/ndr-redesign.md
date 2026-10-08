@@ -1,17 +1,14 @@
 # NDR 改造方案：采集 → 归一化 → 过滤 → 检测 → 推送智能体
 
-状态：**第 1~12 期已实施完成**（监控网段 / 归一化前置 / MCP 服务 + 智能体切到 MCP / 过滤规则 / HTTP 推送智能体 / Wazuh 4.14 集成与容量 / 界面整理 / 基线分析迁到 NDR / 采集面改造批 1~4：类型识别与流分类 / 指纹与文件元数据 / 请求头全量值 + 正文上限可设置 / 文件提取 + 下载通道），代码、门禁与 CI 均绿；**2026-10 已在实机服务器 `172.16.196.77` 部署上线**（含按用户要求删掉全部 10 个卷后从零重建），十个容器全 Up、`Filebeat → Redis → 归一化 → Logstash → ES` 与 `检测器 → 队列 → 智能体` 两条链路端到端跑通、Zeek 专项检查已做、监控网段 `172.16.196.0/24` 已下发并复验（`-f net 172.16.196.0/24` + `packet_filter.log` success），见下方「实机部署记录」。XFF 原始客户端 IP 已支持（`http.log` 的 `proxied` → 归一化 `real_client_ip`，无代理头为 NULL），请求体与响应体都已采集。**仍未做的是后续轮的事**：智能体侧对等适配（含文件下载入口）、智能体线路部署、以及第 8 节列出的几个调查项。全新服务器环境部署，无历史数据迁移。
 范围：`ndr/`（主改）+ `agent/`（接收端与 ES 文档形态同步改）
 
 ---
 
 ## 1. 目标（用户需求原文要点）
 
-- NDR 的功能边界：**采集 Zeek/Wazuh 原始数据 → 推入 Logstash 处理并落库 Elasticsearch 存储**。
 - Logstash 对数据进行处理过滤，并**完成字段归一化**；过滤规则在**用户界面**定义。
 - 过滤后的数据推送给**规则检测器**做安全分析；匹配事件触发后推送给智能体（**网络推送**）。
 - Elasticsearch **直接落库未过滤的全量数据**。
-- 集成 **Wazuh 4.14**（不要 wazuh-dashboard）；为 Zeek / Wazuh / Logstash / Elasticsearch 提供管理界面。
 
 ## 2. 已定决策（用户拍板）
 
@@ -24,16 +21,12 @@
 | 3 | 监控网段的作用面 | 同一份列表**同时喂** `bpf_filter`（只抓这些）与 `local_nets`（Zeek 内部/外部判定），因为规则里的 `src_internal` / `dst_internal` 依赖后者 |
 | 4 | 归一化位置 | `normalizer.py` 提到 Logstash **之前**，由它完成字段归一化 |
 | 5 | normalizer 接口 | **B**：Filebeat `redis` 输出 → normalizer 消费并 ack → Logstash `http` 输入 |
-| 6 | Wazuh | 仓库内起 `wazuh-manager` 4.14，**不含** indexer / dashboard |
-| 7 | Wazuh 采集范围 | **告警 `alerts.json` + 全量日志 `archives.json`**（manager 需开 `logall` / `logall_json`，Filebeat 侧开 archives 输入）。数据量显著上升，容量单列评估 |
-| 8 | Wazuh 管理深度 | **通过 Wazuh API(55000) 管 agent 注册与规则下发**（不只是只读状态）：后端经 Basic 换 JWT、token 过期需刷新，界面可列 agent / 下发规则文件并校验生效；连接信息**固化在部署环境**（`ST_WAZUH_API_*`，界面只读、无保存入口）—— 第 6 期原本设计成「凭据存 `SystemConfig` 表、界面可配」，实机部署后取消（同一事实两份来源，见第 6 期的说明） |
 
 ### 存储与字段
 
 | # | 问题 | 结论 |
 |---|---|---|
 | 9 | ES 文档形态 | **只存归一化后的文档**，智能体侧同步改。另有两条落地约定：只输出**非空字段**（避免大量 null 撑爆 mapping），原始文档整份进 `raw` |
-| 10 | ES 索引名 | 不再沿用 `zeek-*` / `wazuh-alerts-*` 两族，改用**统一索引族 `shentong-events-*`**（按日期滚动），智能体只面对一个索引模式 |
 | 11 | 过滤条件字段 | 源/目的 **地址 + 端口**，**再加协议内容字段**（`uri_path` / `host` / `user_agent` / `body` / `command` / `query` 等），操作符含「包含」与「正则」 |
 | 12 | URL 解码语义 | 现在规则引擎（Python）对 `contains`/`regex` 自动做 URL 解码，Logstash 不会。**由 normalizer 归一化时解码干净**，保证检测器与过滤器行为一致 |
 
@@ -81,11 +74,9 @@
 
 **服务器与环境**：`nss@172.16.196.77`，Ubuntu 24.04.1 LTS（kernel 6.8），6 核 / 11 GiB 内存；Docker **29.1.3** + Compose **2.40.3**，`nss` 在 docker 组（免 sudo 用 docker）与 sudo 组；`ufw` inactive、iptables INPUT policy ACCEPT（不用额外开端口）；网卡 `ens160` = 172.16.196.77/24。
 
-**部署目录与文件**：`/opt/shentong-ndr`，三个文件 —— `docker-compose.deploy.yml`（从仓库拷）、`logstash/config/logstash.yml`（从仓库拷）、`.env`（600，含 `JWT_SECRET` / `CORS_ORIGINS=http://172.16.196.77:3000,http://localhost:3000` / `ZEEK_IFACE=ens160` / `REDIS_HOST=localhost` / `REDIS_PORT=6379` / `REDIS_KEY=shentong:events:collect`）。**Wazuh 叠加件已于 2026-10-03 一起部署**（`4655bd2`/`12eab73`/`646b779`/`f3f91ef`/`ca35c42`/`e598764` 之后的镜像）：`docker-compose.deploy.yml` 顶部加 `include: [docker-compose.wazuh.yml]`（compose ≥2.20.4 支持 `include`，本机与服务器都是 2.40.3），于是多出 `wazuh-manager` 与 `wazuh-filebeat`；`.env` 另加 `WAZUH_API_URL=https://wazuh-manager:55000` / `WAZUH_API_USER=wazuh-wui` / `WAZUH_API_PASSWORD=…` 与 `WAZUH_ARCHIVES_ENABLED=false`。用 `include` 而**不是**把服务复制进 deploy 文件的理由：单一定义、结构上不可能与开发版漂移（本地开发仍是 `-f docker-compose.wazuh.yml` 显式 opt-in）。实机验证结论见 `ndr/wazuh/README.md` 第五节。
 
 **镜像**：仓库是私有库 → 三个 GHCR 包匿名拉取 403，先在服务器 `docker login ghcr.io`（需要带 `read:packages` 的 PAT）才能拉。实际用到 7 个镜像：`ghcr.io/cxiyuan/sec-agent/shentong-ndr`（backend / detector / normalizer / ndr-mcp **四服务共用**，靠 compose 的 `command` 覆盖成 `python -m app.detector` 等）、`shentong-ndr-frontend`（Next）、`shentong-zeek`（Zeek + Filebeat）、`elasticsearch:8.15.3`、`logstash:8.15.3`、`postgres:16`、`redis:7`。
 
-**十个服务**：backend / detector / elasticsearch / frontend / logstash / ndr-mcp / normalizer / postgres / redis / zeek，全部 `RestartCount=0`。（2026-10-03 加 Wazuh 叠加件后为 **12 个**：再加 `wazuh-manager` 与 `wazuh-filebeat`。）
 
 **验收结果（实测）**：ES `_cluster/health` = green（**首次带索引时是 yellow** —— 单节点集群默认 1 副本分配不出去，见下方第 5 条）；`GET /api/health` = `{"status":"ok","app":"深瞳 · 安全分析智能体"}`（注意路径带 `/api`）；`ndr-mcp /health` = ok；frontend `:3000` 返回 307（重定向，正常）；Logstash `:8080` = 200；归一化服务每 10s `POST http://logstash:8080/ "HTTP/1.1 200 OK"`；ES 索引 `shentong-events-YYYY.MM.DD` 持续增长（实测某 10 分钟窗口入库 9079 条、其中退化成 `message` 的 0 条）；Redis 四个队列（`collect` / `collect:processing` / `raw` / `dispatch`）为空＝实时消化；检测器正常投递摘要（`扫描 17335 / 命中 60 / 频率触发 1 / 重复跳过 3126 / 摘要 7 / 投递 9`）；`conn.log` 持续增长。默认管理员 `admin` / `admin123`（`ndr/backend/app/config.py:105-106`）。
 
@@ -110,14 +101,12 @@
 ### 两条已确认的既有事实
 
 - **智能体没有自己的 Redis / ES**：`agent/backend/app/config.py:38-40` 的 `ST_REDIS_URL` / `ST_CELERY_BROKER_URL` / `ST_CELERY_RESULT_BACKEND` 全部指向 `NDR_REDIS_URL`（`/0`、`/1`、`/2`）。**ES 这一侧的直连由第 6 节的 MCP 彻底切断**（智能体从此不需要 ES 地址）；剩下的只有 Celery broker/backend 仍在用 NDR 的 Redis ——「推送改 HTTP」解不掉它，真要解耦得连 broker 一起换，本次不做。
-- **现状链路里没有归一化**（第 2 期已改掉）：改造前是 `Filebeat → Logstash → ES`，`ndr/backend/app/collector/template.py` 的 filter 段只补一个 `source_system`，文档原样落库（Zeek 在 `zeek.*`、Wazuh 在 `data.*`）——`agent/backend/app/investigation/catalog.py:7-12` 的注释正是照此写的。现在归一化提前到 normalizer 服务，ES 只存统一字段。
 
 ## 3. 目标数据流
 
 ```
 Zeek(只抓监控网段 / BPF) ─ Filebeat ┐
                                     ├→ Redis 队列 shentong:events:collect（Filebeat 用 RPUSH 写右端；设长度上限）
-Wazuh 4.14(alerts + archives) ──────┘             │
                           normalizer 服务（BRPOPLPUSH 取出 → 归一化 → 成功后确认）
                                                   │
                      ┌────────────────────────────┴───────────────────────────┐
@@ -142,13 +131,11 @@ Wazuh 4.14(alerts + archives) ──────┘             │
 
 1. **过滤绝不用 `drop{}`**。Logstash 的 `drop` 会**终止整个事件**，连 ES 那条输出一起没了，直接违反「ES 落全量」。**最终落法**：过滤压根不写在 Logstash 里，而是归一化服务里的一次判断（`ndr/backend/app/ingestion/ingest_filter.py`）—— 命中就跳过「投检测器队列」那一步，ES 那条 POST 照旧发全量。
 2. **ES 输出永远无条件**。
-3. **ES 输出的分流判断已被消灭**（第 2 期落地）。原方案要求把 `if [log_type]` 改成按 `source_system` 分流；实际上归一化前置后**只剩一族索引** `shentong-events-*`，`render()` 里已没有任何分流：原始文档根本不经过 Logstash。归一化后 Wazuh 也带 `log_type="wazuh"`（`ndr/backend/app/ingestion/normalizer.py:373`）这个坑随之不存在。
 
 ## 4. 关键契约变更：ES 文档形态
 
 现在 ES 存**原始**文档，智能体按来源走不同字段路径：
 
-| 概念 | 现在（zeek） | 现在（wazuh） | 改后（统一） |
 |---|---|---|---|
 | 源地址 | `zeek.id.orig_h` | `data.srcip` | `src_ip` |
 | 目的地址 | `zeek.id.resp_h` | `data.dstip` | `dst_ip` |
@@ -164,7 +151,6 @@ Wazuh 4.14(alerts + archives) ──────┘             │
 
 | 文件:行 | 现在 | 改后 |
 |---|---|---|
-| `agent/backend/app/investigation/catalog.py` | 26 个字段条目、51 处 `"zeek": ...` 双列映射（`{"zeek": "zeek.id.orig_h", "wazuh": "data.srcip", ...}`） | 单列：概念 → 统一字段名。**净简化** |
 | `agent/backend/app/investigation/es_query.py:284` | 硬编码 `for extra in ("zeek.body", "data.command", "rule.description")` | 用统一字段名 |
 | `agent/backend/app/ingestion/es_schema.py:20-21` | `es_source_fields()` 返回原始路径（与 `ndr/backend/app/ingestion/es_schema.py` 逐字相同） | 返回 `src_ip` / `dst_ip` |
 | `agent/backend/app/config.py:29-32` | `es_zeek_src_fields="zeek.id.orig_h"` 等 4 项（`ndr/backend/app/config.py:31-34` 同） | 新索引名 + 统一字段名 |
@@ -191,7 +177,6 @@ NDR 检测器                               智能体 POST /api/push/digests
 - **回执 = HTTP 2xx**：`ndr/backend/app/detector/push.py:push_batch()` 收到 2xx 即算送达；非 2xx/超时 → 整批落 `shentong:events:pushretry`（`ReliableQueue`，processing 队列兜住进程崩），由检测循环每轮的 `push.retry_pending()` 重发，并区分两类失败：网络错/超时/5xx/408/429（整体不可达）→ 整批放回队尾并**结束本轮**（空转没意义）；持续 4xx 的坏批 → 尝试次数 +1 并挪到队列最新端让健康批先走，满 `_RETRY_MAX_ATTEMPTS=5` 判 `lost` 丢弃并计数（不再永久堵队首）。重试队列有上限 `_RETRY_QUEUE_MAX=2000`（lpush 后立即 ltrim，保最新、丢最老，丢失批数记 `retry_dropped`）；`retry_pending()` 全程持 Redis 锁（SET NX EX）与 `POST /api/agent-push/retry` 串行，抢不到返回 `locked=true`；`recover_pending()` 只在主循环选主时显式调一次。
 - **NDR 侧不再有闸门**：`analyzed_fingerprints` 表、`ndr/backend/app/detector/analyzed.py`、`_drain_done`、`analyzed:done` 队列、agent 侧 `consumer.py` 与 `_notify_done` 已全部删除；`ndr/backend/app/detector/fingerprint.py` 保留 `digest_age`（超龄丢弃）与 `digest_fingerprint`（推送载荷用）。
 - **升级注意**：老部署里 `analyzed_fingerprints` 表会留下（`Base.metadata.create_all` 不删表），不再写入、可手工 drop；`shentong:detector:dedup` 只剩历史计数，界面标注为「退役前」。
-- **验收对照**（单进程实测，`/tmp/test_push_api.py` 30 项、`/tmp/test_agent_push.py` 51 项、`/tmp/test_runner_push.py` 15 项全过）：重复推送同一指纹 → 只加计数、不投任务 ✅；未配/配错令牌 → 503/401，界面报错可见 ✅；推送失败 → 落重试队列并在下一轮重发 ✅；智能体不可达且重试队列写不进 → 摘要放回检测队列，不静默丢 ✅。**未在真实 Zeek/Wazuh 流量与双机部署下端到端跑过**（与第 1~4 期同批实机验收）。
 
 ## 6. 智能体接口：MCP（新）
 
@@ -267,11 +252,9 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 - 新服务 `ndr/backend/app/collector/normalizer_service.py`（入口 `python -m app.collector.normalizer_service`）：复用 `ndr/backend/app/detector/queue.py:18 class ReliableQueue` 的 raw→processing→ack 模式消费 `shentong:events:collect`，逐条 `normalize(source_of(doc), doc)` 得 `UnifiedLog`，`_payload()` 只留非空字段（`raw` 永远保留），再走两条路：
   - **① 先** `LPUSH` 到 `shentong:events:raw`（检测是实时车道，不该被 ES/Logstash 的抖动拖住）；
   - **② 再** 以 NDJSON 批量 POST `http://logstash:8080/`，**2xx 才 ack**；失败则把本批**放回队尾**重试（`recover()` 只兜底进程崩溃留下的残留 —— 只在启动时跑一次，靠它重试会让 Logstash 一挂就永久躺平）。重放造成的重复由检测器 `handled` 注册表按文档哈希挡住。
-- `source_of(doc)` 是新增的**归一化前来源判定**（`ndr/backend/app/ingestion/normalizer.py`）：`source_system` 优先，缺失则看顶层 `log_type` 或 `zeek` 是否为 dict → `zeek`，否则 `wazuh`。
 - 坏消息（JSON 坏 / 非 dict / 归一化返回 None）**直接确认掉并记数**，否则一条坏消息会把队列卡死。
 - 队列封顶 `_trim_queue()`（`ltrim` 裁掉最旧，上限 `collector_queue_max=30000`）；周期日志汇报「入库 / 待重试 / 坏消息 / 积压」。
 - `ndr/backend/app/config.py` 新增采集段 9 项：`collector_collect_queue` / `collector_processing_queue` / `collector_queue_max` / `collector_consume_batch=500` / `collector_poll_timeout=5` / `collector_post_timeout_seconds=20` / `collector_post_retries=3` / `collector_retry_backoff_seconds=1.0` / `collector_stats_log_seconds=300`；`logstash_beats_port=5044` → `logstash_http_port=8080`。
-- ES 索引名全链路收敛为一族：`es_events_index="shentong-events-*"`（模板渲染成 `shentong-events-%{+yyyy.MM.dd}`），删掉 `es_zeek_index` / `es_wazuh_index` 与 `es_zeek_src_fields` / `es_zeek_dst_fields` / `es_wazuh_src_fields` / `es_wazuh_dst_fields`，改为 `es_events_src_fields="src_ip"` / `es_events_dst_fields="dst_ip"`（**2026-10 QA 又删掉了这两项**：唯一读它们的 `ndr/backend/app/ingestion/es_schema.py` 整条链是死代码，网段过滤实际走 `detector/runner.py` 与 `mcp/ndr_tools.py` 的运行时逻辑）。
 - `ndr/backend/app/collector/template.py` 整体重写：input 段 `beats{port 5044}` → `http{port 8080}`，**必须用 `codec => "json_lines"` + `additional_codecs => { "application/json" => "json_lines" }`**（http 输入默认「一个请求 = 一个事件」，否则一批 NDJSON 会被当成一条、json 解析失败）；`remote_host_target_field` / `request_headers_target_field` 挪进 `[@metadata]`（默认会写成 `host`、`headers` 并入库）；filter 段只把 `ts` 搬进 `@timestamp`；output 段只剩一条无条件 ES 输出。
 - Logstash 开持久化队列（`ndr/logstash/config/logstash.yml` 的 `queue.type: persisted` + `path.queue` + `queue.max_bytes: 2gb`），让「Logstash 返回 200 = 已持久化」成立，normalizer 的 ack 才有意义。
 - compose 两份都加了 `normalizer` 服务与 `logstash-queue` 卷、logstash 端口 `5044` → `8080`；zeek 容器 env 从 `LOGSTASH_HOST`/`LOGSTASH_PORT` 改为 `REDIS_HOST`/`REDIS_PORT`/`REDIS_DB`/`REDIS_KEY`。
@@ -284,11 +267,9 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 1. **检测器必须改吃「已归一化」文档**。原方案没说这条：既然归一化提前了，`shentong:events:raw` 里放的就是归一化文档，检测器不该再归一化一遍（白费 CPU）。`ndr/backend/app/detector/runner.py` 加了 `_to_entry()`：文档带 `source_system` + `event_type` + `raw` 三个标记 → 直接 `UnifiedLog.model_validate()`，否则回退老路 `normalize()`。**兼容改造前格式，新旧混跑不炸。**
 2. **投给智能体的摘要样本里必须仍是「原始文档」**。`agent/backend/app/agents/nodes.py:197-203` 会拿样本里的 `doc` 再归一化一次（`entry = normalize(log_source, raw_doc)`），所以检测器聚合时要传 `entry.raw`（原始文档、已脱敏），**不能**传消费到的归一化文档。`_aggregate()` 的形参已从 `doc` 改名 `raw_doc` 并写明这条。
 
-**验收**：三个容器起来后，Zeek 与 Wazuh 事件都进 `shentong-events-*` 且字段统一；停掉 Logstash 不丢数据（消息放回队列尾等下轮重试，检测器侧不重复灌）。
 
 ### 第 3 期 · MCP 服务 + 智能体切到 MCP
 
-> ✅ **已完成（2026-02）**。原方案的「急」在于第 2 期一落地、ES 里只剩 `shentong-events-*` 一族扁平字段，而 agent 侧还在按 `zeek.id.orig_h` / `data.srcip` 旧路径查（`es_zeek_index="zeek-*"` / `es_wazuh_index="wazuh-alerts-*"`）。第 3 期已把这条缝补上：agent 侧不再有任何 ES 直连代码与配置，取数全部经 `ndr-mcp`。
 
 - NDR 侧新增 MCP 服务（独立进程 / 容器 `ndr-mcp`）：用官方 `mcp` SDK 起 streamable HTTP 服务，Bearer 令牌校验，工具实现复用 NDR 现有的 ES 客户端与配置。
 - 把 `agent/backend/app/investigation/es_query.py`(511 行) 与 `catalog.py`(450 行) 整体搬到 NDR，**按新统一字段重写路径** —— 一次改完，不留旧路径。
@@ -311,18 +292,15 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
    **共 17 个工具**（10 个 ES 查询/调查 + 7 个 NDR 自身；**第 8 期新增 `baseline_lookup` / `entity_profile` 后为 19 个 = 10 + 9**；**2026-10 MCP QA 又新增 `file_content` 后为 20 个 = 10 + 10**，见「2026-10 MCP 质量收口」小节），全部写成**显式形参的普通函数**注册 —— MCP 的 `inputSchema` 由函数签名推导，用 `**kwargs` 会被当成一个必填参数（实测报 `1 validation error for search_eventsArguments kwargs Field required`），这个坑踩过一次。工具名与参数名**逐字沿用**智能体原来的 10 个工具，提示词与调用样例不用改。
 
-2. **ES 查询层搬进 NDR 并重写**：新增 `ndr/backend/app/investigation/{__init__,catalog,es_query,tools}.py`（1595 行）；字段目录从 50 条收敛到 **42 条**（删掉只在 `raw` 里的 `duration`/`rcode`/`answers`/`fuid`/`md5`/`sha1`、合并掉 `service`/`host`/`server_name`/`uri`/`note`/`msg`/`rule_level`/`agent_name`/`wazuh_url` 等，新增 12 条顶层统一字段）。索引选择塌成单族：
 
    ```python
    def index_pattern() -> str:
-       return settings.es_events_index          # 原「按来源选 zeek-*/wazuh-alerts-*」整段删除
    ```
 
    `source_clause()` 改 `build_clause("source_system", source)`；`ts` 路径是 ES 元字段 `@timestamp`；`sha256` 路径落 `raw.sha256`。上限值原为 agent 侧配置项、NDR 没有对应物，写成模块常量（`QUERY_TIMEOUT_SECONDS=45` / `TIMELINE_MAX_HOURS=72` / `DEFAULT_LOOKBACK_DAYS=30` / `max_docs()=2000` / `RAW_EVIDENCE_MAX=20`）。
 
 3. **NDR 自身 7 个工具**（`ndr/backend/app/mcp/ndr_tools.py`，形状与 ES 侧一致、无 `ctx`、纯函数；**第 8 期起为 9 个**，新增 `baseline_lookup` / `entity_profile`）：`get_event`（按事件ID/指纹查结论历史；NDR 侧已不记录投递指纹，只回一句指向智能体的说明）、`get_rule`、`detector_status`（队列积压 / 五段速率 / 丢弃 / 去重 / 任务失败 / 选主 / Redis 内存，口径与 `ndr/backend/app/api/routes/detector.py` 对齐）、`list_networks`、`list_filters`、`record_conclusion`（按 `dedup_key = event_id or fingerprint` upsert）、`fetch_window`（按时间窗 + 网段/IP 拉原始条目，给回溯用；返回每条 log 带 `ref = es:<索引>/<文档id>` 与**完整 `raw` 原文**）。
 
-   八个查询工具（`search_events` / `aggregate_events` / `timeline` / `net_flows` / `dns_queries` / `tls_fingerprints` / `web_requests` / `file_hashes`）都收 `source`（`zeek|wazuh|both`，空 = 两个来源）—— 下层 `ndr/backend/app/investigation/tools.py:114 _resolve_sources()` 本来就有这个参数，补的是 MCP 包装层缺的形参（缺了会被**静默丢弃**）。包装层类型必须与下层取值函数对齐：`web_requests.status_code` 下层用 `_str_param()`（支持 `4xx` 这类关键字匹配），包装层原写 `int = 0` 会让非数字状态码在 MCP 校验层就被拒，已改 `str = ""`。
 
    > `raw_evidence` 的 ref 白名单校验与 `describe_data` 的「案件已知事实」**留在智能体侧**（NDR 不知道本轮调查查到过什么），所以 NDR 侧工具必须是无状态纯函数：参数进、JSON 文本出。
 
@@ -348,7 +326,6 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 2. **10 个 NDR 类工具改走 MCP**（`agent/backend/app/investigation/tools.py`，702 行；`MAX_ROWS = 2000`）：每次调用 `mcp_client.call("<工具名>", {...})`。`raw_evidence` 的 **ref 白名单校验留在本地**（先用自己的 `ToolCtx` 校验再调用），`describe_data` 的「案件已知事实」块也留在本地 —— NDR 侧那个工具用的是一个新建的空 `ToolCtx`，看不到案件。
 
-3. **字段目录改为动态拉取**：`agent/backend/app/investigation/catalog.py` 重写为**纯展示目录**（42 个字段的名字/类型/说明，与 NDR 侧逐字对齐，AST 对比全等），并新增 `catalog_text(index, fields=None, *, sources=("zeek","wazuh"), max_chars=2600)`；`planner.py` 的 `_field_catalog_text()` 调 MCP `describe_data` 拿索引名与字段清单后渲染，**进程内缓存 10 分钟**（`_case_context` 每轮循环都算，而 `describe_data` 在 NDR 侧要做时间边界聚合）。索引名不再在 agent 侧硬编码。
 
 4. **回溯改为拉 MCP 窗口**：`agent/backend/app/agents/nodes.py` 的 `lookback_node` 用 `mcp_client.call("fetch_window", {"start","end","nets","limit"})` 取代 `es_client.fetch_window_logs()`；新增 `_doc_list()` / `_to_log()` 把返回条目还原成 `UnifiedLog`（条目里已带统一字段就直接 `model_validate`，否则按 `raw` 原文再走一次 `normalize()`）。
 
@@ -358,7 +335,6 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 7. **方案外发现（顺手修掉）**：agent 侧还留着一份**重复的网段配置** —— `agent/backend/app/ingestion/scope.py` 的 `enabled_cidrs()` 读自己的 `AnalysisScope` 表（`agent/backend/app/db/models.py` 原 282 行，`main.py` 播种 `10.0.0.0/8` 等三段私网兜底），而这份配置**没有任何界面**，且 NDR 第 1 期已把网段唯一来源改成 `zeek.monitored_nets` —— 两份会不一致，回溯就会按错误网段筛日志。现改为 `enabled_cidrs()` 调 MCP `list_networks`（进程内缓存 60 秒；拿不到时回空列表 = **不限制**，因为 NDR 的语义是「清单为空 = 抓全部」），`AnalysisScope` 模型与播种函数一并删除。
 
-**验收对照**：智能体不配 ES 地址也能跑完一次完整调查 ✅（配置项已不存在）；NDR 界面能看到调用记录 ✅；令牌吊销后智能体立刻调不通 ✅（每次调用查库不缓存）；`record_conclusion` 写回的内容在 NDR 界面可见 ✅。四项均以「真起服务 + 真 SDK 客户端」实测过，**未在真实 Zeek/Wazuh 流量下端到端跑过**（与第 2 期同批上线，实机验收一并做）。
 
 ### 第 4 期 · 过滤规则
 
@@ -393,7 +369,6 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 8. **实测**（`/tmp/test_ingest_filter.py`，24 项全过）：校验四类拒绝逐条覆盖；`match()` 命中/不命中/**求值抛异常时回 None（fail-open）**；`dry_run()` 含原始文档的混合取样、非法条件回 error、无数据回提示；`normalizer_service.run()` 用 FakeRedis + FakeQueue + FakeHttp 整轮跑，断言「**检测器队列只剩未命中的那条**」「**ES 收到 2 行、含被挡下的那条**」「两条都 ack」「命中计数 1 / 样例 1」「重试列表为空」。
 
-**验收对照**：加「忽略 10.0.0.5:445」→ 试运行先看到命中量与样例 ✅（`POST /api/ingest-filters/dry-run`）；该流量不再进检测器 ✅（主循环只 LPUSH `kept`）；**ES 里仍有** ✅（`_post` 发全量，测试断言 2 行含被挡下的）。均为单进程内实测，**未在真实 Zeek/Wazuh 流量下端到端跑过**（与第 2、3 期同批实机验收）。
 
 ### 第 5 期 · HTTP 推送智能体 ✅ 已完成（2026-02，实施记录）
 
@@ -406,42 +381,27 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **验收对照**：agent 挂掉 → 摘要落 `shentong:events:pushretry`、恢复后由检测循环补齐 ✅（测试覆盖 queued → retry_pending 全成功，见 `tests/py/test_detector_push.py:235`）；地址配错 → 界面「失败待重发 / 最近失败」有计数与原因 ✅（「失败待重发」= `retry_backlog_batches`；另有 `retry_lost`/`retry_dropped`/`undelivered` 三个「再也不会重发」的可见计数）；**没配地址（`deliver` 返回 `off`）→ 摘要记 `undelivered` 后 ack，不再伪装成已投递** ✅（`tests/py/test_detector_runner.py:56`）；重复推送同一指纹 → 只累加 `event_count`、不投任务、不出第二份报告 ✅。
 
-### 第 6 期 · Wazuh 4.14 集成与容量 ✅ 已完成（2026-02，实施记录）
 
-- **告警与原始日志分流**（`ndr/backend/app/ingestion/normalizer.py` 与 agent 侧同名文件**同步**改）：`normalize_wazuh` 用 `is_archive = not rule` 区分 —— `alerts.json` 每条都带 `rule`，`archives.json`（`logall_json` 的全量原始日志）没有。告警 → `log_type="wazuh"` + 事件类型（`_wazuh_event_type`）；原始日志 → `log_type="wazuh_archive"` + `event_type="wazuh_log"`（不套告警事件类型，规则不会误命中；`ndr/backend/app/rules/builtin.py:1045` 那条 `log_type == "wazuh"` 的规则天然不会跑），`summary` 取 `full_log` 单行化后 200 字。理由：archives 量级远大于告警，混在一起会让告警规则被全量日志触发。
-- **原始日志默认只入库、不喂检测器**：`ST_WAZUH_ARCHIVE_TO_DETECTOR`（默认 false）；`ndr/backend/app/collector/normalizer_service.py` 分流处 `elif entry.log_type == "wazuh_archive" and not settings.wazuh_archive_to_detector: stats["archive_es_only"] += 1`，统计行加「原始日志只入库 %d」。红线「ES 落全量」不受影响（Logstash 那条线照旧）。
-- **容器侧（opt-in 叠加编排）**：`ndr/docker-compose.wazuh.yml` 加 `wazuh-manager`（官方 `wazuh/wazuh-manager:4.14.8`，不含 indexer/dashboard，暴露 55000 与可选 1514/1515，8 个命名卷）与**独立的** `wazuh-filebeat`（官方 beats 8.15.3，`user: root` + `-strict.perms=false`，只读挂载 `wazuh-logs`，命令指向 `ndr/wazuh/filebeat.yml`）。**为什么另起一个 Filebeat**：manager 自带那个是为「发往 Wazuh indexer」预设的，其 `output.redis` 支持在 4.14 未经实机验证（开放问题 6）——另起一个用我们自己的配置，与 Zeek 线行为一致；Filebeat 只支持单一 output，这也顺带绕开了「Zeek 与 Wazuh 各发各的」这个纠结点。`docker compose -f docker-compose.yml -f docker-compose.wazuh.yml config -q` 与 deploy 版组合**均校验通过**。
-- **`ndr/wazuh/filebeat.yml`**：两个 filestream（`alerts.json` 常开 / `archives.json` 由 `WAZUH_ARCHIVES_ENABLED` 控制），都 `ndjson: {overwrite_keys: true, add_error_key: true}` 且**不设 target**（`normalize_wazuh` 从根读 `rule`/`data`/`agent`/`full_log`；`overwrite_keys` 防 Filebeat 的 ECS 顶层 `agent` 盖掉 Wazuh 的 `agent.name`，否则主机名丢失），`fields: {source_system: wazuh}` + `fields_under_root`，`output.redis` 指向 `${REDIS_KEY:shentong:events:collect}`。
-- **`ndr/wazuh/enable-logall.sh`**：幂等开 `archives.json` —— `cp -a` 备份后**就地改值**（`sed` 把 `<logall>no</logall>` / `<logall_json>no</logall_json>` 改 `yes`），只有这两个键在目标小版本里缺失时才 awk 在**第一个** `<global>` 之后插入；**不整体替换 `ossec.conf`**（4.14.x 小版本默认配置有差异，写错 manager 起不来）。写完自检「每个键恰好 1 处 `yes`、0 处 `no`」，不通过就 `cp -a` 回滚原文件并报错退出。（原实现是无条件追加，实测会在同一文件里留下 `yes`/`no` 两组矛盾键，见 `ndr/wazuh/README.md` 第五节「踩到的坑」4。）
-- **Wazuh API 管理面**：`ndr/backend/app/api/routes/wazuh.py` + 路由注册 + `ndr/frontend/components/wazuh-panel.tsx`（第 7 期拆页后挂在 `/admin/collect`「采集接入」页）。**连接信息只有一个来源**：部署环境变量 `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` / `ST_WAZUH_API_VERIFY_TLS`（部署时由 `.env` 的 `WAZUH_API_*` 传入，与 manager 自己用的是同一组值），`_cfg()` 只读环境变量；第 6 期原本让凭据存 `SystemConfig` 键 `wazuh.params`、界面保存的值优先，实机部署后**取消**（遗留的该行不再被读取，`PUT ""` 与 `POST /test` 一并删除、密码不再打码回显）——理由：Wazuh 随项目部署，同一事实留两份来源就会出现「界面写了一个地址、实际连的是另一个」而看不出来，且部署完还要人工再填一遍。Basic → JWT（`POST /security/user/authenticate`，token 按 `(url, user)` 进程内缓存，按 `expires_at` 提前 60 秒失效）；端点 `GET ""`（状态 + Agent 清单 + 入库量，只读）、`GET /status`、`GET /agents`（汇总 + 列表）、`GET /rules`（标出 `etc/rules` 下的本地自定义文件）、`POST /rules`（**`PUT /rules/files/<name>?overwrite=true`** 下发 → `GET /rules?filename=…` **轮询**取生效条数 + `GET /rules/files/…?raw=true` 回读**原文**比对，两者都对才算 `verified`；文件名白名单 `^[A-Za-z0-9_.-]{1,64}\.xml$` 挡目录穿越）。接入状态**同时**看 API 与 ES 入库量：面板的「近 24h 入库 告警 N / 原始日志 N」查 `source_system=wazuh` 并按 `log_type` 分桶（走 `catalog.agg_path()` 拿到 `.keyword`，否则 text 主字段聚合会 400）—— 这是链路真通了的证据，不只是「API 通」。
-- **容量评估（本机实测 + 纸面推算，2026-02）**：本机跑 `normalize("wazuh", doc)` + `_payload` 实测（CPython 3.11，单核）：**告警 94 µs/条（≈1.06 万条/秒）、原始日志 63 µs/条（≈1.6 万条/秒）**；单条线上载荷 **1.36 KB / 1.17 KB**（含 `raw` 整份原始文档）。据此：
   - **ES 日增量** ≈ 单条载荷 × 日条数（单副本）：10 万条告警/天 ≈ **0.13 GB/天（3.9 GB/月）**；100 万条原始日志/天 ≈ **1.11 GB/天（33 GB/月）**。原始日志是容量主项 —— **先按现场日志量估算，再决定是否开 `logall_json`**。
   - **normalizer 吞吐**：单进程 1 万条/秒以上，高于同机 ES/Logstash 的写入能力 —— 瓶颈在 ES，不在归一化。
   - **Redis**：collect 队列上限 `collector_queue_max=30000`，满载约 **40 MB（告警）/ 34 MB（原始日志）**；历史上出过 noeviction 卡死事故，故内存仍要留余量并按 `maxmemory` 观察。
-  - **磁盘**：manager 侧的 `archives.json` 由 Wazuh 自己滚动、**不设保留期**，长期开 `logall_json` 要配合宿主/卷的清理策略。
   - **检测器与推送不受原始日志影响**（默认不喂检测器），仍按告警量计。
 
-**验收**：Wazuh 告警与（可选的）全量日志都进 ES、可查、状态页可见；容量数字落在可接受区间。实施取证：`/tmp/test_wazuh.py` **65/65**（凭据脱敏与 `None`/`""` 语义、JWT 缓存与 401 提示、agents 汇总、规则下发回读校验与文件名穿越拦截、ES 按 `log_type` 分桶与读失败回显）、两侧 ruff/pyright 0 error、`ndr/frontend` `npx tsc --noEmit` 通过、两份 compose 组合 `config -q` 通过、`normalize` 分流与载荷大小本机实测如上。
 
-**实机复验（2026-10-03，`172.16.196.77`，manager 4.14.8）**：六条待验项全部通过，逐条结论与证据见 `ndr/wazuh/README.md` 第五节。过程中修掉 5 个真 bug，其中 3 个会让「接入成功」站不住：**ES 索引模板没有 mappings** ⇒ `raw.id` 被动态映射定成 object 后，Wazuh 告警与 Zeek `ocsp` 的字符串形态文档被 ES **静默 400 丢弃**（`log_type.keyword=wazuh` 恒 0，而 Filebeat/Redis/归一化三段都正常；修法 `{"properties":{"raw":{"type":"object","enabled":false}}}`，两个老索引按「拷贝→删旧→重建→回灌」迁移，`failures: 0`）；面板 `_ingest_stats()` 用 text 主字段聚合 ⇒ 恒报「读 ES 失败」；规则下发 `PUT /rules/files/<name>` **默认不覆盖**同名文件、失败态回在 HTTP 200 的 body 里 ⇒ 规则一条都没更新却报「已上传」。另外两处：`?raw=true` 回读被按 JSON 解析、生效条数会瞬时读到 0（轮询修）；Wazuh `syscollector`/FIM 原始日志的 `process` 是对象 ⇒ 被 pydantic 打成 373 条死信（`_text_or_none()` 修，**两侧 normalizer 同步**，373 条原文回灌全部成功）。提交：`4655bd2`/`12eab73`（映射与面板）、`646b779`（规则下发校验）、`f3f91ef`（死信）、`ca35c42`（`enable-logall.sh`）、`e598764`（`overwrite` + body 级失败判定）。现场容量实测：3 台 agent 约 2000 条告警/1.5 h ≈ **3.2 万条/天**、原文 3.7 MB/1.5 h ≈ **59 MB/天**；archives 侧只在 12 分钟验证窗口里量到 824 KB，**开口前必须按现场真实原始日志量复核**。
 
 ### 第 7 期 · 界面整理 ✅ 已完成（2026-02，实施记录）
 
-原来八个面板全挤在 `ndr/frontend/app/admin/settings/page.tsx` 一页里（Zeek / Wazuh / ES / Logstash / MCP / 智能体推送 / 降噪 / 排除），随 Wazuh 与推送接入后页面已经过长。现按「配置的是哪一段链路」拆成六个子页，`/admin/settings` 保留为**配置总览索引**（旧链接不失效）：
 
 1. **`ndr/frontend/components/page-shell.tsx`（新增）**：统一页面骨架 `PageShell({title, desc, children})` = 左侧 `Nav` + `ml-56` 主区 + 标题/说明 + `space-y-4` 内容栈，新页不再各写一遍布局。
 2. **六个新页面**（均在 `ndr/frontend/app/admin/` 下，套 `PageShell`）：
-   - `collect/page.tsx`「采集接入」= `<ZeekPanel section="iface"/>`（监听网卡）+ `<WazuhPanel/>`（API 凭据、下发规则、入库量）
    - `networks/page.tsx`「监控网段」= `<ZeekPanel section="networks"/>`（抓包范围 + 附加 BPF）
    - `storage/page.tsx`「数据存储」= `<EsPanel/>` + `<LogstashPanel/>`
    - `filters/page.tsx`「过滤规则」= `<IngestFiltersPanel/>` + `<ExclusionsPanel/>`
    - `agent/page.tsx`「智能体对接」= `<McpPanel/>` + `<AgentPushPanel/>`
    - `status/page.tsx`「运行状态」= `<StatusPanel/>`（新增，见下）
 3. **`ndr/frontend/components/zeek-panel.tsx` 按 section 复用**：签名改为 `ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "networks" })`，标题/说明/可见块随 section 切；`save()` 仍一次性 PUT `{interface, networks, bpf_extra}`，**没显示的那部分原样回传**，因此「采集接入」与「监控网段」两页互不覆盖。旧的 `section="all"` 形态保留。
-4. **`ndr/frontend/components/status-panel.tsx`（新增，运行状态页主体）**：只读既有接口、不新增后端 —— `/api/detector/stats`（队列深度 / 投递速率 / 丢弃 / 选主 / Redis 体检）、`/api/agent-push`（送达与重发）、`/api/wazuh`（API 可达性 + 近 24h 入库量）。四个块 + **每 15 秒自刷新**（可关）；Redis 用量超过告警线时显式标红「内存接近上限，整链路会卡死」—— 历史上出过 noeviction 卡死事故，这是最该被看见的前兆。
 5. **`ndr/frontend/components/nav.tsx` 七项导航**：检测规则 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；~~**配置总览（`/admin/settings`）挂在全局页头的 logo 上**（可点，带齿轮图标），不占导航行~~ → **该页与入口已取消，见「2026-10 界面口径」小节的后续说明**。
 6. **顺手修掉两处死跳转**：`ndr/frontend/app/setup/page.tsx`（首次向导保存后）与 `ndr/frontend/app/login/page.tsx`（登录后）原本都 `router.replace("/dashboard")`，而本前端没有 `/dashboard`（首页 `app/page.tsx` 即 `/`，它再 redirect 到 `/admin/rules`）→ 都改为 `"/"`。原先这两处会跳到 404。
-7. **第 6 期那条说明在拆页后保留**：`networks/page.tsx` 的页面说明里写明「这份清单只约束 Zeek 抓包，不影响 Wazuh 采到的主机日志」，`wazuh.py` 的 `HINT` 里也有一句同样的话。
 
 **验收**：六个子页可直达、旧 `/admin/settings` 仍是有效入口、导航七项高亮正确、首次向导与登录不再跳 404。实施取证：`ndr/frontend` `npx tsc --noEmit` 通过（`agent/frontend` 未改动，另行复跑）；后端本轮无改动，收尾仍复跑 ruff/pyright。**未取证**：浏览器里的实际渲染与交互（未起前端 dev server，按 AGENTS.md 也不本地 build）。
 
@@ -468,18 +428,15 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    - `investigation/tools.py` 的 `entity_profile` 工具**改为转发 NDR 的 MCP 工具**（智能体仍能按需追问画像），`pg_query.entity_profiles` 删除。
    - **一条重要事实**：智能体侧原来的 UEBA 观测在实时链路里**本来就是死路径** —— `profile_recall_node` / `profile_update_node` 读的 `raw_logs` 全仓没有任何地方赋值（旧 ingest 节点已随兜底入口下线），所以 `profile_text` 恒返回「无画像异常」。这次下架不改变现网行为，是把已经停摆的代码搬走。
 9. **验收**：NDR 摘要带上基线标签、检测器不再依赖模型就能沉淀长期基线、智能体提示词里仍有画像与数值偏离文本、运行状态页能看到基线与异常 TOP、智能体「追问画像」走 MCP。
-   **实施取证**：`/tmp/test_baseline.py` **112/112**（Welford 增量与观测期、分布裁剪、画像冷启动与各项加权、标签合并去重与渲染、engine 打标 / IP 归属 / 异常去重过期 / flush 发布 Redis）；回归脚本全过（`/tmp/test_wazuh.py` 65/65、`/tmp/test_wazuh_normalize.py` 22/22、`/tmp/test_agent_push.py` 51/51、`/tmp/test_runner_push.py` 15/15、`/tmp/test_push_api.py` 30/30、`/tmp/test_ingest_filter.py` 24/24）；`.venv/bin/ruff check ndr/backend/app agent/backend/app` 全过、`.venv/bin/pyright ndr/backend/app agent/backend/app` 0 error、`python -m compileall -q` 通过、`ndr/frontend` 与 `agent/frontend` 各 `npx tsc --noEmit` 通过。测试还抓出一个移植 bug：`_trim` 按 `_LIMITS` 的落库列名去取观测桶字段（`hour_hist` vs `hours`）会 KeyError，已用 `_BUCKET_FIELDS` 映射修掉。
    **未取证**：真实流量下基线的收敛速度与画像误报率（默认 7 天观测期，需现场跑够时间）；检测器主备切换时进程内缓存会重建（数值基线从库里重捞、画像异常有一段标签稀疏 —— 不丢数据，但切换瞬间的摘要可能少标签）。
 
 ### 第 9 期 · 采集面改造批 1：类型识别 / 流分类 / Filebeat 加固 ✅ 已完成（2026-10-02，实施记录）
 
 **起因**：归一化层拿不到 Zeek 流的真实类型时会**兜底成 `conn`**（`_ZEEK_TYPE_HINTS` 猜不出就 `return "conn"`），于是 `x509`/`ntp`/`weird`/`packet_filter`/`reporter` 这些运维流以「conn + generic」混进事件索引，还可能进检测；同时 Filebeat 的输出队列只有内存（`queue.mem` 默认 3200 条），Redis 一停就丢事件。批 1 只改「类型与去向」，不碰采集内容。逐条决定与后续批次见 `docs/ndr-collect-plan.md`。
 
-1. **新增 `ndr/backend/app/ingestion/log_types.py`，逐字节复制到 `agent/backend/app/ingestion/log_types.py`**（`diff` 确认一致）：三类去向 `EVENT` / `OPS` / `UNKNOWN`；`canonical_log_type(name)` 去掉目录前缀、`.log` 后缀与 `.<YYYY-MM-DD>` / `.<YY-MM-DD>` 日期后缀；`event_log_types()` / `ops_log_types()` / `known_log_types()` / `is_known()` / `classify()`；`classify_entry(entry)` **非 zeek 来源一律 EVENT**（闸门不能误伤 Wazuh 线）；`is_detectable(entry)`。类型判定全仓只有这一个入口。
 2. **两侧 `config.py`** 新增两个键：`zeek_event_log_types = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"`、`zeek_ops_log_types = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"`（加减类型只改配置）。
 3. **两侧 `schemas.py`**：`UnifiedLog` 新增 `log_type_known: bool = True` 与 `source_file: str = ""`；`cookie` / `auth_scheme` 的注释改为与现实一致（请求头值按既定口径原样保留；`auth_scheme` 只留方案名）。
 4. **两侧 `normalizer.py`**：类型判定改为 `_zeek_log_type(doc, outer) -> (log_type, known)` —— **信封 `log_type` 优先** → 猜（`_ZEEK_TYPE_HINTS` 扩到 17 条，专用流排在共用字段流之前，`any()` 撞一个字段即定案）→ 都不中记 `unknown` 并**保留原名**（不再兜底 `conn`）；新增 `_source_file(outer)`（取 Filebeat 的 `log.file.path` 末段）与 `_raw_with_type(...)`，持久化的 `raw` 里带上 `log_type` / `source_file`，让原文自解释、ES 能按流统计（此前 `raw.log_type` 恒不存在）。两侧改完只差 NDR 独有的 `_SOURCES` / `source_of()` 与 docstring。
-5. **两道类型闸门**：归一化服务（`ndr/backend/app/collector/normalizer_service.py`）在 Wazuh 归档分支之后加 `elif not log_types.is_detectable(entry)` → 只入库并计 `ops_es_only` / `unknown_es_only`；检测器（`ndr/backend/app/detector/runner.py`）在 `_to_entry` 之后、网段过滤之前再兜一道（队列里可能还压着升级前的旧文档或人工重放数据），计 `ops_skipped` / `unknown_skipped`。两侧周期统计日志都加出这两个计数，否则实机看不见闸门在工作。
 6. **`ndr/zeek/filebeat.yml` 加固**：① 纠正「轮转后进日期子目录」的错误注释（实机是**同目录平铺改名**；轮转名后来定为带时分秒的 `conn.2026-10-01-08-00-00.log`，见下文「同日轮转覆盖」修复）；② 非事件文件排除名单（stderr/stdout/loaded_scripts/debug/prof/telemetry/threading/capture_loss）；③ 文件名 → 类型从 JS 的 `split(".")[0]` 变成显式剥 `.log` 与日期后缀（**先剥完整时间戳、再剥只到天**，否则带时分秒的轮转件会被认出第二个类型），并**删掉 `drop_event`**（认不出的文件名也照发，由归一化层标 `log_type_known=false` 保留原名 —— 否则新流会静默消失）；④ `queue.disk` 落盘缓冲（1GB、段 128MiB、`write_ahead` 2048），spool 与注册表同在命名卷 `zeek-filebeat` 上，Redis 不可用或容器重建都不丢。**实测坑**：本镜像的 Filebeat 8.15.3 是 OSS 构建，`queue.spool` 直接报 `unrecognized queue type 'spool'`，只有 `queue.disk` 可用 —— 见 `docs/ndr-collect-plan.md` 决定表。
 7. **`tests/` 落地并进 CI**（此前「没有 `tests/` 目录」，验证全靠 `/tmp/*.py`）：`tests/py/`（`conftest.py` 带 `--stack=ndr|agent`、`samples.py` 23 个流样本、`test_log_types.py` 判定矩阵、`test_normalizer_fields.py`、`test_xff_respbody.py`（由 `/tmp/test_xff_respbody.py` 搬入）、`test_stack_consistency.py` 子进程逐字段比对两侧、`test_filebeat_yml.py`）+ `tests/zeek/hb_test.zeek` 与 `run.sh`（容器内 Zeek 单测）+ `tests/README.md`。`.github/workflows/ci.yml` 由 1 个作业变 3 个：`build`（原样）、`test`（ruff + pyright + 两侧 pytest + Zeek 容器单测，依赖**从两侧 `pyproject.toml` 现读**）、`web`（两侧 `tsc --noEmit`）。
 
@@ -590,22 +547,18 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 - **异常消息不再无条件丢弃**：`runner.py` 处理失败的消息进隔离队列 `shentong:detector:failed`（1 千上限 + 7 天 TTL）并计数，取代 `log.exception` + `finally ack`。
 - **推送重试队列有界**：`ndr/backend/app/detector/push.py` 给 `shentong:events:pushretry` 加 `_RETRY_QUEUE_MAX = 2000`（LTRIM 保最新，丢弃计 `retry_dropped`）；区分可重试（网络/超时/5xx/408/429 → 放回队尾、结束本轮，与 `docs` 第 5 期"停止本轮"的设计意图一致）与永久失败（持续 4xx → 记 5 次后判 `retry_lost`）；`recover_pending()` 加 SET NX 锁并与 `/api/agent-push/retry` 收敛，避免两个写者互抢 processing 批造成重复推送。
 - **`exists` 算子语义纠错**：`ndr/backend/app/investigation/es_query.py` 对字符串字段的 `{"exists": true}` 改译为「有该字段且非空串」（`must_not term <keyword路径>:""`）。归一化给所有字符串字段默认 `""` 且全量落库，原语义下 `exists ja4` 命中全部 529370 条（正确口径 1252 条）、`exists account` 命中全量（实际 0）；规则引擎 `rules/engine.py` 一直就是非空判定。
-- **多来源检索不再吞 Wazuh**：`ndr/backend/app/investigation/tools.py` 原来 `hits[:limit]` 只截第一个来源（zeek）段，Wazuh 命中整体丢失而 `by_source` 仍报 `returned=N`；改为各来源全取回 → 全局按时间排序 → 统一截断，`by_source.returned` 按最终返回重算并附 `fetched` 与说明。
 - **`request_timeout` 传字符串让每次查询都失败（2026-10-03 部署后实机发现）**：`ndr/backend/app/investigation/es_query.py::query_timeout()` 返回 `"45s"`，而 elasticsearch-py 把它原样交给 urllib3 的 `Timeout(connect=…)` → 每次查询在建连接前就抛 `ValueError: Timeout value connect was 45s, but it must be an int, float or None.`；更糟的是 `_is_timeout` 按子串匹配 "timeout" 把这条 ValueError 判成超时，于是「查询根本没发出去」被报成「ES 查询超时…请缩小时间窗」——MCP 的 `search_events`/`aggregate_events`/`get_event`/`describe_data` 全部返回空结果 + 误导 note（本批之前就存在，`3af81c4` 引入）。修法：`query_timeout()` 改返回 `float`（4 个调用点同时修好），`_is_timeout` 对 `ValueError`/`TypeError`/`KeyError`/`AttributeError` 直接返回 False。实机复验：修前 `search_events(source=both, limit=5, filters={log_type: ssl})` → `hits: 0` + 两条超时 note；修后返回真实命中。
 - **回溯上限走运行时保留期**：`es_query.py` 原读静态 `settings.es_retention_days`，后台把保留期 30 天改 90 天后超期查询静默返回空；改读 `ingestion/es_config.py` 的运行时 `retention_days()`（ES 索引名同理走 `current()`）。
 - **出厂口令与登录面**：默认 `admin`/`admin123` 且原无改密入口 → 新增 `GET /api/auth/me`（含 `default_password_in_use`）、`POST /api/auth/change-password`（校验旧口令、8~128 位、不得与出厂口令相同）、`POST /api/auth/logout`，首启 warning，前端新增「账户」页 + 导航红字提醒；登录加同 IP+用户名限速（60 秒 5 次失败 → 429 + `Retry-After`），不做账号锁定。
 - **规则改名撞唯一约束**：`ndr/backend/app/api/routes/rules.py` 改名/新建统一重名 409、内置规则禁止改名（400）、兜 `IntegrityError`。原来改名撞名直接 500，且内置规则被改名后启动时按 `Rule.name` 幂等 upsert 失败 → 重复插入内置规则。
 - **基线落库阈值与样本保护**：`ndr/backend/app/baseline/engine.py` 原用累计 `stats["observed"]` 判阈值 → 累计越过 `baseline_max_observations` 后**每条事件**都触发一次整批落库（PG + 画像 + 清理判断全跑，吞吐打穿）；改为新增 `_obs_since_flush` 窗口计数、`flush()` 归零，累计值只用于界面展示。`baseline/stats.py` 写库失败时原来样本已被换走（那批观测永久丢失）→ 失败回并 `_pending` 下轮重试，超上限有界丢弃并记 `stats_write_dropped` / `stats_write_failed`。
 - **Zeek 轮转名丢时分秒**：`ndr/zeek/site/shentong-json.zeek` 轮转名原只到天，同一天多次轮转会**同名覆盖**（丢日志）；改回带时分秒，`ndr/zeek/filebeat.yml` 相应「先剥完整时间戳、再剥只到天」；保留策略改按 mtime 分钟级、只匹配轮转命名、Filebeat 不在运行时不删、活动日志不删。
-- **采集面可观测**：新增 `ndr/zeek/healthcheck.sh` + `ndr/zeek/Dockerfile` 的 HEALTHCHECK（只上报不重启）、`entrypoint.sh` 守护 Filebeat（30 秒探活）并在 Zeek 退出时写 unhealthy 哨兵；两份 compose 补 `TZ: Asia/Shanghai`；Wazuh 线 `ndr/wazuh/filebeat.yml` 补 `queue.disk`（1GB 落盘缓冲）+ `ndr/docker-compose.wazuh.yml` 加 Filebeat 注册表卷。
 
 **应修（口径 / 局部失效）**
 
-- **规则字段归属补 `wazuh` 桶**：`rules/engine.py::_FIELD_TYPES` 原来 Web 字段只挂 `("http",)`，而 Wazuh 分支同样填 `uri_path`/`query_string`/`method`/`body`/`status_code`/`user_agent` → 14 条 Web/URL 内置规则在 Wazuh 告警上永不求值；`query` 补 `("dns","http","wazuh")`（dns 里是域名，http/Wazuh 里是完整 URL）。删掉两条死映射 `host`/`referrer`（真名 `hostname`/`referer`）—— 它们会让只引用这些字段的规则「只挂 http 且永不匹配」。**审计报告的一处误判也已更正**：`rules/builtin.py:566` 的 `event_type eq wazuh_web_attack` 本身是对的（`normalizer.py::_wazuh_event_type` 确实产出该值）；真正缺口是另一分支产出的 `web_attack` 无人匹配，故该规则改为 `in ["wazuh_web_attack","web_attack"]`。
 - **`auth_scheme` 取自请求头**：Zeek http.log 没有顶层 `authorization`（头在 `req_headers`，由 `ndr/zeek/site/shentong-httpheaders.zeek` 拼好），原实现恒空 → `normalizer.py` 回落用 `_AUTH_HEADER_RE` 从头文本解析，内置「Token/JWT 异常使用」的 bearer/jwt 分支才真正生效。
 - **qtype 口径统一为 Zeek 数字码**：内置 DNS 隧道规则 `["16","TXT"]` → `["16"]`；前端 `ndr/frontend/lib/qtype.ts` 给出数字码 → 名字的提示。
 - **检测器口径**：`/api/detector/coverage` 分子改用「窗口内投递量」（原来拿单调累计的 `delivered` 比窗口内文档数，比值只增不减 → `warn` 永不触发，且快照过期时报 `stale`）；`detector_enabled=false` 现在真的停消费/停投递/释放租约并在 `/stats` 暴露 `paused`；聚合 key 到上限不再静默丢弃（计 `agg_full`）；leader 续约改独立线程 + 墙上时钟（原来绑主循环，单轮超时就丢租约）。
-- **其余口径修正**：`ingest_filter.py` / `wazuh.py` / `mcp/ndr_tools.py` 改读运行时 ES 索引名；`_with_degrade` 传真时间窗并区分「超时」与「ES 不可用」（原来一切异常都写成「已把时间窗对半重试仍失败」）；`fetch_window` 的网段条件下推 ES（不能下推的本地过滤并说明）；`record_conclusion` 的 status/severity 加枚举校验；`es_admin` 改 ES 地址会同步重渲染 Logstash 管道、ES 密码支持显式清空（`""` / `clear_password`）回落环境变量（**2026-10-03 作废**：连接信息整体不再可配，见「连接信息收口」一节）；`files.py` 的 `exists extracted` 过滤改本地判非空串；`wazuh.py` 的 pending 统计与 total 对齐；`triage_policy.py` 的开关文案不再谎称「无成功连接」；配了 `Site::local_nets` 时关掉 `private_address_space_is_local`（原来私网地址被判成"外部"）；前端八个面板不再把接口报错吞成空态、令牌/密码可清空、积压显示改真实队列深度、规则页补删除入口（仅非内置规则）。
 
 **清理（死代码 / 死配置 / 注释）**
 
@@ -617,7 +570,6 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **门禁与验收**（2026-10-02，仓库根）
 
-`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **281 passed**；`--stack=agent -q` **195 passed, 86 skipped**；`ndr/frontend` 与 `agent/frontend` 的 `npx tsc --noEmit` 均 exit 0；`sh tests/zeek/run.sh` **ALL PASS**；`docker compose config -q` 对 `docker-compose.yml`、`docker-compose.deploy.yml` 及两份 +`docker-compose.wazuh.yml` 组合均通过。新增测试：`tests/py/test_detector_runner.py`、`test_detector_push.py`、`test_detector_coverage.py`、`test_investigation_query.py`、`test_mcp_tokens.py`、`test_rules_routing.py`。
 
 **实机验收（2026-10-03，172.16.196.77，镜像 `d873953`）**：备份并覆盖 `docker-compose.deploy.yml` → `pull` + `up -d`，十个容器全 Up（`ndr-mcp` 与 `zeek` healthy）；镜像内新代码标记逐项命中；`/api/auth/me` 报 `default_password_in_use: true`、`/api/detector/coverage` 已是窗口口径（`delivered_interval`/`stale`/`delivered_window_est`）、`/api/agent-push` 有 `undelivered`/`retry_lost`/`retry_dropped` 与真实 `queue_depth`、`/api/detector/stats` 有 `paused`/`queue_failed`；ES 集群 green/unassigned 0、模板 200；Logstash 管道卷内 `ecs_compatibility => "disabled"`、近 5 分钟 0 条 WARN/ERROR、入库 4555 条/5 分钟；`exists ja4` 走查询层 = 2265（与 `must_not term ja4.keyword:""` 一致），原生 `exists` 仍 101 万；`account` 存在判定 = 0。`shentong:events:dispatch` 已无写入方（旧代码遗留约 400 条）。
 
@@ -643,11 +595,8 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 **门禁（2026-10-03，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` All checks passed；`.venv/bin/pyright ndr/backend/app agent/backend/app tests/py` 0 errors / 0 warnings；`pytest tests/py --stack=ndr -q` **330 passed, 1 skipped**；`--stack=agent -q` **245 passed, 86 skipped**。
 
-### 2026-10-03 连接信息收口：Wazuh 与 Elasticsearch 都不再由界面配置
 
-Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up -d` 一起起），所以「连哪台、用什么凭据」在部署时就已经确定，属于部署事实、不是用户偏好。但第 6 期把两者都做成了「存 `SystemConfig` + 界面填写 + 测试连接」：同一个事实有**两份来源**（`.env` 一份、库里一份），界面写一个地址、实际连另一个也不会报错，换人接手时还要重新问一遍口令。用户先后两次要求去掉，现已全部收口：
 
-- **Wazuh**：`_cfg()` 只读环境变量（`ST_WAZUH_API_*`）—— `PUT /api/wazuh` 与 `POST /api/wazuh/test` 删除、密码不再打码回显、`SystemConfig.wazuh.params` 的历史行不再被读；「采集接入 → Wazuh」只剩状态 + Agent 清单 + 近 24h 入库量 + 规则下发（下发要真生效，见 :416 的 `overwrite=true` + 轮询校验）。**依据**：`ndr/backend/app/api/routes/wazuh.py` 的模块 docstring 与 `tests/py/test_wazuh_config.py`（钉住「旧入口不许回来」）。
 - **Elasticsearch**：`es_config.RUNTIME_KEYS` 只剩**策略项** `es.events_index` / `es.retention_days`；连接三项（`es.url` / `es.username` / `es.password`）永远取 `settings.es_*`（部署时由 `.env` 的 `ES_*` → `ST_ES_*`，默认 `http://elasticsearch:9200`），库里的历史行不再被读；`PUT /api/es/config` 只收两个策略字段、`POST /api/es/test` 删除、`_mask()` 改名 `_public()` 且密码永不下发明文（只回 `password_set`）。前端「数据存储」去掉地址/用户名/密码/测试连接，「Logstash 管道」的 ES 地址改成只读展示。
 - **写侧一并对齐**：Logstash 管道的 `elasticsearch { hosts => [...] }` 也是部署事实。原先 `PUT /api/logstash/params` 收 `es_host` 并落库（`logstash.params` 的第三份来源），现在 `ParamsIn` 只剩 `es_enabled` / `events_index`，`_effective_params()` 一律把 `es_host` 覆盖成 `settings.es_url`、`_save_params()` 落库前剥掉它；新增 `_resync_es_host()` 在后端启动播种时把**已生成**管道里的旧地址对齐到当前 `ST_ES_URL`（管道被人手工改过就只告警、不覆盖，返回 `manual-edit`）。**依据**：`tests/py/test_es_config.py` 九条（含三条 `_resync_es_host` 行为用例）。
 
@@ -663,7 +612,6 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 - **可信代理白名单（两侧 normalizer 同构）**：新增配置 `zeek_trusted_proxies`（`.env` → 容器 `ST_ZEEK_TRUSTED_PROXIES`，落在 `ndr/backend/app/config.py` 与 `agent/backend/app/config.py` 的同一契约块）。逗号或换行分隔、接受单 IP 与 CIDR、`#` 注释与 `/32` 均可，非法项丢弃并限量告警（`_MAX_TRUSTED_PROXY_WARNINGS=5`）。`_real_client_ip(doc, peer_ip)` 只在**直连对端落在白名单内**时才解析代理头，否则 `real_client_ip` 一律 NULL（`src_ip` 仍是 TCP 对端）；**清单留空 = 谁都不信**（fail-closed）。`_XFF_HEADERS` 增 `X-REAL-IP`、`_RAW_PROXY_HEADERS` 兜住大小写变体，`_http_fields(doc, log_type, peer_ip)` 增加第三个参数、调用点传 `src_ip`。**为什么放 normalizer 而不是 `ingestion/scope.py`**：agent 侧的 `scope.py` 是完全不同的东西（只有 MCP 取网段），放进去会破坏两栈同构；且**必须两侧同改** —— `tests/py/test_stack_consistency.py` 经 `tests/py/_dump_entries.py` 逐条比对两栈归一化结果，只改 NDR 会让测试样本的 `real_client_ip` 从 `198.51.100.77` 变 NULL 而失败。**为什么必须做**：转发头是客户端自报、可伪造，而 `real_client_ip` 已被规则引擎、字段目录、ES 查询、画像与 MCP 工具消费 —— 不设信任锚就等于让任何人在头里自报身份。测试：`tests/py/test_xff_respbody.py` 新增 `test_untrusted_peer_drops_proxy_headers`（非可信对端 / 空清单 ⇒ NULL）与 `test_trusted_proxies_accepts_host_cidr_and_list`（单 IP、`/32`、`/24`、逗号多项、`#` 注释、网段外、非法项），`test_real_client_ip` 改传可信对端（autouse fixture 把 `zeek_trusted_proxies` 设成探针同网段），`test_normalizer_fields.py` 的 HTTP 用例同法放行。
 - **Zeek 侧补 `X-Real-IP`**：`ndr/zeek/site/shentong-httpheaders.zeek` 在 `@load base/protocols/http` 之后加 `redef HTTP::proxy_headers += { "X-REAL-IP" };`，`tests/zeek/batch3_test.zeek` 加断言。**坑**：成员必须**全大写** —— HTTP 分析器先把请求头名统一转大写，再拿去和 `proxy_headers` 比对，小写写法单测直接 `FAIL`。
-- **Filebeat `ndjson` 解析失败不再落空壳文档**：用探针在真实容器上取到了失败事件的准确形态（停 normalizer → 写一行半行 `h{"ts":…}` 与一行裸数字 `17` → 直接读采集队列）：失败事件**解析出来的字段一个都没有**，错误挂在 `zeek.error`（`{"type":"json","message":"Error decoding JSON: invalid character 'h' looking for beginning of value"}`，裸数字那条是 `json: cannot unmarshal number into Go value of type map[string]interface {}`），而**原始那一行原样留在顶层 `message`**。据此 `_filebeat_parse_error()` 认这个标记（根级 `error` 也认），`_unwrap_filebeat_parse_error()` 用 `message` 再 `json.loads` 抢救：解得成对象就照常入库，解不出**返回 None 进死信**（`normalize_failed` 桶、限量告警 `_MAX_FILEBEAT_PARSE_WARNINGS=5`）；`normalize_zeek` 返回类型放宽为 `UnifiedLog | None`，`normalize()` 入口同样过闸（Zeek 与 Wazuh 一视同仁）。**没有改 Filebeat 配置** —— 不动已工作的采集链路。探针取证时 6 秒内采集队列从 0 涨到 **757**（≈126 事件/秒，链路本身健康），探针条目随后用 Lua 精确摘除。测试：新增 `tests/py/test_filebeat_decode.py`（6 例，两侧都跑）。
 - **MCP 切独立接口**：见 §8 第 5 条的结案（新增 `ndr/backend/app/mcpapi.py` 门面 + `tests/py/test_mcp_boundary.py` AST 边界守卫）。
 - **Zeek 3 天归档清理实机复验**：机制早已在（`cleanup_once()` 的两条 `find`），缺的一直是端到端证据。在跑的生产容器上放一个 mtime 4 天前、轮转命名、位于两层子目录的探针 → 到点的清理轮把它删掉（观察任务 `18:57Z` 命中），同一时刻活动 `conn.log` 仍在增长、Filebeat 存活、顶层归档 62 个 ⇒ 「保留 3 天」成立。**判定轮次的口径**：`cleanup_once` 每 `CLEAN_INTERVAL=3600` 秒一轮、从容器启动时刻起算（实测容器 `StartedAt=2026-10-03T02:54:31Z` ⇒ 轮次落在每小时 `:54:31`）；`cleanup_once` 成功路径**不打日志**，所以「日志没动静」不等于没跑。巡检表第 2 行已同步。
 - **`shentong:events:dispatch` 退役通道清空**：`DEL` 掉 400 条（2026-10-03T02:48Z 的 `excluded` 低危摘要）。全仓确认该键**既无写入方也无消费者**（HTTP 推送早已取代 Redis 交接，`detector/push.py` 明确不再写、`runner.py` 改记 `undelivered`），留着只会让监控显示假积压。
@@ -683,12 +631,9 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 ### 2026-10-04 内置规则质量评审与修复（7 条车道全量评审 + 落地）
 
-来源：用户要求「派子 agent 从网络安全专家视角评审 NDR 内置规则质量」。7 条只读评审车道（注入 / Web-WebShell / 探测 / 凭证 / 网络威胁 / Wazuh+杂项 / 引擎语义）逐条评审 82 条规则，产出 [`docs/ndr-rules-quality-report.md`](ndr-rules-quality-report.md)（原始 7 份在 `docs/review/ndr-rules/`）。**评审后已全部落地修复**（规则 82 → 84 条）。
 
 **引擎与链路（`rules/engine.py` / `rules/service.py` / `detector/*`）**
 
-- `rules_for_log_type` 合并 `types + wild` 后**按 (priority, name) 重排**：原来两张表直接拼接、调用方「首个命中即停」，通配的 p5/p10（Wazuh 恶意软件告警、暴力破解）会被专有的 p25（参数 fuzzing）遮蔽。
-- `build_rule_index`：**显式 `log_type eq X` 现在是权威的** —— 原来先判通配再看 explicit，导致「log_type eq wazuh + 通用字段」的规则反被归入通配集合（每条日志都跑）。
 - `_FIELD_TYPES`：删 12 个僵尸键（`uri`/`request_body_len`/`response_body_len`/`rcode`/`answers`/`duration`/`orig_bytes`/`resp_bytes`/`proto`/`service`/`seen_bytes`/`issuer`/`server_name`），补 `content_type`/`tls_version`/`cert_issuer`/`cert_self_signed`，并给 `dst_ip` 登记 conn owner —— 否则 SSRF/云元数据规则的 `dst_ip eq 169.254.169.254` 分支在 conn 日志上**永不求值**（真实取证路径漏报）。
 - `_match` 收口：条件必须给字段名（`whitelist: [{}]` 不再静默全命中）、`eq` 缺值不算相等、**`ne` 在空值上不再恒真**（`auth_scheme ne basic` 曾把「没带认证头」当成「不是 Basic 认证」放行）、`exists` 把布尔 `False` 当存在（`file_is_orig` 的 False 是有效取值）。
 - `service.get_enabled_rules` 改 `order_by(priority, id)`：同优先级无二级键时命中归属随 DB 行序漂移。
@@ -700,7 +645,6 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 - **从头文本解析 `Cookie` 与 `Content-Type`**（`_header_value`）：Zeek 的 http.log 没有这两列 → `cookie` 恒空，「会话跨IP复用」（critical 级会话劫持）与「反序列化 rememberMe」分支永不触发；`content_type` 恒空让「WebShell 上传」「上传类型不匹配」无从判定。
 - **`weird.log` → `protocol_anomaly` / `tls_anomaly`**：采集面已关掉 Zeek 自带 notice，原来这两个标签只由 notice 产出 → 「协议异常」「TLS异常」两规则在**本部署永不触发**（零覆盖却看不出）。
 - **x509 自签判定**：`cert_issuer` 原来只取顶层 `issuer`，而 Zeek 把签发者嵌套在 `certificate.issuer`（恒空）→「自签或异常证书」死规则。现解析嵌套并新增 `cert_self_signed`（subject == issuer，引擎无法比字段，只能在归一化层算）。
-- **`_wazuh_event_type` 去掉 `sshd` 判据**：Wazuh 的 sshd 组同时覆盖**成功**登录，原来会把正常运维登录判成 `brute_force`，连带「暴力破解 / 高频认证失败 / 撞库」在无攻击时就报。
 - `schemas` 两侧新增 `cert_self_signed`；`triage_policy.SUCCESS_EVENT_TYPES` 里的 `conn_http` **全仓无生产者**（HTTP 侧永远判「无成功连接」），换成真实存在的 `http_login`/`http_upload`/`http_request`。
 - `config.web_login_path_regex` 补常见登录形态（`/wp-login.php`、`/admin/login.do`、`/api/v2/authenticate`、`/user/sign_in`）并加词首边界：原正则漏掉它们，让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
 - `policy_skip_rules` 移除「内置-恶意文件传输」：它 `severity=high ≥ min_severity=medium`，**永远不生效**（死配置）；顺带把该规则改为只报上传方向（`file_is_orig`），不再把软件更新/内部 JAR 下载全报 high。
@@ -709,10 +653,8 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 - **P0**：`WebShell上传` 判据从「请求路径以 .php 结尾」改为「multipart + body 里真有 `filename="x.php"`」（原来 `POST /login.php→302` 报 critical、真上传却漏报）；`Log4Shell` 的 `ognl|spel` 加词边界（`/spellcheck` 曾报 critical）并补 `req_headers`/`resp_headers`（CVE-2021-44228 头向量漏报）；`命令注入` 允许分隔符后直接跟命令（`;id`/`|id`/`&&id` 曾全漏）；`大面积目标探测` 去掉恒真条件 `src_ip exists`（实为无条件按源计数）；`cookie`/`weird` 类死规则经上游修复复活。
 - **P1**：新增方向/连接状态限定（横向移动、异常外联、外传、弱 TLS、敏感端口）；账号类 count 规则 key 加 `dst_ip`、抬高阈值（密码喷洒 5→8/5 分钟、登录爆破 15→30/10 分钟、撞库 3→5/30 分钟）并修 normalizer 的 `sshd` 误判；`DNS-TXT隧道` 改为「同源多个不同 TXT 名字」（原 key 含 query，语义相反）；`横向移动管理端口`/`内网慢速横向`/`服务枚举` 补方向与失败连接限定、阈值收敛；`多路径探测`/`暴力路径枚举`/`服务端错误突变` 补状态码过滤与白名单。
-- **P2**：Wazuh 五条规则与等级脱钩（高危告警改按 `severity in [high,critical]`，FIM/策略违规/MITRE 加「非高危」闸门并降级）；`邮件滥用` 从「命中任意 SMTP」改为同源群发频率规则；`CSRF可疑来源` 描述改为与实现一致（已知测试域名黑名单，不是通用 CSRF 检测）；`危险HTTP方法` 去掉 OPTIONS/PUT/DELETE（常规业务）并白名单放行 CORS 预检；`Host头攻击` 限定 `source_system=zeek + log_type=http`（Wazuh 的 hostname 是 agent 名）。
 - **新增两条补漏规则**：「内置-Bearer令牌高频使用」（把原 `auth_scheme in [bearer,jwt]` 的逐条误报改成 ≥60 次/10 分钟的频率规则）、「内置-单目标多端口深扫」（补「单目标多端口」漏报）。
 
-**测试（新增 `tests/py/test_rules_quality.py`，两侧都跑）**：`_FIELD_TYPES` 无僵尸键、**规则引用的字段必须存在**（防写错字段名静默失效）、正则全可编译、路由全局 priority 有序、`_match` 收口语义、cookie/content-type 头解析、weird→异常事件类型、x509 自签、sshd 不再等于爆破、登录路径正则、Log4Shell 词边界+头向量、命令注入分隔符、WebShell 上传正反例、**最普通的正常 conn/http 流量不得命中任何逐条规则**（恒真/过宽条件护栏）、Wazuh 规则必须路由到 wazuh、单规则限速 + 严重度优先。
 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **417 passed, 1 skipped**；`--stack=agent -q` **287 passed, 131 skipped**；`sh tests/zeek/run.sh` 全 `PASS`（`FAILS=0`）；两侧 `npx tsc --noEmit` 无输出。
 
@@ -734,24 +676,16 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors`；`pytest tests/py --stack=ndr -q` **431 passed, 14 skipped**；`--stack=agent -q` **300 passed, 145 skipped**；`sh tests/zeek/run.sh` 全 `PASS`。
 
 
-### 2026-10 界面口径：网卡下拉只留物理网卡 + 界面不再出现 Zeek/Wazuh 字样
 
-用户要求：「① 监听网卡下拉只显示物理网卡，过滤掉虚拟网卡与环回接口；② 界面不体现 Zeek/Wazuh 文字，一律叫网络采集器 / 主机监控」。
 
 - **网卡下拉只留物理网卡**：采集器容器的 `write_interfaces()`（`ndr/zeek/entrypoint.sh`）逐张网卡写 `physical` 字段，判定依据是 sysfs 的 `/sys/class/net/<n>/device` 链接是否存在 —— **只有它是 host 网络**，能看到宿主全部网卡的 sysfs（后端容器只能看到自己的 eth0，所以判定不能放后端）。后端 `_read_interfaces()`（`api/routes/zeek.py`）只返回 `physical=true` 的项，并用名字模式（`lo|docker*|br-*|veth*|virbr*|vmnet*|vboxnet*|tun*|tap*|wg*|tailscale*|zt*|dummy*|ifb*|nflog|kube*|cni*|cali*|…`，忽略大小写）兜底——旧镜像的 `interfaces.json` 没有 `physical` 字段时也不会把 docker0/veth 塞进下拉。实机核对：16 张网卡里只剩 `ens160`/`ens192` 两张（`/sys/class/net/*/device` 与名字过滤结果一致）。
 - **界面文案去掉厂商字样**（用户可读处一律「网络采集器 / 主机监控」）：
   - NDR 前端：采集/网段/总览/首次向导/运行状态/ES 与 Logstash 面板/错误条标签，共 8 个文件；
-  - 后端**返回给界面**的消息：`/api/zeek/interface` 的 `note`、`/api/wazuh` 的 HINT 与全部 API 报错文案；
-  - **内置规则名与描述**：11 条规则改名（`内置-Wazuh高危告警` → `内置-主机高危告警` …、`内置-Web攻击（Wazuh规则组）` → `内置-Web攻击（主机监控）`），描述里的「Wazuh/Zeek …」改成「主机监控：… / 网络采集器：…」。规则名是 upsert 的键，所以 `main._seed` 新增 `_RENAMED_BUILTINS` **就地改名迁移**（每次启动幂等；新名已存在才删旧行）——不迁移会新旧两行并存，而旧行还带着用户设过的启用状态。
-- **明确不动的边界**（改了要付数据迁移代价，且不是界面散文）：API 路径（`/api/zeek/*`、`/api/wazuh/*`）、配置键与环境变量（`ST_ZEEK_*`、`ST_WAZUH_*`、`zeek.*`）、`source_system`/`log_type`/`event_type` 的**内部枚举值**（`wazuh`、`wazuh_high_alert`、`wazuh_web_attack`…，已落在 1200 万+ 存量文档里）、代码注释与文档。这些只出现在技术下拉/条件编辑器与运维文档中。
 
 **顺手修的既存 lint**（都在本次改动的同一行附近，oxlint 直接拦）：ES 面板的嵌套三元提成 `healthVariant()`；ES/Logstash/首次向导里 5 个 `<label>` 补 `htmlFor`+`id`，3 个只是小标题的 `<label>`（下面不是表单控件）改成 `<p>`。
 
-**测试**：新增 `tests/py/test_zeek_interfaces.py`（6 例：physical 过滤、旧格式名字兜底、文件缺失/坏 JSON 回空、入口脚本必须按 sysfs 标记）；`test_rules_quality.py` 新增「规则名与描述不得出现 Zeek/Wazuh」与「改名映射必须旧名已不在、新名确实在」两条护栏；原引用旧规则名的两处测试同步更新。
 
 **后续（同日）**：用户要求「采集接入」页不要再显示主机监控面板的标题/说明/连接信息，已按列表逐项删掉：
-卡片标题「主机监控接入」、整段说明文字（包括 `.env` 的 `WAZUH_API_*`、“日志走另外一跳”那段），
-以及连接信息行（`API 已连通 / https://wazuh-manager:55000 / 用户 wazuh-wui / 密码 已设置 / 连通`）。
 保留：刷新按钮、`API 版本 / 集群模式 / Agent 在线 / 近 24h 入库量` 汇总行、Agent 列表、自定义规则下发。
 连接是否可达与入库量在「运行状态」页仍有（那里是运维看板，不在采集配置页）。
 
@@ -765,7 +699,6 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 ### 2026-10 「总览」页：默认落地页 + 服务器/组件/威胁/流量与协议 + 全页图表化
 
-用户要求：「将侧边栏运行状态上移到首页作为页面进入的默认页面，同时改造运行状态页面以图表方式显示各个数值」，随后补充要展示：**服务器状态（CPU/内存/磁盘圆环）**、**组件状态呼吸灯（zeek/wazuh/redis/logstash/elasticsearch/归一化/分析智能体）**、**威胁事件统计**、**24h 流量捕捉曲线**、**24h 协议分析占比圆图**。计划阶段定了三件事：趋势数据**后端加采样**、呈现方式**数字块 + 图表混合**、入口**置顶 + 默认跳转 + 改名「总览」**。
 
 **入口（路由不变）**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 仍 `/admin/status`**；`/` 的重定向写进 `next.config.mjs` 的 `redirects()`（`/` → `/admin/status`，307）；`app/admin/status/page.tsx` 标题改「总览」，原 `app/page.tsx`（内含 `redirect()`）**已删**——原因见下面「上线复验」。
 
@@ -792,7 +725,6 @@ Wazuh 与 Elasticsearch 都是**随本项目一起部署**的内置服务（`up 
 
 **修订（同日，用户口径）：协议占比只算「协议识别类」日志**。原实现是 `log_type` 全量 `terms`（实机 24h 里 `conn` 一家 1.86M 条占 56%、`syslog` 570K、`weird` 201K —— 那张饼图实际上是「我们的日志构成」，不是协议占比）。现改为**白名单 `ST_STATS_PROTOCOL_LOG_TYPES`**（`dns,http,ssl,ssh,ftp,smtp,smb,kerberos,ntp,dhcp,snmp,rdp,mysql,pgsql,radius,ldap,modbus,quic,websocket,mqtt…`），查询用 `terms.include` 限住；百分比分母 = **协议类文档总数**（top N 之和 + `sum_other_doc_count`）；被排除的量单独一个 `filter` agg 回 `excluded_docs` / `excluded_percent`，卡片上写「另有 X% 为 conn 流记录/异常/主机日志等非协议日志，未计入」——**不静默消失**。
 
-- 选白名单而不是黑名单的理由：实机确实混进了 `analyzer`（4.5K）、`wazuh`（2K）这类名单外的新类型，黑名单得不停地追着加；白名单则默认不上图，要加改配置一行。
 - **口径区别必须写清**（已写进 config 注释、README 配置表、`log_types.py` 的 docstring）：这张图看的是「协议」，与 `ST_ZEEK_EVENT_LOG_TYPES`/`_OPS_`（决定谁进检测）**不是一回事**。所以 `ntp`/`dhcp` 属 ops（不进检测）但会出现在图上；`conn`/`weird`/`files` 属 event（进检测）但不该出现在图上。
 - 旧的 `unclassified_docs`/`unclassified_percent`（“白名单外只入库不进检测”）已随本次改写删掉：它与新口径分母不同、摆在一张卡片上只会让人算不清；那个信息在「数据存储/类型分布」与 `log_type_known` 字段里本来就能看。
 - 测试（`test_stats_overview.py`）：断言白名单里**不得**出现 conn/weird/files/notice/x509/syslog/stats/reporter、必须含 http/dns/ssl/ssh/mysql/pgsql/smtp/ftp；断言 `excluded` 的 `must_not` 就是同一份白名单；新增加只排除非协议日志时的除零边界用例（协议图为空、未计入 100%）。
@@ -1020,7 +952,6 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 - 新增 `requests` 特征（每条 http/dns +1）：连接数暴增（扫描/探测）与请求数暴增（负载/CC）分开看；
 - **中继自身不作为资产**（端口 53 除外）：按**端口**判而不是按「推算出来的角色」判，
   免得依赖角色回写的时序；
-- 只统计**有 `uid` 的 Zeek 事件**：主机监控（Wazuh，它的 dst 是主机自己）与
   files/x509/dhcp/notice 这类没有连接语义的日志不进基线；丢了多少条写进心跳
   `asset_uids_dropped`（**不静默**）；
 - 内存保护 `ST_ASSET_MAX_UIDS`（默认 20000 条连接/窗口；实机 60s 窗口只有几千条）；
@@ -1046,10 +977,8 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 
 1. ~~判重窗口的默认值~~（**已定**，第 5 期）：不用「7 天保留期」做判重窗口，而是**事件组时间桶**（`group_bucket_minutes`，默认 30 分钟）+ Redis 占位 TTL 两个桶；库里 `EventGroup` 命中即累加计数，等价于「同一事件组只出一份报告」，与保留期无关。
 2. **跨机部署时智能体仍依赖 NDR 的 Redis**：ES 直连已由第 6 节的 MCP 切断，推送那跳也改成 HTTP 了；但 `agent/backend/app/config.py:38-40` 的 Celery broker/backend 仍指 `NDR_REDIS_URL`。本次是否接受这个残留耦合，还是要一并把 broker 也换掉？
-3. **监控网段只对 Zeek 生效** —— Wazuh 是主机日志，与网段无关。**已在界面上写明**（第 6 期）：Wazuh 面板的提示语里带一句「Wazuh 采的是主机日志，与『监控网段』无关 —— 那份清单只约束 Zeek 抓包」；第 7 期拆页时保留这条说明。
 4. ~~推送载荷除了摘要还带什么~~（**已定**，第 5 期）：载荷 = `{items: [{event_id, fingerprint, digest}]}`，只加 NDR 生成的事件ID与摘要级指纹（供排查与回执对账），触发规则/原始事件数/时间窗仍在摘要里（`rule` / `count` / `first_seen` / `last_seen`），不额外冗余。
 5. ~~MCP 服务与 NDR 后端的代码共享边界~~（**已定，2026-10-04**）：切了一层独立接口 `ndr/backend/app/mcpapi.py` —— `app/mcp/` 只准 import `app.config` / `app.mcp.*` / `app.mcpapi`，内部子系统（`app.db` / `app.ingestion` / `app.detector` / `app.investigation` / `app.baseline` / `app.workers` / …）一律经门面转发；边界由 `tests/py/test_mcp_boundary.py` 用 AST 静态守住（白名单比黑名单更强，以后新加的内部包也会被拦）。门面**只转发、不含业务逻辑**，且一律转发「模块属性」而不是导入期绑定的函数对象 —— 保住原懒导入的可 monkeypatch 性（否则 `monkeypatch.setattr(es_client, "get_es", …)` 会静默失效，`tests/py/test_investigation_query.py` 会挂 2 个）。`app/mcp/calls.py` 只依赖 `app.config`，留在原地不动。
-6. **待实机验证（第 2 期遗留 + 第 5 期 + 第 6 期）**：~~Wazuh 4.14 自带的 Filebeat 是否支持 `output.redis`~~（**已绕开**，第 6 期）：不再指望 manager 自带的 Filebeat，`ndr/docker-compose.wazuh.yml` 另起一个官方 Filebeat 容器用 `ndr/wazuh/filebeat.yml` 投 Redis；manager 自带那个只留着报「找不到 indexer」的错。~~仍待实机：两个 Filebeat（Zeek 与 Wazuh）同时 `RPUSH` 同一 list 的实际吞吐~~ **已实机验证（2026-10-03）**：两个 Filebeat 确实同时在往同一 list `RPUSH`（Zeek 侧是 host 网络容器、Wazuh 侧在 compose 网络里；Redis `CLIENT LIST` 能按连接看到 `cmd=rpush`，20 秒 MONITOR 聚合到 Zeek 侧 422 次 RPUSH），消费端 `BRPOPLPUSH`（左旧右新、取最新优先）跟得上 —— 连续多个 5 分钟窗口入库 3.9–4.9 万条、死信 0、待重试 0、队列实时清空；`INFO commandstats` 里 `rpush` 与 `brpoplpush` 大体同量级。容器侧清单（`ndr/wazuh/README.md` 第五节）也已在 2026-10-03 逐条跑过，六条全绿。
 7. **基线与画像的真实效果（第 8 期遗留）**：默认 7 天观测期内不判异常，收敛速度与误报率只能在现场跑够时间后才知道；另外检测器主备切换时进程内缓存会重建 —— 数值基线从库里重捞、画像异常有一小段标签稀疏（不丢数据，但切换瞬间的摘要可能少标签）。
 8. **Zeek 日志生成与协议解析的专项检查（上线后必做，用户 2026-02 提出）**：本次所有 Zeek 侧改动都只在纸面与本机归一化侧验证过，真实网卡上线后要专门核一遍：① 实际产出了哪些 `log_type`（`/logs` 顶层 + 日期目录，24h 轮转与 3 天清理是否如期）；② 各协议分析器字段是否齐全（`site/shentong-extra.zeek` 加载的 conn/dns/http/ssl/files/smtp/ssh/dhcp/notice，以及自研 `shentong-httpbody.zeek` 的请求体是否落进 `http.log`）；③ 归一化后的 `log_type` / `event_type` 分桶与内置规则的字段命中（82 条内置规则里 47 处用到 body/uri/query/user_agent/ja3 等）；④ ~~反向代理场景拿不到原始客户端 IP~~ **已支持（2026-10-02）** —— 不需要自己接 `http_header`：Zeek 自带的 HTTP 分析器已把默认代理头清单（`X-Forwarded-For`/`X-Forwarded-From`/`Forwarded`/`Client-IP`/`Via`/`Xroxy-Connection`/`Proxy-Connection`）收进 `HTTP::Info$proxied`，normalizer 解析其中最左的合法 IP 落成 `real_client_ip`（无代理头 = NULL，`src_ip` 仍是 TCP 对端）。实测探针 `X-Forwarded-For: 198.51.100.77, 203.0.113.9` → `proxied: ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]` → `real_client_ip=198.51.100.77`。**2026-10-04 收口**：可信代理白名单已做（`ST_ZEEK_TRUSTED_PROXIES`，只有直连对端落在清单里才认代理头，清单留空 = 一律不认，fail-closed）、`X-Real-IP` 已补进 Zeek 采集清单（`site/shentong-httpheaders.zeek` 的 `redef HTTP::proxy_headers += { "X-REAL-IP" };`，成员必须全大写）；**四层代理的 PROXY protocol 明确不做** —— Zeek 9.0 没有该分析器（镜像内 `zeek -NN` 无该条目），要支持只能在外层终结或回查 NAT/防火墙日志。同一批改动把响应体也采集了（`resp_body` / `resp_body_len`）。逐条清单见 `ndr/zeek/README.md` 的「上线后专项检查」与「已知限制」。
    **实机结果（2026-10，172.16.196.77，Zeek 9.0.0，`iface=ens160`）**：已按 9 项清单核过一遍，逐项证据表见 `ndr/zeek/README.md` 的「实机结果」。三条要记住的结论：① **HTTP 请求体把中文整块丢了**（检查项 4 抓出来的真 bug）—— 自研 `shentong-httpbody.zeek` 的二进制守卫 `/[^\x09\x0a\x0d\x20-\x7e]/` 只放行可打印 ASCII，UTF-8 多字节全被当二进制丢弃；同一 POST 路径对照实测：`{"probe":"ascii","n":1}` 有 `body`、`{"text":"中文请求体"}` 无 `body`。已改为只拦 NUL/C0 控制字符（`/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/`），并在容器内用 Zeek 单测四种样本验证；② **`ja3`/`ja3s` 在 Zeek 9.0 里根本不存在** —— `local i: SSL::Info; print i?$ja3;` 编译报 `no such field in record`，`ssl.log` 127 条 0 处 ja3。检查项 3 与 `shentong-extra.zeek` 注释里的原期望是错的，基于 `ja3` 字段的规则（`rules/builtin.py` 那条空值模板）永不命中；要用得另装/自写 JA3 脚本，已写进 README「已知限制」；③ **监控网段仍未配**（`/config/interface.conf` 里 `monitored_nets=` / `local_nets=` 为空 → Zeek 启动命令无 BPF、全量抓包），这是上线收尾里唯一需要用户拍板的一项。其余：日志产出 conn/dhcp/dns/ssl/http/files/weird/x509 齐全、无 notice.log（符合预期）、`log_type`/`event_type` 分桶正确、内置规则已命中（扫描 17335 / 命中 60 / 投递 9）、24h 轮转当天未见日期目录。XFF（④）**已支持**（2026-10-02，`proxied` → `real_client_ip`）；HTTP 请求体与响应体都采集（`body` / `resp_body`，完整响应字节数 `response_body_len` → `resp_body_len`）。**类型分桶（③）与轮转形态**已由第 9 期改造与核对：`log_type` 改由 `log_types.py` 单一入口判定（信封 `log_type` 优先 → 17 条字段提示猜 → 都不中记 `unknown` 并保留原名，**不再兜底成 `conn`**），运维流（ntp/packet_filter/reporter/stats/ja4ssh/ja4d）只入库、不进检测；轮转实测是**同目录平铺改名**（`conn.log` → `conn.2026-10-01.log`），不是日期子目录。
@@ -1234,16 +1163,10 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 属「站点该上 HTTPS」的**配置事实**而非攻击事件。名字进 `builtin.DELETED_RULES`，播种幂等删行
 （与「内置-端口扫描」同机制）。部署后逐窗口 = **0**。
 
-**同轮一并处置的还有**：删除 notice 型死规则「内置-端口扫描」（并收紧 `_wazuh_event_type` 的
-`"scan"` 词匹配 —— 原来 Wazuh 的 CIS 合规标题（"Ensure 'Turn on e-mail scanning'…"）被误标成 `port_scan`）。
 
 **本轮未修（待定，已量化）**：
-- **主机监控（Wazuh）整条检测线被范围闸门丢掉**：近 6h 1,981 条 Wazuh 告警里**带 `src_ip` 的 0 条**，
   而 `_entry_in_scope()` 只认 `src_ip`/`dst_ip` 落在监控网段 ⇒ 全部在规则之前被丢
-  （5 条主机规则 + 依赖 Wazuh 的认证类规则 24h 零摘要）。日志类型闸门**已经**给 Wazuh 开了例外，
   范围闸门没开 —— 两处口径不一致。
-- **Wazuh 事件类型标签不准**：`rule_groups=windows,system_error`（1,573 条，占 79%）被归成
-  `wazuh_system_change` ⇒ 修好上一条后「内置-主机文件完整性变更」会把 Windows 错误事件报成文件完整性变更。
 - ~~**`cert_issuer` 字段恒空**（近 6h 0 条非空）⇒「内置-自签或异常证书」的 issuer 分支是死路径~~
   **已处置**：先删掉 issuer 死分支（判据只剩 `cert_self_signed`），随后按用户口径**整条删除**
   （自签证书不需要检测；本环境 `cert_self_signed == true` 文档数 = 0，属配置事实非攻击事件）。
@@ -1281,13 +1204,11 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 **后端（这个划分不是界面猜的，是一等公民）**：
 - `Rule` 新增 `scope VARCHAR(16) NOT NULL DEFAULT 'network'`（`main.py::_MIGRATIONS` 幂等补列，两侧栈都有）；
 - 适用范围由**规则条件**自动判定：`rules/builtin.py::rule_scope()` —— 条件引用
-  `log_type == "wazuh"` / `source_system == "wazuh"` / `wazuh_*` 事件类型 ⇒ **主机**，其余 ⇒ **网络**；
   少数条件里看不出侧向的认证/账号类（暴力破解/主机登录失败/高频认证失败/撞库）在
   `_SCOPE_HOST_OVERRIDES` 里手工归主机（本部署由主机监控驱动），实测分布 **网络 65 / 主机 15**；
 - 播种时把判定结果写进 `Rule.scope`（内置规则随版本同步更新该字段）；自定义规则的 scope 由界面选择，
   更新时**不会**覆盖内置规则的自动归类；
 - 接口：`RuleIn.scope`（校验只允许 network/host）、`_rule_dict` 返回 scope；
-- **检测器按侧过滤**：`runner._entry_side()` + `_same_side()` —— 主机规则只在 `source_system=wazuh`
   的事件上求值，网络规则反之（缺 scope 按 network），逐条规则与频率规则两条路径都过滤。
 
 ### 2026-10 引入签名引擎（Suricata）：48 条重叠规则移交 + Community ID 关联

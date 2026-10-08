@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -225,7 +224,6 @@ def test_retired_scan_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
 def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
     """notice 型死规则「内置-端口扫描」必须从规则表移除，并在 DELETED_RULES 备案。
 
-    2026-10 实机数据：库里 8 条 `event_type=port_scan` 全是 Wazuh 的 CIS 合规告警
     （"Ensure 'Turn on e-mail scanning'…"），不是扫描；采集面又已关掉 Zeek 自带 notice →
     这条规则没有任何有效命中路径。
     """
@@ -352,53 +350,6 @@ def test_cert_self_signed_from_nested_x509(mods: dict[str, Any]) -> None:
     assert issuer, "cert_issuer 不应为空（原来只取顶层 issuer → 恒空）"
     cert = samples.X509["certificate"]
     assert entry.cert_self_signed is (cert["issuer"] == cert["subject"])
-
-
-def test_sshd_group_no_longer_means_brute_force(mods: dict[str, Any]) -> None:
-    """Wazuh 的 sshd 组同时覆盖成功登录：不能据此判 brute_force。"""
-    fn = mods["normalizer"]._wazuh_event_type
-    assert fn(10, "sshd,authentication_success", "Accepted password for root") != "brute_force"
-    assert fn(10, "authentication_failed,sshd", "Failed password for root") == "brute_force"
-
-
-def test_windows_error_event_not_labeled_system_change(mods: dict[str, Any]) -> None:
-    """Windows 错误事件不许归成 wazuh_system_change。
-
-    2026-10 实机：``rule_groups=windows,system_error`` 占近 6h 1,981 条 Wazuh 告警里的
-    1,573 条（79%），是「Windows 错误事件」；原实现把任何含 windows/sysmon 的组都归成
-    wazuh_system_change，修好范围闸门后会被「内置-主机文件完整性变更」误报。
-    """
-    fn = mods["normalizer"]._wazuh_event_type
-    for groups in ("windows,system_error", "windows_application", "system_error", "windows"):
-        assert fn(7, groups, "Windows 错误") != "wazuh_system_change", groups
-    # 真系统变更（FIM / Wazuh 自身）仍归 wazuh_system_change
-    assert fn(7, "ossec,syscheck", "Integrity checksum changed") == "wazuh_system_change"
-    assert fn(7, "syscheck", "File added to the system") == "wazuh_system_change"
-
-
-def test_file_integrity_rule_ignores_windows_errors(mods: dict[str, Any]) -> None:
-    """端到端：windows,system_error 事件（medium）不得命中「内置-主机文件完整性变更」。"""
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-主机文件完整性变更")
-    event_type = mods["normalizer"]._wazuh_event_type(7, "windows,system_error", "Windows 错误")
-    windows_error = mods["schemas"].UnifiedLog(
-        source_system="wazuh",
-        ts=datetime.now(UTC),
-        log_type="wazuh",
-        event_type=event_type,
-        severity="medium",
-    )
-    assert mods["engine"].match_rule(rule, windows_error) is False
-    # 真 syscheck 变更（medium）仍命中
-    real_change = mods["schemas"].UnifiedLog(
-        source_system="wazuh",
-        ts=datetime.now(UTC),
-        log_type="wazuh",
-        event_type="wazuh_system_change",
-        severity="medium",
-    )
-    assert mods["engine"].match_rule(rule, real_change) is True
-
-
 def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
     pattern = mods["config"].settings.web_login_path_regex
     for path in (
@@ -468,50 +419,14 @@ def test_boring_traffic_matches_no_per_event_rule(
     assert hits == []
 
 
-def test_wazuh_rules_are_routed_to_wazuh(mods: dict[str, Any]) -> None:
-    """只引用通用字段的 Wazuh 规则必须显式挂 log_type=wazuh，否则退化成通配（每条日志都跑）。"""
-    index = mods["engine"].build_rule_index(
-        [r for r in mods["builtin"].BUILTIN_RULES if (r["conditions"] or {}).get("mode") != "count"]
-    )
-    wild = {r["name"] for r in index["wild"]}
-    for name in ("内置-主机高危告警", "内置-主机文件完整性变更", "内置-主机策略违规"):
-        assert name not in wild, f"{name} 还在通配集合里"
-
-
-# ---------- 界面文案：规则名/描述不得出现厂商字样 ----------
-
-
 def test_builtin_rule_text_has_no_vendor_words(mods: dict[str, Any]) -> None:
-    """规则名与描述都会显示在管理界面上，不得出现 Zeek / Wazuh 字样（2026-10 界面口径）。
-
-    只查**显示的散文**（name/description）；条件里的 `log_type eq wazuh`、
-    `event_type eq wazuh_high_alert` 是内部枚举值（已落 1200 万+ 文档），不在此列。
-    """
+    """内置规则的名称/描述里不得出现采集器厂商字样（界面文案口径）。"""
     bad: list[str] = []
     for rule in mods["builtin"].BUILTIN_RULES:
         text = f"{rule['name']} {rule.get('description') or ''}"
-        if "Zeek" in text or "Wazuh" in text:
+        if "Zeek" in text:
             bad.append(rule["name"])
     assert bad == []
-
-
-def test_renamed_builtins_mapping_matches_rules(mods: dict[str, Any]) -> None:
-    """改名映射必须「旧名已不在、新名确实在」：否则旧库改名会白跑或改到不存在的规则。
-
-    规则名是 upsert 的键，改名不迁移就会新旧两行并存（旧行还带着用户的启用状态）。
-    """
-    main = importlib.import_module("app.main")
-    names = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
-    mapping = main._RENAMED_BUILTINS
-    assert mapping, "改名映射不该为空（界面口径已改成网络采集器 / 主机监控）"
-    for old, new in mapping.items():
-        assert old not in names, f"旧名 {old} 还在内置规则里（没改干净）"
-        assert new in names, f"新名 {new} 不在内置规则里（映射写错）"
-
-
-# ---------- 交付侧：单规则限速 + 严重度优先（仅 NDR） ----------
-
-
 def test_rule_cap_and_severity_order(request: pytest.FixtureRequest) -> None:
     if request.config.getoption("--stack") != "ndr":
         pytest.skip("检测器交付侧只存在于 NDR")

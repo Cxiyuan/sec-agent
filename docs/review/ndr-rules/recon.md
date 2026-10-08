@@ -12,15 +12,12 @@
 | `uri_path` **不含查询串**（`_split_uri` 切 `?`），截断 512；`query_string` 截断 1024 | `normalizer.py:307-313`、`normalizer.py:525-526` |
 | http 日志里 `query` = `uri`（路径+参数），不是完整 URL | `normalizer.py:644-645` |
 | `scan_attempt` 仅由 `conn_state=S0` 产出；`REJ/RSTOS0/RSTRH` → `rejected_connection`，**不在任何 C 组规则的取值里** | `ingestion/conn_states.py:41-55` |
-| Wazuh：描述里含 `scan` → `event_type=port_scan`；含 `sql|injection` → `web_attack` | `normalizer.py:855-860` |
 | 频率窗口默认 300s、冷却 300s、`key` 缺省 `src_ip`；member = `fingerprint():ts`（毫秒级） | `config.py:186-187`、`frequency.py:observe` |
 | 摘要聚合键 = (src_ip, rule)；投递限流 24 条/分钟，超出回队，超龄 1800s 丢弃；**被 excluded 的摘要也走同一条投递通道、同样占额度** | `detector/aggregate.py:_agg_key`、`runner.py:_flush`、`detector/push.py:deliver`（不区分 excluded） |
 | 分级放行白名单默认只有 `内置-扫描尝试连接`、`内置-恶意文件传输` | `config.py:71-76`，`triage_policy.py:internal_routine_reason` |
 | 健康检查白名单：`uri_path` **精确 in** `["/health","/healthz","/ping","/metrics"]` + UA 正则 `(kube-probe|prometheus|zabbix|nagios|uptime|healthcheck|ELB-HealthChecker)` | `builtin.py:23-30` |
 
-关于任务里点名的「混合多类型专有字段 → 某些 log_type 上恒空的死规则」：**C 组不存在完全死规则**。逐条核算：`云元数据访问` 引用 `query`(dns/http/wazuh)+`body`(http/wazuh)+`dst_ip`(通用) → 挂 dns/http/wazuh，逻辑是 `or`，dns 上 `body` 恒空不影响；`敏感文件`/`框架漏洞`/`参数fuzzing`/`未授权访问` 全部落在 http+wazuh（`auth_scheme`、`cookie` 不在 `_FIELD_TYPES` 里，只是不贡献类型，不会把规则推到 wild 或推到错误类型，见 `engine.py:build_rule_index` 的判定顺序）。真正的死条件只有一处：**`框架漏洞探测特征` 的 `/index\.php\?s=` 分支永不成立**（`uri_path` 不含查询串）。这点在下面逐条写。
 
-（另：C 组只有 `端口扫描`、`扫描尝试连接` 两条进 wild 集合，其余都是 http/wazuh/ssl 绑定；但这两条的 `event_type` 是通用字段，实际每个 log_type 都会跑，这是引擎的 fail-open 设计，代价是匹配次数增加，不算 bug。）
 
 ---
 
@@ -40,7 +37,6 @@
 | 内置-暴力路径枚举(单路径高频) | 需修 | 无状态码过滤，轮询接口（2s 刷新）必报；key 缺 dst_ip 跨目标混算；资源 ID 枚举不覆盖 |
 | 内置-服务端错误突变 | 需修 | 本组唯一没有健康白名单的频率规则；反代作为 src 时把全体用户的 5xx 全算到一个 IP |
 | 内置-大面积目标探测 | 疑似死规则级别的空条件 | 唯一条件是 `src_ip exists`，等于「按源计数所有事件」，5 分钟 25 个目标就报，FP 洪泛吞掉 24/分钟投递额度 |
-| 内置-端口扫描 | 需修 | 依赖 notice，Wazuh 侧「描述含 scan」即命中（如“漏洞扫描完成”）；与 808/822 三重重叠 |
 | 内置-高频扫描连接 | 需修 | 只认 S0，漏 REJ/RSTOS0 扫描；防火墙丢包/NAT 造成误报；与 822 同行为、严重度不一致 |
 | 内置-扫描尝试连接 | OK（设计取舍） | 匹配全部 S0、priority 20 是设计使然，且被 `policy_skip_rules` 放行；代价是仍占用投递额度 |
 
@@ -49,9 +45,7 @@
 ### 内置-Web攻击扫描器UA（builtin.py:577，priority=10，severity=high）
 
 - 结论：需修（FP）
-- 逻辑问题：`user_agent` 是 `_FIELD_TYPES` 里 `("http","wazuh")`，路由正确；`(?i)` 大小写处理正确。问题全在关键词表的粒度：整条是「子串或集」，`httpx`、`goby`、`dirb`、`hydra`、`xray` 这类短词在任意 UA 里出现即命中（builtin.py:588-589）。
 - 误报：`python-httpx/0.27.0` 是现代 Python 服务/脚本/Agent 框架的默认 UA（大量 LLM/API 网关、LangChain、k8s 运维脚本），命中 high；`Go-http-client` 类不改 UA 的上游不命中但 `httpx` 会。`hydra` 会命中任何含 "hydra" 的产品名 UA；`xray` 会命中含 X-Ray 的自研客户端。这类误报无法靠 uri/状态码收窄（规则没有其它条件）。
-- 漏报：UA 是可随意伪造的字段，`sqlmap --random-agent`、`nuclei -H 'User-Agent: Mozilla/5.0'`、Burp 改头后一律不命中；清单缺常用工具：`zaproxy|OWASP ZAP`、`afrog`、`vulmap`、`yakit`、`dirmap`、`pocsuite|pocsuite3`、`springbootscan`、`weblogic` 扫描器（绿盟 `RSAS`/极光 UA）。另外 UA 只在 http/wazuh 上有值，ssl/conn 上的工具特征（JA3）另由 594 条覆盖，这是合理分工。
 - 修复建议：把短词改成带边界的版本，例如
   `(?i)(sqlmap|nikto|nmap|masscan|acunetix|nessus|w3af|\bdirb\b|gobuster|wfuzz|\bhydra\b|zgrab|\bnuclei\b|xray|goby|ffuf|feroxbuster|python-httpx|whatweb|jaeles|wpscan|dirsearch|zaproxy|afrog|vulmap|yakit|dirmap|pocsuite)`
   并把 `httpx` 单列为 `(?i)(^|[ /\-_])httpx[ /\-_]?\d` 之类（避免裸 `httpx` 命中 "python-httpx" 之外的正常 UA 的同时保留真正的 httpx 工具）。同时降级为 medium（UA 是启发式证据，不是行为证据），或把 high 保留给「同源 UA 命中 + 30 分钟内多个 4xx/5xx」的组合规则。
@@ -90,7 +84,6 @@
 ### 内置-云元数据访问（builtin.py:660，priority=5，severity=critical）
 
 - 结论：需修（FP，白名单缺失）
-- 逻辑问题：`or` 四条（builtin.py:665-672），字段路由 dns/http/wazuh 正常。问题是不加任何方向/白名单/`log_type` 约束——`dst_ip eq 169.254.169.254` 这一条会把**云主机自己的监控 agent**当成 SSRF。
 - 误报：AWS SSM/CloudWatch/Datadog/kubelet/cloud-init 每几十秒 PUT/GET 一次 IMDS（`http://169.254.169.254/latest/api/token`、`/latest/meta-data/instance-id`），Zeek conn/http 都会看到 → 每条 critical、priority 5 排在最前，且没有 whitelist。GCP 侧 `metadata.google.internal` 同理。这类主机数量一多，critical 队列直接被自己人填满。
 - 漏报：只覆盖 AWS/GCP/Azure/Oracle 的 `169.254.169.254` 与 `metadata.google.internal`。缺 **Aliyun `100.100.100.200`**、**腾讯云 `169.254.0.23`**、**IPv6 IMDS `fd00:ec2::254`**、`metadata.goog`、`metadata.azure.com`；也缺「SSRF 打内网 K8s API」`kubernetes.default.svc` / `https://10.0.0.1:…/api/v1/namespaces` 这类同族特征。
 - 修复建议：加白名单 + 扩地址表：
@@ -155,7 +148,6 @@
 - 结论：需修（FP + 重复 + 漏 401）
 - 逻辑问题：`mode=count`，`key=["src_ip"]`，`min_count=30`，窗口取全局 300s（`config.py:186`），条件 `log_type eq http` + `status_code in [403,404]`（builtin.py:726），白名单 `_WHITELIST_HEALTH`（builtin.py:728，逐条事件生效，方向正确）。缺陷：①状态码列表缺 **401**（受保护 vhost 的目录枚举典型返回码）与 **400**；②`min_count=30/5min` 在「一个 NAT 出口 / 一个代理后面几百个终端」的实机里是个很低的门槛；③白名单 UA 集合太窄（见修复建议）。
 - 误报：①**NAT/正向代理**：一个 src_ip 代表整栋楼，任何用户点几个失效链接就能凑 30 个 404；②站点改版/迁移后大量旧 URL 返回 404，一个浏览器打开一个引用了 30+ 失效静态资源的页面（或爬虫/搜索引擎抓历史 URL，`Googlebot`/`Baiduspider` 不在白名单）即命中 high；③SPA 直接访问深链返回 404 后前端再补请求；④健康探测走非标准路径：`curl` 脚本探 `/health/ready`、`/actuator/health`（未被 in 列表覆盖）、`blackbox_exporter`（UA `Blackbox Exporter`，不在白名单正则里）在没有部署的端点上每 10s 一次 → 5 分钟 30 次正好压线；⑤Datadog/consul/telegraf 探针同样不在白名单。
-- 漏报：①**分布式/慢速扫描**：每个源 29 次以下，或超过 5 分钟窗口（本组所有频率规则都用默认 300s；而 G 组已有 `window: 21600` 的先例，见 builtin.py:1462/1482 —— 慢速扫描覆盖是 C 组没复用的模式）；②全 200 的通配重写站点上的目录枚举完全不报；③`status_code` 缺失（Wazuh 未带 `data.status`）的事件不计数；④扫描器被 CDN/反代挡在 200 错误页上不报。
 - 修复建议：
   ```python
   "min_count": 60,  # 或保留 30 但要求 uri_path 去重
@@ -207,7 +199,6 @@
 - 结论：需修（FP，且与同组规则不一致）
 - 逻辑问题：`mode=count`，`key=["src_ip"]`，`min_count=20`，条件 `log_type eq http` + `status_code gte 500`（builtin.py:770-777）。**本组唯一没有 `whitelist` 的频率规则**（对比 714/732/749/1401 都有）。描述写「疑似打挂或注入成功」，但 `key` 只看源，无法区分「攻击者打出 5xx」与「后端自己坏了」；也没有要求同源还有 4xx/高频证据。
 - 误报：①**反向代理/网关作为 src**：若传感器看到的是 nginx→后端 的请求，全体用户的 5xx 都聚到一个 src_ip，20 次几分钟内必到 → 纯噪声 high-ish；②探针：`/actuator/health` 启动期返回 503、探针 5-10s 一次 → 5 分钟正好 30-60 次命中（没有健康白名单拦）；③App 后端不可用时的客户端重试风暴（移动端/浏览器自动重试、`axios-retry`）→ 单个终端自然过 20；④NAT 后多用户共用一个 src。
-- 漏报：①**服务端整体故障**（每个客户端 <20 次）不报——`key` 缺 `dst_ip` 时无法按「被打击的目标」聚合；②攻击者刻意压低频率（<20/5min）打注入致使偶发 5xx 不报；③Wazuh 侧 5xx 事件因 `log_type eq http` 被过滤（Wazuh 的 `log_type` 是 `wazuh`，见 `normalizer.py:743`），丢失了 Wazuh 上报的 Web 500 事实。
 - 修复建议：加白名单（与 714 一致）、把 key 扩成 `["src_ip","dst_ip"]` 或新增一条 key=`["dst_ip"]` 的「目标端错误突增」规则，并要求源侧伴随证据：
   ```python
   "key": ["src_ip", "dst_ip"], "min_count": 20,
@@ -221,7 +212,6 @@
 ### 内置-大面积目标探测（builtin.py:781，priority=24，severity=medium）
 
 - 结论：疑似空条件规则（等于无条件计数），FP 洪泛并吞掉投递额度
-- 逻辑问题：条件树只有 `[{"field": "src_ip", "op": "exists"}]`（builtin.py:793）。`exists` 在 `src_ip` 非空时恒真——这就是一条**没有过滤**的全量计数规则：`min_count=25`、`distinct="dst_ip"`、`min_distinct=25`、窗口默认 300s，跨所有 log_type（dns/conn/http/ssl/wazuh 都算，`frequency.py` 的 count 路径不看规则路由）。任何主机 5 分钟内与 25 个不同 dst_ip 通信就命中。
 - 误报：①浏览器/客户端 / DNS 客户端 / 邮件客户端 / 补丁与软件更新（多个 CDN IP）；②监控服务器（Prometheus/Ansible/Zabbix 轮询几十上百台，5 分钟 25 个目标是**正常工作量**）；③备份服务器、堡垒机、域控、代理；④任何做服务发现的组件（Consul/k8s）；⑤NAT 后多用户；⑥内网资产巡检本身（任务给出「内网互扫占比很高」）。在 7k-10k 事件/分钟、内网互扫占大头的实机里，这条规则会贡献大量 medium 摘要。
 - 漏报/精度问题：只按 `dst_ip` 去重，**完全不看端口**——一个源对 10 台主机的 65535 个端口做全端口扫描（经典 nmap `-p-`）反而不报（distinct dst_ip=10 <25）；反之正常主机打 25 个目标的 443 就报。也就是说它把「正常广度」当异常、把「高精度深扫」漏掉。
 - 修复建议（三条一起改才有效）：
@@ -239,11 +229,7 @@
 ### 内置-端口扫描（builtin.py:797，priority=20，severity=medium）
 
 - 结论：需修（依赖上游 + 与 808/822 重叠 + 语义过宽）
-- 逻辑问题：单条件 `event_type eq "port_scan"`（builtin.py:805）。该 event_type 有两个来源：Zeek notice 的 `note` 含 `scan`（`normalizer.py:786-788`）与 **Wazuh 告警描述里含 `scan`**（`normalizer.py:857-858`）。后者是明显的宽匹配：「某某扫描任务完成」「Vulnerability scan finished」这类描述会直接变成 medium 端口扫描告警。
-- 误报：①Wazuh 描述里的 `scan` 泛匹配（上面）；②Zeek 侧合法的漏洞管理/资产扫描（Nessus/OpenVAS/合规扫描）与巡检脚本默认就会触发 notice，没有源白名单，也没有内→外/内→内的区分。
 - 漏报：①完全依赖 notice 框架：若 `site` 脚本没开 scan 检测，本规则永不触发（引擎不负责补，靠 808 兜底）；②note 里不含 "scan" 的扫描类 notice（如自定义 `Shentong::Probe`）落到 `note.split("::")[-1]` 不匹配。
-- 修复建议：Medium 保留但加限定：`{"field": "event_type", "op": "eq", "value": "port_scan"}` + `{"field": "src_external", "op": "eq", "value": true}`，或加白名单（已登记的漏扫平台 IP / `user_agent`）。Wazuh 侧建议把 `_wazuh_event_type` 里 `if "scan" in text` 收窄为 `re.search(r"\b(port ?scan|portscan|port scanning)\b", text)`（`normalizer.py:857-858`）。
-- 置信度：中—高（引擎语义与匹配路径确凿；Wazuh 描述多样性需现场样本确认）。
 
 ### 内置-高频扫描连接（builtin.py:808，priority=24，severity=high）
 
@@ -287,7 +273,6 @@
 
 ## 评审结论
 
-- Correct：15 条规则的**字段与路由**基本正确——C 组没有「混合多类型专有字段导致某些 log_type 上 AND 恒假」的死规则；`ja3` 只挂 ssl、Web 字段同时挂 http+wazuh（与 `engine.py:_FIELD_TYPES`、`normalizer.py` 的 Wazuh 分支一致）；`端口扫描`/`扫描尝试连接` 的 event_type 均有真实生产者（`tests/py/test_conn_states.py:227` 有守卫测试）。
 - Fixed：无（本次只做分析，未修改任何文件；按评审指令不写 `progress.md`）。
 - Finding（按影响排序，均为 P1）：
   1. P1 `builtin.py:793` — `src_ip exists` 恒真，`大面积目标探测` 退化为无条件计数（证据：`engine.py:_match` 的 exists 语义 + `frequency.py` 按 src 分组）。
@@ -296,7 +281,6 @@
   4. P1 `builtin.py:653` + `normalizer.py:337-340` — `auth_scheme ne basic` 对空值恒真，未授权访问规则语义不成立。
   5. P1 `builtin.py:609-638` — 缺 `whitelist`，`/actuator` 分支打 K8s 探针（同文件 728/745/760/1401 都有白名单，唯独这条没有）。
   6. P1 `builtin.py:145-146...`（本组相关）`builtin.py:684` 与 `builtin.py:298` 同条件重复，priority 8 遮蔽 10。
-  7. P2 780 段 `内置-服务端错误突变` 无白名单、key 缺 `dst_ip`；`内置-端口扫描` 依赖 Wazuh 描述含 `scan`（`normalizer.py:857`）过宽；`内置-参数fuzzing` 应为频率规则。
 - Merge verdict：**OK with notes**（C 组无 P0；建议先做 5 处一行级修复——白名单补齐、`ne basic` 改 `not exists`、`src_ip exists` 换判据、删死分支与重复条件——再评估阈值类改动，因为阈值改动需要实机流量对账）。
 - 需主管执行的验证（我不执行构建/测试）：`pytest tests/py/test_conn_states.py tests/py/test_rules_routing.py tests/py/test_detector_runner.py`；另建议用近一周实机数据按「规则名 × 源IP」统计各条命中量，确认 `大面积目标探测`、`扫描尝试连接`、`敏感文件`、`框架漏洞探测` 四条的 FP 占比，再定最终阈值。
 
@@ -319,7 +303,6 @@
     }
   ],
   "validationOutput": [
-    "路由核算：C 组无「混合多类型专有字段 → 某些 log_type 上 AND 恒假」的死规则；云元数据(dns/http/wazuh,or 逻辑)、敏感文件/框架漏洞/参数fuzzing/未授权访问(http+wazuh) 归属正确。",
     "死条件唯一定位：builtin.py:688 的 /index\\.php\\?s= 永不成立（uri_path 已由 normalizer.py:307-313 去掉查询串）。",
     "遮蔽核对：builtin.py:684 cookie rememberMe= 与 builtin.py:298（priority 8）同条件，runner.py:686 首个命中即停导致前者恒不生效。",
     "恒真条件定位：builtin.py:793 src_ip exists 恒真（engine.py:_match exists 语义），大面积目标探测退化为无条件全量计数。",
@@ -329,7 +312,6 @@
   "residualRisks": [
     "FP/FN 比例未做量化：我无法访问实机流量与规则命中分布，Top 3 的优先级依据是代码事实 + 通用流量形态，不是本环境的实测占比；建议按「规则名 × 源IP」拉一周统计后再定阈值。",
     "阈值类结论（min_count 30/40/60、窗口 300s、白名单 UA 名单）依赖部署形态：传感器是否看到代理→后端流量、是否存在 NAT 出口、内网探针种类，都会显著改变 FP 判断。",
-    "内置-端口扫描 的 Wazuh 侧宽匹配（描述含 scan → port_scan）需要 Wazuh 告警样本才能确认实际影响面。",
     "JA3 规则的 in 大小写/ strip 问题在 ja3_blocklist 为空时不可见，需在启用该配置的实例上复验。",
     "本次未评审 D-G 组与 agent 侧仓库的同名规则，跨栈一致性（两侧种子规则是否逐字一致）未核对。"
   ],
@@ -343,7 +325,6 @@
     "P1: ndr/backend/app/rules/builtin.py:609-638 - 敏感文件与源码泄露探测 无 whitelist，/actuator 分支命中 K8s 探针(/actuator/health)持续 high",
     "P1: ndr/backend/app/rules/builtin.py:684 vs builtin.py:298 - cookie rememberMe= 条件重复定义(critical/high)，priority 8 遮蔽 priority 10",
     "P2: ndr/backend/app/rules/builtin.py:770-777 - 服务端错误突变 无 whitelist 且 key 缺 dst_ip，反代作为 src 时把全体用户 5xx 归一到单个 IP",
-    "P2: ndr/backend/app/rules/builtin.py:805 - 端口扫描 依赖 Wazuh 描述含 scan(normalizer.py:857) 宽匹配，与 808/822 三重重叠",
     "P2: ndr/backend/app/rules/builtin.py:708-709 - 参数fuzzing超长载荷 是逐条规则(单次超长即报)、无白名单，SAML/OAuth/中文 URL 编码路径正常超长即命中",
     "P2: ndr/backend/app/rules/builtin.py:740-745 - 多路径探测 无 status_code 过滤，爬虫/压测/正常浏览 40 个 200 路径即 high，且与 714 条同一行为双报",
     "P2: ndr/backend/app/rules/builtin.py:756-760 - 暴力路径枚举 无 status_code 过滤、key 缺 dst_ip，轮询接口(2s 刷新)必报；资源 ID 枚举(路径变化)不覆盖"

@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from typing import Any
 
 # 默认数据来源（NDR 侧靠 source_system 字段过滤，不再是索引维度）。
-SOURCES = ("zeek", "wazuh")
+SOURCES = ("zeek", "suricata")
 
 # 单次查询条数上限（与 NDR 侧一致）。
 MAX_DOCS = 2000
@@ -33,7 +33,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "source_system": {
         "kind": "keyword",
-        "desc": "来源系统 zeek/wazuh（来源不再是索引维度，只能用这个字段区分）",
+        "desc": "来源系统 zeek/suricata（来源不再是索引维度，只能用这个字段区分）",
     },
     "event_type": {
         "kind": "keyword",
@@ -41,7 +41,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "log_type": {
         "kind": "keyword",
-        "desc": "日志类型：Zeek 的 conn/http/dns/ssl/files/ssh/smtp/notice/dhcp；Wazuh 固定 wazuh",
+        "desc": "日志类型：Zeek 的 conn/http/dns/ssl/files/ssh/smtp/notice/dhcp；签名引擎固定 suricata",
     },
     "src_ip": {
         "kind": "ip",
@@ -69,11 +69,11 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "hostname": {
         "kind": "keyword",
-        "desc": "主机名/域名：Zeek 的 HTTP Host 或 TLS SNI；Wazuh 的被采集主机名",
+        "desc": "主机名/域名：Zeek 的 HTTP Host 或 TLS SNI",
     },
     "user": {
         "kind": "keyword",
-        "desc": "账号（Zeek 的 user / Wazuh 的 data.user）",
+        "desc": "账号（Zeek 的 user / 请求体提取）",
     },
     "account": {
         "kind": "keyword",
@@ -81,7 +81,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "process": {
         "kind": "text",
-        "desc": "进程名（命令执行证据，主要来自 Wazuh）",
+        "desc": "进程名（命令执行证据）",
     },
     "command": {
         "kind": "text",
@@ -89,19 +89,15 @@ FIELDS: dict[str, dict[str, Any]] = {
     },
     "severity": {
         "kind": "keyword",
-        "desc": "归一化告警级别 critical/high/medium/low/info（Wazuh rule.level 映射而来）",
     },
     "summary": {
         "kind": "text",
-        "desc": "一句话摘要（Zeek 的 note/msg；Wazuh 的 rule.description）",
     },
     "rule_id": {
         "kind": "keyword",
-        "desc": "Wazuh 规则 id",
     },
     "rule_groups": {
         "kind": "text",
-        "desc": "Wazuh 规则组",
     },
     "mitre": {
         "kind": "text",
@@ -363,7 +359,6 @@ def catalog_text(
     index: str,
     fields: Sequence[str] | None = None,
     *,
-    sources: Sequence[str] = ("zeek", "wazuh"),
     max_chars: int = 2600,
 ) -> str:
     """渲染给模型看的字段目录提示词。
@@ -374,7 +369,7 @@ def catalog_text(
     """
     wanted = None if fields is None else set(fields)
     names = [n for n in FIELDS if wanted is None or n in wanted]
-    lines = [f"【NDR 统一事件】索引 {index}，来源 {' / '.join(sources)}"]
+    lines = [f"【NDR 统一事件】索引 {index}，来源 {' / '.join(SOURCES)}"]
     for name in names:
         item = FIELDS[name]
         lines.append(f"- {name}（{item['kind']}）：{item['desc']}")

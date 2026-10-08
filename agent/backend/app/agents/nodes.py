@@ -818,9 +818,11 @@ def _to_log(doc: dict[str, Any]) -> UnifiedLog | None:
         except Exception as exc:  # noqa: BLE001
             log.debug("回溯条目直接校验失败，改用归一化器：%s", exc)
     source = str(payload.get("source_system") or "")
-    if source not in ("zeek", "wazuh"):
+    if source not in ("zeek", "suricata"):
         source = (
-            "zeek" if ("log_type" in payload or isinstance(payload.get("zeek"), dict)) else "wazuh"
+            "zeek"
+            if ("log_type" in payload or isinstance(payload.get("zeek"), dict))
+            else "suricata"
         )
     raw = payload.get("raw")
     return normalize(source, raw if isinstance(raw, dict) else payload)

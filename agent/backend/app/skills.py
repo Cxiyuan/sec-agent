@@ -47,7 +47,7 @@ BUILTIN_SKILLS: list[dict] = [
     {
         "name": "Web 攻击分析",
         "description": "SQLi/XSS/RCE/SSRF/路径穿越等 Web 应用攻击的识别与取证",
-        "event_types": ["web_attack", "wazuh_web_attack", "http_request"],
+        "event_types": ["web_attack", "http_request"],
         "tools": ["url_decode", "ioc_extract"],
         "priority": 15,
         "sop": (
@@ -64,7 +64,7 @@ BUILTIN_SKILLS: list[dict] = [
     {
         "name": "恶意软件/C2 外联分析",
         "description": "恶意软件、勒索、木马与 C2 外联行为的识别",
-        "event_types": ["wazuh_malware", "conn_established", "tls_session", "file_transfer"],
+        "event_types": ["conn_established", "tls_session", "file_transfer"],
         "tools": ["ioc_extract", "threat_lookup", "dns_resolve"],
         "priority": 10,
         "sop": (
@@ -81,7 +81,7 @@ BUILTIN_SKILLS: list[dict] = [
     {
         "name": "横向移动分析",
         "description": "内网横向渗透（凭据重用/远程执行/共享访问）的识别",
-        "event_types": ["wazuh_system_change", "ssh_activity", "conn_established"],
+        "event_types": ["ssh_activity", "conn_established"],
         "tools": ["geoip_lookup", "ioc_extract"],
         "priority": 15,
         "sop": (

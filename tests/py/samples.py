@@ -411,7 +411,6 @@ EXPECT: dict[str, tuple[str, bool, str]] = {
     "flat_suricata": ("suricata", True, "event"),
 }
 
-# 只跟 zeek 线有关：一致性比较用（Wazuh / Suricata 走各自的分支）
 ZEEK_NAMES = tuple(name for name in DOCS if not name.startswith(("suricata_", "flat_suricata")))
 
 
@@ -419,10 +418,10 @@ def doc_source(doc: dict[str, Any]) -> str:
     """样本的来源判定（口径与 ``app.ingestion.normalizer.source_of`` 一致）。
 
     放这里只维护一份：两侧的包名都是 ``app``，测试侧共用同一个 samples 模块就成了。
-    显式 ``source_system`` 优先；缺失时靠「有 alert 块」认 Suricata（Zeek/Wazuh 都没有它）。
+    显式 ``source_system`` 优先；缺失时靠「有 alert 块」认 Suricata（Zeek 没有它）。
     """
     raw = str(doc.get("source_system") or "").strip().lower()
-    if raw in ("zeek", "wazuh", "suricata"):
+    if raw in ("zeek", "suricata"):
         return raw
     if isinstance(doc.get("suricata"), dict) or isinstance(doc.get("alert"), dict):
         return "suricata"

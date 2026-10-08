@@ -14,7 +14,6 @@ from app.api.routes import (
     logstash,
     mcp,
     rules,
-    wazuh,
     zeek,
 )
 
@@ -41,5 +40,4 @@ api_router.include_router(zeek.router)
 api_router.include_router(files.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)
-api_router.include_router(wazuh.router)
 api_router.include_router(suricata_router)

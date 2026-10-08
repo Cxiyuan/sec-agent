@@ -377,7 +377,6 @@ def build_server() -> MCPServer:
         name="shentong-ndr",
         title="深瞳 NDR",
         instructions=(
-            "深瞳 NDR 的事件查询与调查接口。事件数据（Zeek 流量日志与 Wazuh 主机告警，"
             "已归一化成统一字段）只能通过这里查——本服务是数据的看门人。\n"
             "先调 describe_data 拿字段清单与真实时间范围，再按需 search_events /"
             " aggregate_events / timeline / net_flows / dns_queries / tls_fingerprints /"

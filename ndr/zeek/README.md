@@ -321,7 +321,6 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
   `json: cannot unmarshal number into Go value of type map[string]interface {}`），而**原始那一行原样留在
   顶层 `message`**。据此 normalizer 现在先看这个标记：能从 `message` 里再 `json.loads` 出对象的照常入库，
   拼不回的**返回 None 进死信**（`normalize_failed` 桶、限量告警 `_MAX_FILEBEAT_PARSE_WARNINGS=5`），
-  **不再落成只有时间戳与 `log_type` 的空壳文档**；Zeek 与 Wazuh 两条来源都过同一道闸。探针取证时 6 秒内
   采集队列从 0 涨到 **757**（≈126 事件/秒，链路本身健康），探针条目已用 Lua 精确摘除、未污染数据。
   测试：`tests/py/test_filebeat_decode.py`（6 例，两侧都跑）。
 

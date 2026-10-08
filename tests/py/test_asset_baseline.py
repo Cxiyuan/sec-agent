@@ -280,9 +280,7 @@ def test_finalize_drops_connection_without_identity(asset: ModuleType) -> None:
 
 
 def test_entries_without_uid_do_not_enter(asset: ModuleType) -> None:
-    """主机监控（Wazuh）与 files/x509 这类没有连接语义的日志：不入基线并计为丢弃。"""
     records: dict[str, dict[str, Any]] = {}
-    assert asset.observe_entry(records, _entry(uid="", log_type="wazuh")) == -1
     assert asset.observe_entry(records, _entry(uid="", log_type="files")) == -1
     assert records == {}
 

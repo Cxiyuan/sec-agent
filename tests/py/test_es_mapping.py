@@ -2,7 +2,6 @@
 
 背景（2026-10 实机事故）：索引模板只管 settings、没有 mappings，``raw`` 走动态映射，
 ``raw.id`` 被先到的 Zeek conn 文档定成 object；此后所有「``raw.id`` 是字符串」的文档
-（**全部 Wazuh 告警**、以及 Zeek ocsp）被 ES 判 ``document_parsing_exception`` 整条 400、
 被 Logstash 静默丢弃 —— Filebeat / Redis / 归一化三段都是好的，只有落库这一段丢数据。
 
 ``flattened`` 也躲不掉：8.15.3 实测单值超过 32,766 字节（一条 LLM 日志的
@@ -24,16 +23,6 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-
-WZ_ALERT = {
-    "timestamp": "2026-10-03T07:20:00.000+0000",
-    "rule": {"level": 12, "description": "合成端到端测试告警", "id": "100001"},
-    "agent": {"id": "000", "name": "wazuh-manager", "ip": "127.0.0.1"},
-    "id": "1700000000.123456",
-    "full_log": "synthetic",
-    # Filebeat 给每条告警补的采集路径（raw 的 source_file 取自末段）
-    "log": {"file": {"path": "/var/ossec/logs/alerts/alerts.json"}},
-}
 
 
 @pytest.fixture(scope="module")
@@ -92,17 +81,6 @@ def test_is_safe_raw_mapping(mods: dict[str, ModuleType]) -> None:
     assert is_safe({"properties": {"id": {"type": "object"}}}) is False
     assert is_safe(None) is False
     assert is_safe({}) is False
-
-
-def test_wazuh_raw_id_is_a_string(mods: dict[str, ModuleType]) -> None:
-    """Wazuh 告警的 ``raw.id`` 是字符串（Zeek conn 的是对象）—— 正是必须禁解析的原因。"""
-    entry = mods["normalizer"].normalize_wazuh(dict(WZ_ALERT))
-    assert entry is not None
-    raw = entry.model_dump(mode="json")["raw"]
-    assert isinstance(raw["id"], str)
-    # 归一化后自解释字段仍在 raw 里（MCP 的 raw_evidence 靠它）
-    assert raw["log_type"] == "wazuh"
-    assert raw["source_file"] == "alerts.json"
 
 
 def test_ensure_retention_ships_raw_mapping(

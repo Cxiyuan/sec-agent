@@ -194,34 +194,16 @@ def test_leader_release_drops_lease(runner: Any, fakes: Any) -> None:
     assert leader.is_leader is False
 
 
-# ---------- 范围闸门：Wazuh 豁免（主机监控事件多数没有 IP） ----------
-
-
 def _nets(spec: str = "192.0.2.0/24") -> list[Any]:
     return [ipaddress.ip_network(spec)]
 
 
 def _scope_entry(runner: Any, **kw: Any) -> Any:
     base: dict[str, Any] = {
-        "source_system": "wazuh",
         "ts": datetime.now(UTC),
-        "log_type": "wazuh",
-        "event_type": "wazuh_alert",
     }
     base.update(kw)
     return runner.UnifiedLog(**base)
-
-
-def test_wazuh_entry_without_ip_passes_scope_gate(runner: Any) -> None:
-    """Wazuh 告警多数没有 src_ip/dst_ip（近 6h 1,981 条里带 src_ip 的 0 条），
-    范围闸门必须放行，否则主机侧在规则之前被全量丢掉。"""
-    assert runner._entry_in_scope(_scope_entry(runner), _nets()) is True
-
-
-def test_wazuh_entry_with_out_of_scope_ip_also_passes(runner: Any) -> None:
-    """豁免是整条 Wazuh 线：即便带了 IP，也不按网段拦（主机监控用 IP 判范围没有意义）。"""
-    entry = _scope_entry(runner, src_ip="198.51.100.9", dst_ip="203.0.113.7")
-    assert runner._entry_in_scope(entry, _nets()) is True
 
 
 def test_zeek_entry_without_ip_still_blocked(runner: Any) -> None:

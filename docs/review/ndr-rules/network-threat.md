@@ -4,8 +4,6 @@
 
 先说三条贯穿全组的引擎事实（后面反复引用）：
 
-- **路由**：`engine.build_rule_index` 优先看显式 `log_type eq X`；否则按 `_FIELD_TYPES` 归属。`query → (dns, http, wazuh)`；`bytes_out / bytes_in → (conn,)`；`dst_port / event_type` 属通用字段 → 通配（每个 log_type 都跑）。**频率规则（mode=count）不走路由**：`runner.py:709-712` 对每条 event 遍历全部 count 规则并 `evaluate_conditions`，且不 break。
-- **字段真实来源**（`normalizer.py`）：`dst_port = id.resp_p`（Zeek 行 666；Wazuh 行 753）；`bytes_out = orig_bytes`（行 674，"源→目的"）；`bytes_in = resp_bytes or response_body_len`（行 561，`_http_fields`，即"目的→源"）；`qtype = str(qtype or qtype_name)`（行 548）；Zeek http 的 `query = doc["query"] or uri`，**http.log 的 uri 是路径+参数，不含主机名**。`schemas.py:60-61` 把 bytes_out/bytes_in 明确定义为方向相对的字节数，不含内外网语义。
 - **抑制/容量**：`config.py:71-76` 内网常规跳过要求"规则名在 `policy_skip_rules`（默认只有「内置-扫描尝试连接」「内置-恶意文件传输」）+ 内→内 + 严重度 < medium + 目标 ≤1 + 无成功连接"——本组 13 条**没有一条**能被跳过。`config.py:170` 投递限流 24 摘要/分钟、`:177` 摘要 30 分钟超龄丢弃。
 
 ## 本组小结
@@ -14,14 +12,12 @@
 |---|---|---|
 | 内置-勒索/僵尸网络域名 (35) | 需修 | 短词无边界子串（`conti`/`beacon`）在 critical 级放大误报，同时抓不到真实 C2 |
 | 内置-挖矿域名/矿池 (52) | 需修 | `xmr` 三字符子串过宽；`stratum+tcp` 在 DNS 上物理不可能出现（该分支无效） |
-| 内置-Wazuh恶意软件告警 (69) | 需修 | 只认 `wazuh_malware`，Windows Defender/yara/clamav 组落不到该事件类型（漏报）；不看等级，rootcheck 低危也 critical |
 | 内置-横向移动高频连接 (1096) | 需修 | 无方向限定；10 次/5 分钟对 SMB/RDP 正常会话过松；priority 对频率规则无意义 |
 | 内置-横向移动多目标 (1116) | 需修 | 无方向；与「大面积目标探测」「内网慢速横向」同一行为产多份摘要；端口集与 (1134) 不一致 |
 | 内置-横向移动管理端口 (1134) | 需修（最严重） | 无方向/无白名单的"全量 SMB·RDP·NFS 命中"，挤占投递预算并遮蔽 3389 的低危规则 |
 | 内置-异常外联端口 (1149) | 需修 | 无方向 → 内网服务监听 5555/9001 时入向连接也报"疑似 C2"；缺 50050/1080 等常见 C2 默认口；p20 平级顺序不确定 |
 | 内置-DNS隧道可疑长查询 (1180) | 需修 | 只看长度+字符集、不排除 PTR/ACME/NSEC3 长合法名 → high 级误报；<60 字符分块隧道漏 |
 | 内置-DNS-TXT隧道 (1194) | 逻辑不成立（疑似死规则） | key 含 `query` 要求同一名字重复 10 次，与"TXT 隧道"语义相反，真隧道永不触发 |
-| 内置-可疑域名（动态DNS/短域名）(1211) | 需修 | 名字说"短域名"但无任何长度判定；`$` 锚在 http/wazuh 上失效；`dyn.`/`transfer.sh` 无边界 → 误报；主流 DDNS 漏 |
 | 内置-大流量外传 (1229) | 需修 | 无 `dst_external`；10MB 阈值过低；`bytes_out` 为空时静默不命中；无按源求和 → 慢速外传漏 |
 | 内置-超大流量外传 (1240) | 需修 | 同上（方向/白名单）；100MB 阈值本身合理 |
 | 内置-大规模数据下载 (1251) | 需修 | 无方向，`bytes_in=resp_bytes`，外→内连接时其实是出站外传却叫"下载"；正常更新/媒体/备份 FP |
@@ -31,28 +27,16 @@
 ---
 
 ### 内置-勒索/僵尸网络域名（builtin.py:35，priority=5，severity=critical）
-- 条件：`line 46` `query` regex `(?i)(ransom|lockbit|blacksuit|conti|emotet|trickbot|cobaltstrike|meterpreter|beacon)`；无白名单。路由 `query → (dns,http,wazuh)`，在 conn/files/ssl 上不跑。
 - 逻辑问题：`logic: and` 单条件，等价于该条件，**OK**。但"关键字命中域名 = critical 勒索/C2"这个判据本身价值低：真实 C2 用 DGA/正常域名，关键字型规则主要命中"研究/测试/误撞"。
-- 误报：`re.search` 无词边界 → 三字符/常用词子串全中。`conti` 命中 `continental*`、`continuing` 类品牌/路径；`beacon` 命中大量正常遥测像素（`/beacon.gif`、`/api/v1/beacon/config`）；`ransom` 命中搜索/攻防研究类 URL（如 `?q=ransomware`）。http 路由下 `query` 是**请求路径**（`normalizer.py` normalize_zeek：`query = doc["query"] or uri`），所以"访问一个含这些词的页面路径"就报 critical；wazuh 路由下 `query = data.url` 整条 URL，任何路径段含这些词同样报 critical。无白名单、无方向限定（外网访问你的站点也报 critical）。
 - 漏报：指标集不含常见家族/工具名（`sliver`、`havoc`、`mythic`、`asyncrat`、`remcos`、`cobalt`、`empire`、`metasploit`）；且**TLS SNI 完全没有覆盖**：`hostname`（`normalize_zeek` 里来自 `doc["host"] or doc["server_name"]`）上有域名，但本规则只查 `query`，路由后 ssl/conn 日志根本不评估。硬编码 IP + DoH 的无 DNS 场景直接漏。
-- 修复建议：① 用词边界/标签边界收窄，例如 `(?i)(^|[._-])(lockbit|blacksuit|emotet|trickbot|cobaltstrike|meterpreter)([._-]|$)`，`conti|beacon` 这类短词直接删掉（换成 `conti\b` 也仍会撞 `continental`，建议只保留 `conti-ransom`、`cobaltstrike`）；② 拆一条对 `hostname` 的规则覆盖 SNI/Host（注意 `hostname` 不在 `_FIELD_TYPES`，若把它放进同一 AND 树，路由仍由 `query` 决定为 dns/http/wazuh，ssl 仍不评估 → 需单独一条规则或显式 `log_type in ["ssl","http"]`）；③ 加白名单（内网域/自有域/威胁情报平台域）并把 critical 降为 high，或改成"命中名单 + 与已知 C2 情报交叉"才算 critical。
 - 置信度：高（正则无边界、字段与路由、http 下 `query` 是路径这三点都由代码直接可证；`continental`/`beacon.gif` 为示意性 FP 例子）。附带一条：`priority=5` 与「内置-挖矿域名/矿池」(line 55) 同为 5，而 `rules/service.py:15` 只有 `order_by(Rule.priority)` 无第二排序键，`runner.py:699` 又是 `next(...)` 取首个命中 → 同一事件两条都命中时"报哪条"取决于 DB 返回顺序（不确定）。
 
 ### 内置-挖矿域名/矿池（builtin.py:52，priority=5，severity=high）
-- 条件：`line 63` `query` regex `(?i)(xmr|monero|minergate|nanopool|minexmr|coin-hive|cryptonight|stratum\+tcp|2miners|f2pool)`；无白名单；路由 dns/http/wazuh。
-- 逻辑问题：`stratum\+tcp` 这一支**在 DNS 上不可能命中**（DNS 名字不含 `+`，且 `query` 对 dns 就是域名），只有 http 路径/wazuh URL 里出现 `stratum+tcp` 才可能命中 → 描述写"域名/协议"但协议分支实际近乎空转。`xmr` 是 3 字符无边界子串（`re.search`），命中面远超矿池。
 - 误报：任何含 `xmr` 子串的域名/路径（示意：`xmradio.com`、`/xmr/report`、主机名 `xmr-node`）；`monero` 命中科普/交易所页面路径；`coin-hive`/`2miners` 类词出现在安全博客/搜索结果 URL → high。同样是 critical/high 级无白名单。
 - 漏报：常见矿池/协议未覆盖（`pool.minexmr`已有、缺 `nanopool.org` 之外的 `ethermine`、`nicehash`、`hashvault`、`herominers`、`kryptex`、`unmineable`、`c3pool`；协议 `stratum+tcp/ssl`、`getwork`、`ethproxy` 等）。挖矿流量多为长连接 TLS，真正可分的是"到矿池 IP/域的会话"，本规则只查名字字段。
 - 修复建议：`xmr` 改为带边界的标签匹配 `(?i)(^|[._-])(xmr|xmr-?[a-z]*pool|moneroocean|nanopool|minexmr|2miners|f2pool|nicehash|ethermine|c3pool|herominers|hashvault|unmineable)([._-]|$)`；协议特征移出 DNS 语义、放到 `query_string`/`body` 独立规则；补 `stratum\+(tcp|ssl)`、`getwork`、`ethproxy`；加"内部资产/自有域"白名单。severity high 保留合理。
 - 置信度：高（`+` 在 DNS 名不可能出现、子串匹配语义由引擎代码决定）；矿池补充清单为中（按公开默认域名，未在本仓库验证）。
 
-### 内置-Wazuh恶意软件告警（builtin.py:69，priority=5，severity=critical）
-- 条件：`line 76` 唯一条件 `event_type eq wazuh_malware`；无白名单；无等级/规则 ID 限定。
-- 逻辑问题：事件类型由 `normalizer.py` 的 `_wazuh_event_type` 生成，其分组关键字是 `("malware","ransomware","virus","rootcheck","trojan")`（在 web/attack、authentication 分支之后）。**Windows Defender 类告警**（Wazuh 组 `windows,windows_defender`）不包含这些子串 → 落到下一分支 `("syscheck","ossec","sysmon","windows")` → 被判为 `wazuh_system_change`，于是"Defender 报毒"**不会**命中本规则；`yara`、`clamav`、`virustotal`、`malware_ioc` 这类组名同样落不到 `wazuh_malware`，只会掉到 `wazuh_high_alert`（被 p10/high 的「内置-Wazuh高危告警」接住）→ **critical 级漏报、降级为 high**。
-- 误报：`rootcheck` 组被算作恶意软件 → rootcheck 的合规/巡检噪声（常为低 level）也会 critical；规则完全不看 `level/severity`（`_map_wazuh_level` 已算出 `severity` 字段可用却未用）。
-- 漏报（补充）：Wazuh 的"恶意软件"不止分组命名的这些（Defender/FIM 检出可执行文件、Sysmon 规则、第三方 AV 集成）。
-- 修复建议：条件改为 `event_type in ["wazuh_malware"] and severity in ["high","critical"]`（或 `severity ne info/low`）；同时把 `wazuh_system_change` 中"Defender/AV 检出"单独建模（更稳的做法是在 `_wazuh_event_type` 里把 `windows_defender|defender|yara|clamav|virustotal|malware_ioc` 一并归到 `wazuh_malware`）；给 `rootcheck` 组单独降级或加白名单。
-- 置信度：高（分组关键字列表与分支顺序在 `normalizer.py` 直接可读；Defender→`wazuh_system_change` 是这套分支的必然结果）。
 
 ### 内置-横向移动高频连接（builtin.py:1096，priority=22，severity=high）
 - 条件：`line 1102-1104` `mode=count`、`key=["src_ip","dst_ip"]`、`min_count=10`；`line 1110` 条件 `dst_port in [445,139,135,3389,5985,5986,512,513,514]`。窗口取默认 `config.py:186 freq_window_seconds=300`，冷却 `config.py:187 = 300`。
@@ -105,14 +89,11 @@
 - 置信度：高（key 语义、qtype 存储口径、路由行为均可从 `frequency.py`/`normalizer.py`/`runner.py` 直接验证）。
 
 ### 内置-可疑域名（动态DNS/短域名）（builtin.py:1211，priority=25，severity=medium）
-- 条件：`line 1222` `query` regex `(?i)(\.onion|\.top$|\.xyz$|\.tk$|\.pw$|dyn(dns)?\.|no-ip\.|ngrok\.|pastebin\.|transfer\.sh)`；路由 `query → (dns,http,wazuh)`。
 - 逻辑问题：
   1. **名不符实**：规则名/描述包含"短域名"，但正则里**没有任何长度判定**（无 `{1,4}` 之类）→ 运维以为短域名被覆盖，实际完全不覆盖（漏报源，且是文档级误导）。
-  2. **`$` 锚在非 DNS 源上失效**：dns 上 `query` 就是域名，`\.top$` 正确；但 http 上 `query` 是**请求路径**（`normalize_zeek` 的 `query = doc["query"] or uri`），wazuh 上 `query` 是完整 URL → 对 `https://bad.top/login.php` 这种"真恶意但有路径"的 URL **反而不命中**（`\.top$` 匹配不到）；反之路径以 `.top/.xyz` 结尾就误命中。TLD 后缀判定在 http/wazuh 上既不安全也不完整。
   3. `dyn(dns)?\.`、`no-ip\.`、`pastebin\.`、`transfer\.sh` 全是**无边界子串**（`re.search`）：`dyn.` 命中静态资源路径 `/dyn.js`、`/cdn/dyn.css`；`transfer.sh` 命中 `transfer.shtml`/`transfer.shared`（`.shtml` 是常见的旧式后缀）；`pastebin.` 命中任何含该词的分享/代理路径。`\.onion` 基本只在测试/情报场景出现，价值低。
 - 误报：内网自建区域里带 `dyn` 标签（`dyn.corp.local`）也命中；`.xyz/.top/.pw` 上有大量正常站点（TLD 滥用比例高但合法使用确实存在）→ medium 级噪声无白名单、且 `policy_skip_rules`/`policy_internal_routine_min_severity=medium` 组合使它在"内→内 + medium"时也**不会被跳过**（门槛要求 < medium）。
 - 漏报：主流 DDNS 大面积缺失——`duckdns.org`、`ddns.net`、`noip.com`（只有 `no-ip.` 命中，`noip.com` 不中）、`hopto.org`、`sytes.net`、`zapto.org`、`myftp.org`、`3utilities.com`、`freedns.afraid.org`、`dynu.com`、`changeip.com`、`myonlineportal.net`；且 `.top/.xyz` 之外的高滥用 TLD（`.cc`、`.click`、`.gq`、`.cf`、`.ml`、`.work`、`.cam`）未覆盖。
-- 修复建议：① 按 log_type 拆分：DNS 版用域名边界锚定 `(?i)(^|\.)(onion|top|xyz|tk|pw)$`，HTTP/URL 版改用 `uri_path`/`hostname`（wazuh 有 `data.url`，Zeek http 有 `host`）而非 `query`；② DDNS 列表补全并加边界：`(?i)(^|\.)([a-z0-9-]+\.)?(duckdns\.org|ddns\.net|no-?ip\.(com|org|biz)|hopto\.org|sytes\.net|zapto\.org|dynu\.com|freedns\.afraid\.org|3utilities\.com|ngrok\.(io|app)|trycloudflare\.com)(:|/|$)`；③ 如确实要抓短域名，另立条件（`^[a-z0-9]{1,5}\.[a-z]{2,4}$` 且排除白名单的 CDN/内部域）；④ 加内部域白名单（`dst_internal eq true` 或 `not query regex "\.(corp|internal|lan)$"`）。
 - 置信度：高（锚点语义、`query` 在不同 log_type 的取值、子串匹配边界均由代码决定）；DDNS 清单为中。
 
 ### 内置-大流量外传（builtin.py:1229，priority=25，severity=medium）
@@ -147,11 +128,9 @@
 2. **P1｜内置-DNS-TXT隧道 (1194)：判据（`key` 含 `query`、`min_count=10`）与"TXT 隧道"语义相反，真隧道永不触发；`qtype in ["16"]` 又与 `normalizer.py:548` 的 `qtype_name` 回落路径不兼容（静默恒假）**。修：改为按源统计 **不同** query 数（`distinct:"query"`）、`qtype in ["16","TXT"]`。
 3. **P1｜数据外传三兄弟 (1229/1240/1251)：全部缺 `dst_external/dst_internal` 方向限定，且全仓没有任何"按源字节求和"的规则类型（`frequency.py` 只计数/基数）→ 内网备份·更新分发·媒体造成大量 high/medium FP，同时 1GB 分片慢速外传结构性漏报；`bytes_*` 为 `-` 时数值比较静默返回 False 再漏一层**（`engine._match` 数值分支 + `normalizer.py:561,674`）。修：加方向谓词 + 白名单，并新增按 (src,dst) 窗口的字节求和规则。
 
-（并列第四：内置-可疑域名 (1211) 的 `$` 锚在 http/wazuh 上双向失效 + `dyn.`/`transfer.sh` 无边界子串；以及 勒索/挖矿 (35/52) 在 critical 级用 3 字符子串 `xmr`/短词 `conti`、`beacon` 判"勒索/C2"。）
 
 ## 证据与复核说明
 
-- 已核对：`ndr/backend/app/rules/builtin.py`（13 条规则的条件树、regex、阈值、priority/severity）、`rules/engine.py`（操作符语义、`_DECODE_FIELDS`、虚拟字段、`_FIELD_TYPES`/`build_rule_index`/`rules_for_log_type`、`match_rule`/`whitelisted`）、`ingestion/normalizer.py`（Zeek/Wazuh 分支字段填充：666/753/674/561/548 行等）、`schemas.py:57-74`、`ingestion/log_types.py`、`ingestion/conn_states.py:42`、`detector/runner.py:697-717`、`detector/frequency.py`、`rules/service.py:15`、`triage_policy.py:141-206`、`config.py:71-82,167-187`、`tests/py/test_rules_routing.py`、`tests/py/test_conn_states.py`（规则 event_type 词表守卫）、`agent/backend/app/rules/builtin.py`（同内容副本）。
 - 未做（限制）：没有运行测试（本环境不执行构建/测试；建议由主管跑 `pytest tests/py/test_rules_routing.py tests/py/test_conn_states.py`），没有做提交范围 diff 对比（本次评审按当前工作区文件内容进行），未在生产数据上验证 FP 率（所有 FP 场景为可推证的构造/经验例子，已逐条标注置信度）。
 
 ```acceptance-report
@@ -183,8 +162,6 @@
     "blocker: builtin.py:1194 - 内置-DNS-TXT隧道 count key 含 query（同一名字重复10次）与隧道语义相反，且 qtype 仅接受 \"16\"（normalizer.py:548 有 qtype_name 回落路径）→ 结构性漏报",
     "blocker: builtin.py:1229/1240/1251 - 三条流量外传规则无 dst_external/dst_internal，无按源字节求和，且 bytes_* 为 None 时 engine 数值比较静默返回 False",
     "note: builtin.py:35/52 - 无边界短词子串（xmr/conti/beacon）在 critical/high 级放大误报；priority=5 平级依赖 service.py:15 的 DB 顺序不确定",
-    "note: builtin.py:69 - 只匹配 event_type eq wazuh_malware，Windows Defender/yara/clamav 组落到 wazuh_system_change；且不看等级，rootcheck 低危也 critical",
-    "note: builtin.py:1211 - 名字承诺短域名但无长度判定；\\.top$ 等锚在 http/wazuh 的 query（路径/URL）上双向失效；dyn./transfer.sh 无边界；主流 DDNS 未覆盖"
   ],
   "manualNotes": "本组 13 条规则未发现引擎/字段层面的实现缺陷；问题集中在规则内容（方向限定缺失、阈值与真实业务量不匹配、正则无边界、count 规则 key 选错、priority 对频率规则无效）。最该先修的三条见 Top 3；所有修复建议需同步 agent/backend/app/rules/builtin.py 的同名副本。"
 }

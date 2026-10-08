@@ -45,7 +45,6 @@
 
 **实施记录（as-built）**：
 
-- 新增 `ndr/backend/app/ingestion/log_types.py`（**原样复制到 `agent/backend/app/ingestion/log_types.py`**，`diff` 一致）：`EVENT/OPS/UNKNOWN` 三个去向、`canonical_log_type()`（去 `.log` 与两种轮转后缀、去目录前缀）、`classify()`/`classify_entry()`/`is_detectable()`/`is_known()`。**非 Zeek 来源（Wazuh）一律按事件类**，闸门不套到 Wazuh 线路上。
 - `config.py`（两侧）：`zeek_event_log_types`（默认 `conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh`）、`zeek_ops_log_types`（默认 `ntp,packet_filter,reporter,stats,ja4ssh,ja4d`）—— 加类型只改配置。
 - `_ZEEK_TYPE_HINTS` 扩到 17 条，顺序改为特异性从高到低（`any()` 撞一个字段就定案，故 ja4ssh 排在 ssh 前）；`_zeek_log_type()` 返回 `(类型, 是否已知)`，猜不出返回 `unknown`（**不再兜底 `conn`**）。
 - raw 走 `_raw_with_type()`：解包后的内层原文 + `log_type` + `source_file`（Filebeat 的 `log.file.path` 末段）。

@@ -100,28 +100,21 @@ query 的反引号分支同时过宽。
 | `内置-恶意文件传输`(505) + `policy_skip_rules` | 未用 `file_is_orig/file_source/filename`；且 `config.py:73` 把它列进跳过白名单，但 `severity=high ≥ min_severity=medium` 使**抑制永不生效**（死配置，合规上等于静默降噪失效） | 软件更新/内部 JAR 下载全报 high |
 | 账号类 count 规则：`密码喷洒`(888) / `登录接口爆破`(870) / `撞库`(907) | key 只有 src_ip、无失败条件、无 dst_ip | **NAT 出口下必然 critical 误报**：同出口 5 个员工登录=密码喷洒；15 次正常登录=爆破；移动端切网=撞库 |
 | `内置-Token/JWT异常使用`(999) | `auth_scheme in [bearer,jwt]` 分支命中**每一个** Bearer 请求 | 所有前后端分离应用的正常 API 调用都报，与描述"高频使用"完全不符 |
-| 上游 `normalizer.py:830-836` | 只要 Wazuh 规则组含 `sshd`（**含成功登录**）就判 `brute_force` | 连带 834(逐条 high)、856(≥10 次 critical)、907 在正常运维下就报 |
 | `内置-内网慢速横向`(1454) / `内置-内网慢速服务枚举`(1474) | 无 `conn_state`/`log_type` 限定、服务器回包也计入；阈值取「任意内网源 6h ≥5 目标」「同目标 ≥10 端口」；且 `window==cooldown=300` → 每 5 分钟重复触发（单主机 6h 最多 72 条） | 域控/文件服务器/代理**常驻触发**；单键累计上万（实机已见）；模式与窗口设计均需重做 |
 | `内置-高频扫描连接`(808) + `扫描尝试连接`(822) + `端口扫描`(797) | 三条同行为规则语义/覆盖/定级三处打架，同一扫描出 2-3 份摘要；只认 `S0`，漏 `REJ/RSTOS0/RSTRH` 型扫描；NAT 与容器重试的正常 S0 被当扫描 | 重复告警 + 漏真实扫描 |
 | `内置-框架漏洞探测特征`(676) | 一条规则里混合：死条件 `/index\.php\?s=`（`uri_path` 已去查询串）、大面积 FP 的 `\.do$\|\.action$`、与 298 行重复的 `rememberMe=` | ThinkPHP 探测漏报 + 遗留 Java 应用正常请求误报 |
 | `内置-敏感文件与源码泄露探测`(609) | 无白名单 | K8s 探针 `/actuator/health` 持续 high |
 | `内置-未授权访问探测成功`(641) | `auth_scheme ne basic` 对空值恒真 | 只排掉 HTTP Basic，放过所有会话式登录访问 |
-| `内置-Host头攻击`(416) | 描述承诺"外部域名/内网地址"但**完全没实现**；`hostname` 在 Wazuh 是 agent 名、在 ssl 是 SNI | Host 头投毒漏报；"agent 名恰好是 localhost"的主机每条 Wazuh 告警都命中 medium |
 | `内置-开放重定向探测`(394) | 与 SSRF(316-331) 关键字几乎重合且优先级更低(20>10) | 真实遮蔽，`?redirect=https://evil` 永远归因给 SSRF |
 | 数据外传三兄弟(1229/1240/1251) | 全部缺 `dst_external/dst_internal`；全仓没有"按源字节求和"的规则类型（频率规则只计数/基数）；`bytes_*` 为 `-` 时数值比较静默返回 False | 内网备份/更新分发/媒体大量 FP；1GB 分片慢速外传结构性漏报 |
 | `内置-DNS-TXT隧道`(1194) | `key` 含 `query`（同一名字重复 10 次）与隧道语义相反；`qtype in ["16"]` 与 `normalizer.py:548` 的 `qtype_name` 回落不兼容（静默恒假） | 真隧道永不触发 |
 
 ### P2（中优先）
 - **同优先级无 tiebreaker**：`rules/service.py:15` 只 `order_by(priority)`，p10 有 6-8 条 → 同一请求命中多条时留下哪条**不保证稳定**，分析报告里的规则名会误导人。修：`order_by(Rule.priority, Rule.id)`。
-- **优先级跨列表失序**：`rules_for_log_type` 返回 `types[kind] + wild`，**不是全局 priority 排序** → wild 的 p5/p10（Wazuh恶意软件告警:69、暴力破解:834）会被 typed 的 p25（参数fuzzing:700）遮蔽。
-- **Wazuh 五条规则严重度与等级脱钩**：level 15 的 syscheck 事件报「文件完整性变更/medium」、level 13 的 audit 报「策略违规/low」、只要带 mitre 就报「MITRE映射命中/medium」（1307 还会遮蔽 34 号的策略违规）。
 - `内置-SMTP滥用`(1427)：`OR log_type==smtp` ⇒ **每封正常邮件**报 medium；真正的 `smtp_abuse` 分支已死。
-- `内置-明文凭证传输`(962) 只认 `dst_port=80`（8080 全漏）；`默认口令尝试`(977) 只认 `=` 形态（JSON `"password":"admin"` 全漏）；`密码重置接口滥用`(1017) 正则未锚定（`/password-policy` 也算）；`多账号同机登录`(1037) Wazuh 缺 srcip 时全部归并到分组 `-`。
 - `engine.py:90` 缺省 `op='eq'` + `None==None` → 错字段名或 `whitelist:[{}]` 会**静默全命中**；`exists` 把 `False` 当存在。
 - 正则无边界短词：`xmr`/`conti`/`beacon` 在 critical/high 级放大误报（`conti`→continue、`beacon`→/cdn-cgi/beacon）。
 - `aggregate.py`：samples 只留最早 3 条 + `_MAX_SET=50` 被基线复用为 distinct → >50 扇出后 2σ 基线失真。
-- `内置-可疑域名`(1211)：名字承诺短域名但无长度判定；`\.top$` 锚在 http/wazuh 的 `query`（URI）上双向失效；`dyn.`/`transfer.sh` 无边界；主流 DDNS 未覆盖。
-- `内置-端口扫描`(805) 依赖 Wazuh 描述含 `scan` 的宽匹配，与 808/822 三重重叠。
 
 ## 四、跨组结构性问题（Top 5）
 
@@ -129,7 +122,6 @@ query 的反引号分支同时过宽。
 2. **P1 优先级跨列表失序**（`types + wild` 拼接 + 首个命中即停）→ 判错性质/等级。
 3. **P1 频率规则在实机流量下必然误报且自我重复**，且 `src_ip` 作 key 在反代/NAT 下把整站塌成一组；`密码喷洒`(888) 与 `会话跨IP复用`(943) 因 `distinct` 字段为空而永不触发。
 4. **P1 交付侧把产出全部丢弃，且额度策略对噪声没有优先级**：`_flush` 超额 FIFO requeue + 1800s 超龄丢弃 + 队列裁最旧，噪声规则会挤掉高价值告警；**per-event 规则当前没有任何抑制手段**。
-5. **P1/P2 字段语义被"跨来源复用"污染**：`hostname` 在 Zeek 是 Host 头/SNI、在 Wazuh 是 agent 名；`query` 在 dns 是域名、在 http 是完整 URI —— 同一套无边界关键字在两种语义上匹配，产生 critical FP。
 
 ## 五、Top 修复清单（按性价比分层）
 
@@ -146,7 +138,6 @@ query 的反引号分支同时过宽。
 
 ### 第 2 层：字段/上游级（一处修、多条规则复活）
 10. **normalizer 从 `req_headers` 解析 `Cookie:` 进 `cookie` 字段** → 救活 943（critical 会话劫持）、284、684。
-11. **normalizer `_wazuh_event_type` 去掉 `sshd` 判据**（只在失败类组名/描述命中时判 `brute_force`）→ 救 834/856/907。
 12. **x509 嵌套 issuer 解析**（`certificate.issuer`）→ 救 `内置-自签或异常证书`(541)。
 13. **`_FIELD_TYPES` 与 `UnifiedLog` 对齐**（补 `dst_ip` owner、清 12 个僵尸键）+ 守卫测试 → 救 660/308。
 14. **`正常登录路径正则` 补 `.php/.do/.action/authenticate/sign_in`**（`web_login_path_regex`）→ 救 870/888/962/1020 整链漏报。
@@ -170,7 +161,6 @@ query 的反引号分支同时过宽。
 
 - **未做运行时验证**：全部结论来自静态代码推导，未连实机 ES、未跑规则命中统计。阈值类结论
   （如"数千-上万/天"）是量级估计，落地前建议先按「规则名 × 源IP」拉一周命中分布再定阈值。
-- **Wazuh 规则集未在本仓落地**：`account_lock`/`sudo`/`sshd` 等组名是否真实存在只能按 Wazuh
   默认约定推断（相关结论置信度标为"中"）。
 - **待实机确认两点**：① `ssl.log` 是否实际产出 `cert_issuer`/`issuer`（决定 541 是否死规则）；
   ② 重复 Host 头是否真的落进 `req_headers`（决定 `hostname contains ","` 是否恒假）。
@@ -178,7 +168,6 @@ query 的反引号分支同时过宽。
 
 ---
 
-_原始车道报告：`docs/review/ndr-rules/{injection-core,injection-web,recon,auth-session,network-threat,wazuh-misc,engine-semantics}.md`_
 
 ---
 

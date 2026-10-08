@@ -9,7 +9,6 @@
 #   - ES 的日志索引（agent 经 NDR 的 MCP 服务 8090/mcp 取数，不直连）
 #
 # 采集链路（第 2 期起，归一化前置）：
-#   Zeek/Wazuh 的 Filebeat --RPUSH--> shentong:events:collect
 #     （Filebeat 的 redis output 在 data_type=list 下用 RPUSH，实测+官方文档；队列左旧右新）
 #     → normalizer 取出并拍平成统一结构
 #         ├ LPUSH --> shentong:events:raw（detector 实时消费）
@@ -24,12 +23,6 @@
 # 用法（在 ndr/ 下）：
 #   docker compose -f docker-compose.deploy.yml up -d
 #
-# Wazuh 4.14 是本线路的**内置服务**（wazuh-manager + wazuh-filebeat）：部署环境默认带上，
-# 由下面的 include 引入 docker-compose.wazuh.yml（单一定义，避免两份编排各自漂移）。
-# 想临时跳过 Wazuh 就按服务名起（例：docker compose -f docker-compose.deploy.yml up -d backend normalizer detector ndr-mcp）。
-# 注意：include 指向的文件必须与本体放在同一目录（部署时要一起拷到 /opt/shentong-ndr）。
-include:
-  - docker-compose.wazuh.yml
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
@@ -116,12 +109,7 @@ services:
       # 第 5 期：检测器命中后经 HTTP 推给智能体（地址形如 http://<agent-host>:8000/api/push/digests）
       ST_AGENT_PUSH_URL: ${NDR_AGENT_PUSH_URL:-}
       ST_AGENT_PUSH_TOKEN: ${NDR_AGENT_PUSH_TOKEN:-}
-      # Wazuh 是内置服务（见下面 include），后台连它用的就是这三个变量 —— 也是**唯一来源**，
-      # 容器间走服务名直连；凭据与 wazuh-manager 共用同一组 .env 变量，两边不会各写一份，
       # 管理面只显示状态、没有填写入口（改了这里要 `up -d` 让 backend 重新读环境变量）。
-      ST_WAZUH_API_URL: ${WAZUH_API_URL:-https://wazuh-manager:55000}
-      ST_WAZUH_API_USER: ${WAZUH_API_USER:-wazuh-wui}
-      ST_WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-}
     ports:
       - "8000:8000"
     volumes:

@@ -202,7 +202,6 @@ def _warn_legacy_raw_mapping(es: Any, pattern: str) -> None:
     """老索引的 ``raw`` 还不是安全映射时报警（索引模板只管之后新建的索引）。
 
     这类索引里 ``raw.id`` 已被动态映射定成 object，之后凡是「``raw.id`` 是字符串」的文档
-    （Wazuh 告警、Zeek ocsp）都会被 ES 判 ``document_parsing_exception`` 整条 400 丢弃
     （见 `app/collector/es_mapping.py` 的事故说明）。``flattened`` 也不安全：单值超过
     32,766 字节仍会整条丢弃。**字段类型不能原地改**——8.15.3 实测三条路都不通：
     ``dynamic: false`` 只对未映射字段生效（``raw.id`` 已映射，照样 400）、``enabled`` 不允许
@@ -215,7 +214,6 @@ def _warn_legacy_raw_mapping(es: Any, pattern: str) -> None:
         if not is_safe_raw_mapping(props.get("raw")):
             logger.warning(
                 "索引 %s 的 raw 仍是动态/flattened 映射（raw.id 已被定成 object）：raw.id 为字符串"
-                "的文档（Wazuh 告警、Zeek ocsp）与单值超过 32766 字节的文档会被 ES 丢弃；"
                 "需 reindex 到新模板的映射",
                 index,
             )
@@ -247,8 +245,6 @@ def ensure_retention(days: int | None = None) -> None:
                     "auto_expand_replicas": "0-1",
                 },
                 # `raw` 声明成 {type: object, enabled: false}：它是各来源原文，形状不统一
-                # （`raw.id` 在 Zeek conn 是对象、在 Zeek ocsp 与 Wazuh 告警是字符串），动态映射
-                # 会把先到的形状定死、之后整条文档被 ES 判 400 丢弃（2026-10 实机：全部 Wazuh
                 # 告警 + 2024 条 ocsp 静默丢失）；`flattened` 也躲不掉（单值 > 32766 字节仍整条丢）。
                 # 理由与实测见 `app/collector/es_mapping.py`。
                 "mappings": EVENT_INDEX_MAPPINGS,

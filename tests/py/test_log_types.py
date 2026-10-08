@@ -87,10 +87,3 @@ def _entry(**kw: object) -> UnifiedLog:
 )
 def test_is_detectable_zeek(log_type: str, want: bool) -> None:
     assert log_types.is_detectable(_entry(log_type=log_type)) is want
-
-
-def test_wazuh_never_gated() -> None:
-    """Wazuh 线不受这个闸门约束（它有自己的一套：归档只入库、告警进检测）。"""
-    entry = _entry(source_system="wazuh", log_type="ntp")  # 就算类型名撞上运维类
-    assert log_types.classify_entry(entry) == log_types.EVENT
-    assert log_types.is_detectable(entry) is True

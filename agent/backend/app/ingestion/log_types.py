@@ -76,8 +76,8 @@ def classify(log_type: str) -> str:
 def classify_entry(entry: UnifiedLog) -> str:
     """事件条目的分类。
 
-    非 Zeek 来源（Wazuh）由各自分支管理（如 `wazuh_archive` 只入库、不喂检测器），
-    这里一律按事件类处理，避免把这个闸门套到 Wazuh 线路上。
+    非 Zeek 来源（签名引擎告警）一律按事件类处理：它的日志类型闸门由归一化层自己的
+    口径决定（只发 alert），不需要再套 Zeek 的运维类名单。
     """
     if entry.source_system != "zeek":
         return EVENT

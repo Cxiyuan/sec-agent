@@ -15,13 +15,13 @@ GroupStatus = Literal[
 
 
 class UnifiedLog(BaseModel):
-    """Zeek / Wazuh 原始日志规范化后的统一结构。"""
+    """Zeek / 签名引擎原始日志规范化后的统一结构。"""
 
-    source_system: str  # "zeek" | "wazuh" | "suricata"
+    source_system: str  # "zeek" | "suricata"
     ts: datetime
     event_type: str  # 归一化事件类型：port_scan / brute_force / dns_query / ...
     log_type: str = (
-        ""  # Zeek 日志类型：conn/dns/http/ssl/files/dhcp/x509/weird/notice…；Wazuh 为 wazuh
+        ""  # Zeek 日志类型：conn/dns/http/ssl/files/dhcp/x509/weird/notice…；签名引擎为 suricata
     )
     # 类型是否在采集白名单内（config 的 zeek_event/ops 清单）：名单外的流保留原名，
     # 只入库、不进检测/画像，靠 log_type.keyword 聚合巡检发现新流
@@ -44,7 +44,6 @@ class UnifiedLog(BaseModel):
     # 「采集质量」灯统计（见 normalizer._capture_weird）。
     weird_name: str = ""
     # Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（中继的前后跳是两条独立
-    # 连接、uid 不同，所以它只做同一跳内的关联）。Wazuh 侧恒空。
     uid: str = ""
     # 签名引擎（Suricata）命中信息：只有 source_system="suricata" 的告警事件有值。
     # 「签名命中」三条内置规则按 signature_severity 分档（1=高 / 2=中 / 3=低，取自 EVE 的
@@ -125,10 +124,6 @@ class UnifiedLog(BaseModel):
     extracted_cutoff: bool | None = None
     # 账号（画像主键：user 字段优先，缺失时从请求体提取）
     account: str = ""
-    # Wazuh 规则语义（保留原始规则信息，避免被压成通用类型）
-    rule_id: str = ""
-    rule_groups: str = ""  # 逗号连接
-    mitre: str = ""  # 逗号连接（MITRE 技术号/战术）
     severity: Severity = "info"
     summary: str = ""
     raw: dict[str, Any] = Field(default_factory=dict)

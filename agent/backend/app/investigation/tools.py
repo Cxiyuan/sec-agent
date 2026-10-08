@@ -196,7 +196,6 @@ def _search_events(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     allowed = ("source", "filters", "keyword", "start", "end", "limit", "sort", "with_body")
     _check_unknown(args, allowed, "search_events")
     # 参数在这里 fail-closed 校验，取数与跨来源合并交给 NDR 侧的同名 MCP 工具
-    # （不给 source 时由它默认查 zeek+wazuh 两个来源，与改动前的 _search_multi 一致）。
     sort = _str_param(args, "sort")
     result = mcp_client.call(
         "search_events",
@@ -581,7 +580,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _search_events,
         "desc": "定向检索事件（时间范围 + 字段过滤 + 关键词）",
         "params": {
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
             "filters": "对象，字段用逻辑名",
             "keyword": "自由文本",
             "start": "ISO 时间",
@@ -596,7 +595,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "desc": "按字段 top-N 聚合（找横向目标/外联目的地/端口分布）",
         "params": {
             "field": "可聚合字段（见 describe_data）",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
             "filters": "对象",
             "start": "ISO",
             "end": "ISO",

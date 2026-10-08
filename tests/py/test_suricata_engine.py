@@ -30,15 +30,16 @@ SIGNATURE_RULES = ("内置-签名命中(高危)", "内置-签名命中(中危)",
 
 
 def test_builtin_rule_count() -> None:
-    """80 - 48（交给签名引擎）- 1（TLS 异常换成新判据）+ 2（TLS 新判据）+ 3（签名命中分档）= 36。"""
-    assert len(builtin_mod.BUILTIN_RULES) == 36
+    assert len(builtin_mod.BUILTIN_RULES) == 21
 
 
 def test_deleted_rules_do_not_come_back() -> None:
     """删掉的 48 条必须在 DELETED_RULES 名单里（否则下次启动会被内置定义重新 upsert 回库）。"""
     names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
     deleted = set(builtin_mod.DELETED_RULES)
-    assert len(deleted) == 53, "4 条历史 + 48 条重叠规则 + 1 条裸单条 TLS 异常（已换新判据）"
+    assert len(deleted) == 68, (
+        "4 条历史 + 48 条重叠规则 + 1 条裸单条 TLS 异常 + 15 条主机规则（主机线下线）"
+    )
     assert not (deleted & names), "删除名单里的规则又回到内置定义了"
     # 抽查几个不同类别的（注入/WebShell/扫描/认证/IOC 名单）
     for name in (
@@ -67,7 +68,6 @@ def test_signature_rules_shape() -> None:
         spec = by_name[name]
         assert spec["severity"] == severity
         assert spec["priority"] == priority
-        assert builtin_mod.rule_scope(spec) == "network"
         conds = {c["field"]: c["value"] for c in spec["conditions"]["rules"]}
         assert conds["event_type"] == "signature_hit"
         assert conds["signature_severity"] == sev_value
@@ -362,4 +362,4 @@ def test_source_of_recognizes_suricata(catalog: ModuleType) -> None:
     assert normalizer.source_of(samples.DOCS["suricata_alert"]) == "suricata"
     assert normalizer.source_of(samples.DOCS["flat_suricata"]) == "suricata"
     assert normalizer.source_of(samples.DOCS["conn"]) == "zeek"
-    assert normalizer.source_of({"rule": {"id": "1"}}) == "wazuh"
+    assert normalizer.source_of({"foo": "bar"}) == "zeek"  # 兜底按 Zeek（来源只剩 zeek/suricata）

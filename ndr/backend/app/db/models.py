@@ -47,9 +47,7 @@ class Rule(Base):
     source: Mapped[str] = mapped_column(String(16), default="user")  # user | builtin
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=100)  # 越小越先
-    # 规则适用范围：`network` = 网络侧（网络采集器/Zeek 事件）、`host` = 主机侧（主机监控/Wazuh 事件）。
     # 内置规则在播种时按条件自动判定（见 rules/builtin.py::rule_scope），自定义规则由界面选择；
-    # 检测器按事件的 source_system 过滤：host 规则只在 wazuh 事件上求值，network 反之。
     scope: Mapped[str] = mapped_column(String(16), default="network")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

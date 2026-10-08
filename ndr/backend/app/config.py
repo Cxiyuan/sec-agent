@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
 
     # Elasticsearch
-    # 归一化前置之后只有**一族**索引：Zeek 与 Wazuh 落同一套结构、按日期滚动。
     es_events_index: str = "shentong-events-*"
     es_url: str = "http://localhost:9200"
     es_user: str = ""
@@ -126,7 +125,6 @@ class Settings(BaseSettings):
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
         # /user/sign_in —— 漏了它们会让「密码喷洒」这类登录类判据漏报（主机侧的登录失败
-        # 统计走 Wazuh 自己的规则，不依赖这里）。
         "(?i)(^|/)(login|signin|sign-in|sign_in|wp-login|auth|authorize|authenticate"
         "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
@@ -172,17 +170,8 @@ class Settings(BaseSettings):
     # 追加到 BPF 末尾的附加条件（可选，如 not port 22）
     zeek_bpf_extra: str = ""
 
-    # Wazuh 采集（第 6 期）：manager 容器 + Filebeat 把 alerts.json / archives.json 写进采集队列
     # archives.json 是 logall_json 的全量原始日志，量级远大于告警：默认只入库、不喂检测器
     # （检测器跑的是告警规则，把原始日志也灌进去既无收益又会把队列与模型容量吃掉）。
-    wazuh_archive_to_detector: bool = False
-
-    # Wazuh API(55000) 管理面：凭据界面可配（存 SystemConfig），环境变量只作默认值
-    wazuh_api_url: str = ""  # 形如 https://wazuh-manager:55000；空 = 面板显示未配置
-    wazuh_api_user: str = ""
-    wazuh_api_password: str = ""
-    wazuh_api_verify_tls: bool = False  # Wazuh 自签证书是常态，默认不校验
-    wazuh_api_timeout_seconds: float = 10.0
 
     # 数据接入：检测器（旁路队列实时检测）
     detector_enabled: bool = True
@@ -241,7 +230,6 @@ class Settings(BaseSettings):
     capture_anomaly_warn_15m: int = 5000
     capture_anomaly_crit_15m: int = 20000
     # 「24h 协议分析占比」只统计**协议识别类**日志（每个协议一个日志流）。
-    # 为什么不直接把 log_type 全丢进去：conn/weird/files 是流记录与异常、syslog/wazuh
     # 是主机日志、x509/ocsp/pe 是产物元数据——它们混进饼图会把「协议占比」变成
     # 「我们的日志构成」；实机 24h 里 conn 一家就占 56%。
     # 用**白名单**而不是黑名单：名单外的新类型（如 analyzer）不该默默进这张图。

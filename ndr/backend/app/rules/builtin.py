@@ -63,11 +63,9 @@ RETIRED_RULES: dict[str, str] = {
 #:
 #: 为什么删而不是停用（2026-10 实机数据）：`内置-端口扫描` 的判据是 `event_type=port_scan`，
 #: 而本部署采集面关掉了 Zeek 自带 notice（`shentong-policies.zeek`）→ 这个事件类型**不会由 Zeek 产生**；
-#: 库里那 8 条 `port_scan` 全是 Wazuh 的 CIS 合规告警（"Ensure 'Turn on e-mail scanning'…"）
-#: —— 那是归一化的词匹配 bug（已在 `_wazuh_event_type` 收紧），不是扫描。
 #: 规则本身没有任何有效命中路径，留着只会是一个“看起来在防扫描”的死条。
 DELETED_RULES: dict[str, str] = {
-    "内置-端口扫描": "notice 型死规则（本部署不产生 port_scan；唯一来源是已被修正的 Wazuh 词匹配误判）",
+    "内置-端口扫描": "notice 型死规则（本部署不产生 port_scan；唯一来源是已被修正的日志源词匹配误判）",
     # 2026-10 用户口径：明文凭证传输是「配置事实」而不是攻击事件 —— 实测 2,848 条/12h 全是
     # 校园 App 的正常登录（status=200、579/644 个真实客户端），逐次告警只占额度。真要治理，
     # 应作为「站点该上 HTTPS」的配置类问题一次性处理，而不是当事件告警。
@@ -88,6 +86,21 @@ DELETED_RULES: dict[str, str] = {
     # 是**裸单条匹配**（来一条报一条）。取代它的是两条有攻击含义的判据：
     # 「内置-TLS弱版本协商」「内置-TLS握手失败风暴」。
     "内置-TLS异常": "裸单条匹配，实测 8 条/天全是握手不顺的运维信号（非攻击事件）；由新的 TLS 两条判据取代",
+    "内置-主机恶意软件告警": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-Web攻击（主机监控）": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-暴力破解": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机登录失败": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-高频认证失败": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-撞库(同账号多源)": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-多账号同机登录": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机账号锁定": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机提权告警": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机高危告警": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机文件完整性变更": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机漏洞告警": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机网络告警": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机MITRE映射命中": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
+    "内置-主机策略违规": "主机监控线已随其日志源一起下线（本项目不再保留该日志源）",
     # ----------------- 2026-10：与签名引擎（Suricata / ET Open）重叠的 48 条 -----------------
     # 这 48 条的判据全部落在「HTTP 的 hostname/uri/method/user_agent/cookie/请求体/响应体、
     # 文件属性、TLS 版本、DNS 查询名」这些字段上，而 Suricata 有**一一对应的规则关键字**
@@ -147,93 +160,10 @@ DELETED_RULES: dict[str, str] = {
     "内置-Bearer令牌高频使用": "与签名引擎（Suricata / ET Open）重叠，已由 HTTP 频率/头特征 签名覆盖",
 }
 
-#: 规则适用范围（与 `db/models.py` 的 `Rule.scope`、界面「检测规则」里内置规则的两个分组对应）。
-SCOPE_NETWORK = "network"
-SCOPE_HOST = "host"
-
-
-#: 少数条件里看不出侧向的规则（认证/账号类）手工归到主机侧：
-#: 它们的 `brute_force` / `account` 语义在本部署由主机监控（Wazuh）驱动 —— 网络采集器关掉了
-#: Zeek 自带 notice，认不出这类事件；且运维在界面上找“登录失败/撞库”时预期它们在「主机」组。
-#: 若某环境的认证类规则来自 Web 日志，把对应条目删掉即可回到条件判定（`network`）。
-_SCOPE_HOST_OVERRIDES: frozenset[str] = frozenset(
-    {
-        "内置-暴力破解",
-        "内置-主机登录失败",
-        "内置-高频认证失败",
-        "内置-撞库(同账号多源)",
-    }
-)
-
-
-def rule_scope(spec: dict) -> str:
-    """这条内置规则属于**网络侧**还是**主机侧**（界面分组 + 检测器按侧过滤都吃它）。
-
-    为什么按条件判定、不再维护一份“规则名 → 侧别”名单：归属本来就在条件里 —— 引用
-    `log_type == "wazuh"`、`source_system == "wazuh"` 或 `wazuh_*` 事件类型的规则只能跑在
-    主机事件上；名单要手工同步，漏一条就归类错。只有少数条件里看不出的（见上方覆盖表）手工指定。
-    """
-    if str(spec.get("name") or "") in _SCOPE_HOST_OVERRIDES:
-        return SCOPE_HOST
-    host = False
-
-    def walk(node: object) -> None:
-        nonlocal host
-        if isinstance(node, dict):
-            field = str(node.get("field") or "")
-            value = node.get("value")
-            values = value if isinstance(value, list) else [value]
-            if field in ("log_type", "source_system"):
-                host = host or any(str(v).lower() == "wazuh" for v in values)
-            elif field == "event_type":
-                host = host or any(str(v).lower().startswith("wazuh") for v in values)
-            for key, child in node.items():
-                if key != "whitelist":
-                    walk(child)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(spec.get("conditions") or {})
-    return SCOPE_HOST if host else SCOPE_NETWORK
-
 
 BUILTIN_RULES: list[dict] = [
     # ================= A. 勒索 / 僵尸网络 / 挖矿 =================
-    {
-        "name": "内置-主机恶意软件告警",
-        "description": "主机监控：恶意软件/勒索/病毒/木马类规则组",
-        "source": "builtin",
-        "priority": 5,
-        "severity": "critical",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "event_type", "op": "eq", "value": "wazuh_malware"},
-                # 低等级 rootcheck/策略类「恶意软件」告警不该定 critical（评审 P2）
-                {"field": "severity", "op": "in", "value": ["high", "critical"]},
-            ],
-        },
-    },
     # ================= B. 注入 / 漏洞利用 =================
-    {
-        "name": "内置-Web攻击（主机监控）",
-        "description": "主机监控 web/attack 规则组或描述里带 SQL 注入特征（web_attack / wazuh_web_attack）",
-        "source": "builtin",
-        "priority": 10,
-        "severity": "high",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {
-                    "field": "event_type",
-                    "op": "in",
-                    "value": ["wazuh_web_attack", "web_attack"],
-                }
-            ],
-        },
-    },
     # ================= C. 探测 / 漏洞挖掘 =================
     {
         "name": "内置-多路径探测(漏洞挖掘)",
@@ -344,48 +274,6 @@ BUILTIN_RULES: list[dict] = [
     },
     # ================= D. 凭证 / 会话 =================
     {
-        "name": "内置-暴力破解",
-        "description": "检测到暴力破解行为（notice/规则描述）",
-        "source": "builtin",
-        "priority": 10,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "brute_force"}],
-        },
-    },
-    {
-        "name": "内置-主机登录失败",
-        "description": "主机监控：认证失败规则组",
-        "source": "builtin",
-        "priority": 20,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "rule_groups", "op": "regex", "value": "(?i)authentication_fail"},
-                # 归一化已把它判成 brute_force 的告警归 内置-暴力破解，本条只做补集
-                {"not": {"field": "event_type", "op": "eq", "value": "brute_force"}},
-            ],
-        },
-    },
-    {
-        "name": "内置-高频认证失败",
-        "description": "同源在窗口内出现大量认证失败（≥10 次）",
-        "source": "builtin",
-        "priority": 12,
-        "severity": "high",
-        "conditions": {
-            "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 10,
-            "window": 900,
-            "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "brute_force"}],
-        },
-    },
-    {
         "name": "内置-密码喷洒(同源多账号)",
         "description": "同源对 ≥5 个不同账号尝试登录（密码喷洒特征）",
         "source": "builtin",
@@ -401,26 +289,6 @@ BUILTIN_RULES: list[dict] = [
             "logic": "and",
             "rules": [
                 {"field": "event_type", "op": "eq", "value": "http_login"},
-                {"field": "account", "op": "exists"},
-            ],
-        },
-    },
-    {
-        "name": "内置-撞库(同账号多源)",
-        "description": "同一账号来自 ≥3 个不同源 IP 的登录（撞库/凭证填充特征）",
-        "source": "builtin",
-        "priority": 8,
-        "severity": "critical",
-        "conditions": {
-            "mode": "count",
-            "key": ["account"],
-            "min_count": 5,
-            "window": 1800,
-            "distinct": "src_ip",
-            "min_distinct": 5,
-            "logic": "and",
-            "rules": [
-                {"field": "event_type", "op": "in", "value": ["http_login", "brute_force"]},
                 {"field": "account", "op": "exists"},
             ],
         },
@@ -448,85 +316,6 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 {"field": "session_id", "op": "exists"},
                 {"field": "log_type", "op": "eq", "value": "http"},
-            ],
-        },
-    },
-    {
-        "name": "内置-多账号同机登录",
-        "description": "同一源 IP 使用 ≥8 个不同账号（共享终端或撞库）",
-        "source": "builtin",
-        "priority": 18,
-        "severity": "medium",
-        "conditions": {
-            "mode": "count",
-            "key": ["src_ip"],
-            "min_count": 12,
-            "distinct": "account",
-            "min_distinct": 12,
-            "logic": "and",
-            "rules": [
-                {"field": "account", "op": "exists"},
-                # Wazuh 缺 srcip 时会被归并到同一个空键（评审 P2），先挡掉
-                {"field": "src_ip", "op": "exists"},
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机账号锁定",
-        "description": "主机监控：账号锁定/多次失败后锁定类规则",
-        "source": "builtin",
-        "priority": 9,
-        "severity": "high",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {
-                    "logic": "or",
-                    "rules": [
-                        {
-                            "field": "rule_groups",
-                            "op": "regex",
-                            "value": "(?i)(account_lock|locked[_ ]?out|account[_ ]?disabled|user[_ ]?disabled)",
-                        },
-                        {
-                            "field": "summary",
-                            "op": "regex",
-                            "value": "(?i)(account (is )?locked|locked out|too many (authentication )?failures|account (has been )?disabled)",
-                        },
-                    ],
-                },
-            ],
-        },
-    },
-    {
-        "name": "内置-主机提权告警",
-        "description": "主机监控：提权/特权操作类规则",
-        "source": "builtin",
-        "priority": 10,
-        "severity": "high",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                # 正常管理员 sudo 成功也会命中「组名含 sudo」（评审 P2）：先按等级闸门
-                {"field": "severity", "op": "in", "value": ["high", "critical"]},
-                {
-                    "logic": "or",
-                    "rules": [
-                        {
-                            "field": "rule_groups",
-                            "op": "regex",
-                            "value": "(?i)(privilege_escalation|sudoers|su_root)",
-                        },
-                        {
-                            "field": "summary",
-                            "op": "regex",
-                            "value": "(?i)(privilege escalation|not in sudoers|incident)",
-                        },
-                    ],
-                },
             ],
         },
     },
@@ -622,99 +411,6 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     # ================= H. 主机监控其他语义 =================
-    {
-        "name": "内置-主机高危告警",
-        "description": "主机监控：归一级别为 high/critical 的主机告警（含被分组规则归类的 syscheck/audit）",
-        "source": "builtin",
-        "priority": 10,
-        "severity": "high",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "source_system", "op": "eq", "value": "wazuh"},
-                # 只看 event_type 会漏掉「等级很高但先被分组规则归类」的事件（评审 P2）：
-                # level>=12 的 syscheck/audit 也会被归成 wazuh_system_change/policy_violation。
-                {"field": "severity", "op": "in", "value": ["high", "critical"]},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机文件完整性变更",
-        "description": "主机监控：syscheck/系统变更类规则组",
-        "source": "builtin",
-        "priority": 30,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "event_type", "op": "eq", "value": "wazuh_system_change"},
-                # 高等级变更已由 内置-主机高危告警 覆盖，这里只留低等级，避免重复与埋没
-                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机漏洞告警",
-        "description": "主机监控：漏洞/CVE 类规则组",
-        "source": "builtin",
-        "priority": 36,
-        "severity": "low",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "event_type", "op": "eq", "value": "wazuh_vulnerability"},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机网络告警",
-        "description": "主机监控：防火墙/IDS 类规则组",
-        "source": "builtin",
-        "priority": 28,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "event_type", "op": "eq", "value": "wazuh_network_alert"},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机MITRE映射命中",
-        "description": "主机监控：规则带 MITRE ATT&CK 映射",
-        "source": "builtin",
-        "priority": 36,
-        "severity": "low",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "source_system", "op": "eq", "value": "wazuh"},
-                {"field": "mitre", "op": "exists"},
-                # 高等级告警已由 内置-主机高危告警 报出，本条降为「MITRE 标注」
-                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
-            ],
-        },
-    },
-    {
-        "name": "内置-主机策略违规",
-        "description": "主机监控：audit/policy 类规则组",
-        "source": "builtin",
-        "priority": 34,
-        "severity": "low",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "log_type", "op": "eq", "value": "wazuh"},
-                {"field": "event_type", "op": "eq", "value": "wazuh_policy_violation"},
-                {"not": {"field": "severity", "op": "in", "value": ["high", "critical"]}},
-            ],
-        },
-    },
     # ================= I. 其他 Web / 协议异常 =================
     {
         "name": "内置-协议异常",

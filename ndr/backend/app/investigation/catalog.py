@@ -6,11 +6,9 @@
 
 字段路径依据（与代码逐一对齐，勿凭记忆改）：
 - 归一化前置之后 ES 里**只有一族索引**（``settings.es_events_index`` = ``shentong-events-*``）：
-  Zeek 与 Wazuh 的原始文档在入库前就被拍平成同一套**扁平统一字段**，字段名 =
   ``ndr/backend/app/schemas.py`` 里 ``class UnifiedLog`` 的字段名（``src_ip`` / ``dst_ip`` /
   ``log_type`` / ``summary`` …）。所以这里没有「来源 → 字段路径」的双列映射，
   也不存在「按来源选索引」的逻辑。
-- 来源仍然要能区分：归一化把 ``source_system``（``zeek`` / ``wazuh``）写进了文档，
   工具的 ``source`` 参数就靠这个字段过滤（见 ``es_query.source_clause``）。
 - 原始文档没丢：``UnifiedLog.raw`` 把归一化前的整份文档带进 ES 的 ``raw`` 对象，
   归一化**没有单列**的东西只能在这里翻（例如 Zeek files 日志的 ``raw.sha256``）。
@@ -31,7 +29,7 @@ from app.workers.log import get_logger
 log = get_logger(__name__)
 
 # 来源仍然是一个查询维度（source_system 字段的取值），但不再是索引维度：两者落同一族索引。
-SOURCES = ("zeek", "wazuh")
+SOURCES = ("zeek", "suricata")
 
 # 字段种类决定允许的查询动作（见 es_query.build_clause）
 # term/keyword 类：精确匹配 + contains；num/date：范围 + 精确；ip：精确/CIDR + 范围
@@ -45,7 +43,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     "source_system": {
         "path": "source_system",
         "kind": "keyword",
-        "desc": "来源系统 zeek/wazuh（来源不再是索引维度，只能用这个字段区分）",
+        "desc": "来源系统 zeek/suricata（来源不再是索引维度，只能用这个字段区分）",
     },
     "event_type": {
         "path": "event_type",
@@ -55,7 +53,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     "log_type": {
         "path": "log_type",
         "kind": "keyword",
-        "desc": "日志类型：Zeek 的 conn/http/dns/ssl/files/ssh/smtp/notice/dhcp；Wazuh 固定 wazuh",
+        "desc": "日志类型：Zeek 的 conn/http/dns/ssl/files/ssh/smtp/notice/dhcp；签名引擎固定 suricata",
     },
     "log_type_known": {
         "path": "log_type_known",
@@ -123,12 +121,12 @@ FIELDS: dict[str, dict[str, Any]] = {
     "hostname": {
         "path": "hostname",
         "kind": "keyword",
-        "desc": "主机名/域名：Zeek 的 HTTP Host 或 TLS SNI；Wazuh 的被采集主机名",
+        "desc": "主机名/域名：Zeek 的 HTTP Host 或 TLS SNI",
     },
     "user": {
         "path": "user",
         "kind": "keyword",
-        "desc": "账号（Zeek 的 user / Wazuh 的 data.user）",
+        "desc": "账号（Zeek 的 user / 请求体提取）",
     },
     "account": {
         "path": "account",
@@ -138,21 +136,17 @@ FIELDS: dict[str, dict[str, Any]] = {
     "process": {
         "path": "process",
         "kind": "text",
-        "desc": "进程名（命令执行证据，主要来自 Wazuh）",
+        "desc": "进程名（命令执行证据）",
     },
     "command": {"path": "command", "kind": "text", "desc": "命令行"},
     "severity": {
         "path": "severity",
         "kind": "keyword",
-        "desc": "归一化告警级别 critical/high/medium/low/info（Wazuh rule.level 映射而来）",
     },
     "summary": {
         "path": "summary",
         "kind": "text",
-        "desc": "一句话摘要（Zeek 的 note/msg；Wazuh 的 rule.description）",
     },
-    "rule_id": {"path": "rule_id", "kind": "keyword", "desc": "Wazuh 规则 id"},
-    "rule_groups": {"path": "rule_groups", "kind": "text", "desc": "Wazuh 规则组"},
     "mitre": {"path": "mitre", "kind": "text", "desc": "MITRE 技术编号"},
     # ---------- HTTP ----------
     "method": {"path": "method", "kind": "keyword", "desc": "HTTP 方法"},
@@ -213,8 +207,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     "uid": {
         "path": "uid",
         "kind": "keyword",
-        "desc": "Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（拿字节/连接状态/时长）；"
-        "注意它只能关联**同一跳** —— 中继的前后跳是两条独立连接、uid 不同。Wazuh 侧为空",
+        "desc": "Zeek 连接 UID：可把 http/ssl/dns/files 与**同一条** conn 对上（拿字节/连接状态/时长）；",
     },
     "hop": {
         "path": "hop",

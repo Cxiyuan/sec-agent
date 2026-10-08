@@ -5,9 +5,7 @@
 才真正探测一轮**（进程内缓存）。页面 15 秒轮询时大约两次里有一次命中缓存。
 
 **判据全部是 `judge_*` 纯函数**（可单测）；每个探测各自 try —— 任何一个失败只影响它自己
-那盏灯（Wazuh 没配不能连带把 Zeek 的状态也变成不可见）。
 
-探测口径刻意**复用既有实现**（`wazuh.py` 的连通性探测与入库量、`logstash.py` 的运行状态、
 `detector/health.py` 的 Redis 体检），避免同一个事实在两处各写一遍再慢慢漂移。
 """
 
@@ -21,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
-from app.api.routes import logstash as logstash_route, wazuh as wazuh_route
+from app.api.routes import logstash as logstash_route
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import User
@@ -44,18 +42,16 @@ ZEEK_DEGRADED_WITHIN = 1800.0  # 5~30 分钟没有 = 注意；超过 30 分钟 =
 NORMALIZER_OK_WITHIN = 120.0  # 归一化是唯一写 ES 的角色，2 分钟没写就是不正常
 NORMALIZER_DEGRADED_WITHIN = 900.0
 
-#: 新鲜度探测窗口：一次 ES 往返同时满足 zeek/wazuh/归一化 三个判据
 _FRESHNESS_WINDOW = "now-30m"
 
 #: 「采集质量」统计窗口（近 15 分钟的采集类协议异常）
 _CAPTURE_WINDOW = "now-15m"
 
-#: 总览页的**展示顺序**（用户列的顺序：网络采集器 / 采集质量 / 主机监控 / Redis / Logstash /
+#: 总览页的**展示顺序**（用户列的顺序：网络采集器 / 采集质量 / Redis / Logstash /
 #: Elasticsearch / 归一化 / 分析智能体）。构建顺序与展示顺序解耦，前端直接照数组渲染。
 _DISPLAY_ORDER: tuple[str, ...] = (
     "zeek",
     "capture",
-    "wazuh",
     "redis",
     "logstash",
     "elasticsearch",
@@ -141,16 +137,6 @@ def judge_logstash(runtime: dict[str, Any] | None) -> str:
         return STATE_DOWN
     failures = _int_or_none(runtime.get("reloads_failures"))
     if failures is not None and failures > 0:
-        return STATE_DEGRADED
-    return STATE_OK
-
-
-def judge_wazuh(reachable: bool, alerts_24h: int | None) -> str:
-    """主机监控：管理 API 可达 = 正常；可达但 24h 一条都没入库 = 注意（那一跳没通）。"""
-    if not reachable:
-        return STATE_DOWN
-    total = _int_or_none(alerts_24h)
-    if total is not None and total <= 0:
         return STATE_DEGRADED
     return STATE_OK
 
@@ -251,7 +237,7 @@ def _capture_item() -> dict[str, Any]:
 
 def _es_freshness() -> dict[str, Any]:
     """近 30 分钟：按来源的最新文档时间 + 全局最新时间（一次 ES 往返喂三盏灯）。"""
-    out: dict[str, Any] = {"zeek_age": None, "wazuh_age": None, "any_age": None, "error": ""}
+    out: dict[str, Any] = {"zeek_age": None, "any_age": None, "error": ""}
     try:
         from app.ingestion import es_config
         from app.ingestion.es_client import get_es
@@ -282,7 +268,7 @@ def _es_freshness() -> dict[str, Any]:
         out["any_age"] = _age((aggs.get("any") or {}).get("value"))
         for bucket in (aggs.get("src") or {}).get("buckets") or []:
             key = str(bucket.get("key") or "")
-            if key in ("zeek", "wazuh"):
+            if key == "zeek":
                 out[f"{key}_age"] = _age((bucket.get("last") or {}).get("value"))
     except Exception as exc:  # noqa: BLE001
         out["error"] = str(exc)[:160]
@@ -424,27 +410,6 @@ def _freshness_item(
     }
 
 
-def _wazuh_item() -> dict[str, Any]:
-    probe = wazuh_route.probe_status()
-    alerts24: int | None = None
-    try:
-        alerts24 = _int_or_none(wazuh_route.ingest_stats().get("alerts"))
-    except Exception as exc:  # noqa: BLE001
-        log.debug("Wazuh 入库量探测失败: %s", exc)
-    reachable = bool(isinstance(probe, dict) and probe.get("reachable"))
-    return {
-        "key": "wazuh",
-        "name": "主机监控",
-        "state": judge_wazuh(reachable, alerts24),
-        "detail": (
-            f"API {probe.get('version') or '连通'} · 近 24h 入库 {alerts24} 条"
-            if reachable
-            else f"不可达：{str(probe.get('detail') or '')[:120]}"
-        ),
-        "last_seen": "",
-    }
-
-
 def _collect() -> dict[str, Any]:
     """跑一轮全部探测（不缓存）。每项经 `_guard`，互不牵连。"""
     client: Any = None
@@ -456,7 +421,6 @@ def _collect() -> dict[str, Any]:
     items: list[dict[str, Any]] = [
         _guard("elasticsearch", _es_item, _stub("elasticsearch", "Elasticsearch", STATE_UNKNOWN)),
         _guard("logstash", _logstash_item, _stub("logstash", "Logstash", STATE_DOWN)),
-        _guard("wazuh", _wazuh_item, _stub("wazuh", "主机监控", STATE_DOWN)),
     ]
 
     # Redis / 分析智能体：两者都需要 Redis 连接

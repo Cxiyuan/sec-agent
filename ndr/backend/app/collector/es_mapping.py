@@ -6,12 +6,9 @@
 
     Zeek conn  → raw.id 是对象 {"orig_h": …, "resp_p": …}
     Zeek ocsp  → raw.id 是字符串 "FSMOFV3XzYW6HJTLuc"
-    Wazuh 告警 → raw.id 是字符串 "1700000000.123456"
 
 动态映射按**先到的形状**把 ``raw.id`` 定成 object，此后所有「raw.id 是字符串」的文档都被
 ES 判 ``document_parsing_exception`` 整条 400 丢掉，Logstash 只留一行 WARN —— 采集侧
-「无条件入库」的红线在 ES 这一步被绕过了。2026-10 实机事故就是它：**全部 Wazuh 告警
-（``log_type.keyword=wazuh`` 计数恒为 0）与 2024 条 Zeek ocsp 静默丢失**，而
 Filebeat/Redis/归一化三段都是好的。
 
 为什么是 ``enabled: false`` 而不是 ``flattened``（8.15.3 实测，临时索引）：

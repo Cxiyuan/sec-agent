@@ -119,7 +119,7 @@ def _resolve_sources(args: dict[str, Any], default: tuple[str, ...] = SOURCES) -
     if not raw or raw == "both":
         return list(default)
     if raw not in SOURCES:
-        raise ValueError("参数 source 只能是 zeek / wazuh / both")
+        raise ValueError("参数 source 只能是 zeek / suricata / both")
     return [raw]
 
 
@@ -160,7 +160,6 @@ def _search_multi(
         fetched = list(result.get("hits") or [])
         per_source[source] = {
             # returned 在合并截断之后按最终列表重算（见下）：以前这里是「本来源截断前
-            # 取回条数」，与真实返回不一致，模型会以为 Wazuh 的命中都在 hits 里。
             "returned": 0,
             "fetched": len(fetched),
             "truncated": result.get("truncated"),
@@ -169,8 +168,6 @@ def _search_multi(
         hits.extend(fetched)
 
     # 合并后统一按时间排序再截断。以前是「按来源 extend 完直接 hits[:limit]」：
-    # 默认 desc 下排在后面的来源（wazuh）会被整段丢掉，而 by_source 还报着 returned=N
-    # ——智能体因此永远看不到 Wazuh 证据（来源顺序 zeek→wazuh 是写死的）。
     hits.sort(key=lambda h: str(h.get("ts") or ""), reverse=sort != "asc")
     kept = hits[: max(1, limit)]
     for row in kept:
@@ -514,7 +511,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _search_events,
         "desc": "定向检索事件（时间范围 + 字段过滤 + 关键词）",
         "params": {
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
             "filters": "对象，字段用统一字段名",
             "keyword": "自由文本",
             "start": "ISO 时间",
@@ -529,7 +526,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "desc": "按字段 top-N 聚合（找横向目标/外联目的地/端口分布）",
         "params": {
             "field": "可聚合字段（见 describe_data）",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
             "filters": "对象",
             "start": "ISO",
             "end": "ISO",
@@ -544,7 +541,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "limit": "条数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "net_flows": {
@@ -555,7 +552,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "top": "桶数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "dns_queries": {
@@ -567,7 +564,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "limit": "条数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "tls_fingerprints": {
@@ -578,7 +575,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "limit": "条数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "web_requests": {
@@ -592,7 +589,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "limit": "条数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "file_hashes": {
@@ -605,7 +602,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "start": "ISO",
             "end": "ISO",
             "limit": "条数",
-            "source": "zeek|wazuh|both",
+            "source": "zeek|suricata|both",
         },
     },
     "raw_evidence": {

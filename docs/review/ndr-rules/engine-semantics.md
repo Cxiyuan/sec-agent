@@ -27,14 +27,10 @@
 | 字段 | 规则（builtin.py 行） | 后果 |
 |---|---|---|
 | `hostname` | 内置-Host头攻击:416 | 通配，在每个 log_type 上求值 |
-| `rule_groups` | 内置-Wazuh登录失败:845、Wazuh账号锁定:1056、Wazuh提权告警:1073 | 同上，但只有 wazuh 会填 |
-| `mitre` | 内置-Wazuh MITRE映射命中:1307 | 同上 |
 | `cookie` | 反序列化特征:284、框架漏洞探测特征:676、会话跨IP复用:943 | 前两条另有 body/uri_path 已能路由；**会话跨IP复用是 count 规则，直接绕过索引** |
 | `auth_scheme` | 未授权访问探测成功:641、Token/JWT异常使用:999 | 靠 status_code/uri_path/query 已能路由 |
-| `content_type` | 上传类型不匹配:1371 | 靠 uri_path 路由到 http+wazuh |
 | `account` | 密码喷洒:888、撞库:907、多账号同机登录:1037 | count 规则，不受路由影响 |
 
-通配集合实测约 **20/82 条**（Wazuh 8 条 event_type 泛型 + 端口类 4 条 + Host头/rule_groups/mitre + 协议异常/TLS异常/SMTP滥用 等），代价是每条事件多跑 ~20 条规则；这不是 bug（fail-open 的取舍），但**其中 4 条（hostname/rule_groups/mitre）只在单一来源上有值，属于纯开销**。
 
 ### 1.3 反向漂移：`_FIELD_TYPES` 里有 12 个字段在 `UnifiedLog` 里根本不存在【P1，规则作者陷阱】
 核对 `schemas.py` 的字段全集后，`_FIELD_TYPES` 中存在以下**无对应字段**的键：
@@ -50,10 +46,8 @@ logic=or: query contains 169.254.169.254
           query contains metadata.google.internal
           dst_ip eq 169.254.169.254        ← 这一支
 ```
-字段集合 = {query, body, dst_ip}；`query`→(dns,http,wazuh)(engine.py:267)、`body`→(http,wazuh)、**`dst_ip` 不在 `_FIELD_TYPES`**（只属 `_COMMON_FIELDS`）→ owner = {dns,http,wazuh}。于是：
 - **conn 日志上这条规则根本不参与求值**（runner.py:697 只取该 log_type 的候选），而"内网主机/被入侵的 Web 服务器真的去连 169.254.169.254"恰恰只体现在 conn.log（`dst_ip` + `dst_port=80`）上。
 - 结果：SSRF 成功利用后的**真实取证线索被路由掉了**，只剩"客户端把 metadata IP 写进 URL/body"这类以扫描器为主的信号。
-- 修复（可抄）：给该规则两个分支——`{"field":"log_type","op":"eq","value":"conn"}` + `{"field":"dst_ip","op":"eq","value":"169.254.169.254"}`；或把 `dst_ip` 加进 `_FIELD_TYPES` 的 conn 归属并把规则写成显式 log_type 组。同族问题：**内置-SSRF敏感参数与协议（builtin.py:308）** 全条件只用 `query` → 只挂 dns/http/wazuh，conn 侧零覆盖（同一缺口）。
 
 ### 1.5 显式 log_type 被丢弃：内置-SMTP滥用【P2，语义）
 `build_rule_index` 的第二个判断（engine.py:350-352）：`if not owner or not (fields - _COMMON_FIELDS - {"log_type"}): wild`。
@@ -68,8 +62,6 @@ logic=or: query contains 169.254.169.254
 - `docs/ndr-collect-plan.md:29`「路线 A：不加载任何 Zeek 自带检测策略；`Log::disable_stream(Notice::LOG)`」。
 因此：
 - **内置-协议异常（builtin.py:1405，event_type eq protocol_anomaly）实际无生产者**：weird.log 进 `_zeek_event_type("weird", note=None, conn_state=None)` → 不匹配任何分支、无 conn_state → 返回 `conn_states.GENERIC_EVENT_TYPE = "generic"`（conn_states.py:33 + `event_type_of` 空值返回 None）。它不是"路由死了"，是**标签永远不会出现**。
-- 内置-TLS异常（1416，tls_anomaly）同理（唯一 Zeek 生产者是 notice；Wazuh 分支不会产 tls_anomaly）。
-- 内置-端口扫描（797，port_scan）只能靠 Wazuh 描述里含 "scan"（`_wazuh_event_type`）擦边命中；Zeek 侧端口扫描实际只由 conn.log 的 S0/REJ 覆盖（扫描尝试连接:822 low / 高频扫描连接:808 count）。
 - SMTP滥用（1427）的 `event_type eq smtp_abuse` 支同理死，真正在跑的是 `log_type eq smtp`（过度宽）。
 - 建议：把这条词表守卫升级为"**按当前采集配置**可产出"的守卫（该标签的生产者路径若依赖 notice，而 notice 已关，则测试应失败），否则 CI 永远绿、线上永远不触发这种规则。
 
@@ -78,7 +70,6 @@ logic=or: query contains 169.254.169.254
 ## (2) 匹配语义
 
 ### 2.1 正确的部分（明确记 OK）
-- `status_code eq 200` / `in [200,201,202,204,302]`（WebShell上传:464、未授权访问:641、目录爆破:714）是安全的：Zeek 分支 `status_code=_to_int(...)`、Wazuh 分支 `status_code=_to_int(data.get("status"))`，两侧都是 int，`eq/in` 精确匹配可用。
 - `dst_port eq 80`（明文凭证传输:962）、`dst_port in [...]`（横向移动管理端口:1134 等）同理是 int，无类型坑。
 - 数字操作符对 None/脏值安全：`gt/gte/lt/lte` 转 float 失败返回 False（engine.py:111-116）→ `服务端错误突变`(764) 遇到 status_code 缺失不会误报。
 - `qtype in ["16"]`（DNS-TXT隧道:1194）能工作，因为 normalizer 明确按数字码存：`"qtype": str(doc.get("qtype") or doc.get("qtype_name") or "")[:16]`（normalizer.py:548，含注释）。
@@ -86,7 +77,6 @@ logic=or: query contains 169.254.169.254
 
 ### 2.2 `contains/eq/in` 的大小写与归一化【P2】
 - `contains` 大小写敏感（engine.py:102-104）：`内置-云元数据访问`（660）的第二支 `contains "metadata.google.internal"` → `metadata.GOOGLE.internal` 形式（DNS 大小写不敏感）漏报。
-- `eq/in` 不做大小写归一：`内置-危险HTTP方法`（439）`method in ["PUT","DELETE","TRACE","TRACK","PROPFIND","OPTIONS"]`、`内置-明文凭证传输`（962）`method eq "POST"`。归一化两侧都原样保留（Zeek `str(doc.get("method"))[:16]`、Wazuh `str(data.get("method"))[:16]`，都**没有 upper()**），因此任何 `put`/`options`/上游解码器给小写 的写法都会绕过这两条规则。修复：`op: regex, value: "(?i)^(put|delete|trace|track|propfind|options)$"`，或在 normalizer 统一 `method.upper()`。
 
 ### 2.3 `exists` 把 `False` 当存在【P2，当前无内置规则触发】（engine.py:95-97）
 `return actual is not None and str(actual).strip() != ""` → `str(False) == "False"` → **`{"field":"dst_internal","op":"exists"}` 永真**；`0`（如 bytes_out=0）同样算"存在"。内置规则里 `exists` 只用于 `account`(888/907/1037)/`cookie`(943)/`mitre`(1307)/`src_ip`(781)，都是字符串，暂未踩雷；但用户自定义规则很容易踩。修复：`if isinstance(actual, bool): return True` 显式化，或对 bool/number 分开判定。
@@ -120,13 +110,11 @@ logic=or: query contains 169.254.169.254
 `UnifiedLog.cookie` 的唯一来源是 `doc.get("cookie")`（normalizer.py `_http_fields` 的 `"cookie": _clip(doc.get("cookie"), ...)`，normalizer.py:536）。而 Zeek 侧该键不存在时是空串：
 - `ndr/zeek/README.md` 的 http.log 字段清单只列 `method/host/uri/user_agent/status_code` + 自写的 `req_headers/resp_headers`（并明确"Cookie / Authorization 的值由 `shentong-httpheaders.zeek` 采集"）；
 - `tests/py/samples.py` 的 HTTP 样例文档里也没有 `cookie`/`content_type` 键（只有 `req_headers` 里带 `AUTHORIZATION: Basic ...`）。
-→ 结论：Shiro 利用（rememberMe Cookie 里带 base64 序列化 payload）在 Zeek 侧**两条路都不通**：`cookie` 恒空（284/676 的死支），payload 在 Cookie 头而不在 body（所以 `rO0AB`/`ACED0005` 的 body 支也看不到它）。Wazuh 侧 `cookie` 来自 `data.cookie` 可能非空，但 Wazuh 不产 `http_upload`/不填 `uri_path`(部分场景) 且 284/676 是 OR 结构，只在 Wazuh 有对应 URL/字段时才可能中。
 - **可抄修复（最小改动）**：把 cookie 条件改成打 `req_headers`：
   `{"field":"req_headers","op":"regex","value":"(?i)^rememberme=([A-Za-z0-9+/=]{40,})"}`（`req_headers` 是多行 `Name: value`，Zeek 侧头名**已大写**，见 shentong-httpheaders.zeek 注释），或更彻底：在 normalizer 里从 `req_headers` 解析出 `cookie` 头值填进 `UnifiedLog.cookie`（这样 baseline 的会话画像 `session_id_from_cookie`，config.py:203 `session_cookie_names`，也才有输入）。
 - 置信度：**中高**。依据是采集脚本注释与 README/samples 的字段清单；反证方法（一条命令）：发一个带 Cookie 的请求，看 ES 文档里顶层 `cookie` 是否为空（README 的批 3 实测只记了 `raw.cookie_vars`，从未出现顶层 cookie 值）。
 **(e) 死规则｜内置-会话跨IP复用（builtin.py:943，p8，critical）**：条件 `cookie exists` **AND** `log_type eq http`。
 - Zeek 侧 `log_type=http` 成立但 `cookie` 恒空（同 (d)）→ 不成立；
-- Wazuh 侧 `cookie` 可能非空但 `log_type` 是 `wazuh`/`wazuh_archive`（normalizer Wazuh 分支）→ 不成立。
 → **两侧都不成立 = 永不触发**。而且即便修好字段，`key=["cookie"]` 用的是整条 Cookie 串：`Cookie: lang=zh; consent=1` 这种静态 cookie 在全站所有用户间都相同（distinct src_ip ≥2 立刻满足）→ 会变成 critical 误报机器。正确修法：先按 `session_cookie_names`（config.py:203）只取会话 cookie 的**值**做 key（baseline/profile.py 已有这个函数），再复用。
 
 ---
@@ -138,8 +126,6 @@ logic=or: query contains 169.254.169.254
 - 但 `rules_for_log_type` 返回 `list(types[kind]) + list(wild)`（engine.py:365-371），runner 取第一个命中（runner.py:699）。
 → **跨列表的全局优先级被破坏：任何 typed 规则都先于任何 wild 规则求值，无论 priority 数字多大。**
 具体后果（真实规则名 + priority）：
-- `内置-暴力破解`（**wild**，builtin.py:834，p10，high）会被 `内置-参数fuzzing超长载荷`（**typed http+wazuh**，builtin.py:700，p25，medium）遮蔽：一条 Wazuh 认证失败告警如果 URL/参数串 >600 字符（Wazuh 的 web 类告警经常带完整攻击 URL），报告出来的是"参数fuzzing（medium）"，暴力破解语义丢失。
-- `内置-Wazuh恶意软件告警`（wild，builtin.py:69，p5，critical）同样会被任何 typed 规则抢走：同一份 Wazuh 告警若 `data.url` 以 `.php` 结尾、方法 POST、`data.status=200`，则由 `内置-WebShell上传`（typed，p8，critical）先命中 —— 等级一样但**性质判错**。
 - 修复（一行）：`return sorted(types + wild, key=lambda r: (int(r.get("priority") or 999), str(r.get("name") or "")))`。顺带解决同 priority 时依赖 SQL/插入顺序的**不确定性**（当前 p20 的 端口扫描:797 与 扫描尝试连接:822、p10 的一堆规则，命中哪条不可复现）。
 
 ### 3.2 正确的遮蔽（记录为设计取舍，非 bug）
@@ -152,8 +138,6 @@ logic=or: query contains 169.254.169.254
 |---|---|---|
 | 扫描/扇出 | 端口扫描(797,p20)、扫描尝试连接(822,p20)、高频扫描连接(count,808,p24)、大面积目标探测(count,781,p24)、横向移动多目标(count,1116,p18)、内网慢速横向(count,1454,p27) | 6 条规则描述同一种"同源多目标"行为，且**count 与 per-event 会各产一条摘要**（runner.py:699 + 709） |
 | WebShell | WebShell上传(464,p8)、WebShell访问(487,p10)、敏感文件探测(609,p12)、上传类型不匹配(1371,p20，已死)、未授权访问(641,p15) | `/actuator/health` 200 会先命中 敏感文件探测(p12)，未授权访问(p15) 被遮蔽；两条都是 high，报告名与分析师预期不符 |
-| 凭证 | 暴力破解(834,p10)、高频认证失败(count 856,p12)、登录接口爆破(count 870,p12)、密码喷洒(count 888,p8)、撞库(count 907,p8)、HTTPBasic(count 926,p12)、默认口令(977,p15)、明文凭证(962,p15) | 逻辑分工合理，但 `暴力破解`(per-event) 与 `高频认证失败`(count) 会对同一批 Wazuh 告警各产一条摘要 |
-| Wazuh 兜底 | Wazuh高危告警(1263,p10)、Wazuh网络告警(1296,p28)、Wazuh文件完整性变更(1274,p30)、Wazuh漏洞告警(1285,p30) | `event_type` 互斥（`_wazuh_event_type` 早返回），不构成遮蔽；但**"Wazuh level≥12 全覆盖"是错觉**：命中更具体 event_type 的告警不会落到 `wazuh_high_alert` |
 **派生 FP（必须单列）**：`内置-横向移动管理端口`（1134，medium）与 `内置-SMTP滥用`（1427，medium）；前者对**任何** dst_port ∈ {445,139,135,3389,5985,5986,2049} 的日志命中（`event_type ne scan_attempt` 对空值也为真，见 §2.5），即**每一次正常的 SMB 共享访问 / NFS 挂载 / RDP 登录** → medium，而 severity=medium 进不了 triage 的 `<medium` 门（triage_policy.py:172-173）→ 全部进分析、全部吃投递额度。后者 `log_type eq smtp` = **每一封正常邮件** → medium。这两条是本组最廉价的降噪靶子。
 
 ---
@@ -227,9 +211,6 @@ logic=or: query contains 169.254.169.254
 - 键 `_agg_key(src_ip, rule, excluded)`（aggregate.py 的 `_agg_key`，sha256 前 20 位）→ **同源 + 同规则** 合并：`内置-SQL注入-基础特征`(81) 是 `union select / or 1=1 / sleep() / benchmark()` 的 OR 规则，同一 src_ip 在 5 分钟内打 10 个不同应用、4 种载荷 → **1 条摘要**，`count`/`dst_ips`/`event_types` 全部混在一起，无法回答"哪次是成功的注入"。
 - `samples` 只保留前 3 条（`_MAX_SAMPLES = 3`，append 时 `if len(samples) < _MAX_SAMPLES`）→ **留下的是最早 3 条**。慢速攻击的前几条通常是探活/404，真正成功的入侵请求被丢弃；而分析链路的证据展示正是拿这 3 条 `raw` 文档跑 normalize（runner.py `_aggregate` 注释、agent 侧 nodes.py）。
 - `dst_ips`/`dst_ports` 上限 50（`_MAX_SET = 50`）→ 扇出被低估；更要注意它被**基线**复用：`baseline.annotate` 用 `len(dst_ips)` 当 `distinct_dst_ips`（docs/ndr-redesign.md:456），>50 之后该特征恒定 50 → 2σ 基线对"扇出继续扩大"不再敏感（`内网慢速横向` 打到 300 台与 100 台读数相同）。triage 的 `dst_count = len(dst_ips)`（runner.py `_apply_routine_policy`）只用于 `<=1` 判定，上限不影响该分支。
-- `event_types`/`conn_states` 用 `_push_unique` 累计（上限 50）；`conn_states` 仅在 `entry.conn_state` 非空时记录（aggregate.py 的 add）→ HTTP/DNS/Wazuh 命中的摘要通常没有 conn_states，`has_success` 只能靠 event_types，而那个路径依赖 §5.2 的幽灵标签 `conn_http`。
-- `rule_severity` 在摘要创建时写死（来自规则静态 severity，runner.py `_aggregate` 传 `rule.get("severity")`）→ 摘要无法表达"这 200 次里有一次是 critical 行为"；Wazuh 自身 level 映射出的 `UnifiedLog.severity`（normalizer `_map_wazuh_level`，critical/high）**不参与**聚合与分诊，于是"Wazuh critical 告警被 medium 规则名下合并后按 medium 处理"。
-- `src_ip` 缺失时统一填 `"-"`（runner.py `_aggregate`）→ 所有无源地址的命中（Wazuh 告警常见无 `data.srcip`）在每个规则下塌进同一条摘要，`dst_ips` 跨事件混装。
 
 ### 6.2 未丢的部分（OK）
 - `excluded` 位入键（避免"只排除部分命中"把两类事件混桶）——设计正确。
@@ -244,7 +225,6 @@ logic=or: query contains 169.254.169.254
 修复：① 给这两条规则补显式 conn 分支；② 加守卫测试 `set(_FIELD_TYPES) ⊆ set(UnifiedLog.model_fields)` 与"每条规则的每个 typed 字段至少有 1 个 owner log_type 会填它"；③ 把事件类型词表守卫改成"按当前采集配置可产出"（notice 关掉时，只有 notice 能产出的标签必须让 CI 失败）。
 
 **#2 优先级跨列表失序（判错性质/等级，P1）**
-证据：`rules_for_log_type` 的 `types + wild` 拼接（engine.py:365-371）+ 首个命中即停（runner.py:699）→ wild 的 p5/p10（Wazuh恶意软件告警:69、暴力破解:834）被 typed 的 p25（参数fuzzing:700）遮蔽。
 修复：拼接后按 `(priority, name)` 排序（一行）；并把"被遮蔽的规则名"写进摘要（`related_rules`）供分析师参考。
 
 **#3 频率规则在实机流量下必然误报且自我重复（P1，噪声 = 漏报）**
@@ -256,7 +236,6 @@ logic=or: query contains 169.254.169.254
 修复：① 先修推送地址/令牌；② `_flush` 超额时按 severity 降序保留（低危先丢）而不是 FIFO；③ 增加 per-rule 摘要速率上限（per-event 规则当前没有任何抑制手段）。
 
 **#5 字段语义被"跨来源复用"污染（误报，P1/P2）**
-证据：`hostname` 在 Zeek 是 Host 头/SNI（normalizer.py:669 `doc.get("host")`/`server_name`），在 Wazuh 是**agent 名**（`hostname=str(hostname)`，取自 `agent.name`）——而 `内置-Host头攻击`(416) 是通配规则（hostname 不在 `_FIELD_TYPES`），于是"agent 名恰好是 localhost/127.0.0.1"的主机每有 Wazuh 告警就会命中 medium「Host头攻击」；同理 `query` 在 dns 是域名、在 http 是完整 URI（engine.py:267 注释自己写明），`内置-勒索/僵尸网络域名`(35) 用同一套无边界关键字在 URI 上匹配 → critical FP（`conti`→continue、`beacon`→/cdn-cgi/beacon）。
 修复：① 把"来源相关语义"拆成显式字段（如 `host_header` vs `agent_name`，或规则里显式 `source_system eq zeek`）；② 高风险规则加语义边界/白名单，或给 `query` 按 log_type 分设不同规则的版本（dns 用域名表，http 用 URI 参数语义）。
 
 ---
@@ -305,7 +284,6 @@ logic=or: query contains 169.254.169.254
   "residualRisks": [
     "未运行代码：所有'死规则/恒假条件'结论是代码路径证明，未经运行时验证（已给出反证命令）",
     "cookie/content_type 为空的结论依赖 Zeek http.log 无该列 + 仓库内的字段清单与采集脚本注释（置信度中高，未在实机 ES 文档上核验）",
-    "Wazuh agent 名恰为 localhost/127.0.0.1 才会命中 Host头攻击 FP，属条件性结论（未拿到现场 agent 命名清单）",
     "未评估 agent 侧（智能体图/模型）对摘要的解释行为，也未评估前端展示口径"
   ],
   "noStagedFiles": true,
@@ -313,7 +291,6 @@ logic=or: query contains 169.254.169.254
   "reviewFindings": [
     "P0: engine.py:249-298 _FIELD_TYPES 无 dst_ip owner → builtin.py:660 云元数据访问的 dst_ip 分支在 conn 日志上永不求值（SSRF 真实取证路径漏报）；builtin.py:308 SSRF 同样无 conn 覆盖",
     "P0: normalizer.py:536 cookie 无 Zeek 来源 → builtin.py:284/676 cookie 条件恒假（Shiro 利用漏报）、builtin.py:943 会话跨IP复用（p8 critical）条件 log_type=http 与 cookie exists 两侧永不同真 = 永不触发",
-    "P1: engine.py:365-371 typed+wild 拼接破坏全局 priority 顺序（runner.py:699 首个命中即停）→ builtin.py:834 暴力破解(p10 wild)、:69 Wazuh恶意软件告警(p5 wild) 会被 builtin.py:700 参数fuzzing(p25 typed) 遮蔽",
     "P1: config.py:73 policy_skip_rules 含 high 级规则「内置-恶意文件传输」→ triage_policy.py:172-173 的 severity<medium 门槛使它永不生效（死配置）",
     "P1: triage_policy.py:49 SUCCESS_EVENT_TYPES 含无生产者的 conn_http（全仓仅常量+测试）→ 一旦把低危 HTTP 规则加入跳过白名单，真实成功的 HTTP 告警会被当'无成功连接'跳过",
     "P1: config.py:186-187 window==cooldown=300s + frequency.py:79-81 → builtin.py:1454/1474（6h 窗）每 5 分钟重复触发，单主机 6h 最多 72 条 high 摘要",

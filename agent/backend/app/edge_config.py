@@ -32,10 +32,6 @@ EDGE_MODEL_LABEL = "edge"  # 对外展示名（不暴露真实路径）
 # 复杂研判事件类型：triage 里这些类型值得开思考（payload 语义复杂，需多步推理判真伪）
 COMPLEX_TRIAGE_EVENT_TYPES = {
     "web_attack",
-    "wazuh_web_attack",
-    "wazuh_malware",
-    "wazuh_vulnerability",
-    "wazuh_system_change",
     "file_transfer",
     "http_upload",
     "dns_anomaly",

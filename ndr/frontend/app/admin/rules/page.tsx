@@ -31,11 +31,10 @@ import {
 } from "@/components/condition-editor";
 
 /**
- * 检测规则页：内置规则（按 网络/主机 两组，可展开、可勾选启停）+ 自定义规则（可增改删）。
+ * 检测规则页：树型展开/收缩（网络采集器 → 内置规则 / 自定义规则 / 签名规则）。
  *
- * 「网络」= 网络采集器（Zeek 事件），「主机」= 主机监控（Wazuh 事件）—— 这个划分由后端
- * `rules/builtin.py::rule_scope()` 按规则条件自动判定并存在 `Rule.scope` 上；检测器也按它过滤
- * （主机规则只在主机事件上求值，反之亦然）。界面上分组就是读这个字段，不做二次猜测。
+ * 规则只有网络一侧：条件引用网络侧字段（http/ssl/dns/conn…）与签名引擎告警，
+ * 检测器只在网络事件上求值。主机监控那条线已随对应日志源一起下线。
  */
 
 const SRC = { list: "检测规则（/api/rules）" } as const;
@@ -48,10 +47,6 @@ function ruleType(r: RuleItem): string {
     return `频率（${key} ≥ ${c.min_count ?? 1}${distinct}）`;
   }
   return "逐条";
-}
-
-function scopedLabel(scope: string): string {
-  return scope === "host" ? "主机" : "网络";
 }
 
 function severityBadge(sev: string): React.ReactElement {
@@ -105,7 +100,6 @@ export default function RulesPage() {
   const [rules, setRules] = React.useState<RuleItem[]>([]);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({
     network: true,
-    host: true,
     "network:builtin": true,
   });
   const [openIds, setOpenIds] = React.useState<Record<string, boolean>>({});
@@ -117,7 +111,6 @@ export default function RulesPage() {
   const [editId, setEditId] = React.useState("");
   const [name, setName] = React.useState("");
   const [desc, setDesc] = React.useState("");
-  const [scope, setScope] = React.useState("network");
   const [sev, setSev] = React.useState("medium");
   const [priority, setPriority] = React.useState("100");
   const [enabled, setEnabled] = React.useState(true);
@@ -165,10 +158,9 @@ export default function RulesPage() {
 
   const builtin = rules.filter((r) => r.source === "builtin");
   const custom = rules.filter((r) => r.source !== "builtin");
-  const netBuiltin = builtin.filter((r) => (r.scope || "network") !== "host");
-  const hostBuiltin = builtin.filter((r) => (r.scope || "network") === "host");
-  const netCustom = custom.filter((r) => (r.scope || "network") !== "host");
-  const hostCustom = custom.filter((r) => (r.scope || "network") === "host");
+  // 规则只有网络一侧（主机监控线已下线）
+  const netBuiltin = builtin;
+  const netCustom = custom;
 
   function setCond(i: number, patch: Partial<Cond>) {
     setConds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -192,7 +184,6 @@ export default function RulesPage() {
     setEditId("");
     setName("");
     setDesc("");
-    setScope("network");
     setSev("medium");
     setPriority("100");
     setEnabled(true);
@@ -211,18 +202,12 @@ export default function RulesPage() {
     setDrawer(true);
   }
 
-  /** 从某个树节点里新建规则：预选该节点所在的一侧（网络/主机）。 */
-  function openCreateFor(nextScope: string) {
-    openCreate();
-    if (nextScope === "host") setScope("host");
-  }
 
   function openEdit(r: RuleItem) {
     const c = (r.conditions || {}) as { mode?: string; key?: string[]; min_count?: number; distinct?: string; min_distinct?: number };
     setEditId(r.id);
     setName(r.name);
     setDesc(r.description || "");
-    setScope(r.scope || "network");
     setSev(r.severity);
     setPriority(String(r.priority));
     setEnabled(r.enabled);
@@ -259,7 +244,6 @@ export default function RulesPage() {
           severity: r.severity,
           enabled: !r.enabled,
           priority: r.priority,
-          scope: r.scope || "network",
         }),
       });
       setMsg(`已${r.enabled ? "禁用" : "启用"}「${r.name}」`);
@@ -288,7 +272,6 @@ export default function RulesPage() {
       severity: sev,
       enabled,
       priority: parseInt(priority, 10) || 100,
-      scope,
     };
     try {
       if (editId) {
@@ -408,7 +391,6 @@ export default function RulesPage() {
         <TableHeader>
           <TableRow>
             <TableHead>名称</TableHead>
-            <TableHead className="w-24">规则内容</TableHead>
             <TableHead className="w-40">类型</TableHead>
             <TableHead className="w-20">级别</TableHead>
             <TableHead className="w-20">优先级</TableHead>
@@ -424,9 +406,6 @@ export default function RulesPage() {
                 <span className="ml-2 text-xs text-muted-foreground">
                   {(r.description || "").slice(0, 50)}
                 </span>
-              </TableCell>
-              <TableCell>
-                <Badge variant="outline">{scopedLabel(r.scope || "network")}</Badge>
               </TableCell>
               <TableCell className="text-xs text-muted-foreground">{ruleType(r)}</TableCell>
               <TableCell>{severityBadge(r.severity)}</TableCell>
@@ -500,7 +479,7 @@ export default function RulesPage() {
             expanded={!!expanded["network:custom"]}
             onToggle={() => toggleNode("network:custom")}
             action={
-              <Button size="sm" className="ml-auto" onClick={() => openCreateFor("network")}>
+              <Button size="sm" className="ml-auto" onClick={openCreate}>
                 添加规则
               </Button>
             }
@@ -516,41 +495,6 @@ export default function RulesPage() {
             onToggle={() => toggleNode("network:signature")}
           >
             <SuricataRulesPanel />
-          </TreeNode>
-        </TreeNode>
-
-        <TreeNode
-          id="host"
-          title="主机（主机监控）"
-          hint="规则条件引用主机侧字段（主机监控事件）—— 检测器只在主机事件上求值"
-          count={hostBuiltin.length + hostCustom.length}
-          expanded={!!expanded.host}
-          onToggle={() => toggleNode("host")}
-        >
-          <TreeNode
-            id="host:builtin"
-            title="内置规则"
-            count={hostBuiltin.length}
-            expanded={!!expanded["host:builtin"]}
-            onToggle={() => toggleNode("host:builtin")}
-          >
-            {builtinTable(hostBuiltin)}
-          </TreeNode>
-
-          <TreeNode
-            id="host:custom"
-            title="自定义规则"
-            hint="自己添加/修改的规则；ID 自动生成、不可编辑"
-            count={hostCustom.length}
-            expanded={!!expanded["host:custom"]}
-            onToggle={() => toggleNode("host:custom")}
-            action={
-              <Button size="sm" className="ml-auto" onClick={() => openCreateFor("host")}>
-                添加规则
-              </Button>
-            }
-          >
-            {customTable(hostCustom)}
           </TreeNode>
         </TreeNode>
 
@@ -581,19 +525,6 @@ export default function RulesPage() {
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
               <Input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="这条规则是干什么的" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">规则内容（跑在哪一侧）</label>
-              <div className="flex items-center gap-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input type="radio" name="scope" checked={scope === "network"} onChange={() => setScope("network")} />
-                  网络规则（网络采集器）
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="radio" name="scope" checked={scope === "host"} onChange={() => setScope("host")} />
-                  主机规则（主机监控）
-                </label>
-              </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>

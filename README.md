@@ -19,7 +19,6 @@
 ```text
 Zeek(Filebeat) ─┐
                 ├→ Redis List  shentong:events:collect（采集队列）
-Wazuh(Filebeat) ┘                    ↓
                         归一化服务 normalizer（python -m app.collector.normalizer_service）
                         UnifiedLog 统一字段（源系统/事件类型/IP/端口/协议/原文 raw…）
                                     ├─ ① LPUSH shentong:events:raw ──→ 检测器（实时车道）
@@ -59,22 +58,15 @@ Wazuh(Filebeat) ┘                    ↓
 
 ```bash
 mkdir -p /opt/shentong-ndr && cd /opt/shentong-ndr
-# 三个编排文件要放同一目录：docker-compose.deploy.yml、docker-compose.wazuh.yml、wazuh/filebeat.yml
 cat > .env <<'EOF'
 JWT_SECRET=<随机 64 位>
 CORS_ORIGINS=http://<NDR服务器IP>:3000
 ZEEK_IFACE=ens224          # 镜像/SPAN 抓包口
-# 内置 Wazuh 4.14：这组变量同时喂给 wazuh-manager 和后台（ST_WAZUH_API_*），两边不会各写一份。
-# 口令必须满足 Wazuh 复杂度要求（≥8 位且含大小写/数字/符号），否则 manager 的 API 起不来。
-WAZUH_API_USER=wazuh-wui
-WAZUH_API_PASSWORD=<强口令>
 EOF
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```
 
-部署编排默认 `include` 了 `docker-compose.wazuh.yml`（Wazuh 是本项目的**内置服务**，随项目一起发布），
-所以这一条 `up -d` 会把 `wazuh-manager` + `wazuh-filebeat` 一起带起来。想临时不接 Wazuh 就按服务名起：
 `docker compose -f docker-compose.deploy.yml up -d backend normalizer detector ndr-mcp`。
 
 存储端口默认只绑宿主机回环（ES 9200 / Postgres 5432 / Redis 6379 都不对外，ES 与 Postgres
@@ -115,7 +107,6 @@ docker compose -f docker-compose.deploy.yml up -d
 | NDR | `ndr-mcp` | MCP 服务（`python -m app.mcp.server`，宿主 `:8090`） |
 | NDR | `logstash` | 归一化文档入 ES（只有 ES 一个去处） |
 | NDR | `zeek` | 抓包（host 网络 + NET_RAW/NET_ADMIN） |
-| NDR | `wazuh-manager` / `wazuh-filebeat` | **内置**（部署编排默认 `include`，见 §三）：官方 Wazuh 4.14 manager（不含 indexer/dashboard）+ 独立 Filebeat 采集 |
 | 智能体 | `postgres` | 智能体自己的库（pgvector 支持向量检索） |
 | 智能体 | `backend` / `frontend` | API + 管理后台/驾驶舱 |
 | 智能体 | `celery-worker` / `celery-investigation` / `celery-beat` | 分析任务 / 调查 worker / 定时任务（**摘要由 NDR 直接 HTTP 推给 `backend`**，不再有队列消费者进程） |
@@ -124,55 +115,34 @@ docker compose -f docker-compose.deploy.yml up -d
 
 ---
 
-## 三、Wazuh 接入
 
-Wazuh 的日志走**和 Zeek 一样的路**：Filebeat → NDR 的 Redis 采集队列 `shentong:events:collect`
 （不直连 Logstash，也不直连 ES）。
 
 ### 3.1 用本仓库自带的 manager（内置服务，部署默认带上）
 
-`ndr/docker-compose.wazuh.yml` 是内置服务的编排：部署编排 `docker-compose.deploy.yml` 用
-`include` 引入它，所以部署就是一条命令（`up -d` 里已经含 Wazuh）：
 
 ```bash
 cd ndr
-docker compose -f docker-compose.deploy.yml up -d          # 含 wazuh-manager + wazuh-filebeat
 
-# 本地开发默认编排不含 Wazuh，要接就显式叠加
-docker compose -f docker-compose.yml -f docker-compose.wazuh.yml up -d
 ```
 
 它加两个官方镜像服务：
 
 | 服务 | 镜像 | 作用 |
 | --- | --- | --- |
-| `wazuh-manager` | `wazuh/wazuh-manager:4.14.8` | Wazuh 本体（**不含** indexer / dashboard），暴露 `55000`（API）与可选 `1514`/`1515` |
-| `wazuh-filebeat` | `docker.elastic.co/beats/filebeat:8.15.3` | 只读挂载 manager 日志卷，按 `ndr/wazuh/filebeat.yml` 投 Redis |
 
-> **为什么另起一个 Filebeat**：manager 自带的那个是为「发往 Wazuh indexer」预设的，
 > 而「4.14 自带的 Filebeat 能否配 `output.redis`」没有实机验证过；Filebeat 又只支持单一
 > output。另起一个用我们自己的配置，行为与 Zeek 线一致、可控。
 
-细节与**实机验证记录**见 [`ndr/wazuh/README.md`](ndr/wazuh/README.md)（2026-10-03 已在
-真实 Wazuh 4.14.8 环境上逐条跑过，六条清单全绿，过程中修掉 5 个真 bug —— 包括「告警被 ES
 静默丢弃」「面板恒报读 ES 失败」「规则下发其实没生效」这三个会让「接入成功」站不住的问题）：
 
-- 想要**全量原始日志**：先在 manager 上幂等开 `logall_json`（`ndr/wazuh/enable-logall.sh`），
-  再把 `WAZUH_ARCHIVES_ENABLED=true` 传给 `wazuh-filebeat`。原始日志默认**只入库、不喂检测器**
-  （`ST_WAZUH_ARCHIVE_TO_DETECTOR=false`）—— 量级比告警大得多，容量估算见
   [`docs/ndr-redesign.md`](docs/ndr-redesign.md) 第 6 期。
 - 管理面「采集接入 → 主机监控」**只显示状态、不需要配置**：主机监控随项目一起部署，
-  地址与凭据由部署环境固定（`.env` 的 `WAZUH_API_*` → 后台 `ST_WAZUH_API_*`）；
   面板显示 API 版本 / Agent 在线情况 / **近 24h 入库的告警与原始日志条数**（后者是链路真通了的证据），
   并可下发本地规则文件（下发后回读校验）。
 
-### 3.2 接外部已有的 Wazuh
 
-不要起本仓库的 `wazuh-manager`，把 `ndr/wazuh/filebeat.yml` 拷到能读到 `alerts.json` 的机器上，
-改 `WAZUH_LOG_DIR` 与 `REDIS_HOST`/`REDIS_PORT`/`REDIS_KEY`，起 Filebeat 即可；再把那台 manager 的
-API 地址与凭据写进后台的 `ST_WAZUH_API_*`（`GET /api/wazuh` 只读，界面没有填写入口）。
 
-两个字段改配置时别丢：`overwrite_keys: true`（否则 Filebeat 自己的 ECS 顶层 `agent` 会盖掉 Wazuh
 的 `agent.name`，主机名就丢了）与 **不设 ndjson `target`**（归一化服务直接从根读
 `rule`/`data`/`agent`/`full_log`）。
 
@@ -221,13 +191,8 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
 9. （两条线路）**配好摘要推送**：先给智能体线路设 `PUSH_TOKEN`（或 `ST_PUSH_TOKEN`），
    再到 NDR「智能体对接 → 摘要推送」填地址（`http://<agent>:8000/api/push/digests`）与同一令牌，
    点「测试连接」应为连通；之后检测器命中就会直接推过去（面板可看送达与失败计数）
-10. （NDR 线路）**Wazuh 已内置，部署即已接入**：`up -d` 会一起起 `wazuh-manager` 与
-   `wazuh-filebeat`；只需确认 `.env` 里的 `WAZUH_API_USER`/`WAZUH_API_PASSWORD` 是强口令
    （与 manager 共用同一组变量，后台直接取它，没有第二处要填），
    到「采集接入 → 主机监控」应直接看到「API 已连通」与 Agent 在线情况（这一页只显示状态，
-   地址固定是 `https://wazuh-manager:55000`，没有保存/测试连接的入口）；
-   要全量原始日志就先跑 `ndr/wazuh/enable-logall.sh` 再开 `WAZUH_ARCHIVES_ENABLED=true`。
-   只有接**外部已有**的 Wazuh 时才需要看 §3.2
 11. **日常盯「总览」页**（左侧导航第一项，也是 `/` 的默认落地页，每 15 秒自刷新）：
     **服务器状态**（CPU/内存/磁盘三个圆环，容器内读 `/proc`）、**组件呼吸灯**（网络采集器/
     主机监控/Redis/Logstash/Elasticsearch/归一化服务/分析智能体，绿=正常、黄闪=注意、红=不可用、
@@ -280,7 +245,6 @@ Logstash 那一侧的 `elasticsearch { hosts => [...] }` 也由后端按 `ST_ES_
     默认管理员 `admin`/`admin123`、内置规则、ES 模板与 ILM、Logstash 管道都会自动回来**，但
     **监控网段与两个正文上限必须重新下发**（左侧「监控网段」页，或 `PUT /api/zeek/interface`），
     MCP 令牌、摘要推送地址与令牌、云端模型 Key 也都要重填
-    （**ES 与 Wazuh 的连接信息不用管**：它们在 `.env` 里，不在库里，删卷不影响）。脚本里调登录接口注意
     它是 **OAuth2 表单编码**（`-d 'username=admin&password=admin123'`），发 JSON 会 422 返回空 token
 
 ---
@@ -382,9 +346,6 @@ NDR 线路（采集与检测）：
 | `ST_RELAY_VISIBILITY_SECONDS` | 300 | 中继去重的「前跳可见」记忆时长（秒，下限 30）：侧向=客户端侧时，见过该中继的前跳就把后跳判为重复；从未见过则后跳照常处理（不丢数据） |
 | `ST_RELAY_SIDE_MIN` | 50 | **按内容判侧向**的门槛：另一侧的明文内容条数至少这么多才考虑翻转（默认保留客户端侧） |
 | `ST_RELAY_SIDE_RATIO` | 10 | 且至少是本侧的这么多倍（数据要足够悬殊才翻，避免健康检查/扫描把侧向带偏） |
-| `ST_WAZUH_ARCHIVE_TO_DETECTOR` | false | Wazuh 原始日志（`logall_json`）是否也投检测器；默认**只入库** |
-| `ST_WAZUH_API_URL` / `ST_WAZUH_API_USER` / `ST_WAZUH_API_PASSWORD` | 空 | Wazuh API 连接信息，**唯一来源**（面板只读、没有填写入口）；部署时由 `.env` 的 `WAZUH_API_*` 传入 |
-| `ST_WAZUH_API_VERIFY_TLS` / `ST_WAZUH_API_TIMEOUT_SECONDS` | false / 10 | Wazuh 自签证书是常态，默认不校验 TLS |
 | `ST_COLLECTOR_COLLECT_QUEUE` | shentong:events:collect | Filebeat 写入的**采集队列** |
 | `ST_COLLECTOR_CONSUME_BATCH` / `ST_COLLECTOR_POLL_TIMEOUT` | 500 / 5 | 归一化服务每轮取批与轮询超时 |
 | `ST_COLLECTOR_POST_RETRIES` / `ST_COLLECTOR_RETRY_BACKOFF_SECONDS` | 3 / 1.0 | 写 Logstash 失败的重试次数与退避 |

@@ -1,4 +1,4 @@
-"""日志规范化：把 Zeek / Wazuh 原始文档映射成统一 schema。
+"""日志规范化：把 Zeek / 签名引擎原始文档映射成统一 schema。
 
 设计要点：
 - 尽量保留可被规则利用的字段（Web 深检：method/uri_path/query_string/body/
@@ -216,33 +216,6 @@ def _str_or_none(value: Any) -> str | None:
     同名时会把 Zeek 的字符串字段顶掉，直接透传给 pydantic 会报错。
     """
     return value if isinstance(value, str) and value else None
-
-
-def _text_or_none(value: Any) -> str | None:
-    """把「可能是对象」的字段收敛成可读字符串（用于 Wazuh 的 process/user/command/protocol）。
-
-    Wazuh 的 syscollector / FIM 解码器会把 ``data.process``、``data.user`` 这类字段给成**对象**
-    （如 ``{"name": "svchost.exe", "pid": "676", ...}``），直接透传给 ``UnifiedLog`` 的 ``str``
-    字段会被 pydantic 拒掉，**整条记录进死信队列**：2026-10-03 实机开 archives（全量原始日志）
-    后 373 条 ``normalize_failed`` 全是这一类。
-
-    与 ``_str_or_none`` 的区别：那个用于「同名对象顶掉字符串，宁缺勿滥」的 Zeek 字段；
-    这里面对的是**原始日志本身的内容**，丢字段可以、丢整条记录不行，所以对象优先取可读的
-    名字类字段，取不到再退化成紧凑 JSON。
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value or None
-    if isinstance(value, dict):
-        for key in ("name", "command", "path", "cmd", "id"):
-            inner = value.get(key)
-            if isinstance(inner, str) and inner:
-                return inner
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)[:256] or None
-    if isinstance(value, (list, tuple)):
-        return ", ".join(str(x) for x in value)[:256] or None
-    return str(value)
 
 
 def _to_int(v: Any) -> int | None:
@@ -901,100 +874,6 @@ def normalize_suricata(doc: dict[str, Any]) -> UnifiedLog | None:
     )
 
 
-# ---------- Wazuh ----------
-
-
-def _wazuh_rule_info(doc: dict[str, Any]) -> tuple[str, str, str]:
-    """返回 (rule_id, rule_groups, mitre)。"""
-    rule = _as_dict(doc.get("rule"))
-    rule_id = str(rule.get("id") or "")
-    groups = _to_str_list(rule.get("groups") or rule.get("group"))
-    mitre_raw = rule.get("mitre")
-    mitre = ""
-    if isinstance(mitre_raw, dict):
-        mitre_dict = _as_dict(mitre_raw)
-        parts = [
-            _to_str_list(mitre_dict.get("id")),
-            _to_str_list(mitre_dict.get("technique")),
-        ]
-        mitre = ",".join(p for p in parts if p)
-    else:
-        mitre = _to_str_list(mitre_raw)
-    return rule_id, groups, mitre
-
-
-def normalize_wazuh(doc: dict[str, Any]) -> UnifiedLog:
-    ts = _to_dt(doc.get("timestamp") or doc.get("@timestamp"))
-    data = _as_dict(doc.get("data"))
-    src_ip = data.get("srcip") or doc.get("srcip")
-    dst_ip = data.get("dstip") or doc.get("dstip")
-    rule = _as_dict(doc.get("rule"))
-    level = rule.get("level")
-    description = rule.get("description") or doc.get("description")
-    severity = _map_wazuh_level(level)
-    rule_id, rule_groups, mitre = _wazuh_rule_info(doc)
-    # alerts.json 的每一条都带 rule；archives.json（logall_json 的全量原始日志）没有 rule。
-    # 两者必须区分开：告警走检测规则，原始日志只入库供查询/回溯（见 normalizer_service）。
-    is_archive = not rule
-    agent = doc.get("agent")
-    hostname = agent.get("name") if isinstance(agent, dict) else doc.get("agent")
-    source_file = _source_file(doc)  # Filebeat 带来的原始文件（alerts.json / archives.json）
-
-    url = str(data.get("url") or data.get("uri") or "")
-    path, qs = _split_uri(url)
-    body_value = _first({**data, **doc}, _csv(settings.http_body_fields))
-    status_code = _to_int(data.get("status"))
-    # 见 `_text_or_none`：syscollector/FIM 的 data.user 可能是对象，透传会把整条原始日志打成死信。
-    user_field = _text_or_none(data.get("user") or data.get("srcuser") or data.get("dstuser"))
-
-    if is_archive:
-        raw_text = str(doc.get("full_log") or "").replace("\n", " ").strip()
-        summary = _clip(raw_text or str(doc.get("location") or ""), 200) or "wazuh 原始日志"
-        event_type = "wazuh_log"  # 原始日志不套告警事件类型，规则不会误命中
-        log_type = "wazuh_archive"
-    else:
-        summary = str(description or f"wazuh rule level {level}")
-        event_type = _wazuh_event_type(level, rule_groups, description)
-        log_type = "wazuh"
-
-    return UnifiedLog(
-        source_system="wazuh",
-        ts=ts,
-        event_type=event_type,
-        log_type=log_type,
-        src_ip=str(src_ip) if src_ip else None,
-        dst_ip=str(dst_ip) if dst_ip else None,
-        src_port=_to_int(data.get("srcport")),
-        dst_port=_to_int(data.get("dstport")),
-        protocol=_text_or_none(data.get("protocol")),
-        hostname=str(hostname) if hostname else None,
-        user=user_field,
-        process=_text_or_none(data.get("process")),
-        command=_text_or_none(data.get("command")),
-        query=url,
-        uri_path=path[:512],
-        query_string=qs[:1024],
-        method=str(data.get("method") or "")[:16],
-        body=_clip(body_value, http_body_limit()),
-        referer=str(data.get("referer") or "")[:512],
-        cookie=_clip(data.get("cookie"), settings.http_cookie_max_chars),
-        auth_scheme=_auth_scheme({**data, **doc}),
-        content_type=str(data.get("content_type") or "")[:128],
-        user_agent=str(data.get("user_agent") or ""),
-        status_code=status_code,
-        rule_id=rule_id,
-        rule_groups=rule_groups,
-        mitre=mitre,
-        account=_extract_account(path, str(body_value or ""), qs, user_field),
-        severity=severity,
-        summary=summary,
-        # 与 Zeek 侧同一个口径（`normalize_zeek` 的 raw）：raw 里带 log_type/source_file，
-        # MCP 的 raw_evidence 拿到原文就知道是哪条流、哪个文件来的；Wazuh 的告警与归档
-        # （archives.json）共用这张表，更需要 raw 自解释。
-        raw=_raw_with_type(doc, log_type, source_file),
-    )
-
-
 @lru_cache(maxsize=4)
 def _capture_weird_names(raw: str) -> frozenset[str]:
     """把 `ST_ZEEK_CAPTURE_WEIRD_NAMES` 解析成小写集合（按文本缓存，逐条事件都会问）。"""
@@ -1077,70 +956,6 @@ def _zeek_event_type(
     return conn_states.GENERIC_EVENT_TYPE
 
 
-def _wazuh_event_type(level: Any, rule_groups: str, description: Any) -> str:
-    """结合规则组与等级细分，避免全部压成 wazuh_high_alert。"""
-    groups = (rule_groups or "").lower()
-    if any(k in groups for k in ("web", "attack", "web_scan")):
-        return "wazuh_web_attack"
-    if any(k in groups for k in ("authentication_failed", "authentication_failures")):
-        # 注意：**不能**把 `sshd` 算进来 —— Wazuh 的 sshd 组同时覆盖**成功**登录，
-        # 否则正常运维登录会被判成 brute_force，连带 内置-暴力破解/高频认证失败/撞库
-        # 在无攻击时就报（实机评审 P1）。失败语义已由组名与描述兜底。
-        return "brute_force"
-    if any(k in groups for k in ("malware", "ransomware", "virus", "rootcheck", "trojan")):
-        return "wazuh_malware"
-    # 系统变更只认 FIM（syscheck）与 Wazuh 自身（ossec）。2026-10 实机数据：rule_groups=
-    # windows,system_error 占近 6h 1,981 条 Wazuh 告警里的 1,573 条（79%），其实是「Windows
-    # 错误事件」；原实现把任何含 windows/sysmon 的组都归成 wazuh_system_change，于是修好范围
-    # 闸门后「内置-主机文件完整性变更」（event_type == wazuh_system_change）会把这些错误事件
-    # 误报成文件完整性变更。收紧：windows 系（含 windows_application）错误事件单列
-    # wazuh_system_error；高等级仍由「内置-主机高危告警」按 severity 接住。
-    if any(k in groups for k in ("syscheck", "ossec")):
-        return "wazuh_system_change"
-    if any(k in groups for k in ("windows", "sysmon", "system_error")):
-        return "wazuh_system_error"
-    if any(k in groups for k in ("vulnerability", "cve")):
-        return "wazuh_vulnerability"
-    if any(k in groups for k in ("firewall", "ids", "ips")):
-        return "wazuh_network_alert"
-    if any(k in groups for k in ("audit", "policy")):
-        return "wazuh_policy_violation"
-
-    text = str(description or "").lower()
-    if "brute" in text or "failed password" in text:
-        return "brute_force"
-    # 只认真正的扫描描述（2026-10 实机数据）：原来 `"scan" in text` 会把合规/基线告警里的
-    # "Ensure 'Turn on e-mail scanning'…"、"Scan removable drives"、"script scanning" 也算成
-    # 端口扫描 —— 库里 8 条 `event_type=port_scan` 全是 Wazuh CIS 基准合规项，属误标。
-    if any(k in text for k in ("port scan", "portscan", "port_scan", "扫描")):
-        return "port_scan"
-    if "sql" in text or "injection" in text:
-        return "web_attack"
-
-    try:
-        if int(level) >= 12:
-            return "wazuh_high_alert"
-    except (TypeError, ValueError):
-        pass
-    return "wazuh_alert"
-
-
-def _map_wazuh_level(level: Any) -> Severity:
-    try:
-        value = int(level)
-    except (TypeError, ValueError):
-        return "info"
-    if value >= 15:
-        return "critical"
-    if value >= 12:
-        return "high"
-    if value >= 8:
-        return "medium"
-    if value >= 4:
-        return "low"
-    return "info"
-
-
 _normalize_failures = 0
 _MAX_FAILURE_LOGS = 5
 
@@ -1154,15 +969,13 @@ def normalize(source: str, doc: dict[str, Any]) -> UnifiedLog | None:
     """
     global _normalize_failures
     try:
-        # Filebeat 解析失败的整行也要走同一道闸（抢救或丢弃），Zeek/Wazuh 一视同仁
+        # Filebeat 解析失败的整行也要走同一道闸（抢救或丢弃），Zeek 与签名引擎一视同仁
         unwrapped = _unwrap_filebeat_parse_error(doc, source)
         if unwrapped is None:
             return None
         doc = unwrapped
         if source == "zeek":
             return normalize_zeek(doc)
-        if source == "wazuh":
-            return normalize_wazuh(doc)
         if source == "suricata":
             return normalize_suricata(doc)
         return None

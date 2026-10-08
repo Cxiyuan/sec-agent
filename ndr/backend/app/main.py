@@ -17,7 +17,7 @@ from app.api.router import api_router
 from app.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.db.models import AssetStat, Rule, SystemConfig, User
-from app.rules.builtin import BUILTIN_RULES, DELETED_RULES, RETIRED_RULES, rule_scope
+from app.rules.builtin import BUILTIN_RULES, DELETED_RULES, RETIRED_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,6 @@ _MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
     # 规则适用范围（network/host）：内置规则播种时按条件自动判定（见 rules/builtin.py::rule_scope），
     # 自定义规则由界面选择；检测器按事件的 source_system 过滤
-    "ALTER TABLE rules ADD COLUMN IF NOT EXISTS scope VARCHAR(16) NOT NULL DEFAULT 'network'",
 )
 
 #: 被访问方基线的**口径版本**：
@@ -56,21 +55,8 @@ _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
 
 #: 内置规则改名映射（旧名 → 新名）。
 #: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
-#: 启用状态 / 阈值改动。2026-10：界面不再出现 Zeek/Wazuh 字样，规则名同步改用「网络采集器 /
 #: 主机监控」，旧库靠这张表就地改名。
-_RENAMED_BUILTINS: dict[str, str] = {
-    "内置-Wazuh恶意软件告警": "内置-主机恶意软件告警",
-    "内置-Web攻击（Wazuh规则组）": "内置-Web攻击（主机监控）",
-    "内置-Wazuh登录失败": "内置-主机登录失败",
-    "内置-Wazuh账号锁定": "内置-主机账号锁定",
-    "内置-Wazuh提权告警": "内置-主机提权告警",
-    "内置-Wazuh高危告警": "内置-主机高危告警",
-    "内置-Wazuh文件完整性变更": "内置-主机文件完整性变更",
-    "内置-Wazuh漏洞告警": "内置-主机漏洞告警",
-    "内置-Wazuh网络告警": "内置-主机网络告警",
-    "内置-Wazuh MITRE映射命中": "内置-主机MITRE映射命中",
-    "内置-Wazuh策略违规": "内置-主机策略违规",
-}
+_RENAMED_BUILTINS: dict[str, str] = {}
 
 
 def _delete_builtin_rules(db: Any) -> None:
@@ -269,21 +255,17 @@ def _seed() -> None:
         _delete_builtin_rules(db)
         for spec in BUILTIN_RULES:
             rule_spec = _dynamic_rule_spec(spec)
-            # 适用范围（network/host）按条件自动判定：界面「检测规则」按它分「网络/主机」两组，
-            # 检测器按它过滤（见 rules/builtin.py::rule_scope）
-            scope = rule_scope(rule_spec)
             exists = db.execute(
                 select(Rule).where(Rule.name == rule_spec["name"])
             ).scalar_one_or_none()
             if exists is None:
-                db.add(Rule(**rule_spec, scope=scope))
+                db.add(Rule(**rule_spec))
             elif exists.source == "builtin":
                 # 内置规则随版本同步更新（不覆盖用户自建规则）
                 exists.description = rule_spec.get("description", "")
                 exists.conditions = rule_spec.get("conditions", {})
                 exists.severity = rule_spec.get("severity", exists.severity)
                 exists.priority = rule_spec.get("priority", exists.priority)
-                exists.scope = scope
                 if rule_spec["name"] in _CONFIG_DRIVEN_RULES:
                     # 依赖配置的规则，启用状态跟随配置
                     exists.enabled = rule_spec.get("enabled", exists.enabled)

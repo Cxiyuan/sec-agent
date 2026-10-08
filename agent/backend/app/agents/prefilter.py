@@ -177,7 +177,7 @@ def score_log(
     改动原因（实测）：原来「非常用端口 +0.3 / 外联 +0.2」对**内网到内网**的常规连接
     也生效，于是兜底预筛命中里 91% 是正常已建立连接，把模型预算全吃掉了。
     现在：非标端口只在**跨出受管网段**时算信号；已建立会话/常用端口/已录资产目标要扣分。
-    召回底线：明确可疑信号（后门端口 / 超大数据外发 / 未覆盖的 Wazuh 高危）不受扣分影响。
+    召回底线：明确可疑信号（后门端口 / 超大数据外发 / 签名命中）不受扣分影响。
     """
     score = 0.0
     reasons: list[str] = []
@@ -231,13 +231,6 @@ def score_log(
     ):
         score += 0.2
         reasons.append("目标不在已录资产中")
-
-    # 7) Wazuh 中高级别但规则没命中（规则未覆盖的主机事件）
-    if entry.source_system == "wazuh" and entry.severity in ("medium", "high", "critical"):
-        score += 0.3
-        if entry.severity in ("high", "critical"):
-            strong = True
-        reasons.append(f"未覆盖的 Wazuh {entry.severity} 事件")
 
     # ---- 正常特征扣分（本轮降噪的主要来源）----
     # 注意：“已建立会话”的扣分**只用于内网内部**：对外建立连接正是 C2/后门的典型形状，

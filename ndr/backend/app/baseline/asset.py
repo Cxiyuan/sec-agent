@@ -119,7 +119,6 @@ def observe_entry(records: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
     """
     uid = str(getattr(entry, "uid", "") or "").strip()
     if not uid:
-        # 主机监控（Wazuh）与 files/x509/dhcp/notice 等没有连接语义的日志：不入基线
         return -1
     record = records.get(uid)
     if record is None:

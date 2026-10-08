@@ -5,7 +5,6 @@
 - `exists` 算子语义（必修1）：归一化给所有字符串字段默认空串，原生 `exists` 因此恒真；
   字符串字段的「存在」必须是「键在且值不是空串」；
 - 回溯上限跟随**运行时**保留期（必修3）：`es_config.retention_days()` 而不是静态 settings；
-- 跨来源取证不丢 Wazuh（必修2）：合并排序后截断，`by_source.returned` 与真实返回一致；
 - 超时降级要真的能触发 + 错误文案区分「超时」与「ES 不可达」（应修4）；
 - 网段过滤下推到 ES（应修5）：ip 字段用 CIDR term，text/keyword 用对齐 prefix；
 - 结论枚举校验（应修6）与死代码删除的回归护栏（清理7）。
@@ -241,39 +240,6 @@ def test_is_timeout_ignores_parameter_errors(mods: dict[str, ModuleType]) -> Non
     assert es_query._is_timeout(RuntimeError("search_phase_execution_exception: timed out")) is True
 
 
-# ---------- 必修2：跨来源取证不丢 Wazuh ----------
-
-
-def test_search_multi_keeps_wazuh_hits(
-    monkeypatch: pytest.MonkeyPatch, mods: dict[str, ModuleType]
-) -> None:
-    es_query, tools = mods["es_query"], mods["tools"]
-
-    def fake_search(source: str, **kwargs: Any) -> dict[str, Any]:
-        rows = {
-            "zeek": [
-                {"ts": "2026-01-01T00:00:01+00:00", "source_system": "zeek"},
-                {"ts": "2026-01-01T00:00:03+00:00", "source_system": "zeek"},
-            ],
-            "wazuh": [{"ts": "2026-01-01T00:00:02+00:00", "source_system": "wazuh"}],
-        }[source]
-        return {"hits": rows, "truncated": False, "index": "shentong-events-*"}
-
-    monkeypatch.setattr(es_query, "search", fake_search)
-    out = tools._search_multi(["zeek", "wazuh"], filters={}, limit=2)
-    # 按时间倒序合并后截断：Wazuh 那条（00:00:02）必须留下，不能整段被 zeek 挤掉
-    assert [h["source_system"] for h in out["hits"]] == ["zeek", "wazuh"]
-    assert out["by_source"]["zeek"] == {
-        "returned": 1,
-        "fetched": 2,
-        "truncated": False,
-        "index": "shentong-events-*",
-    }
-    assert out["by_source"]["wazuh"]["returned"] == 1
-    assert out["by_source"]["wazuh"]["fetched"] == 1
-    assert out["fetched"] == 3
-    assert out["truncated"] is True
-    assert any("截掉 1 条" in note for note in out["notes"])
 
 
 def test_search_multi_keeps_other_source_when_one_fails(
@@ -282,7 +248,7 @@ def test_search_multi_keeps_other_source_when_one_fails(
     es_query, tools = mods["es_query"], mods["tools"]
 
     def fake_search(source: str, **kwargs: Any) -> dict[str, Any]:
-        if source == "wazuh":
+        if source == "suricata":
             raise es_query.QueryError("索引不存在")
         return {
             "hits": [{"ts": "2026-01-01T00:00:01+00:00", "source_system": "zeek"}],
@@ -291,9 +257,8 @@ def test_search_multi_keeps_other_source_when_one_fails(
         }
 
     monkeypatch.setattr(es_query, "search", fake_search)
-    out = tools._search_multi(["zeek", "wazuh"], filters={}, limit=10)
+    out = tools._search_multi(["zeek", "suricata"], filters={}, limit=2)
     assert [h["source_system"] for h in out["hits"]] == ["zeek"]
-    assert any("wazuh" in note for note in out["notes"])
 
 
 # ---------- 应修5：网段过滤下推 ----------

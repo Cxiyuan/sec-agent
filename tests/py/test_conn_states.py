@@ -65,7 +65,6 @@ CONN_SOURCED_LABELS = {
 }
 
 # 非 conn_state 来源的事件类型标签全集：由 normalizer 的三个生产函数产出
-# （``_http_event_type`` / ``_zeek_event_type`` 非 conn 分支 / ``_wazuh_event_type``）。
 # 这是"规则引用的标签必须真的有人产出"的两半之一，另一半是 CONN_SOURCED_LABELS。
 OTHER_EVENT_TYPES = {
     "http_login",
@@ -87,15 +86,6 @@ OTHER_EVENT_TYPES = {
     "dhcp_activity",
     "zeek_notice",
     "web_attack",
-    "wazuh_web_attack",
-    "wazuh_malware",
-    "wazuh_system_change",
-    "wazuh_system_error",
-    "wazuh_vulnerability",
-    "wazuh_network_alert",
-    "wazuh_policy_violation",
-    "wazuh_high_alert",
-    "wazuh_alert",
 }
 
 

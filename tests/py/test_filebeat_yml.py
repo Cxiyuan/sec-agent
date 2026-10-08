@@ -9,7 +9,6 @@
 - ``filestream`` 输入只提供 ``log.file.path``（没有 ``log.file.name``），
   且该构建不含 grok 处理器，取文件名只能用 JS script 处理器；
 - Zeek 轮转是**同目录平铺改名**（``conn.log`` → ``conn.2026-10-02-09-30-15.log``），不是日期子目录；
-  ``ndr/wazuh/filebeat.yml`` 是同一套投递形状（disk queue + 命名卷注册表），单独一组测试；
 - 排除名单必须写在 ``prospector.scanner.exclude_files``：写成输入顶层的
   ``exclude_files``（旧 ``log`` 输入选项）8.15.3 实测无效，``stderr.log`` 照样入库。
 """
@@ -23,8 +22,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 FB_PATH = ROOT / "ndr" / "zeek" / "filebeat.yml"
-WAZUH_FB_PATH = ROOT / "ndr" / "wazuh" / "filebeat.yml"
-WAZUH_COMPOSE_PATH = ROOT / "ndr" / "docker-compose.wazuh.yml"
 
 # 非事件文件（Zeek / Filebeat 自身输出）必须被排除
 EXCLUDED = (
@@ -137,64 +134,6 @@ def test_redis_output() -> None:
     assert out["hosts"] and "${REDIS_HOST" in out["hosts"][0]
 
 
-# ---------- Wazuh 线路（与 Zeek 线同一套投递形状，2026-10 QA 后对齐）----------
-
-
-def wazuh_cfg() -> dict[str, Any]:
-    return yaml.safe_load(WAZUH_FB_PATH.read_text(encoding="utf-8"))
-
-
-def test_wazuh_inputs_and_parsers() -> None:
-    inputs = wazuh_cfg()["filebeat.inputs"]
-    assert [i["id"] for i in inputs] == ["wazuh-alerts", "wazuh-archives"]
-    for item in inputs:
-        assert item["type"] == "filestream"
-        ndjson = item["parsers"][0]["ndjson"]
-        # Wazuh 的 rule/data/agent/full_log 在根；套 target 归一化就读不到
-        assert "target" not in ndjson, "Wazuh 输入不能设 ndjson target"
-        assert ndjson["overwrite_keys"] is True, (
-            "否则 Filebeat 的 ECS agent 会盖掉 Wazuh agent.name"
-        )
-        assert item["fields"]["source_system"] == "wazuh"
-        assert item["fields_under_root"] is True
-    # archives 默认关闭：要 .env 里 WAZUH_ARCHIVES_ENABLED=true + enable-logall.sh 两处都开
-    assert inputs[1]["enabled"] == "${WAZUH_ARCHIVES_ENABLED:false}"
-
-
-def test_wazuh_disk_queue_matches_zeek_line() -> None:
-    conf = wazuh_cfg()
-    assert "queue.spool" not in conf, "OSS 版 Filebeat 不支持 queue.spool（Zeek 线实测）"
-    disk = conf["queue.disk"]
-    # 队列目录与读取注册表都要落在命名卷上（docker-compose.wazuh.yml 挂载点）
-    assert "/usr/share/filebeat/data" in disk["path"], disk["path"]
-    assert disk["max_size"] == "1GB"
-    assert disk["segment_size"] == "128MiB"
-    assert disk["write_ahead"] >= 1
-
-
-def test_wazuh_registry_volume_persisted() -> None:
-    """注册表/队列必须持久化：否则每次重建都从头重读全部 alerts.json（生产踩过）。"""
-    compose = yaml.safe_load(WAZUH_COMPOSE_PATH.read_text(encoding="utf-8"))
-    svc = compose["services"]["wazuh-filebeat"]
-    assert "wazuh-filebeat:/usr/share/filebeat/data" in svc["volumes"]
-    assert "wazuh-filebeat" in compose["volumes"]
-
-
-def test_wazuh_redis_output() -> None:
-    out = wazuh_cfg()["output.redis"]
-    assert out["data_type"] == "list"
-    assert out["key"] == "${REDIS_KEY:shentong:events:collect}"
-
-
-# ---------- Wazuh 是内置服务：部署编排必须默认带上它 ----------
-
-DEPLOY_COMPOSE_PATH = ROOT / "ndr" / "docker-compose.deploy.yml"
-
-
-def wazuh_compose() -> dict[str, Any]:
-    return yaml.safe_load(WAZUH_COMPOSE_PATH.read_text(encoding="utf-8"))
-
-
 def _container_paths(svc: dict[str, Any]) -> list[str]:
     paths = []
     for item in svc.get("volumes", []):
@@ -202,60 +141,3 @@ def _container_paths(svc: dict[str, Any]) -> list[str]:
         if len(parts) >= 2 and parts[1].startswith("/"):
             paths.append(parts[1])
     return paths
-
-
-def test_deploy_compose_includes_wazuh() -> None:
-    """部署编排必须 include Wazuh 叠加件：它得随项目一起发布，不是可选外接。"""
-    deploy = yaml.safe_load(DEPLOY_COMPOSE_PATH.read_text(encoding="utf-8"))
-    include = deploy.get("include") or []
-    assert "docker-compose.wazuh.yml" in include, f"deploy 编排没有 include Wazuh：{include}"
-    # include 指向的文件必须真有这两个服务，否则部署时才炸
-    services = wazuh_compose()["services"]
-    assert {"wazuh-manager", "wazuh-filebeat"} <= set(services)
-
-
-def test_wazuh_manager_volumes_match_official_4_14() -> None:
-    """manager 的卷清单按官方 4.14.8 single-node 编排对齐。
-
-    官方把 wodles / agentless 各自挂卷；`etc/shared` 不能单独挂——它就在 etc 卷里，
-    对同一容器挂 `/var/ossec/etc` 和 `/var/ossec/etc/shared` 会遮蔽 etc 卷。"""
-    svc = wazuh_compose()["services"]["wazuh-manager"]
-    paths = set(_container_paths(svc))
-    for expected in (
-        "/var/ossec/etc",
-        "/var/ossec/logs",
-        "/var/ossec/queue",
-        "/var/ossec/api/configuration",
-        "/var/ossec/var/multigroups",
-        "/var/ossec/integrations",
-        "/var/ossec/active-response/bin",
-        "/var/ossec/wodles",
-        "/var/ossec/agentless",
-    ):
-        assert expected in paths, f"manager 少了卷挂载点 {expected}：{sorted(paths)}"
-    # 卷路径不许互相嵌套（一个挂载点盖住另一个）
-    for outer in paths:
-        for inner in paths:
-            assert not inner.startswith(outer + "/"), f"挂载点嵌套了：{outer} 盖住 {inner}"
-
-
-def test_wazuh_manager_api_env_and_ulimits() -> None:
-    """API 用户名/口令与 ulimits 必须显式给出（官方编排也只靠这几个环境变量）。"""
-    svc = wazuh_compose()["services"]["wazuh-manager"]
-    env = svc["environment"]
-    assert env["API_USERNAME"] == "${WAZUH_API_USER:-wazuh-wui}"
-    assert "API_PASSWORD" in env
-    # 默认口令必须是个明显要改的占位，别把弱口令带到生产
-    assert "change-me" in env["API_PASSWORD"], env["API_PASSWORD"]
-    assert svc["ulimits"]["memlock"]["soft"] == -1
-    assert svc["ulimits"]["nofile"]["hard"] == 655360
-
-
-def test_deploy_backend_points_at_builtin_wazuh() -> None:
-    """内置 Wazuh 得让后台知道去哪找：部署编排要给 backend 默认 API 地址与凭据。"""
-    deploy = yaml.safe_load(DEPLOY_COMPOSE_PATH.read_text(encoding="utf-8"))
-    env = deploy["services"]["backend"]["environment"]
-    assert env["ST_WAZUH_API_URL"] == "${WAZUH_API_URL:-https://wazuh-manager:55000}"
-    assert env["ST_WAZUH_API_USER"] == "${WAZUH_API_USER:-wazuh-wui}"
-    # 口令只从 .env 取（不给弱默认值：没配就让界面显式报"未配置"）
-    assert env["ST_WAZUH_API_PASSWORD"] == "${WAZUH_API_PASSWORD:-}"

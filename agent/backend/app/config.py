@@ -109,7 +109,6 @@ class Settings(BaseSettings):
     web_login_path_regex: str = (
         # 常见登录形态都要覆盖：/wp-login.php、/admin/login.do、/api/v2/authenticate、
         # /user/sign_in —— 漏了它们会让「密码喷洒」这类登录类判据漏报（主机侧的登录失败
-        # 统计走 Wazuh 自己的规则，不依赖这里）。
         "(?i)(^|/)(login|signin|sign-in|sign_in|wp-login|auth|authorize|authenticate"
         "|session|sso|oauth|token|passwd|password)([/?.]|$)"
     )
