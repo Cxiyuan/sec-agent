@@ -185,8 +185,23 @@ def _kept(doc: dict[str, Any]) -> bool:
 
 
 def _edges() -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """已确认且**未被环打断**的边 + 层级。
+
+    必须排除 `cycle_broken` 里的边：拓扑检测到 A→B 与 B→A 共存时会打断较弱的一条，
+    链路推导要尊重这个结论，否则会沿着被打断的那条边往回走，链路上出现重复中继
+    （实机踩到：`… → [.214, .203, .214] → 源站`）。
+    """
     topo = relay_nodes.topology()
-    edges = [e for e in (topo.get("edges") or []) if isinstance(e, dict)]
+    broken = {
+        f"{pair[0]}|{pair[1]}"
+        for pair in (topo.get("cycle_broken") or [])
+        if isinstance(pair, list) and len(pair) >= 2
+    }
+    edges = [
+        e
+        for e in (topo.get("edges") or [])
+        if isinstance(e, dict) and f"{e.get('from')}|{e.get('to')}" not in broken
+    ]
     levels = {str(k): int(v) for k, v in (topo.get("levels") or {}).items()}
     return edges, levels
 

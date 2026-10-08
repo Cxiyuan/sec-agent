@@ -411,3 +411,49 @@ def test_dispatch_builds_chain_digest(
     assert digest["dst_ips"] == ["oanew.nczy.edu.cn"]
     assert digest["aggregate"]["chain"]["relay_path"] == [A, B]
     assert digest["samples"], "样本要带给智能体，否则它看不到证据"
+
+
+# ---------- 实测暴露的两个缺陷：各留一条守卫 ----------
+
+
+def test_apply_role_overrides_is_read_time(relay: ModuleType) -> None:
+    """手工指定角色要**读时生效**（检测器回写是 5 分钟一轮，不能让人等）。"""
+    roles = {A: {"roles": ["proxy"], "role_source": "auto", "role_reason": ""}}
+    out = relay.apply_role_overrides(roles, {A: "dns"})
+    assert out[A]["roles"] == ["dns"]
+    assert out[A]["role_source"] == "manual"
+    assert out[A]["role_reason"] == ""
+    # auto / 非法值不动它；未在清单里的地址也不会凭空出现
+    assert relay.apply_role_overrides(roles, {A: "auto"})[A]["roles"] == ["proxy"]
+    assert relay.apply_role_overrides(roles, {A: "whatever"})[A]["roles"] == ["proxy"]
+    assert relay.apply_role_overrides(roles, {"10.0.0.9": "dns"}).get("10.0.0.9") is None
+    assert relay.apply_role_overrides(roles, {A: "both"})[A]["roles"] == ["proxy", "dns"]
+
+
+def test_chain_ignores_cycle_broken_edge(
+    chain_mod: ModuleType, stub_relays: dict[str, Any]
+) -> None:
+    """链路推导必须排除被环打断的边，否则会出现重复中继（实机踩到 [.214,.203,.214]）。"""
+    stub_relays["topology"] = {
+        "edges": [
+            {"from": A, "to": B, "direct": 7683, "header": 332, "confirmed": True},
+            {"from": B, "to": A, "direct": 16, "header": 0, "confirmed": True},
+        ],
+        "levels": {A: 0, B: 1},
+        "cycle_broken": [[B, A]],  # 弱边（16 次）被判断开
+    }
+    edges, _ = chain_mod._edges()
+    assert [e["to"] for e in edges] == [B]  # 只剩 A→B
+    chain = chain_mod._chain_of(
+        {
+            "hop": "back",
+            "src_ip": B,
+            "dst_ip": ORIGIN,
+            "real_client_ip": "8.8.8.8",
+            "hostname": "oanew.nczy.edu.cn",
+            "log_type": "http",
+        },
+        edges,
+    )
+    assert chain is not None
+    assert chain["relay_path"] == [A, B]  # 不再出现重复的 A

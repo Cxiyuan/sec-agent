@@ -329,6 +329,24 @@ def save_sides(db: Session, mapping: dict[str, Any]) -> None:
     invalidate()
 
 
+def apply_role_overrides(roles: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """把手工指定的角色叠加到检测器回写的角色上（**读时生效**）。
+
+    为什么要读时叠加：角色是检测器按流量累计、每 `ST_RELAY_ROLE_DETECT_SECONDS`（默认 300 秒）
+    回写一次 —— 运维在界面上指定完还要等一轮才能看到，体验很差。侧向本来就是读时生效的，
+    角色也用同一口径。（侧向/清单的读取方有 30 秒缓存，所以最迟 30 秒生效。）
+    """
+    out = {str(ip): dict(info or {}) for ip, info in (roles or {}).items()}
+    for ip, value in (overrides or {}).items():
+        role = str(value or "")
+        if role not in (ROLE_PROXY, ROLE_DNS, ROLE_BOTH) or ip not in out:
+            continue
+        out[ip]["roles"] = ["proxy", "dns"] if role == ROLE_BOTH else [role]
+        out[ip]["role_source"] = "manual"
+        out[ip]["role_reason"] = ""
+    return out
+
+
 def describe() -> dict[str, Any]:
     """给界面用的一份快照：清单原文、解析出的条目、角色推算结果、侧向设置、是否已配置。"""
     snap = _snapshot()
@@ -342,7 +360,9 @@ def describe() -> dict[str, Any]:
             for net in nets
         ],
         "configured": bool(str(snap.get("text") or "").strip()),
-        "roles": dict(snap.get("roles") or {}),
+        "roles": apply_role_overrides(
+            dict(snap.get("roles") or {}), dict(snap.get("role_overrides") or {})
+        ),
         "sides": dict(snap.get("sides") or {}),
         "role_overrides": dict(snap.get("role_overrides") or {}),
         "topology": topology(),
