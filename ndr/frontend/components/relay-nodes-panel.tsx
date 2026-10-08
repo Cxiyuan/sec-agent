@@ -49,6 +49,7 @@ export function RelayNodesPanel() {
   const [data, setData] = React.useState<RelayNodesPayload | null>(null);
   const [text, setText] = React.useState("");
   const [sides, setSides] = React.useState<Record<string, string>>({});
+  const [roleOverrides, setRoleOverrides] = React.useState<Record<string, string>>({});
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [sideMsg, setSideMsg] = React.useState("");
@@ -57,6 +58,7 @@ export function RelayNodesPanel() {
     setData(d);
     setText(d.text);
     setSides(d.sides || {});
+    setRoleOverrides(d.role_overrides || {});
   }
 
   async function load() {
@@ -96,18 +98,52 @@ export function RelayNodesPanel() {
   const sideDirty = nodes.some(
     (ip) => (sides[ip] || "auto") !== ((data?.sides || {})[ip] || "auto"),
   );
+  const roleDirty = nodes.some(
+    (ip) => (roleOverrides[ip] || "auto") !== ((data?.role_overrides || {})[ip] || "auto"),
+  );
+  const labelDirty = sideDirty || roleDirty;
 
-  async function saveSides() {
+  const topo = data?.topology || {};
+  const levels = topo.levels || {};
+
+  /** 该中继的上一跳（只认已确认的边）—— 界面上的「级联关系」就靠它 */
+  function parentOf(ip: string): string {
+    const edge = (topo.edges || []).find((x) => x.to === ip && x.confirmed);
+    return edge?.from || "";
+  }
+
+  /** 相对时间（“最后判定/最后看到流量”用；看不懂就原样显示） */
+  function ago(value: string | undefined): string {
+    if (!value) return "—";
+    const ts = Date.parse(value);
+    if (Number.isNaN(ts)) return value.slice(0, 19).replace("T", " ");
+    const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (sec < 60) return `${sec} 秒前`;
+    if (sec < 3600) return `${Math.round(sec / 60)} 分钟前`;
+    if (sec < 86400) return `${Math.round(sec / 3600)} 小时前`;
+    return `${Math.round(sec / 86400)} 天前`;
+  }
+
+  async function saveLabels() {
     setBusy(true);
     setSideMsg("");
     try {
-      const payload = Object.fromEntries(nodes.map((ip) => [ip, sides[ip] || "auto"]));
-      const d = await apiFetch<RelayNodesPayload>("/api/zeek/relay-nodes/sides", {
+      const sidePayload = Object.fromEntries(nodes.map((ip) => [ip, sides[ip] || "auto"]));
+      const rolePayload = Object.fromEntries(
+        nodes.map((ip) => [ip, roleOverrides[ip] || "auto"]),
+      );
+      let d = await apiFetch<RelayNodesPayload>("/api/zeek/relay-nodes/sides", {
         method: "PUT",
-        body: JSON.stringify({ sides: payload }),
+        body: JSON.stringify({ sides: sidePayload }),
       });
+      if (roleDirty) {
+        d = await apiFetch<RelayNodesPayload>("/api/zeek/relay-nodes/roles", {
+          method: "PUT",
+          body: JSON.stringify({ roles: rolePayload }),
+        });
+      }
       apply(d);
-      setSideMsg("已保存侧向设置 —— 检测器约 30 秒内生效（读取方缓存 TTL）");
+      setSideMsg("已保存角色/侧向标注 —— 检测器约 30 秒内生效（读取方缓存 TTL）");
     } catch (e) {
       setSideMsg(e instanceof ApiError ? errorText(e.body) : "保存失败");
     } finally {
@@ -167,38 +203,95 @@ export function RelayNodesPanel() {
             角色与两侧内容由检测器按实际流量自动统计并回写（
             {data?.detected_at ? `推算时间 ${formatDateTime(data.detected_at)}` : "只读"}）。
             <b>内容</b>指该侧带 Host/URI/请求体的明文日志条数（http/dns 这类）；
-            <b>TLS 加密流不算内容</b>。默认按实测自动判（哪侧有内容就保留哪侧），
-            拓扑特殊时可手动指定「保留哪一侧」：
+            <b>TLS 加密流不算内容</b>。角色/侧向默认按实测证据判定，两种情形需要人工指定：
+            两边都无明文内容的中继（只有握手）判不出角色；只在 conn 层出现的中继也一样。
           </p>
+          {(topo.chains || []).length ? (
+            <p className="mb-2 rounded-md border border-input px-3 py-2 text-xs">
+              <b>转发链路（上游→下游）</b>：
+              {(topo.chains || []).map((chain) => (
+                <span key={chain.join(">")} className="ml-2 font-mono">
+                  外网 → {chain.join(" → ")} → 源站
+                </span>
+              ))}
+              {(topo.cycle_broken || []).length ? (
+                <span className="ml-2 text-amber-600">
+                  （检测到环路，已打断最弱边：
+                  {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}）
+                </span>
+              ) : null}
+            </p>
+          ) : null}
           {nodes.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>地址</TableHead>
+                  <TableHead>链路层级</TableHead>
                   <TableHead>推算角色</TableHead>
+                  <TableHead>角色指定</TableHead>
                   <TableHead>客户端侧内容</TableHead>
                   <TableHead>源站侧内容</TableHead>
                   <TableHead>当前保留</TableHead>
                   <TableHead>保留哪一侧</TableHead>
-                  <TableHead>http/ssl 证据</TableHead>
-                  <TableHead>dns 证据</TableHead>
+                  <TableHead>证据（本轮/累计）</TableHead>
+                  <TableHead>最后看到流量</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {nodes.map((ip) => {
+                {nodes
+                  .slice()
+                  .sort((x, y) => (levels[x] ?? 99) - (levels[y] ?? 99))
+                  .map((ip) => {
                   const info = data?.roles?.[ip] || {};
                   const isNet = ip.includes("/");
+                  const parent = parentOf(ip);
+                  const hits = info.hits_total || {};
                   return (
                     <TableRow key={ip}>
                       <TableCell className="font-mono text-xs">{ip}</TableCell>
+                      <TableCell className="text-xs">
+                        <span className="font-mono">L{levels[ip] ?? "?"}</span>
+                        <span className="ml-2 text-muted-foreground">
+                          {parent ? `上一跳 ${parent}` : "入口（无上级）"}
+                        </span>
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">{roleText(info.roles)}</Badge>
+                        {info.role_source === "manual" ? (
+                          <span className="ml-1 text-xs text-muted-foreground">（手动）</span>
+                        ) : null}
+                        {info.role_reason ? (
+                          <div className="text-xs text-muted-foreground">{info.role_reason}</div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        {isNet ? (
+                          <span className="text-xs text-muted-foreground">网段条目按每条 IP 自动判</span>
+                        ) : (
+                          <select
+                            className="h-8 rounded-md border bg-transparent px-2 text-xs"
+                            value={roleOverrides[ip] || "auto"}
+                            onChange={(e) =>
+                              setRoleOverrides((prev) => ({ ...prev, [ip]: e.target.value }))
+                            }
+                          >
+                            <option value="auto">自动（按证据）</option>
+                            <option value="proxy">反向代理 / WAF</option>
+                            <option value="dns">DNS 转发</option>
+                            <option value="both">两者都是</option>
+                          </select>
+                        )}
                       </TableCell>
                       <TableCell>{info.front_content ?? 0}</TableCell>
                       <TableCell>{info.back_content ?? 0}</TableCell>
                       <TableCell className="text-xs">
                         {info.side ? sideText(info.side) : "未判定"}
                         {info.side_source === "manual" ? "（手动）" : ""}
+                        {info.side_source === "kept" ? "（沿用上次）" : ""}
+                        {info.side_reason ? (
+                          <div className="text-muted-foreground">{info.side_reason}</div>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         {isNet ? (
@@ -217,8 +310,10 @@ export function RelayNodesPanel() {
                           </select>
                         )}
                       </TableCell>
-                      <TableCell>{info.proxy ?? 0}</TableCell>
-                      <TableCell>{info.dns ?? 0}</TableCell>
+                      <TableCell className="text-xs">
+                        {info.proxy ?? 0} / {hits.proxy ?? 0} ・ {info.dns ?? 0} / {hits.dns ?? 0}
+                      </TableCell>
+                      <TableCell className="text-xs">{ago(info.last_seen)}</TableCell>
                     </TableRow>
                   );
                 })}
@@ -230,9 +325,15 @@ export function RelayNodesPanel() {
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={busy || !sideDirty} onClick={() => void saveSides()}>
-              保存侧向{sideDirty ? "（有改动）" : ""}
+            <Button size="sm" disabled={busy || !labelDirty} onClick={() => void saveLabels()}>
+              保存角色/侧向标注{labelDirty ? "（有改动）" : ""}
             </Button>
+            {topo.min_evidence ? (
+              <span className="text-xs text-muted-foreground">
+                链路关系门槛：每类证据 ≥{topo.min_evidence} 次才算已确认
+                {topo.pruned ? `（已剔除 ${topo.pruned} 条不在清单内的边）` : ""}
+              </span>
+            ) : null}
             {sideMsg ? <span className="text-xs text-muted-foreground">{sideMsg}</span> : null}
           </div>
         </div>

@@ -350,6 +350,8 @@ def test_cert_self_signed_from_nested_x509(mods: dict[str, Any]) -> None:
     assert issuer, "cert_issuer 不应为空（原来只取顶层 issuer → 恒空）"
     cert = samples.X509["certificate"]
     assert entry.cert_self_signed is (cert["issuer"] == cert["subject"])
+
+
 def test_login_path_regex_covers_common_forms(mods: dict[str, Any]) -> None:
     pattern = mods["config"].settings.web_login_path_regex
     for path in (
@@ -427,6 +429,8 @@ def test_builtin_rule_text_has_no_vendor_words(mods: dict[str, Any]) -> None:
         if "Zeek" in text:
             bad.append(rule["name"])
     assert bad == []
+
+
 def test_rule_cap_and_severity_order(request: pytest.FixtureRequest) -> None:
     if request.config.getoption("--stack") != "ndr":
         pytest.skip("检测器交付侧只存在于 NDR")

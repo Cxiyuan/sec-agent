@@ -484,3 +484,37 @@ def set_relay_sides(
     snapshot = relay_nodes.describe()
     log.info("中继侧向设置已更新：%s", snapshot["sides"])
     return snapshot
+
+
+class RelayRolesIn(BaseModel):
+    #: {中继地址: "auto" | "proxy" | "dns" | "both"}；`auto` = 按流量证据自动判（可清除手工指定）
+    roles: dict[str, str] = Field(default_factory=dict)
+
+
+@router.put("/relay-nodes/roles")
+def set_relay_roles(
+    body: RelayRolesIn,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+):
+    """手工指定每台中继的角色：`auto`（按证据，默认）/ `proxy`（反向代理·WAF）/ `dns`（DNS 转发）/ `both`。
+
+    为什么要能手工指定（2026-10 用户口径）：角色是**按实际流量**推算的 —— 只在
+    http/ssl/dns 事件里出现过才能判出角色；只在 conn 层出现、或两侧都无明文内容的中继
+    （实测 .214 只有 TLS 握手）永远判不出来。这种情形必须让运维能直接定死。
+    优先级：**手工 > 证据 > 未判定（带原因）**；值改成 `auto` 即清除手工指定。
+    """
+    errors = relay_nodes.validate_roles(body.roles)
+    if errors:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "conflict": "field_error",
+                "detail": errors[0]["msg"],
+                "field_errors": errors,
+            },
+        )
+    relay_nodes.save_role_overrides(db, body.roles)
+    snapshot = relay_nodes.describe()
+    log.info("中继角色手工指定已更新：%s", snapshot["role_overrides"])
+    return snapshot

@@ -1,5 +1,4 @@
-"""中继角色自动推算 + 两侧「内容」统计：清单里的每个地址是「反向代理 / WAF」还是
-「内网 DNS 转发器」，以及它的**哪一侧带明文请求内容**。
+"""中继角色自动推算 + 两侧「内容」统计 + **上下级链路拓扑**。
 
 为什么要推算（用户 2026-10 的口径）：中继清单只有一份地址清单，但两类角色的去重方式不同 ——
 反代靠代理头配前后跳，DNS 转发靠「客户端跳 vs 转发跳」配。让运维在界面再填一遍角色既重复
@@ -10,14 +9,28 @@
 - 该地址在 **dns** 事件里出现 → `dns` 证据 +1
 - 其余类型（conn/files/…）不提供证据：conn 覆盖所有流量，判不出角色
 
-**两侧内容统计（2026-10 实机实测新增）**：去重要问的头号问题是「该保留哪一侧」。
-实测本环境的 WAF：客户端侧那一跳是 **TLS 且无 SNI**（44,623 条 ssl 里 SNI 0 条、http 只有 9 条），
-而源站侧那一跳是**明文 HTTP**（28,557 行 http，带 Host/URI/请求体，XFF 里 438 个真实客户端）——
-两侧内容比 9 : 28,557。所以判据必须看「哪一侧有内容」，不能看跳的名字。
+**两侧内容统计**：去重要问的头号问题是「该保留哪一侧」。实测本环境的 WAF：客户端侧那一跳是
+**TLS 且无 SNI**，而源站侧那一跳是**明文 HTTP**（带 Host/URI/请求体，XFF 里是真实客户端）——
+所以判据必须看「哪一侧有内容」，不能看跳的名字。
 
-位置：**检测器**（持锁实例逐条看到全部在范围事件），累计只走内存，不额外扫库；
-每 `ST_RELAY_ROLE_DETECT_SECONDS`（默认 300s）把计数与时间写回 PG 同一个键（**不覆盖清单**）。
-清单变更（指纹变化）时计数清零 —— 旧地址的残留证据没有意义。
+**2026-10 可靠性改造（用户口径：1+2+3）**：
+1. 回写从「整份覆盖」改「**合并**」：每地址带 `hits_total`（跨重启累计，用于角色判定）与
+   `window_hits`（本进程观测数，用于展示活跃度），所以检测器重启或低流量期**不会再掉成「未判定」**；
+2. 每地址带 `last_seen`（最近一次被观测到的业务时间）与 `reason`（未判定原因，分两种：
+   从未观测到证据类流量 / 两侧均无明文内容），界面据此解释「为什么没判定」；
+3. 角色与侧向都支持**运维手工指定**（`role_overrides` / 已存在的 `sides`），优先级：手工 > 证据 > 未判定。
+
+**上下级拓扑**（同一回写节奏，两类独立证据，各自计数、各自标来源）：
+- ① 直连观测边：`hop=relay_internal` 的事件（src/dst 都在清单里）→ 边 `src→dst` 的 `direct += 1`；
+- ② 代理头边：对每条事件用 `chain_peer_ips()` 取「上一跳」（`X-Real-IP` / `XFF 末尾`，发送方自写、
+  客户端塞不进去）→ 边 `上一跳→src` 的 `header += 1`。
+两类证据都 ≥ `ST_RELAY_EDGE_MIN` 才标记为「已确认」（低于门槛的只展示、不参与链路推导）；
+超过 `ST_RELAY_EDGE_STALE_SECONDS` 没再观测只标 `stale`，不删。拓扑按上游→下游排序给出
+`levels`（无入边 = 0 = 最靠近真实客户端的入口）与 `chains`；检出环时打断最弱的边并记录
+`cycle_broken`（界面明示，不静默）。
+
+位置：**检测器**（持锁实例逐条看到全部在范围事件，且在去重之前 —— 所以被丢掉的那一跳也能
+贡献角色与拓扑证据）。本模块只把结果写回 PG，不做任何 I/O 于热路径。
 """
 
 from __future__ import annotations
@@ -50,6 +63,13 @@ CONTENT_LOG_TYPES: frozenset[str] = frozenset({"http", "http2", "smtp", "dns"})
 SIDE_FRONT = relay_nodes.SIDE_FRONT
 SIDE_BACK = relay_nodes.SIDE_BACK
 
+#: 未判定原因（界面直接展示，所以写成人话）
+REASON_NEVER_SEEN = "从未观测到 http/ssl/dns 流量"
+REASON_NO_CONTENT = "两侧均无明文内容，按保守默认保留客户端侧"
+
+#: 拓扑里最多保留多少条链（防病态数据把界面撑爆）
+_MAX_CHAINS = 20
+
 
 def auto_side(front: int, back: int) -> str:
     """按两侧的内容条数判该保留哪一侧（默认保留客户端侧 = 历史行为）。
@@ -66,13 +86,166 @@ def auto_side(front: int, back: int) -> str:
     return SIDE_FRONT
 
 
+def _role_override_list(override: str, evidence: list[str]) -> list[str]:
+    """手工覆盖 → 角色列表；`auto` = 用证据。"""
+    if override == relay_nodes.ROLE_PROXY:
+        return ["proxy"]
+    if override == relay_nodes.ROLE_DNS:
+        return ["dns"]
+    if override == relay_nodes.ROLE_BOTH:
+        return ["proxy", "dns"]
+    return evidence
+
+
+def _side_from_counts(override: str, front: int, back: int, previous: str) -> tuple[str, str]:
+    """侧向 + 来源：手工优先；否则本轮内容足够多就按本轮判，不够就沿用上一次判定。
+
+    沿用上一次是关键：检测器重启后本轮没有内容时，**不能**把已经判对的 `back` 退回默认值
+    （实机踩过：.203 已判「保留源站侧」，重启后一度退回客户端侧）。
+    """
+    if override in (SIDE_FRONT, SIDE_BACK):
+        return override, "manual"
+    minimum = max(1, int(settings.relay_side_min))
+    if max(front, back) >= minimum:
+        return auto_side(front, back), "auto"
+    if previous in (SIDE_FRONT, SIDE_BACK):
+        return previous, "kept"
+    return auto_side(front, back), "auto"
+
+
+def derive_topology(
+    edges: dict[str, dict[str, Any]],
+    nodes: list[str],
+    *,
+    min_evidence: int,
+    stale_seconds: int,
+    now_ts: float,
+    generated_at: str,
+) -> dict[str, Any]:
+    """把边证据整理成「上下级拓扑」：确认的边 + 层级 + 链 + 异常标记。
+
+    - `edges` 键形如 ``"上游|下游"``，值 = ``{"direct": n, "header": n, "last_seen": iso}``；
+    - 只保留**当前清单内**的两端（被移除的地址计入 `pruned`）；
+    - `confirmed`：两类证据任一达到 `min_evidence`（链路推导只用确认的边，其余只展示）；
+    - `stale`：超过 `stale_seconds` 没再观测（按 `last_seen` 的时间戳判）。
+    """
+    alive = set(nodes)
+    pruned = 0
+    kept: list[dict[str, Any]] = []
+    for key, item in sorted(edges.items()):
+        if "|" not in key:
+            continue
+        up, down = key.split("|", 1)
+        if up not in alive or down not in alive or up == down:
+            pruned += 1
+            continue
+        direct = int(item.get("direct") or 0)
+        header = int(item.get("header") or 0)
+        last_seen = str(item.get("last_seen") or "")
+        age = now_ts - _parse_ts(last_seen, now_ts)
+        kept.append(
+            {
+                "from": up,
+                "to": down,
+                "direct": direct,
+                "header": header,
+                "confirmed": max(direct, header) >= max(1, min_evidence),
+                "stale": age > max(60, stale_seconds),
+                "last_seen": last_seen,
+            }
+        )
+
+    confirmed = [(e["from"], e["to"]) for e in kept if e["confirmed"]]
+    levels, cycle_broken = _levels(confirmed, edges)
+
+    # 链：从没有入边的节点一路走到叶子（同一路径只留一条）
+    chains: list[list[str]] = []
+    for start in sorted(n for n in alive if n in levels and n not in {d for _, d in confirmed}):
+        stack: list[list[str]] = [[start]]
+        while stack:
+            path = stack.pop()
+            tail = path[-1]
+            downs = sorted(d for u, d in confirmed if u == tail and d not in path)
+            if not downs:
+                if len(path) > 1:
+                    chains.append(path)
+                continue
+            for down in downs:
+                stack.append([*path, down])
+            if len(chains) > _MAX_CHAINS * 4:  # 病态数据保护
+                break
+    deduped = sorted({tuple(c) for c in chains})[:_MAX_CHAINS]
+    return {
+        "edges": kept,
+        "levels": levels,
+        "chains": [list(c) for c in deduped],
+        "min_evidence": max(1, min_evidence),
+        "pruned": pruned,
+        "cycle_broken": cycle_broken,
+        "generated_at": generated_at,
+    }
+
+
+def _parse_ts(value: str, default: float) -> float:
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError):
+        return default
+
+
+def _levels(
+    confirmed: list[tuple[str, str]], edges: dict[str, dict[str, Any]]
+) -> tuple[dict[str, int], list[list[str]]]:
+    """拓扑排序求层级（无入边 = 0）。有环就打断最弱的边，并记录被打断的边。"""
+    broken: list[list[str]] = []
+    pairs = list(confirmed)
+    for _ in range(8):  # 最多打断 8 次（病态数据下不至于死循环）
+        nodes = sorted({x for pair in pairs for x in pair})
+        incoming: dict[str, set[str]] = {n: set() for n in nodes}
+        for up, down in pairs:
+            incoming[down].add(up)
+        levels: dict[str, int] = {}
+        pending = list(nodes)
+        progress = True
+        while pending and progress:
+            progress = False
+            for node in list(pending):
+                ups = [u for u in incoming[node] if u in levels]
+                if len(ups) != len(incoming[node]):
+                    continue
+                levels[node] = (max((levels[u] for u in ups), default=-1)) + 1
+                pending.remove(node)
+                progress = True
+        if not pending:
+            return levels, broken
+        # 有环：打断「环内」证据最弱的边
+        weakest = None
+        weakest_score = None
+        for up, down in pairs:
+            if up in pending and down in pending:
+                item = edges.get(f"{up}|{down}") or {}
+                score = int(item.get("direct") or 0) + int(item.get("header") or 0)
+                if weakest_score is None or score < weakest_score:
+                    weakest, weakest_score = (up, down), score
+        if weakest is None:
+            break
+        pairs.remove(weakest)
+        broken.append([weakest[0], weakest[1]])
+    return {}, broken
+
+
 class RelayRoleDetector:
-    """累计中继角色证据并周期回写 PG（进程内计数，单写者）。"""
+    """累计中继角色/内容/拓扑证据并周期回写 PG（进程内计数，单写者）。"""
 
     def __init__(self) -> None:
         self._counts: dict[str, dict[str, int]] = {}
         # 两侧的「内容」条数：{ip: {"front": n, "back": n}}；front = 该地址作目的地
         self._content: dict[str, dict[str, int]] = {}
+        # 自上次回写以来的增量（用于与库内累计值合并，避免重启就丢历史判定）
+        self._pending_roles: dict[str, dict[str, int]] = {}
+        self._pending_content: dict[str, dict[str, int]] = {}
+        self._pending_edges: dict[str, dict[str, Any]] = {}
+        self._last_seen: dict[str, str] = {}
         self._signature = ""
         self._last_flush = 0.0
 
@@ -81,20 +254,56 @@ class RelayRoleDetector:
         log_type = str(entry.log_type or "")
         if log_type in CONTENT_LOG_TYPES:
             self._count_content(entry)
+        self._count_edge(entry)
         role = _ROLE_BY_LOG_TYPE.get(log_type)
         if role is None:
             return
+        seen_at = _iso(getattr(entry, "ts", None))
         for ip in (entry.src_ip, entry.dst_ip):
             if ip and relay_nodes.is_relay(ip):
-                counts = self._counts.setdefault(str(ip), {})
+                addr = str(ip)
+                counts = self._counts.setdefault(addr, {})
                 counts[role] = counts.get(role, 0) + 1
+                pending = self._pending_roles.setdefault(addr, {})
+                pending[role] = pending.get(role, 0) + 1
+                self._last_seen[addr] = max(self._last_seen.get(addr, ""), seen_at)
 
     def _count_content(self, entry: UnifiedLog) -> None:
         """记「哪一侧带明文请求内容」：目的地是中继 → 客户端侧；来源是中继 → 源站侧。"""
+        seen_at = _iso(getattr(entry, "ts", None))
         for ip, side in ((entry.dst_ip, "front"), (entry.src_ip, "back")):
             if ip and relay_nodes.is_relay(ip):
-                bucket = self._content.setdefault(str(ip), {"front": 0, "back": 0})
+                addr = str(ip)
+                bucket = self._content.setdefault(addr, {"front": 0, "back": 0})
                 bucket[side] = bucket.get(side, 0) + 1
+                pending = self._pending_content.setdefault(addr, {"front": 0, "back": 0})
+                pending[side] = pending.get(side, 0) + 1
+                self._last_seen[addr] = max(self._last_seen.get(addr, ""), seen_at)
+
+    def _count_edge(self, entry: UnifiedLog) -> None:
+        """累计上下级边证据：① 中继↔中继直连跳 ② 代理头里的「上一跳」。"""
+        src = str(entry.src_ip or "")
+        dst = str(entry.dst_ip or "")
+        seen_at = _iso(getattr(entry, "ts", None))
+        # ① 直连观测：两端都在清单里（中继→中继），方向就是请求前进方向
+        if src and dst and relay_nodes.is_relay(src) and relay_nodes.is_relay(dst) and src != dst:
+            self._bump_edge(src, dst, "direct", seen_at)
+        # ② 代理头：发送方自己追加的位置（X-Real-IP / XFF 末尾），指向「上一跳」
+        # 延迟导入：relay_pairing 反向依赖本模块的常量（CONTENT_LOG_TYPES/SIDE_*），
+        # 模块级导入会成环；函数内导入在首次调用后就是一次 sys.modules 查表，可忽略。
+        if src:
+            from app.detector.relay_pairing import chain_peer_ips
+
+            for peer in chain_peer_ips(entry):
+                other = str(peer or "").strip()
+                if not other or other == src or not relay_nodes.is_relay(other):
+                    continue
+                self._bump_edge(other, src, "header", seen_at)
+
+    def _bump_edge(self, up: str, down: str, kind: str, seen_at: str) -> None:
+        item = self._pending_edges.setdefault(f"{up}|{down}", {"direct": 0, "header": 0})
+        item[kind] = int(item.get(kind) or 0) + 1
+        item["last_seen"] = max(str(item.get("last_seen") or ""), seen_at)
 
     def side_of(self, ip: Any) -> str:
         """这台中继该保留哪一侧：运维设置优先，否则按实测内容自动判（默认客户端侧）。"""
@@ -103,7 +312,12 @@ class RelayRoleDetector:
         if override in (SIDE_FRONT, SIDE_BACK):
             return override
         counts = self._content.get(addr) or {}
-        return auto_side(int(counts.get("front") or 0), int(counts.get("back") or 0))
+        stored = relay_nodes.roles().get(addr) or {}
+        previous = str(stored.get("side") or "")
+        side, _ = _side_from_counts(
+            override, int(counts.get("front") or 0), int(counts.get("back") or 0), previous
+        )
+        return side
 
     def _reset_if_list_changed(self) -> None:
         signature = relay_nodes.raw_text().strip()
@@ -111,28 +325,142 @@ class RelayRoleDetector:
             self._signature = signature
             self._counts = {}
             self._content = {}
+            self._pending_roles = {}
+            self._pending_content = {}
+            self._pending_edges = {}
+            self._last_seen = {}
 
     def snapshot(self) -> dict[str, Any]:
-        """当前证据计数与侧向（要展示给界面看的那份结构）。"""
+        """当前证据 + 与库内累计值**合并**后的展示结构（界面与后续判定都用它）。"""
+        stored = relay_nodes.roles()
         out: dict[str, Any] = {}
         for ip, counts in sorted(self._counts.items()):
-            content = self._content.get(ip) or {}
-            override = relay_nodes.side_override(ip)
-            out[ip] = {
-                "proxy": int(counts.get("proxy", 0)),
-                "dns": int(counts.get("dns", 0)),
-                # 角色名由证据多的那类决定；两类都有就都给（同一个地址既做反代又做 DNS 很常见）
-                "roles": [role for role in ("proxy", "dns") if int(counts.get(role, 0)) > 0],
-                # 两侧的明文请求内容条数 + 当前生效的侧向（界面据此核对/覆盖）
-                "front_content": int(content.get("front") or 0),
-                "back_content": int(content.get("back") or 0),
-                "side": self.side_of(ip),
-                "side_source": "manual" if override in (SIDE_FRONT, SIDE_BACK) else "auto",
-            }
+            out[ip] = self._merge_one(ip, counts, stored.get(ip) or {})
+        # 本轮没观测到、但库里有记录的地址：保留（重启/低流量不再掉成「未判定」）
+        for ip, old in stored.items():
+            if ip not in out and relay_nodes.is_relay(ip):
+                out[ip] = dict(old)
+        # 清单里**从未被观测过**的地址也要出现：界面要能显示「为什么未判定」，
+        # 而不是给一个没有解释的空行（用户 2026-10 的明确要求）。
+        for net in relay_nodes.networks():
+            addr = str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+            if addr in out or addr in stored:
+                continue
+            out[addr] = self._merge_one(
+                addr,
+                {},
+                {
+                    "hits_total": {"proxy": 0, "dns": 0},
+                    "roles": [],
+                    "role_reason": REASON_NEVER_SEEN,
+                },
+            )
         return out
 
+    def _merge_one(
+        self, ip: str, counts: dict[str, int], old: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        stored = old if isinstance(old, dict) else {}
+        pending = self._pending_roles.get(ip) or {}
+        raw_totals = stored.get("hits_total")
+        old_totals = raw_totals if isinstance(raw_totals, dict) else {}
+        totals = {
+            role: int(old_totals.get(role) or 0) + int(pending.get(role) or 0)
+            for role in ("proxy", "dns")
+        }
+        evidence = [role for role in ("proxy", "dns") if int(totals.get(role) or 0) > 0]
+
+        content = self._content.get(ip) or {}
+        pending_content = self._pending_content.get(ip) or {}
+        old_front = int(stored.get("front_total") or 0)
+        old_back = int(stored.get("back_total") or 0)
+        front_total = old_front + int(pending_content.get("front") or 0)
+        back_total = old_back + int(pending_content.get("back") or 0)
+
+        override = relay_nodes.role_override(ip)
+        roles = _role_override_list(override, evidence)
+        side, side_source = _side_from_counts(
+            relay_nodes.side_override(ip),
+            int(content.get("front") or 0),
+            int(content.get("back") or 0),
+            str(stored.get("side") or ""),
+        )
+        # 原因分开给（界面各用各的）：
+        #   角色：手工指定过就不算「未判定」；只在「从未观测到证据类流量」时解释；
+        #   侧向：本轮内容不够、也没有历史判定与手工覆盖时，说明走的是保守默认。
+        if override != relay_nodes.ROLE_AUTO:
+            role_reason = ""
+        elif not any(int(totals.get(r) or 0) for r in ("proxy", "dns")):
+            role_reason = REASON_NEVER_SEEN
+        else:
+            role_reason = ""
+        enough_content = max(int(content.get("front") or 0), int(content.get("back") or 0)) >= max(
+            1, int(settings.relay_side_min)
+        )
+        side_reason = (
+            "" if (enough_content or side_source in ("manual", "kept")) else REASON_NO_CONTENT
+        )
+        return {
+            "proxy": int(counts.get("proxy", 0)),
+            "dns": int(counts.get("dns", 0)),
+            "hits_total": totals,
+            "window_hits": int(sum(int(counts.get(r, 0)) for r in ("proxy", "dns"))),
+            "roles": roles,
+            "role_source": "manual" if override != relay_nodes.ROLE_AUTO else "auto",
+            "front_content": int(content.get("front") or 0),
+            "back_content": int(content.get("back") or 0),
+            "front_total": front_total,
+            "back_total": back_total,
+            "side": side,
+            "side_source": side_source,
+            "last_seen": max(
+                str(self._last_seen.get(ip) or ""), str(stored.get("last_seen") or "")
+            ),
+            "role_reason": role_reason,
+            "side_reason": side_reason,
+        }
+
+    def _merged_edges(self) -> dict[str, dict[str, Any]]:
+        """与库内拓扑合并边证据（累加计数、取最大 last_seen），再重算层级与链。"""
+        stored = relay_nodes.topology().get("edges")
+        merged: dict[str, dict[str, Any]] = {}
+        for item in stored if isinstance(stored, list) else []:
+            if not isinstance(item, dict):
+                continue
+            key = f"{item.get('from')}|{item.get('to')}"
+            merged[key] = {
+                "direct": int(item.get("direct") or 0),
+                "header": int(item.get("header") or 0),
+                "last_seen": str(item.get("last_seen") or ""),
+            }
+        for key, item in self._pending_edges.items():
+            bucket = merged.setdefault(key, {"direct": 0, "header": 0, "last_seen": ""})
+            bucket["direct"] = int(bucket.get("direct") or 0) + int(item.get("direct") or 0)
+            bucket["header"] = int(bucket.get("header") or 0) + int(item.get("header") or 0)
+            bucket["last_seen"] = max(
+                str(bucket.get("last_seen") or ""), str(item.get("last_seen") or "")
+            )
+        return merged
+
+    def derive_and_save_topology(self, db: Any, *, generated_at: str) -> None:
+        merged = self._merged_edges()
+        nodes = [
+            str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+            for net in relay_nodes.networks()
+        ]
+        data = derive_topology(
+            merged,
+            nodes,
+            min_evidence=int(settings.relay_edge_min),
+            stale_seconds=int(settings.relay_edge_stale_seconds),
+            now_ts=time.time(),
+            generated_at=generated_at,
+        )
+        relay_nodes.save_topology(db, data)
+        self._pending_edges = {}
+
     def maybe_flush(self) -> bool:
-        """到点就把证据写回 PG（返回是否写了）。写失败只记警告，不影响检测主循环。"""
+        """到点就把证据（与库内累计值合并后）写回 PG。写失败只记警告，不影响检测主循环。"""
         self._reset_if_list_changed()
         interval = max(30, int(settings.relay_role_detect_seconds))
         now = time.monotonic()
@@ -141,14 +469,20 @@ class RelayRoleDetector:
         self._last_flush = now
         if not relay_nodes.configured():
             return False  # 没有清单就没有推算对象
+        generated_at = datetime.now(UTC).isoformat()
         try:
             with SessionLocal() as db:
-                relay_nodes.save_roles(
-                    db,
-                    self.snapshot(),
-                    detected_at_value=datetime.now(UTC).isoformat(),
-                )
+                relay_nodes.save_roles(db, self.snapshot(), detected_at_value=generated_at)
+                self.derive_and_save_topology(db, generated_at=generated_at)
         except Exception as exc:  # noqa: BLE001
-            log.warning("中继角色写回失败（下一轮重试）: %s", exc)
+            log.warning("中继角色/拓扑写回失败（下一轮重试）: %s", exc)
             return False
+        self._pending_roles = {}
+        self._pending_content = {}
         return True
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=UTC)).isoformat()
+    return ""

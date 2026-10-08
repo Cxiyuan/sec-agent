@@ -240,8 +240,6 @@ def test_is_timeout_ignores_parameter_errors(mods: dict[str, ModuleType]) -> Non
     assert es_query._is_timeout(RuntimeError("search_phase_execution_exception: timed out")) is True
 
 
-
-
 def test_search_multi_keeps_other_source_when_one_fails(
     monkeypatch: pytest.MonkeyPatch, mods: dict[str, ModuleType]
 ) -> None:

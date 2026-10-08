@@ -39,6 +39,16 @@ SIDE_AUTO = "auto"
 SIDE_FRONT = "front"
 SIDE_BACK = "back"
 SIDES: tuple[str, ...] = (SIDE_AUTO, SIDE_FRONT, SIDE_BACK)
+
+#: 角色手工覆盖（与 sides 并列存在同一个键里）：auto = 按证据自动判，其余为运维定死。
+ROLE_AUTO = "auto"
+ROLE_PROXY = "proxy"
+ROLE_DNS = "dns"
+ROLE_BOTH = "both"
+ROLES: tuple[str, ...] = (ROLE_AUTO, ROLE_PROXY, ROLE_DNS, ROLE_BOTH)
+
+#: 上下级拓扑单独一个键：与清单/角色分开存，便于独立回滚。
+TOPOLOGY_KEY = "zeek.relay_topology"
 #: 非法项的告警次数上限（清单是安全边界配置，写错要看得见，但不能刷爆日志）
 _MAX_WARNINGS = 5
 
@@ -51,9 +61,14 @@ _cache: dict[str, Any] = {
     "nets": (),
     "roles": {},
     "sides": {},
+    "role_overrides": {},
     "detected_at": "",
 }
 _warnings = 0
+
+#: 拓扑单独的缓存（它写得没角色那么勤，读得更少）
+_topo_lock = threading.Lock()
+_topo_cache: dict[str, Any] = {"at": 0.0, "data": {}}
 
 
 def parse(text: str) -> tuple[_Net, ...]:
@@ -85,11 +100,15 @@ def _load() -> dict[str, Any]:
     text = str(payload.get("value") or "")
     roles = payload.get("roles") if isinstance(payload.get("roles"), dict) else {}
     sides = payload.get("sides") if isinstance(payload.get("sides"), dict) else {}
+    overrides = (
+        payload.get("role_overrides") if isinstance(payload.get("role_overrides"), dict) else {}
+    )
     return {
         "text": text,
         "nets": parse(text),
         "roles": roles or {},
         "sides": sides or {},
+        "role_overrides": overrides or {},
         "detected_at": str(payload.get("detected_at") or ""),
     }
 
@@ -134,6 +153,17 @@ def sides() -> dict[str, str]:
 def side_override(ip: Any) -> str:
     """该中继的侧向设置：`auto`（默认，按实测内容自动判）/ `front` / `back`。"""
     return sides().get(str(ip or "").strip(), SIDE_AUTO)
+
+
+def role_overrides() -> dict[str, str]:
+    """运维为每台中继**手工指定**的角色（`auto` / `proxy` / `dns` / `both`）。"""
+    value = _snapshot().get("role_overrides")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def role_override(ip: Any) -> str:
+    """该中继的角色手工覆盖；`auto` = 按证据自动判（可清除）。"""
+    return role_overrides().get(str(ip or "").strip(), ROLE_AUTO)
 
 
 def detected_at() -> str:
@@ -206,6 +236,75 @@ def save_roles(db: Session, roles: dict[str, Any], *, detected_at_value: str) ->
     invalidate()
 
 
+def validate_roles(mapping: dict[str, Any]) -> list[dict[str, str]]:
+    """校验角色覆盖：键必须是清单内地址，值必须是 auto/proxy/dns/both。"""
+    errors: list[dict[str, str]] = []
+    for ip, role in dict(mapping or {}).items():
+        if not is_relay(ip):
+            errors.append({"field": "roles", "msg": f"{ip} 不在中继清单里"})
+        if str(role) not in ROLES:
+            errors.append({"field": "roles", "msg": f"{ip} 的取值只能是 auto/proxy/dns/both"})
+    return errors
+
+
+def save_role_overrides(db: Session, mapping: dict[str, Any]) -> None:
+    """保存角色手工覆盖（**不覆盖**清单文本、检测器回写的 roles 与 sides）。"""
+    row = db.get(SystemConfig, KEY)
+    if row is None:
+        row = SystemConfig(key=KEY, value={})
+        db.add(row)
+    payload = _payload(row)
+    payload["role_overrides"] = {str(k): str(v) for k, v in dict(mapping or {}).items()}
+    row.value = payload
+    db.commit()
+    invalidate()
+
+
+# ---------- 上下级拓扑（单独键，检测器回写） ----------
+
+
+def _load_topology() -> dict[str, Any]:
+    try:
+        with SessionLocal() as db:
+            row = db.get(SystemConfig, TOPOLOGY_KEY)
+            data = dict((row.value or {}) if row is not None else {})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("读取中继拓扑失败（按空处理）: %s", exc)
+        data = {}
+    return data
+
+
+def _topology_snapshot() -> dict[str, Any]:
+    now = time.monotonic()
+    if now - float(_topo_cache.get("at") or 0.0) > CACHE_TTL_SECONDS:
+        fresh = _load_topology()
+        with _topo_lock:
+            _topo_cache["data"] = fresh
+            _topo_cache["at"] = now
+    return dict(_topo_cache.get("data") or {})
+
+
+def invalidate_topology() -> None:
+    with _topo_lock:
+        _topo_cache["at"] = 0.0
+
+
+def topology() -> dict[str, Any]:
+    """中继上下级关系（检测器推算回写）：edges / levels / chains / 异常标记。"""
+    return _topology_snapshot()
+
+
+def save_topology(db: Session, data: dict[str, Any]) -> None:
+    """写回拓扑（合并已在检测器里做完，这里只落库）。"""
+    row = db.get(SystemConfig, TOPOLOGY_KEY)
+    if row is None:
+        row = SystemConfig(key=TOPOLOGY_KEY, value={})
+        db.add(row)
+    row.value = dict(data or {})
+    db.commit()
+    invalidate_topology()
+
+
 def validate_sides(mapping: dict[str, Any]) -> list[dict[str, str]]:
     """校验侧向设置：键必须是清单内地址，值必须是 auto/front/back。"""
     errors: list[dict[str, str]] = []
@@ -245,5 +344,7 @@ def describe() -> dict[str, Any]:
         "configured": bool(str(snap.get("text") or "").strip()),
         "roles": dict(snap.get("roles") or {}),
         "sides": dict(snap.get("sides") or {}),
+        "role_overrides": dict(snap.get("role_overrides") or {}),
+        "topology": topology(),
         "detected_at": str(snap.get("detected_at") or ""),
     }

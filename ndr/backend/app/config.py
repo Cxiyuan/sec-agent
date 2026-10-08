@@ -130,6 +130,17 @@ class Settings(BaseSettings):
     )
     exclusion_cache_seconds: int = 30  # 过滤器配置缓存秒数（跨进程最迟这么久生效）
 
+    # ---------- 中继链路（角色/侧向/上下级拓扑） ----------
+    # 上下级边（中继→中继）的最小证据次数：两类证据（直连观测 / 代理头上一跳）各自计数，
+    # 达标才算「已确认的边」（低于门槛的只展示、不参与链路推导）。
+    relay_edge_min: int = 5
+    # 边的陈旧阈值：超过这么久没再观测到，只标 stale、不删（拓扑是历史知识）
+    relay_edge_stale_seconds: int = 86400
+    # 「攻击链还原」页默认时间窗（分钟）与规模上限（条数 / 参与聚合的事件数）
+    chain_default_window_minutes: int = 60
+    chain_max_chains: int = 200
+    chain_max_events: int = 2000
+
     # ---------- 签名引擎（Suricata）规则集 ----------
     # 规则集与状态的共享卷：后端写 staging/ 与请求标记（validate/activate/reset），
     # 容器跑 `suricata -T` 校验后切 active/ 并写 runtime.json（两边各写自己的文件）。

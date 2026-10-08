@@ -876,24 +876,113 @@ export interface RelayNodesPayload {
   nodes: string[];
   /** false = 系统认定「网络里没有中继」（不认代理头、不做去重） */
   configured: boolean;
-  /** 检测器自动推算的角色、证据计数与两侧内容统计（界面只读，侧向可覆盖） */
+  /** 检测器自动推算的角色、证据计数与两侧内容统计（界面只读，侧向/角色可覆盖） */
   roles: Record<
     string,
     {
       proxy?: number;
       dns?: number;
       roles?: string[];
+      /** 本轮（本进程）证据数：看“最近活不活跃” */
+      window_hits?: number;
+      /** 跨重启累计证据数（按单个角色）：角色判定用它，所以重启不会掉成未判定 */
+      hits_total?: { proxy?: number; dns?: number };
       /** 客户端侧（该地址作目的地）的明文请求内容条数 */
       front_content?: number;
       /** 源站侧（该地址作来源）的明文请求内容条数 */
       back_content?: number;
+      front_total?: number;
+      back_total?: number;
       /** 当前生效的侧向：front = 保留客户端侧，back = 保留源站侧 */
       side?: "front" | "back" | string;
-      /** auto = 按实测内容自动判；manual = 运维手动指定 */
-      side_source?: "auto" | "manual" | string;
+      /** auto = 按实测内容自动判；manual = 运维手动指定；kept = 本轮内容不足、沿用上次判定 */
+      side_source?: "auto" | "manual" | "kept" | string;
+      /** 角色来源：manual = 手工指定，auto = 按证据 */
+      role_source?: "auto" | "manual" | string;
+      /** 该中继最近一次被观测到的业务时间 */
+      last_seen?: string;
+      /** 角色未判定的原因（人话）；手工指定过则为空 */
+      role_reason?: string;
+      /** 侧向走保守默认的原因（人话） */
+      side_reason?: string;
     }
   >;
   /** 运维的侧向设置（auto / front / back），键是清单里的地址 */
   sides: Record<string, string>;
+  /** 运维的角色手工指定（auto / proxy / dns / both），键是清单里的地址 */
+  role_overrides: Record<string, string>;
+  /** 上下级链路拓扑（检测器推算回写） */
+  topology: RelayTopology;
   detected_at: string;
+}
+
+/** 中继上下级拓扑：边 / 层级 / 链 + 异常标记 */
+export interface RelayTopology {
+  edges?: Array<{
+    from: string;
+    to: string;
+    direct?: number;
+    header?: number;
+    /** 两类证据任一达到门槛才算“已确认”（链路推导只认已确认的边） */
+    confirmed?: boolean;
+    stale?: boolean;
+    last_seen?: string;
+  }>;
+  levels?: Record<string, number>;
+  chains?: string[][];
+  min_evidence?: number;
+  pruned?: number;
+  cycle_broken?: string[][];
+  generated_at?: string;
+}
+
+/** 攻击链还原：一条链的逐段证据 */
+export interface ChainSegment {
+  from: string;
+  to: string;
+  kind?: string;
+  direct?: number;
+  header?: number;
+  confirmed?: boolean;
+}
+
+/** 攻击链还原：一条链（真实请求IP →（中继…）→ 源站） */
+export interface ChainItem {
+  client: string;
+  client_source?: string;
+  origin: string;
+  origin_kind?: string;
+  relay_path: string[];
+  segments: ChainSegment[];
+  suspicious?: boolean;
+  hop?: string;
+  facts: {
+    events?: number;
+    log_types?: Record<string, number>;
+    event_types?: Record<string, number>;
+    status_codes?: Record<string, number>;
+    signatures?: Record<string, number>;
+    filenames?: Record<string, number>;
+    dns_queries?: Record<string, number>;
+    top_paths?: Record<string, number>;
+    methods?: Record<string, number>;
+    clients?: string[];
+    first_seen?: string;
+    last_seen?: string;
+  };
+}
+
+/** 攻击链列表响应 */
+export interface ChainListPayload {
+  window: { from: string; to: string };
+  relays: {
+    configured?: boolean;
+    sides?: Record<string, string>;
+    role_overrides?: Record<string, string>;
+    levels?: Record<string, number>;
+  };
+  chains: ChainItem[];
+  scanned: number;
+  truncated: boolean;
+  suspicious_only: boolean;
 }

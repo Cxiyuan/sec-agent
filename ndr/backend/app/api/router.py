@@ -19,6 +19,7 @@ from app.api.routes import (
 
 # 总览页的三个新只读端点：直接用「子模块」形式导入（与上面同义的另一种写法，
 # 这里刻意保持模块名可读、便于按名字定位文件）。
+from app.api.routes.chain import router as chain_router
 from app.api.routes.health_components import router as health_components_router
 from app.api.routes.stats_overview import router as stats_overview_router
 from app.api.routes.suricata import router as suricata_router
@@ -41,3 +42,4 @@ api_router.include_router(files.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)
 api_router.include_router(suricata_router)
+api_router.include_router(chain_router)

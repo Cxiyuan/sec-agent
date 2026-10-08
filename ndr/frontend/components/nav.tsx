@@ -8,6 +8,7 @@ import {
   Bot,
   Database,
   Filter,
+  GitBranch,
   LayoutDashboard,
   Network,
   Radio,
@@ -24,6 +25,8 @@ const items = [
   { href: "/admin/status", label: "总览", icon: LayoutDashboard },
   // 行为分析：基线与画像的「看得见的明细 + 可调参数」（与总览的概览图互补）
   { href: "/admin/behavior", label: "行为分析", icon: Activity },
+  // 攻击链还原：真实请求IP →（中继…）→ 源站的链路与动作事实
+  { href: "/admin/chain", label: "攻击链还原", icon: GitBranch },
   { href: "/admin/rules", label: "检测规则", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
   { href: "/admin/networks", label: "监控网段", icon: Network },
