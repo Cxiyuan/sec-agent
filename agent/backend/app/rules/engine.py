@@ -318,6 +318,8 @@ _FIELD_TYPES: dict[str, tuple[str, ...]] = {
     "ja3s": ("ssl",),
     "ja4": ("ssl",),
     "tls_version": ("ssl",),
+    # 握手是否建立（Zeek ssl.log 的 established）：「TLS 握手失败风暴」的判据
+    "tls_established": ("ssl",),
     "cert_issuer": ("ssl",),
     "cert_self_signed": ("ssl",),
 }

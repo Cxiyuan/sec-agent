@@ -80,6 +80,14 @@ DELETED_RULES: dict[str, str] = {
     # （一个自签都没有），且该规则判据只剩这一条布尔（issuer 分支上一步已按实机数据删除）——
     # 属“配置事实”而非攻击事件，故整条删除。
     "内置-自签或异常证书": "按用户口径删除：自签证书不需要检测（属配置事实非攻击事件）",
+    # 2026-10 用户口径：只保留有攻击含义的 TLS 判据，放弃低价值的那条。
+    # 实测（7 天）：event_type=tls_anomaly 共 59 条 ≈ 8 条/天，全部来自 weird.log，
+    # 目标固定在同一个对外 TLS 服务（7 天 2,400+ 次成功会话里约 7% 异常收尾）；
+    # 异常名是 SSL_excessive_alerts_in_record / ssl_early_application_data —— 它们说的是
+    # 「客户端/中间盒与该服务的握手不顺」，属运维/健康信号，不是攻击事件，而这条规则
+    # 是**裸单条匹配**（来一条报一条）。取代它的是两条有攻击含义的判据：
+    # 「内置-TLS弱版本协商」「内置-TLS握手失败风暴」。
+    "内置-TLS异常": "裸单条匹配，实测 8 条/天全是握手不顺的运维信号（非攻击事件）；由新的 TLS 两条判据取代",
     # ----------------- 2026-10：与签名引擎（Suricata / ET Open）重叠的 48 条 -----------------
     # 这 48 条的判据全部落在「HTTP 的 hostname/uri/method/user_agent/cookie/请求体/响应体、
     # 文件属性、TLS 版本、DNS 查询名」这些字段上，而 Suricata 有**一一对应的规则关键字**
@@ -727,17 +735,6 @@ BUILTIN_RULES: list[dict] = [
         },
     },
     {
-        "name": "内置-TLS异常",
-        "description": "TLS/证书异常告警",
-        "source": "builtin",
-        "priority": 30,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [{"field": "event_type", "op": "eq", "value": "tls_anomaly"}],
-        },
-    },
-    {
         "name": "内置-SMTP滥用",
         "description": "SMTP 垃圾邮件/滥用行为",
         "source": "builtin",
@@ -876,6 +873,57 @@ BUILTIN_RULES: list[dict] = [
             "rules": [
                 {"field": "event_type", "op": "eq", "value": "signature_hit"},
                 {"field": "signature_severity", "op": "eq", "value": 3},
+            ],
+        },
+    },
+    # ----------------- TLS 攻击判据（2026-10 按实测重做） -----------------
+    # 背景：原「内置-TLS异常」是裸单条匹配（来一条报一条），实测全是运维信号，已删除（见
+    # DELETED_RULES 说明）。这里换成两条有攻击含义、且带同源同目标频次门槛的判据。
+    # 阈值都是拿线上数据定的，不是拍脑袋：
+    #   弱版本协商：6h 全量 ssl 采样里 SSLv3/TLSv10/TLSv11 共 20 条、集中在 1 对 (源,目的)
+    #     —— 领先的那一对 18 次，其余对 ≤1 次 ⇒ 阈值取 5 次/6 小时：正好落在两者之间的空白区，
+    #     既不会因为「偶发一次」误报，也不会配上过高的门槛变成永不触发的死规则（第一版就是
+    #     这么写错的：10 次/小时，实测单对峰值才 3 次/小时）。
+    #   握手失败：同期 established=false 168 条 / 31 对，领先的一对 105 次、其余 ≤10 次
+    #     ⇒ 阈值取 30 次/6 小时：同样落在空白区，偶发失败不报、风暴才报。
+    # 另：本来还想做「版本回退（客户端 offer 高于协商结果）」——实测该判据 0 条命中
+    #   （这个环境里没有降级特征），做了一个永不触发的死规则没意义，因此不做。
+    {
+        "name": "内置-TLS弱版本协商",
+        "description": "同源同目标持续协商出弱 TLS 版本（SSLv3/TLSv1.0/TLSv1.1）——疑似旧客户端或降级尝试",
+        "source": "builtin",
+        "priority": 29,
+        "severity": "medium",
+        "conditions": {
+            "mode": "count",
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 5,
+            "window": 21600,
+            "logic": "and",
+            "rules": [
+                {
+                    "field": "tls_version",
+                    "op": "in",
+                    "value": ["SSLv2", "SSLv3", "TLSv10", "TLSv11"],
+                },
+            ],
+        },
+    },
+    {
+        "name": "内置-TLS握手失败风暴",
+        "description": "同源同目标大量 TLS 握手未建立（可能是在探测/压制该 TLS 服务，或服务异常）",
+        "source": "builtin",
+        "priority": 21,
+        "severity": "high",
+        "conditions": {
+            "mode": "count",
+            "key": ["src_ip", "dst_ip"],
+            "min_count": 30,
+            "window": 21600,
+            "logic": "and",
+            "rules": [
+                {"field": "log_type", "op": "eq", "value": "ssl"},
+                {"field": "tls_established", "op": "eq", "value": False},
             ],
         },
     },

@@ -232,6 +232,11 @@ FIELDS: dict[str, dict[str, Any]] = {
         "desc": "JA4 TLS 客户端指纹（BSD 子集脚本产出；JA4S/JA4H 等 JA4+ 因许可证未收录，恒空）",
     },
     "tls_version": {"path": "tls_version", "kind": "keyword", "desc": "TLS 版本"},
+    "tls_established": {
+        "path": "tls_established",
+        "kind": "bool",
+        "desc": "TLS 握手是否真的建立（Zeek ssl.log 的 established）；「TLS 握手失败风暴」的判据",
+    },
     "cert_issuer": {"path": "cert_issuer", "kind": "text", "desc": "证书签发者"},
     "cert_self_signed": {
         "path": "cert_self_signed",
@@ -328,6 +333,7 @@ SUMMARY_FIELDS: list[str] = [
     "ja3s",
     "ja4",
     "tls_version",
+    "tls_established",
     "cert_issuer",
     "filename",
     "mime_type",

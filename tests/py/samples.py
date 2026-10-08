@@ -101,6 +101,8 @@ SSL = {
     "client_version": 771,
     "server_version": 771,
     "resumed": False,
+    # 握手是否真的建立（「TLS 握手失败风暴」判据用；实机 ssl.log 有该字段）
+    "established": True,
 }
 
 FILES = {

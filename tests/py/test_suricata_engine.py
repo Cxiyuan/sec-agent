@@ -30,15 +30,15 @@ SIGNATURE_RULES = ("内置-签名命中(高危)", "内置-签名命中(中危)",
 
 
 def test_builtin_rule_count() -> None:
-    """80 - 48（交给签名引擎）+ 3（签名命中分档）= 35。"""
-    assert len(builtin_mod.BUILTIN_RULES) == 35
+    """80 - 48（交给签名引擎）- 1（TLS 异常换成新判据）+ 2（TLS 新判据）+ 3（签名命中分档）= 36。"""
+    assert len(builtin_mod.BUILTIN_RULES) == 36
 
 
 def test_deleted_rules_do_not_come_back() -> None:
     """删掉的 48 条必须在 DELETED_RULES 名单里（否则下次启动会被内置定义重新 upsert 回库）。"""
     names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
     deleted = set(builtin_mod.DELETED_RULES)
-    assert len(deleted) == 52, "4 条历史 + 48 条重叠规则"
+    assert len(deleted) == 53, "4 条历史 + 48 条重叠规则 + 1 条裸单条 TLS 异常（已换新判据）"
     assert not (deleted & names), "删除名单里的规则又回到内置定义了"
     # 抽查几个不同类别的（注入/WebShell/扫描/认证/IOC 名单）
     for name in (
@@ -71,6 +71,39 @@ def test_signature_rules_shape() -> None:
         conds = {c["field"]: c["value"] for c in spec["conditions"]["rules"]}
         assert conds["event_type"] == "signature_hit"
         assert conds["signature_severity"] == sev_value
+
+
+def test_tls_rules_are_attack_oriented() -> None:
+    """TLS 判据按实测重做：删掉裸单条匹配的「内置-TLS异常」，换成两条带频次门槛的判据。
+
+    实测依据（线上、6 小时窗口）：旧 tls_anomaly 7 天 59 条全是「握手不顺」的运维信号；
+    弱版本协商共 20 条、集中在 1 对（领先 18 次 vs 其余 ≤1）⇒ 阈值 5；
+    握手未建立 168 条 / 31 对、领先一对 105 次（其余 ≤10）⇒ 阈值 30。
+    """
+    names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
+    assert "内置-TLS异常" not in names, "裸单条匹配的低价值 TLS 规则应已删除"
+    assert "内置-TLS异常" in builtin_mod.DELETED_RULES, (
+        "删除的规则要备案（否则会被内置定义 upsert 回库）"
+    )
+
+    by_name = {spec["name"]: spec for spec in builtin_mod.BUILTIN_RULES}
+    weak = by_name["内置-TLS弱版本协商"]["conditions"]
+    assert weak["mode"] == "count"
+    assert weak["key"] == ["src_ip", "dst_ip"]
+    assert weak["min_count"] == 5
+    assert weak["window"] == 21600, "窗口要落到实测数据的空白区（1 小时窗口下这条永不触发）"
+    assert weak["rules"][0]["field"] == "tls_version"
+
+    storm = by_name["内置-TLS握手失败风暴"]["conditions"]
+    assert storm["mode"] == "count"
+    assert storm["min_count"] == 30
+    assert storm["window"] == 21600
+    assert {"field": "tls_established", "op": "eq", "value": False} in storm["rules"]
+
+    # 两条都挂在 ssl 日志上（不是通配规则），保证只在 TLS 事件上求值
+    index = build_rule_index(builtin_mod.BUILTIN_RULES)
+    routed = {r["name"] for r in index["types"].get("ssl", [])}
+    assert {"内置-TLS弱版本协商", "内置-TLS握手失败风暴"} <= routed
 
 
 def test_signature_rules_are_routed_to_suricata_logs() -> None:

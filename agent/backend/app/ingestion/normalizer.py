@@ -596,6 +596,8 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
         "ja3s": str(doc.get("ja3s") or "")[:64],
         "ja4": str(doc.get("ja4") or "")[:64],
         "tls_version": str(doc.get("version") or doc.get("tls_version") or "")[:32],
+        # 握手是否真的建立（Zeek ssl.log 的 established）：TLS 握手失败风暴的判据
+        "tls_established": _to_bool(doc.get("established")),
         "cert_issuer": cert_issuer,
         "cert_self_signed": cert_self_signed,
         # qtype 存的是 **Zeek 原始值**：dns.log 里 `qtype` 是数字码（1=A、28=AAAA、16=TXT…），

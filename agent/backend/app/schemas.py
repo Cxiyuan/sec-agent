@@ -102,6 +102,9 @@ class UnifiedLog(BaseModel):
     # 自签判定（normalizer 由 x509 的 certificate.issuer/subject 算出）：
     # 引擎没有「字段对字段」比较，自签只能在归一化层算好——否则规则无法表达。
     cert_self_signed: bool | None = None
+    # TLS 握手是否真的建立（Zeek ssl.log 的 `established`）：「TLS 握手失败风暴」的判据。
+    # 只在这种日志上有值，其余为 NULL。
+    tls_established: bool | None = None
     # DNS / 文件
     qtype: str = ""
     filename: str = ""

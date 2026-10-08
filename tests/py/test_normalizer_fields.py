@@ -56,6 +56,14 @@ def test_raw_is_self_describing(name: str) -> None:
         assert entry.raw["source_file"] == entry.source_file
 
 
+def test_ssl_established_mapped() -> None:
+    """TLS 握手是否建立要落成字段：规则靠它判「TLS 握手失败风暴」。"""
+    entry = normalize_zeek(samples.DOCS["ssl"])
+    assert entry is not None and entry.tls_established is True
+    failed = normalize_zeek({**samples.SSL, "established": False})
+    assert failed is not None and failed.tls_established is False
+
+
 def test_raw_keeps_inner_document() -> None:
     """raw 是解包后的内层原文（不是 Filebeat 的信封）。"""
     entry = normalize_zeek(samples.DOCS["conn"])
