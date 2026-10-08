@@ -9,6 +9,7 @@ import {
   Database,
   Filter,
   GitBranch,
+  Share2,
   LayoutDashboard,
   Network,
   Radio,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@shentong/ui";
 import { apiFetch, type AuthMe, type NetworksStatus } from "@/lib/api";
+import { loadAliases } from "@/lib/aliases";
 
 // 第 7 期拆页：左侧导航按链路分段。
 // 第一项「总览」（运行状态页，路由仍是 /admin/status）同时是默认落地页（`/` 重定向到这里）；
@@ -30,6 +32,8 @@ const items = [
   { href: "/admin/rules", label: "检测规则", icon: SlidersHorizontal },
   { href: "/admin/collect", label: "采集接入", icon: Radio },
   { href: "/admin/networks", label: "监控网段", icon: Network },
+  // 拓扑发现：自动发现网络拓扑（转发链路 / 全量通信两视图）
+  { href: "/admin/topology", label: "拓扑发现", icon: Share2 },
   { href: "/admin/storage", label: "数据存储", icon: Database },
   { href: "/admin/filters", label: "过滤规则", icon: Filter },
   { href: "/admin/agent", label: "智能体对接", icon: Bot },
@@ -40,6 +44,11 @@ export function Nav() {
   const pathname = usePathname();
   const router = useRouter();
   const [me, setMe] = React.useState<AuthMe | null>(null);
+
+  // 节点别名是全局展示层数据：导航在每个页面都挂载，顺手在全局拉一次（已拉过就不再请求）
+  React.useEffect(() => {
+    void loadAliases();
+  }, []);
 
   // 首次使用强制向导：未配置监控网段 -> 跳 /setup（网段同时也是 Zeek 的抓包范围）
   React.useEffect(() => {

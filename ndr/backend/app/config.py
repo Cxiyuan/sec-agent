@@ -141,6 +141,14 @@ class Settings(BaseSettings):
     chain_max_chains: int = 200
     chain_max_events: int = 2000
 
+    # ---------- 拓扑发现（/admin/topology） ----------
+    # 「转发链路」视图：节点/边的展示上限（两者都按事件数取前 N，超出在界面上明说）
+    topology_node_limit: int = 60
+    topology_edge_limit: int = 200
+    # 「全量通信」视图：每个源节点最多画几条出边 + 聚合结果进程内缓存秒数
+    topology_full_edge_per_node: int = 8
+    topology_cache_seconds: int = 120
+
     # ---------- 签名引擎（Suricata）规则集 ----------
     # 规则集与状态的共享卷：后端写 staging/ 与请求标记（validate/activate/reset），
     # 容器跑 `suricata -T` 校验后切 active/ 并写 runtime.json（两边各写自己的文件）。

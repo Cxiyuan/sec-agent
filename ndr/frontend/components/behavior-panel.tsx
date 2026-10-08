@@ -23,6 +23,7 @@ import {
 } from "@shentong/ui";
 
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
+import { displayName, useAliases } from "@/lib/aliases";
 import type {
   AssetListPayload,
   BaselineConfigItem,
@@ -66,6 +67,17 @@ function topKeys(map: Record<string, number> | undefined, n: number): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
     .map(([key]) => key);
+}
+
+/** 单个 IP 的展示：有别名时「别名（真实 IP）」，没别名就是 IP（真实 IP 永远可见） */
+function ipLabel(ip: string): string {
+  const name = displayName(ip);
+  return name && name !== ip ? `${name}（${ip}）` : ip;
+}
+
+/** IP 列表的展示（比 topKeys 多一步别名替换） */
+function ipLabels(map: Record<string, number> | undefined, n: number): string {
+  return topKeys(map, n).map(ipLabel).join(", ");
 }
 
 /**
@@ -194,11 +206,11 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
       <div className="grid gap-2 sm:grid-cols-2">
         <p>
           <span className="text-muted-foreground">来源 IP：</span>
-          <span className="font-mono">{topKeys(row.src_ips, 5).join(", ") || "-"}</span>
+          <span className="font-mono">{ipLabels(row.src_ips, 5) || "-"}</span>
         </p>
         <p>
           <span className="text-muted-foreground">服务端 IP：</span>
-          <span className="font-mono">{topKeys(row.dst_ips, 5).join(", ") || "-"}</span>
+          <span className="font-mono">{ipLabels(row.dst_ips, 5) || "-"}</span>
         </p>
       </div>
       <p className="break-all">
@@ -224,6 +236,8 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
 }
 
 export function BehaviorPanel() {
+  // 展示层别名：画像/基线里出现的 IP 优先显示别名（真实 IP 以括号补在旁边）
+  useAliases();
   const errs = usePanelErrors();
   const [overview, setOverview] = React.useState<BaselinePayload | null>(null);
   const [config, setConfig] = React.useState<BaselineConfigPayload | null>(null);
@@ -516,7 +530,7 @@ export function BehaviorPanel() {
                     <Badge variant="critical">风险 {(item.risk_score ?? 0).toFixed(2)}</Badge>
                     <span className="font-medium">{item.entity_display || item.entity_key}</span>
                     <span className="font-mono text-muted-foreground">
-                      {topKeys(item.dst_ips, 2).join(", ")}
+                      {ipLabels(item.dst_ips, 2)}
                     </span>
                     <span className="text-muted-foreground">判定 {formatDateTime(item.risk_at)}</span>
                     <span className="text-muted-foreground">
@@ -598,7 +612,7 @@ export function BehaviorPanel() {
               <TableBody>
                 {numeric.items.map((group) => (
                   <TableRow key={group.ip}>
-                    <TableCell className="font-mono text-xs">{group.ip}</TableCell>
+                    <TableCell className="font-mono text-xs">{ipLabel(group.ip)}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {group.features.map((f) => (
@@ -736,7 +750,7 @@ export function BehaviorPanel() {
                         <TableCell className="text-xs">{formatDateTime(row.last_seen)}</TableCell>
                         <TableCell>{row.obs_count ?? 0}</TableCell>
                         <TableCell className="font-mono text-xs">
-                          {topKeys(row.dst_ips, 2).join(", ") || "-"}
+                          {ipLabels(row.dst_ips, 2) || "-"}
                         </TableCell>
                         <TableCell className="text-xs">
                           {row.fail_count ?? 0}/{row.success_count ?? 0}

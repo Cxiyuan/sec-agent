@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, LogOut, Shield } from "lucide-react";
+import { formatDateTime } from "@shentong/ui";
 import { apiFetch, clearToken, type AgentPushPayload, type AuthMe, type DetectorStats } from "@/lib/api";
 
 /**
@@ -30,7 +31,7 @@ interface Notice {
 function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): Notice[] {
   const out: Notice[] = [];
   if (stats?.paused) {
-    const since = stats.paused_since ? `（自 ${stats.paused_since.replace("T", " ").slice(0, 19)}）` : "";
+    const since = stats.paused_since ? `（自 ${formatDateTime(stats.paused_since)}）` : "";
     out.push({ key: "paused", text: `检测器已暂停消费${since}`, href: "/admin/status", danger: true });
   }
   if (stats?.queue_failed) {

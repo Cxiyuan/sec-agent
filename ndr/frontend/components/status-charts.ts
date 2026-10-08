@@ -1,4 +1,5 @@
 import type { EChartsOption } from "echarts";
+import { formatClock, formatHourSlot, formatShort } from "@shentong/ui";
 import type {
   AgentPushPayload,
   BaselinePayload,
@@ -61,30 +62,22 @@ export function formatBytes(value: number | null | undefined): string {
   return `${sign}${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
 }
 
-/** 时间戳（毫秒）→ `HH:mm`；采样点的 ts 是秒或毫秒都要能用。 */
+/** 时间戳（毫秒）→ `HH:mm`（北京时间）；采样点的 ts 是秒或毫秒都要能用。 */
 function clockOf(ts: number | undefined): string {
   if (!ts) return "";
   const ms = ts > 1e12 ? ts : ts * 1000;
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return formatClock(ms);
 }
 
-/** ISO 时间戳 → `MM-DD HH:MM`（画像风险的判定时间）。空值/脏值一律给 `-`，不显示 NaN。 */
+/** ISO 时间戳 → `MM-DD HH:MM`（北京时间，画像风险的判定时间）。空值/脏值一律给 `-`，不显示 NaN。 */
 function stampOf(iso: string | null | undefined): string {
   if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatShort(iso);
 }
 
 function hourOf(iso: string): string {
   if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(
-    d.getHours()
-  ).padStart(2, "0")}:00`;
+  return formatHourSlot(iso);
 }
 
 /** 采样点 → 每分钟值（**用该点自己的 interval_seconds**：检测器重启后首段可能只有几十秒）。 */

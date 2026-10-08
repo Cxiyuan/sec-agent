@@ -6,6 +6,7 @@ import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { formatDateTime } from "@shentong/ui";
 import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
 const SELECT_CLS = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
@@ -274,7 +275,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
           )}
           {status && (
             <span className="text-xs text-muted-foreground">
-              最近重载：{status.last_reload ? status.last_reload.replace("T", " ").slice(0, 19) : "—"}
+              最近重载：{status.last_reload ? formatDateTime(status.last_reload) : "—"}
             </span>
           )}
         </div>

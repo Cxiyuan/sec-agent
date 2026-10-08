@@ -6,7 +6,7 @@
  * 否则排查时对时间线会对不上（而且容器日志也用北京时间，前端要一致）。
  */
 
-const TIME_ZONE = "Asia/Shanghai";
+export const TIME_ZONE = "Asia/Shanghai";
 
 export const SEVERITY_LABEL: Record<string, string> = {
   critical: "严重",
@@ -71,9 +71,19 @@ export function directionText(value?: string | null): string {
   return DIRECTION_LABEL[value] ?? value;
 }
 
-function toDate(value?: string | Date | null): Date | null {
-  if (!value) return null;
-  const d = value instanceof Date ? value : new Date(value);
+function toDate(value?: string | number | Date | null): Date | null {
+  // 0 与 "" 都视作「没有值」：时间戳 0 在展示层没有意义，一律回退成空。
+  if (value === 0 || value === null || value === undefined || value === "") return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "number") {
+    const fromNumber = new Date(value);
+    return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+  }
+  // 不带时区的时间串按**北京时间**解释：`new Date("2026-10-09 02:00:00")` 在浏览器里按本地时区
+  // 解析，机器时区一变显示的就不是北京时间了（后端/脚本偶尔会给无偏移串）。
+  const text = String(value).trim();
+  const naive = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(text);
+  const d = new Date(naive ? `${text.replace(" ", "T")}+08:00` : value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -103,6 +113,22 @@ const timeFmt = new Intl.DateTimeFormat("zh-CN", {
   hour12: false,
 });
 
+const clockFmt = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: TIME_ZONE,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const shortFmt = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: TIME_ZONE,
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 function tidy(text: string): string {
   // zh-CN 默认给 2026/09/25 21:30:00，统一换成 2026-09-25 21:30:00
   return text.replace(/\//g, "-");
@@ -121,7 +147,29 @@ export function formatDate(value?: string | Date | null): string {
 }
 
 /** 只要时分秒（北京时间）：21:30:00 */
-export function formatTime(value?: string | Date | null): string {
+export function formatTime(value?: string | number | Date | null): string {
   const d = toDate(value);
   return d ? tidy(timeFmt.format(d)) : "-";
+}
+
+/** 只要时:分（北京时间）：21:30 */
+export function formatClock(value?: string | number | Date | null): string {
+  const d = toDate(value);
+  return d ? tidy(clockFmt.format(d)) : "-";
+}
+
+/** 月-日 时:分（北京时间）：09-25 21:30 */
+export function formatShort(value?: string | number | Date | null): string {
+  const d = toDate(value);
+  return d ? tidy(shortFmt.format(d)) : "-";
+}
+
+/** 月-日 整点（北京时间）：09-25 21:00 */
+export function formatHourSlot(value?: string | number | Date | null): string {
+  const d = toDate(value);
+  if (!d) return "-";
+  // 日期段复用 dateFmt（去掉年份），小时段复用 clockFmt（保证是按北京时间的 24 小时制）
+  const day = tidy(dateFmt.format(d)).slice(5);
+  const hour = clockFmt.format(d).slice(0, 2);
+  return `${day} ${hour}:00`;
 }

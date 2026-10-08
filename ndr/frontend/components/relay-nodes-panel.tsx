@@ -22,6 +22,7 @@ import {
 
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
 import type { RelayNodesPayload } from "@/lib/api";
+import { useAliases } from "@/lib/aliases";
 
 /**
  * 中继节点清单（反向代理 / WAF / 内网 DNS 转发器）——「监控网段」页的第二块。
@@ -45,6 +46,8 @@ function roleText(roles: string[] | undefined): string {
 }
 
 export function RelayNodesPanel() {
+  // 展示层别名：中继名优先显示别名（真实 IP 紧跟在旁边）
+  const { displayName } = useAliases();
   const errs = usePanelErrors();
   const [data, setData] = React.useState<RelayNodesPayload | null>(null);
   const [text, setText] = React.useState("");
@@ -116,7 +119,7 @@ export function RelayNodesPanel() {
   function ago(value: string | undefined): string {
     if (!value) return "—";
     const ts = Date.parse(value);
-    if (Number.isNaN(ts)) return value.slice(0, 19).replace("T", " ");
+    if (Number.isNaN(ts)) return formatDateTime(value);
     const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
     if (sec < 60) return `${sec} 秒前`;
     if (sec < 3600) return `${Math.round(sec / 60)} 分钟前`;
@@ -233,7 +236,12 @@ export function RelayNodesPanel() {
                   const hits = info.hits_total || {};
                   return (
                     <TableRow key={ip}>
-                      <TableCell className="font-mono text-xs">{ip}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {displayName(ip)}
+                        {displayName(ip) !== ip ? (
+                          <span className="ml-1 text-muted-foreground">{ip}</span>
+                        ) : null}
+                      </TableCell>
                       <TableCell className="text-xs">
                         <span className="font-mono">L{levels[ip] ?? "?"}</span>
                         <span className="ml-2 text-muted-foreground">

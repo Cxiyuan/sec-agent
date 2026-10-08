@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Chart } from "@shentong/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Chart, formatDateTime, formatTime } from "@shentong/ui";
 import type {
   AgentPushPayload,
   BaselinePayload,
@@ -291,13 +291,13 @@ export function StatusPanel() {
           <span className="text-xs text-muted-foreground">{auto ? "每 15 秒自刷新。" : "自动刷新已关闭。"}</span>
           {health?.checked_at ? (
             <span className="text-xs text-muted-foreground">
-              组件探测 {health.checked_at.replace("T", " ").slice(11, 19)}
+              组件探测 {formatTime(health.checked_at)}
               {health.cached ? "（缓存）" : ""}
             </span>
           ) : null}
           {overview?.computed_at ? (
             <span className="text-xs text-muted-foreground">
-              流量聚合 {overview.computed_at.replace("T", " ").slice(11, 19)}
+              流量聚合 {formatTime(overview.computed_at)}
               {overview.cached ? "（缓存 5 分钟）" : ""}
             </span>
           ) : null}
@@ -536,7 +536,7 @@ export function StatusPanel() {
             <Badge variant={stats?.enabled ? "info" : "outline"}>{stats?.enabled ? "检测开启" : "检测关闭"}</Badge>
             {stats?.paused ? (
               <Badge variant="critical">
-                检测器已暂停消费{stats.paused_since ? `（自 ${stats.paused_since.replace("T", " ").slice(0, 19)}）` : ""}
+                检测器已暂停消费{stats.paused_since ? `（自 ${formatDateTime(stats.paused_since)}）` : ""}
               </Badge>
             ) : null}
             <span>消费者 {stats?.leader?.holder || "无（选主键过期）"}</span>
@@ -546,7 +546,7 @@ export function StatusPanel() {
               <span>· 策略跳过（内网常规）{stats.policy.internal_routine}</span>
             ) : null}
             {stats?.last_dropped_at ? (
-              <span>· 最近丢弃 {stats.last_dropped_at.replace("T", " ").slice(0, 19)}</span>
+              <span>· 最近丢弃 {formatDateTime(stats.last_dropped_at)}</span>
             ) : null}
             {stats?.dedup ? <span>· 判重：{stats.dedup.note || "已下放到智能体"}</span> : null}
             {logstash?.logstash ? (

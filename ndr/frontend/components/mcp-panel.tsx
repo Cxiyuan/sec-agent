@@ -16,6 +16,7 @@ import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import { formatDateTime } from "@shentong/ui";
 import { emptyOrFailed, loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
 /** 读取失败的接口名（错误条与空态用，别再让 500 显示成「还没有令牌」）。 */
@@ -39,14 +40,10 @@ function daysFromInput(raw: string): number | null | undefined {
   return n;
 }
 
-/** 到期时间显示：ISO 串 → 本地「YYYY-MM-DD HH:mm」；空串 = 永不过期。 */
+/** 到期时间显示：ISO 串 → 北京时间「YYYY-MM-DD HH:mm:ss」；空串 = 永不过期。 */
 function fmtExpiry(iso: string | undefined): string {
   if (!iso) return "";
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return iso;
-  const d = new Date(t);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return formatDateTime(iso);
 }
 
 /** 还剩几天（用来在到期前提醒；已过期返回空串，由 Badge 负责说清）。 */
@@ -359,7 +356,7 @@ export function McpPanel() {
                       {t.prefix}…
                     </TableCell>
                     <TableCell>{t.call_count}</TableCell>
-                    <TableCell>{t.last_used_at ? t.last_used_at.slice(0, 19).replace("T", " ") : "-"}</TableCell>
+                    <TableCell>{t.last_used_at ? formatDateTime(t.last_used_at) : "-"}</TableCell>
                     <TableCell>
                       {t.expired ? (
                         <Badge variant="high">已过期</Badge>
@@ -530,7 +527,7 @@ export function McpPanel() {
               {conclusions.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell>
-                    {c.updated_at ? c.updated_at.slice(0, 19).replace("T", " ") : "-"}
+                    {c.updated_at ? formatDateTime(c.updated_at) : "-"}
                   </TableCell>
                   <TableCell className="font-mono">{c.event_id || c.fingerprint || "-"}</TableCell>
                   <TableCell>{c.status || "-"}</TableCell>

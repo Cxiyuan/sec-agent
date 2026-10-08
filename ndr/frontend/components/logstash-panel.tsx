@@ -5,6 +5,7 @@ import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { formatDateTime } from "@shentong/ui";
 import { ApiError, apiFetch, errorText, type DetectorStats, type LogstashParams, type LogstashStatus } from "@/lib/api";
 import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
@@ -160,7 +161,7 @@ export function LogstashPanel() {
               <Badge variant="outline">待归一化积压 {data.queue_depth ?? "-"}</Badge>
             </div>
             <p className="text-muted-foreground">
-              最近下发：{data.updated_at ? data.updated_at.replace("T", " ").slice(0, 19) : "—"}
+              最近下发：{data.updated_at ? formatDateTime(data.updated_at) : "—"}
               {" · "}
               <span className="font-mono">{data.config_path}</span>
             </p>

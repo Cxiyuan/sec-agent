@@ -5,7 +5,7 @@ import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { apiFetch, type RebuildDryRun, type RebuildRun } from "@/lib/api";
-import { statusText } from "@shentong/ui";
+import { formatDateTime, statusText } from "@shentong/ui";
 
 /**
  * 存量重建面板：dry-run（只算不写）→ 人工核对 → 执行 → 可回滚。
@@ -169,7 +169,7 @@ export function RebuildPanel() {
                   <Badge variant={r.status === "finished" ? "outline" : "high"}>{statusText(r.status)}</Badge>
                   {r.dry_run ? <span className="text-muted-foreground">dry-run</span> : null}
                   <span className="text-muted-foreground">
-                    {r.started_at ? r.started_at.replace("T", " ").slice(0, 19) : "-"}
+                    {r.started_at ? formatDateTime(r.started_at) : "-"}
                   </span>
                   {!r.dry_run && r.status === "finished" && (
                     <Button

@@ -5,8 +5,9 @@ import { useSearchParams } from "next/navigation";
 import { Nav } from "@/components/nav";
 import { TopBar } from "@/components/topbar";
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, apiFetch, ApiError, errorText } from "@shentong/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, apiFetch, ApiError, errorText, formatDateTime } from "@shentong/ui";
 import type { ChainItem, ChainListPayload } from "@/lib/api";
+import { useAliases } from "@/lib/aliases";
 
 /**
  * 攻击链还原：把每次请求还原成「真实请求IP →（中继…）→ 源站」+ 动作事实聚合。
@@ -54,6 +55,8 @@ function factLine(name: string, data?: Record<string, number>): React.ReactNode 
 }
 
 function ChainInner() {
+  // 展示层别名：链路上的每一跳都优先显示别名（没起名就是 IP）
+  const { displayName } = useAliases();
   const params = useSearchParams();
   const errs = usePanelErrors();
   const [minutes, setMinutes] = React.useState(60);
@@ -185,15 +188,15 @@ function ChainInner() {
                       {chain.suspicious ? "可疑" : "常规"}
                     </Badge>
                     <span className="font-mono">
-                      {chain.client || "未知请求IP"}
+                      {displayName(chain.client) || "未知请求IP"}
                       {chain.relay_path.length
-                        ? ` → ${chain.relay_path.join(" → ")} → ${chain.origin || "源站"}`
-                        : ` → ${chain.origin || "源站"}`}
+                        ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${displayName(chain.origin) || "源站"}`
+                        : ` → ${displayName(chain.origin) || "源站"}`}
                     </span>
                     <span className="text-xs font-normal text-muted-foreground">
                       {facts.events ?? 0} 条事件
-                      {facts.first_seen ? ` · 起 ${facts.first_seen.slice(0, 19).replace("T", " ")}` : ""}
-                      {facts.last_seen ? ` · 止 ${facts.last_seen.slice(0, 19).replace("T", " ")}` : ""}
+                      {facts.first_seen ? ` · 起 ${formatDateTime(facts.first_seen)}` : ""}
+                      {facts.last_seen ? ` · 止 ${formatDateTime(facts.last_seen)}` : ""}
                     </span>
                     <div className="ml-auto flex gap-2">
                       <Button

@@ -6,6 +6,7 @@ import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import { formatDateTime } from "@shentong/ui";
 import {
   ConditionEditor,
   EMPTY_COND,
@@ -58,7 +59,7 @@ const SOURCE_TEXT: Record<string, string> = {
 function SampleLine({ s }: { s: IngestFilterSample }) {
   return (
     <p className="font-mono text-xs text-muted-foreground" title={s.ref ? `事件引用 ${s.ref}` : ""}>
-      [{String(s.ts || s.at || "").slice(0, 19).replace("T", " ")}] {s.source_system} ·{" "}
+      [{formatDateTime(s.ts || s.at)}] {s.source_system} ·{" "}
       {s.event_type} · {s.src_ip}
       {s.src_port ? `:${s.src_port}` : ""} → {s.dst_ip}
       {s.dst_port ? `:${s.dst_port}` : ""} · {String(s.summary || "").slice(0, 120)}
@@ -451,7 +452,7 @@ export function IngestFiltersPanel() {
               ))}
             {lastHitAt && (
               <p className="text-xs text-muted-foreground">
-                最近命中：{String(lastHitAt).slice(0, 19).replace("T", " ")}
+                最近命中：{formatDateTime(lastHitAt)}
               </p>
             )}
           </div>

@@ -6,6 +6,7 @@ import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import { formatDateTime } from "@shentong/ui";
 import {
   ConditionEditor,
   EMPTY_COND,
@@ -307,7 +308,7 @@ export function ExclusionsPanel() {
                 <p className="text-xs text-muted-foreground">{fname}</p>
                 {samples.map((s, i) => (
                   <p key={i} className="font-mono text-xs text-muted-foreground">
-                    [{String(s.at || "").slice(0, 19).replace("T", " ")}] {s.rule} · {s.src_ip} →{" "}
+                    [{formatDateTime(s.at)}] {s.rule} · {s.src_ip} →{" "}
                     {s.dst_ip} · {s.event_type} · {String(s.summary || "").slice(0, 120)}
                   </p>
                 ))}
@@ -315,7 +316,7 @@ export function ExclusionsPanel() {
             ))}
             {stats?.last_hit_at && (
               <p className="text-xs text-muted-foreground">
-                最近命中：{String(stats.last_hit_at).slice(0, 19).replace("T", " ")}
+                最近命中：{formatDateTime(stats.last_hit_at)}
               </p>
             )}
           </div>
