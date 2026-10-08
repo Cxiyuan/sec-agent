@@ -206,22 +206,6 @@ export function RelayNodesPanel() {
             <b>TLS 加密流不算内容</b>。角色/侧向默认按实测证据判定，两种情形需要人工指定：
             两边都无明文内容的中继（只有握手）判不出角色；只在 conn 层出现的中继也一样。
           </p>
-          {(topo.chains || []).length ? (
-            <p className="mb-2 rounded-md border border-input px-3 py-2 text-xs">
-              <b>转发链路（上游→下游）</b>：
-              {(topo.chains || []).map((chain) => (
-                <span key={chain.join(">")} className="ml-2 font-mono">
-                  外网 → {chain.join(" → ")} → 源站
-                </span>
-              ))}
-              {(topo.cycle_broken || []).length ? (
-                <span className="ml-2 text-amber-600">
-                  （检测到环路，已打断最弱边：
-                  {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}）
-                </span>
-              ) : null}
-            </p>
-          ) : null}
           {nodes.length ? (
             <Table>
               <TableHeader>
@@ -332,6 +316,12 @@ export function RelayNodesPanel() {
               <span className="text-xs text-muted-foreground">
                 链路关系门槛：每类证据 ≥{topo.min_evidence} 次才算已确认
                 {topo.pruned ? `（已剔除 ${topo.pruned} 条不在清单内的边）` : ""}
+              </span>
+            ) : null}
+            {(topo.cycle_broken || []).length ? (
+              <span className="text-xs text-amber-600">
+                链路关系检出环路，已打断最弱边：
+                {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}
               </span>
             ) : null}
             {sideMsg ? <span className="text-xs text-muted-foreground">{sideMsg}</span> : null}
