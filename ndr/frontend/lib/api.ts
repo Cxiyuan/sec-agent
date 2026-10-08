@@ -1004,6 +1004,11 @@ export interface TopologyNode {
   side?: string;
   /** 中继的链路层级（-1 = 不是中继） */
   level?: number;
+  /** 最近一次被观测到的业务时间（只有中继有；用来判"这台现在还活跃吗"） */
+  last_seen?: string;
+  /** 本轮（进程内）证据数：累计值只用来判角色，不能说明现在还活跃 */
+  window_hits?: number;
+  hits_total?: Record<string, number>;
 }
 
 /** 拓扑发现：一条有向边（谁转发给谁） */
@@ -1029,6 +1034,13 @@ export interface TopologyPayload {
   relays?: { configured?: boolean; levels?: Record<string, number> };
   scanned?: number;
   truncated: boolean;
+  /** 入口证据：entry = 有公网来源连它；upstream_unobserved = 上游没被镜像到（不能叫入口） */
+  entries?: Record<
+    string,
+    { inbound?: number; public?: Record<string, number>; entry_state?: string }
+  >;
+  /** 被判为「次要方向」而没画进图的边（双向里明显更弱的那条，如回连/健康检查） */
+  weak_reverse?: TopologyEdge[];
   note?: string;
   cached?: boolean;
   computed_at?: string;

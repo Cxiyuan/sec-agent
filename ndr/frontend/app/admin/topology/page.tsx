@@ -57,6 +57,28 @@ function kindLabel(kind: string): string {
   return KIND_LABEL[kind] || kind || "未知";
 }
 
+/** 相对时间（时效判据用；看不懂就原样截断显示） */
+function ago(value: string | undefined): string {
+  if (!value) return "";
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return formatDateTime(value); // 兜底也走共享格式化（北京时间）
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 90) return "刚刚";
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟前`;
+  if (sec < 86400) return `${Math.round(sec / 3600)} 小时前`;
+  return `${Math.round(sec / 86400)} 天前`;
+}
+
+/** 超过这么久没有流量就当「长期无流量」灰显（只影响观感，不影响数据） */
+const STALE_AFTER_SECONDS = 30 * 60;
+
+function isStale(value: string | undefined): boolean {
+  if (!value) return false;
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return false;
+  return (Date.now() - ts) / 1000 > STALE_AFTER_SECONDS;
+}
+
 export default function TopologyPage() {
   const errs = usePanelErrors();
   const [mode, setMode] = React.useState<"forward" | "full">("forward");
@@ -114,6 +136,7 @@ export default function TopologyPage() {
 
   const option: EChartsOption = React.useMemo(() => {
     const maxEvents = Math.max(1, ...nodes.map((n) => n.events));
+    const maxEdgeEvents = Math.max(1, ...edges.map((e) => Math.max(0, e.events)));
     const categoryOf = (kind: string): number => {
       const order = ["relay", "origin", "client", "transit", "endpoint", "internal", "external"];
       const idx = order.indexOf(kind);
@@ -125,7 +148,13 @@ export default function TopologyPage() {
           const node = (p as { data?: { id?: string; events?: number; kind?: string } }).data;
           if (!node || !node.id) {
             const edge = (p as { data?: { source?: string; target?: string; value?: number } }).data;
-            return edge?.source ? `${edge.source} → ${edge.target}<br/>事件 ${edge.value ?? 0}` : "";
+            if (!edge?.source) return "";
+            // 占比：这条边在该源节点的全部出边里占多少（主次方向一眼看出来）
+            const total = edges
+              .filter((x) => x.source === edge.source)
+              .reduce((sum, x) => sum + Math.max(0, x.events), 0);
+            const share = total ? Math.round((Math.max(0, edge.value || 0) / total) * 100) : 0;
+            return `${displayName(String(edge.source))} → ${displayName(String(edge.target))}<br/>事件 ${edge.value ?? 0}（占该源出流量 ${share}%）`;
           }
           const alias = aliasOf(node.id);
           return [
@@ -166,15 +195,24 @@ export default function TopologyPage() {
             category: Math.min(3, categoryOf(n.kind)),
             events: n.events,
             kind: n.kind,
+            // 长期无流量（默认 30 分钟）的节点半透明：累计证据只说明它"曾经是"，不代表现在还活跃
+            itemStyle: isStale(n.last_seen) ? { opacity: 0.45 } : undefined,
             symbolSize: 12 + 26 * Math.sqrt(Math.max(0, n.events) / maxEvents),
           })),
-          links: edges.map((e) => ({
-            source: e.source,
-            target: e.target,
-            value: e.events,
-            // 推导出来的转发关系（没直接抓到）用虚线，别让人以为是实测
-            lineStyle: e.kind === "inferred" ? { type: "dashed" } : undefined,
-          })),
+          links: edges.map((e) => {
+            // 线宽按事件数（主次一眼看出来）：最粗 5px，最细 1px
+            const width = 1 + 4 * (Math.max(0, e.events) / maxEdgeEvents);
+            return {
+              source: e.source,
+              target: e.target,
+              value: e.events,
+              lineStyle: {
+                width: Number(width.toFixed(2)),
+                // 推导出来的转发关系（没直接抓到）用虚线，别让人以为是实测
+                ...(e.kind === "inferred" ? { type: "dashed" as const } : {}),
+              },
+            };
+          }),
         },
       ],
     };
@@ -245,6 +283,16 @@ export default function TopologyPage() {
         <div className="mb-3">
           <PanelError errors={errs} />
         </div>
+        {(data?.weak_reverse || []).length ? (
+          <p className="mb-3 rounded-md border border-input px-3 py-2 text-xs text-muted-foreground">
+            已忽略 {data?.weak_reverse?.length} 条「次要方向」：双向里明显更弱的那条
+            （{data?.weak_reverse
+              ?.slice(0, 3)
+              .map((e) => `${e.source}→${e.target}(${e.events})`)
+              .join("、")}
+            ）—— 回连/健康检查不该画成转发边，因此不参与层级与链路。
+          </p>
+        ) : null}
         {data?.note ? (
           <p className="mb-3 rounded-md border border-amber-900 bg-amber-950/30 px-3 py-2 text-xs">
             {data.note}
@@ -296,7 +344,9 @@ export default function TopologyPage() {
                   <button
                     key={n.id}
                     type="button"
-                    className="rounded-md border px-2 py-1 text-left text-xs hover:bg-muted/40"
+                    className={`rounded-md border px-2 py-1 text-left text-xs hover:bg-muted/40 ${
+                      n.kind === "relay" && isStale(n.last_seen) ? "opacity-50" : ""
+                    }`}
                     onClick={() => setEditing({ ip: n.id, name: aliasOf(n.id) })}
                   >
                     <span className="font-mono">{displayName(n.id)}</span>
@@ -306,6 +356,13 @@ export default function TopologyPage() {
                     <span className="ml-2 text-muted-foreground">
                       {kindLabel(n.kind)}
                       {typeof n.level === "number" && n.level >= 0 ? ` · L${n.level}` : ""} · {n.events} 事件
+                      {n.kind === "relay" && n.last_seen
+                        ? ` · ${ago(n.last_seen)}${isStale(n.last_seen) ? "（长期无流量）" : ""}`
+                        : ""}
+                      {n.kind === "relay" &&
+                      (data?.entries?.[n.id]?.entry_state === "entry"
+                        ? ` · 入口（公网来源 ${Object.keys(data?.entries?.[n.id]?.public || {}).length}）`
+                        : " · 上游未观测")}
                     </span>
                   </button>
                 ))}

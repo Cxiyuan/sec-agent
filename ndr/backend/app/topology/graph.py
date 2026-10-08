@@ -89,6 +89,88 @@ def _classify(ip: str, sources: set[str], targets: set[str], relays: set[str]) -
     return "unknown"
 
 
+def prune_weak_reverse(
+    edges: dict[tuple[str, str], dict[str, Any]], *, ratio: int = 10
+) -> list[dict[str, Any]]:
+    """双向边里丢掉**明显更弱**的那条（回连 / 健康检查 / 长连接复用不该画成转发边）。
+
+    为什么需要（2026-10 服务器实测）：`214→203` 1,628,017 次 vs 反向 `203→214` 仅 614 次
+    —— 差 2600 倍，反向那点量是回连/探测；两条都画出来，界面上看着像"两条平行入口"。
+    返回被丢掉的边（界面要说明哪条被判定为次要方向，不静默）。
+    """
+    dropped: list[dict[str, Any]] = []
+    for key in list(edges.keys()):
+        a, b = key
+        edge = edges.get(key)
+        reverse = edges.get((b, a))
+        if edge is None or reverse is None:
+            continue
+        strong, weak = (
+            (edge, reverse) if int(edge["events"]) >= int(reverse["events"]) else (reverse, edge)
+        )
+        if int(strong["events"]) >= max(1, ratio) * max(1, int(weak["events"])):
+            dropped.append(dict(weak))
+            edges.pop((weak["source"], weak["target"]), None)
+    return dropped
+
+
+def entry_probe(hours: int) -> dict[str, dict[str, Any]]:
+    """每台中继的「入口证据」：谁在连它，其中有多少是**公网来源**。
+
+    为什么不能拿 `level=0` 当入口（2026-10 实测）：`level=0` 只说明"清单里没有它的上级"，
+    可能是"它的客户端侧根本没被镜像到"。214 与 213 都是 level 0，但 24h 内**没有任何公网来源**
+    连接到它们 —— 真正的公网入口在镜像范围之外。所以入口要用**连接来源**判：
+      - 有公网来源 → `entry`（它就是入口）
+      - 没有 → `upstream_unobserved`（上游未观测，不是"它就是入口"）
+    """
+    from app.iputil import is_public_ip
+
+    relays = [str(net) for net in relay_nodes.networks()]
+    out: dict[str, dict[str, Any]] = {
+        ip: {"inbound": 0, "public": {}, "entry_state": "unknown"} for ip in relays
+    }
+    if not relays:
+        return out
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        end = datetime.now(UTC)
+        start = end - timedelta(hours=max(1, hours))
+        pattern = str(es_config.current().get("es.events_index") or settings.es_events_index)
+        resp = get_es().search(
+            index=pattern,
+            size=0,
+            query={
+                "bool": {
+                    "filter": [
+                        {"range": {"ts": {"gte": start.isoformat(), "lte": end.isoformat()}}},
+                        {"terms": {"log_type.keyword": ["conn"]}},
+                        {"terms": {"dst_ip.keyword": relays}},
+                    ]
+                }
+            },
+            aggs={
+                "relays": {
+                    "terms": {"field": "dst_ip.keyword", "size": max(1, len(relays))},
+                    "aggs": {"src": {"terms": {"field": "src_ip.keyword", "size": 1000}}},
+                }
+            },
+        )
+        for bucket in ((resp.get("aggregations") or {}).get("relays") or {}).get("buckets") or []:
+            ip = str(bucket.get("key") or "")
+            info = out.setdefault(ip, {"inbound": 0, "public": {}, "entry_state": "unknown"})
+            info["inbound"] = int(bucket.get("doc_count") or 0)
+            for src_bucket in ((bucket.get("src") or {}).get("buckets")) or []:
+                src = str(src_bucket.get("key") or "")
+                if src and is_public_ip(src):
+                    info["public"][src] = int(src_bucket.get("doc_count") or 0)
+            info["entry_state"] = "entry" if info["public"] else "upstream_unobserved"
+    except Exception as exc:  # noqa: BLE001 — 入口判定失败不该让整页报错
+        log.debug("入口证据探测失败：%s", exc)
+    return out
+
+
 def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[str, Any]:
     """转发链路视图：只画**真正进了转发逻辑的事件**（通过中继去重的那一批）。"""
     from app.api.routes import chain as chain_route
@@ -143,6 +225,11 @@ def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[s
             stale=bool(edge.get("stale")),
         )
 
+    # 方向强度门槛：双向都出现时，弱的那条只标注、不参与链路（见 prune_weak_reverse 说明）
+    weak_reverse = prune_weak_reverse(edges)
+    # 入口证据：谁在连它、其中有多少公网来源（level=0 不等于入口）
+    entries = entry_probe(24)
+
     relay_set = {ip for ip in nodes if relay_nodes.is_relay(ip)}
     relay_meta = relay_nodes.roles()
     sides = relay_nodes.sides()
@@ -161,6 +248,10 @@ def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[s
                 "role_reason": str(info.get("role_reason") or ""),
                 "side": str(sides.get(ip) or relay_nodes.SIDE_AUTO),
                 "level": int(levels.get(ip, -1)) if ip in relay_set else -1,
+                # 时效：最近一次被观测到 + 本轮证据数（累计值只用来判角色，不能说明"现在还活跃"）
+                "last_seen": str(info.get("last_seen") or ""),
+                "window_hits": int(info.get("window_hits") or 0),
+                "hits_total": dict(info.get("hits_total") or {}),
             }
         )
     out_nodes.sort(key=lambda n: (-int(n["events"]), n["id"]))
@@ -182,6 +273,8 @@ def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[s
             "configured": relay_nodes.configured(),
             "levels": levels,
         },
+        "entries": entries,
+        "weak_reverse": weak_reverse,
         "scanned": len(docs),
         "truncated": bool(truncated or node_truncated or edge_truncated),
         "note": _forward_note(
