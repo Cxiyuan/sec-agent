@@ -457,3 +457,30 @@ def test_chain_ignores_cycle_broken_edge(
     )
     assert chain is not None
     assert chain["relay_path"] == [A, B]  # 不再出现重复的 A
+
+
+def test_save_role_overrides_prunes_auto(relay: ModuleType) -> None:
+    """保存手工指定时剪掉 auto（界面会把每台都提交一遍，留着就是一堆空条目）。"""
+
+    class _Row:
+        def __init__(self, key: str, value: dict[str, Any]) -> None:
+            self.key = key
+            self.value = value
+
+    class _DB:
+        def __init__(self) -> None:
+            self.rows: dict[str, Any] = {}
+
+        def get(self, _model: Any, key: str) -> Any:
+            return self.rows.get(key)
+
+        def add(self, row: Any) -> None:
+            self.rows[row.key] = row
+
+        def commit(self) -> None:
+            return None
+
+    db = _DB()
+    relay.save_role_overrides(db, {A: "auto", B: "dns"})
+    # 断言写进库里的载荷（不读缓存：缓存走真 DB，测试里只看这次写入）
+    assert db.rows[relay.KEY].value["role_overrides"] == {B: "dns"}

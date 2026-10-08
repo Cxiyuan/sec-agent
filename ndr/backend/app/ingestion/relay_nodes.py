@@ -254,7 +254,10 @@ def save_role_overrides(db: Session, mapping: dict[str, Any]) -> None:
         row = SystemConfig(key=KEY, value={})
         db.add(row)
     payload = _payload(row)
-    payload["role_overrides"] = {str(k): str(v) for k, v in dict(mapping or {}).items()}
+    # 剪掉 auto：界面会把每台都提交一遍（含未指定的），留着只会让库里堆一堆空条目
+    payload["role_overrides"] = {
+        str(k): str(v) for k, v in dict(mapping or {}).items() if str(v) != ROLE_AUTO
+    }
     row.value = payload
     db.commit()
     invalidate()
