@@ -53,7 +53,7 @@ function factLine(name: string, data?: Record<string, number>): React.ReactNode 
   );
 }
 
-export default function ChainPage() {
+function ChainInner() {
   const params = useSearchParams();
   const errs = usePanelErrors();
   const [minutes, setMinutes] = React.useState(60);
@@ -262,5 +262,15 @@ export default function ChainPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+// Next.js 构建要求：用了 useSearchParams() 的客户端组件必须包在 Suspense 边界里
+// （否则 `next build` 直接失败：missing-suspense-with-csr-bailout）。
+export default function ChainPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <ChainInner />
+    </React.Suspense>
   );
 }
