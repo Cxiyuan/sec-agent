@@ -267,3 +267,19 @@ def test_route_rejects_unknown_mode(route: ModuleType) -> None:
 def test_route_aliases_rejects_bad_ip(route: ModuleType) -> None:
     resp = route.set_alias(route.AliasIn(ip="999.1.1.1", name="x"), db=_DB(), _=None)  # type: ignore[arg-type]
     assert getattr(resp, "status_code", 200) == 400
+
+
+def test_panel_parent_matches_levels_source() -> None:
+    """中继清单的「上一跳」必须与「链路层级」同源（实机踩到：显示 L0 却写着上一跳 xxx）。
+
+    层级（levels）是**排除被环打断的边**之后算出来的；上一跳如果直接读原始边列表，
+    就会把被打断的反向弱边捡回来 —— 214 曾因此被显示成「L0 上一跳 203」（真实主干是
+    214→203 的 163 万次，反向只有 614 次）。
+    """
+    panel = (ROOT / "ndr" / "frontend" / "components" / "relay-nodes-panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "cycle_broken" in panel, "上一跳必须排除被判环打断的边"
+    assert "brokenEdges" in panel
+    assert "入口（无上级）" not in panel, "层级 0 只是「清单内没有上级」，不能直接叫入口"
+    assert "最上游" in panel

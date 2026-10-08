@@ -109,10 +109,24 @@ export function RelayNodesPanel() {
   const topo = data?.topology || {};
   const levels = topo.levels || {};
 
-  /** 该中继的上一跳（只认已确认的边）—— 界面上的「级联关系」就靠它 */
+  // 被判为环而打断的边：层级（levels）是**排除它们之后**算出来的，所以「上一跳」也必须排除，
+  // 否则会出现「L0 却写着上一跳 xxx」这种自相矛盾的显示（实机踩到：214 被显示成 L0 上一跳 203，
+  // 而那正是被 cycle_broken 丢掉的 203→214 反向弱边 —— 反向只有 614 次，主干是 214→203 的 1.63M 次）。
+  const brokenEdges = new Set((topo.cycle_broken || []).map((e) => `${e[0]}|${e[1]}`));
+
+  /** 该中继的上一跳：与层级**同源** —— 已确认、未被判环、且上级层级确实更小；多条时取证据最强的。 */
   function parentOf(ip: string): string {
-    const edge = (topo.edges || []).find((x) => x.to === ip && x.confirmed);
-    return edge?.from || "";
+    const myLevel = levels[ip];
+    const candidates = (topo.edges || []).filter(
+      (e) =>
+        e.to === ip &&
+        e.confirmed &&
+        !brokenEdges.has(`${e.from}|${e.to}`) &&
+        (myLevel === undefined || (levels[e.from] ?? 99) < myLevel),
+    );
+    if (!candidates.length) return "";
+    const weight = (e: { direct?: number; header?: number }) => (e.direct || 0) + (e.header || 0);
+    return candidates.reduce((a, b) => (weight(a) >= weight(b) ? a : b)).from;
   }
 
   /** 相对时间（“最后判定/最后看到流量”用；看不懂就原样显示） */
@@ -245,7 +259,7 @@ export function RelayNodesPanel() {
                       <TableCell className="text-xs">
                         <span className="font-mono">L{levels[ip] ?? "?"}</span>
                         <span className="ml-2 text-muted-foreground">
-                          {parent ? `上一跳 ${parent}` : "入口（无上级）"}
+                          {parent ? `上一跳 ${parent}` : "最上游（清单内没有它的上级）"}
                         </span>
                       </TableCell>
                       <TableCell>
