@@ -125,7 +125,12 @@ def entry_probe(hours: int) -> dict[str, dict[str, Any]]:
     """
     from app.iputil import is_public_ip
 
-    relays = [str(net) for net in relay_nodes.networks()]
+    # 注意：networks() 给的是网段对象（单地址是 /32），而聚合字段 dst_ip 是纯 IP ——
+    # 直接用 str(net) 会变成 "1.2.3.4/32" 匹配不到任何文档（实机踩到：入口证据全空）。
+    relays = [
+        str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+        for net in relay_nodes.networks()
+    ]
     out: dict[str, dict[str, Any]] = {
         ip: {"inbound": 0, "public": {}, "entry_state": "unknown"} for ip in relays
     }
@@ -211,7 +216,9 @@ def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[s
         if not src or not dst or f"{src}|{dst}" in broken:
             continue
         weight = int(edge.get("direct") or 0) + int(edge.get("header") or 0)
-        _add_node(nodes, src, 0)
+        # 用边的权重当节点事件量：否则 inferred 边带进来的中继节点事件数为 0，
+        # 排序垫底、被节点上限裁掉，多级串联在图里整段消失（实机踩到）
+        _add_node(nodes, src, weight)
         _add_node(nodes, dst, 0)
         _add_edge(
             edges,
@@ -254,7 +261,8 @@ def forward_graph(*, minutes: int, from_ts: str = "", to_ts: str = "") -> dict[s
                 "hits_total": dict(info.get("hits_total") or {}),
             }
         )
-    out_nodes.sort(key=lambda n: (-int(n["events"]), n["id"]))
+    # 排序：**中继排在最前** —— 它们是结构骨架，不能因为事件数低被裁掉
+    out_nodes.sort(key=lambda n: (n["id"] not in relay_set, -int(n["events"]), n["id"]))
 
     limit = max(1, int(settings.topology_node_limit))
     node_truncated = len(out_nodes) > limit

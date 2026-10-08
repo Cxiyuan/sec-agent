@@ -283,3 +283,66 @@ def test_panel_parent_matches_levels_source() -> None:
     assert "brokenEdges" in panel
     assert "入口（无上级）" not in panel, "层级 0 只是「清单内没有上级」，不能直接叫入口"
     assert "最上游" in panel
+
+
+def test_entry_probe_uses_plain_ips(topo: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """入口证据必须用**纯 IP** 查（清单里是网段对象，str() 会变成 1.2.3.4/32 匹配不到文档）。"""
+    import ipaddress
+
+    relay = importlib.import_module("app.ingestion.relay_nodes")
+    es_client = importlib.import_module("app.ingestion.es_client")
+    monkeypatch.setattr(relay, "networks", lambda: (ipaddress.ip_network(f"{A}/32"),))
+
+    captured: dict[str, Any] = {}
+
+    class _ES:
+        def search(self, **kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "aggregations": {
+                    "relays": {
+                        "buckets": [
+                            {
+                                "key": A,
+                                "doc_count": 614,
+                                "src": {"buckets": [{"key": "8.8.8.8", "doc_count": 12}]},
+                            }
+                        ]
+                    }
+                }
+            }
+
+    monkeypatch.setattr(es_client, "get_es", lambda: _ES())
+    # es_config.current() 会去读库（测试环境没有 PG）：直接给一份索引名
+    monkeypatch.setattr(
+        importlib.import_module("app.ingestion.es_config"),
+        "current",
+        lambda: {"es.events_index": "shentong-events-*"},
+    )
+    out = topo.entry_probe(24)
+    terms = ((captured.get("query") or {}).get("bool", {}).get("filter") or [])[-1].get(
+        "terms"
+    ) or {}
+    assert terms.get("dst_ip.keyword") == [A], f"入口证据必须查纯 IP，实际 {terms}"
+    assert out[A]["inbound"] == 614
+    assert out[A]["entry_state"] == "entry", "有公网来源（8.8.8.8）就该判成入口"
+
+
+def test_relays_survive_node_limit(
+    topo: ModuleType, stub: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """中继是结构骨架：即使事件数很低（inferred 边带进来的）也不能被节点上限裁掉。"""
+    from app.config import settings
+
+    stub["sides"] = {B: "back"}
+    stub["docs"] = [
+        _doc(src_ip=B, dst_ip=f"10.0.0.{i}", real_client_ip=CLIENT) for i in range(1, 40)
+    ]
+    stub["topology"] = {
+        "edges": [{"from": A, "to": B, "direct": 9, "header": 0, "confirmed": True}],
+        "levels": {A: 0, B: 1},
+    }
+    monkeypatch.setattr(settings, "topology_node_limit", 3)
+    data = topo.forward_graph(minutes=30)
+    ids = {n["id"] for n in data["nodes"]}
+    assert {A, B} <= ids, f"中继不能被裁掉（实际 {sorted(ids)}）"
