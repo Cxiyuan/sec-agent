@@ -130,9 +130,14 @@ export default function TopologyPage() {
 
   const nodes = data?.nodes || [];
   const edges = data?.edges || [];
-  const filtered = query.trim()
-    ? nodes.filter((n) => n.id.includes(query.trim()) || aliasOf(n.id).includes(query.trim()))
-    : nodes;
+  /**
+   * 搜索只用来在图上定位节点（下方节点列表已删除，图占满整个内容区）：
+   * 命中的加粗描边、没命中的淡出，一眼能看到目标在哪。
+   */
+  const hitQuery = (id: string): boolean => {
+    const q = query.trim();
+    return !q || id.includes(q) || aliasOf(id).includes(q);
+  };
 
   const option: EChartsOption = React.useMemo(() => {
     const maxEvents = Math.max(1, ...nodes.map((n) => n.events));
@@ -145,7 +150,17 @@ export default function TopologyPage() {
     return {
       tooltip: {
         formatter: (p: unknown) => {
-          const node = (p as { data?: { id?: string; events?: number; kind?: string } }).data;
+          const node = (
+            p as {
+              data?: {
+                id?: string;
+                events?: number;
+                kind?: string;
+                last_seen?: string;
+                entry?: string;
+              };
+            }
+          ).data;
           if (!node || !node.id) {
             const edge = (p as { data?: { source?: string; target?: string; value?: number } }).data;
             if (!edge?.source) return "";
@@ -162,6 +177,9 @@ export default function TopologyPage() {
             alias ? `真实 IP：${node.id}` : "",
             `类型：${kindLabel(String(node.kind || ""))}`,
             `事件：${node.events ?? 0}`,
+            // 节点列表已删（图占满内容区），时效与入口证据改在悬停提示里给
+            node.last_seen ? `最近活跃：${ago(node.last_seen)}` : "",
+            node.entry || "",
             "点击可改显示名",
           ]
             .filter(Boolean)
@@ -187,18 +205,36 @@ export default function TopologyPage() {
             { name: "入口（客户端侧）", itemStyle: { color: "#22c55e" } },
             { name: "普通端点", itemStyle: { color: "#94a3b8" } },
           ],
-          data: nodes.map((n: TopologyNode) => ({
-            id: n.id,
-            name: n.id,
-            // label 用展示名（别名优先，没有别名就是 IP —— 绝不用 host 名）
-            label: { formatter: displayName(n.id) },
-            category: Math.min(3, categoryOf(n.kind)),
-            events: n.events,
-            kind: n.kind,
-            // 长期无流量（默认 30 分钟）的节点半透明：累计证据只说明它"曾经是"，不代表现在还活跃
-            itemStyle: isStale(n.last_seen) ? { opacity: 0.45 } : undefined,
-            symbolSize: 12 + 26 * Math.sqrt(Math.max(0, n.events) / maxEvents),
-          })),
+          data: nodes.map((n: TopologyNode) => {
+            const hit = hitQuery(n.id);
+            return {
+              id: n.id,
+              name: n.id,
+              // label 用展示名（别名优先，没有别名就是 IP —— 绝不用 host 名）
+              label: { formatter: displayName(n.id) },
+              category: Math.min(3, categoryOf(n.kind)),
+              events: n.events,
+              kind: n.kind,
+              last_seen: n.kind === "relay" ? n.last_seen : undefined,
+              entry:
+                n.kind === "relay"
+                  ? data?.entries?.[n.id]?.entry_state === "entry"
+                    ? `入口（公网来源 ${Object.keys(data?.entries?.[n.id]?.public || {}).length} 个）`
+                    : "上游未观测（清单内没有它的上级，也可能客户端侧没被镜像到）"
+                  : undefined,
+              itemStyle: query.trim()
+                ? // 搜索中：命中的描黄边、其余淡出
+                  hit
+                  ? { borderColor: "#facc15", borderWidth: 3 }
+                  : { opacity: 0.15 }
+                : // 没搜索时：长期无流量（默认 30 分钟）的节点半透明
+                  //（累计证据只说明它"曾经是"，不代表现在还活跃）
+                  isStale(n.last_seen)
+                  ? { opacity: 0.45 }
+                  : undefined,
+              symbolSize: (hit && query.trim() ? 26 : 12) + 26 * Math.sqrt(Math.max(0, n.events) / maxEvents),
+            };
+          }),
           links: edges.map((e) => {
             // 线宽按事件数（主次一眼看出来）：最粗 5px，最细 1px
             const width = 1 + 4 * (Math.max(0, e.events) / maxEdgeEvents);
@@ -216,13 +252,15 @@ export default function TopologyPage() {
         },
       ],
     };
-  }, [nodes, edges]);
+    // query 参与：搜索高亮要跟着输入即时变；data 参与：入口证据/时效要在悬停提示里显示
+  }, [nodes, edges, query, data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="min-h-screen">
+    <div className="h-screen overflow-hidden">
       <TopBar />
       <Nav />
-      <main className="ml-56 px-6 pb-6 pt-20">
+      {/* 图占满右侧内容区：整页不滚动，尾部那张图用 flex-1 撑满剩余高度 */}
+      <main className="ml-56 flex h-screen flex-col overflow-hidden px-6 pb-4 pt-20">
         <h1 className="mb-2 text-2xl font-bold">拓扑发现</h1>
         <p className="mb-4 text-xs text-muted-foreground">
           自动发现网络拓扑：<b>转发链路</b>视图以流量转发的逻辑为准（客户端 →（中继…）→ 源站，多级串联都体现）；
@@ -259,7 +297,7 @@ export default function TopologyPage() {
           </select>
           <Input
             className="h-9 w-48"
-            placeholder="搜索 IP 或别名"
+            placeholder="搜索 IP 或别名（在图上高亮）"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -305,17 +343,17 @@ export default function TopologyPage() {
         ) : null}
         {msg ? <p className="mb-3 text-sm">{msg}</p> : null}
 
-        <Card>
-          <CardHeader className="pb-2">
+        <Card className="flex min-h-0 flex-1 flex-col">
+          <CardHeader className="shrink-0 pb-2">
             <CardTitle className="text-sm">
               {mode === "forward" ? "转发链路图（按流量转发关系）" : "全量通信图（按流量 TopN）"}
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-h-0 flex-1 overflow-hidden p-2">
             {nodes.length ? (
               <Chart
                 option={option}
-                height={560}
+                height="100%"
                 onEvents={{
                   click: (params: unknown) => {
                     const id = (params as { data?: { id?: string } })?.data?.id;
@@ -332,47 +370,6 @@ export default function TopologyPage() {
             )}
           </CardContent>
         </Card>
-
-        {nodes.length ? (
-          <Card className="mt-3">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">节点（点一行即可改名）</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-wrap gap-2">
-                {filtered.map((n) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    className={`rounded-md border px-2 py-1 text-left text-xs hover:bg-muted/40 ${
-                      n.kind === "relay" && isStale(n.last_seen) ? "opacity-50" : ""
-                    }`}
-                    onClick={() => setEditing({ ip: n.id, name: aliasOf(n.id) })}
-                  >
-                    <span className="font-mono">{displayName(n.id)}</span>
-                    {aliasOf(n.id) ? (
-                      <span className="ml-1 font-mono text-muted-foreground">{n.id}</span>
-                    ) : null}
-                    <span className="ml-2 text-muted-foreground">
-                      {kindLabel(n.kind)}
-                      {typeof n.level === "number" && n.level >= 0 ? ` · L${n.level}` : ""} · {n.events} 事件
-                      {n.kind === "relay" && n.last_seen
-                        ? ` · ${ago(n.last_seen)}${isStale(n.last_seen) ? "（长期无流量）" : ""}`
-                        : ""}
-                      {n.kind === "relay" &&
-                      (data?.entries?.[n.id]?.entry_state === "entry"
-                        ? ` · 入口（公网来源 ${Object.keys(data?.entries?.[n.id]?.public || {}).length}）`
-                        : " · 上游未观测")}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {query && !filtered.length ? (
-                <p className="text-xs text-muted-foreground">没有匹配的节点</p>
-              ) : null}
-            </CardContent>
-          </Card>
-        ) : null}
 
         <Dialog
           open={editing !== null}

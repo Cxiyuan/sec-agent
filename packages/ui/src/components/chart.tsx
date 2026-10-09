@@ -6,7 +6,8 @@ import * as echarts from "echarts";
 export interface ChartProps {
   option: echarts.EChartsOption;
   className?: string;
-  height?: number;
+  /** 数值 = 固定像素；字符串（如 "100%"）= 跟着容器走（外层用 flex 填满区域时用） */
+  height?: number | string;
   /**
    * ECharts 事件回调：`{ click: (params) => ... }`。
    *
@@ -62,6 +63,16 @@ export function Chart({ option, className, height = 300, onEvents }: ChartProps)
       for (const [name, wrapper] of wrappers) chart.off(name, wrapper);
     };
   }, [eventNames]);
+
+  // 容器自己变大变小（外层从固定高度改成 flex-1 填满区域）时也得跟着 resize：
+  // 只监听 window 不够 —— flex 布局重排不会触发 window 的 resize 事件。
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => chartRef.current?.resize());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return <div ref={ref} className={className} style={{ width: "100%", height }} />;
 }

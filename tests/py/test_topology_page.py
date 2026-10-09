@@ -346,3 +346,22 @@ def test_relays_survive_node_limit(
     data = topo.forward_graph(minutes=30)
     ids = {n["id"] for n in data["nodes"]}
     assert {A, B} <= ids, f"中继不能被裁掉（实际 {sorted(ids)}）"
+
+
+def test_page_fills_area_and_drops_node_list() -> None:
+    """拓扑图占满右侧内容区，下方的节点列表卡删除（用户 2026-10 要求）。
+
+    注意：删列表不能顺手把信息也删掉 —— 时效（last_seen）与入口证据改在**悬停提示**里给。
+    """
+    src = (ROOT / "ndr" / "frontend" / "app" / "admin" / "topology" / "page.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "节点（点一行即可改名）" not in src, "节点列表卡应已删除"
+    assert 'height="100%"' in src, "图要跟着容器高度走（占满）"
+    assert "min-h-0 flex-1 flex-col" in src, "图卡片要 flex-1 撑满剩余高度"
+    assert "h-screen" in src, "整屏排布局（不整页滚动）"
+    # 时效与入口证据仍要能看到
+    assert "最近活跃：" in src, "时效要挪到悬停提示里，不能随列表一起消失"
+    assert "上游未观测" in src, "入口证据要挪到悬停提示里"
+    # 搜索改为在图上高亮（原来只过滤列表，列表没了就成了死控件）
+    assert "在图上高亮" in src
