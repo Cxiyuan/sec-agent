@@ -256,7 +256,16 @@ export function LogstashPanel() {
             )}
             {!data.params_applied && (
               <p className="mt-1 text-muted-foreground">
-                当前管道为<b>自定义内容</b>（非参数生成）；用下方表单保存会覆盖它。
+                {data.params_stored ? (
+                  <>
+                    当前管道为<b>自定义内容</b>（非参数生成）；用下方表单保存会覆盖它。
+                  </>
+                ) : (
+                  <>
+                    当前管道与<b>默认模板不一致</b>（可能手工改过，或部署升级后模板已变）；
+                    下面保存参数会按模板重写。
+                  </>
+                )}
               </p>
             )}
           </div>

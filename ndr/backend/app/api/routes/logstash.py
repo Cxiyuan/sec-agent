@@ -334,7 +334,12 @@ def get_logstash(
     rendered = template.render(params, settings.logstash_http_port)
     return {
         "params": params,
-        "params_applied": bool(stored) and text.strip() == rendered.strip(),
+        # 管道内容是否**等于当前模板渲染结果**（与“是否存过参数”无关）：
+        # 部署升级后模板会变，旧文件就不等于模板了 —— 这时界面该提醒“按模板重写”，
+        # 而不是笼统地说“自定义内容”（实机踩到：文件里还留着已移除的 Wazuh 说明注释，
+        # 界面却也把它当成“自定义内容”，看不出“模板已更新”这件事）。
+        "params_applied": bool(text.strip()) and text.strip() == rendered.strip(),
+        "params_stored": stored is not None,
         "pipeline": text,
         "default_pipeline": rendered,
         "config_path": settings.logstash_pipeline_conf,

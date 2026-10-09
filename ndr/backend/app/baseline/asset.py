@@ -170,6 +170,12 @@ def finalize(records: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, An
     """把窗口内的连接记录定稿成「每个资产一份计数」。返回 ``(资产桶, 丢弃的连接数)``。
 
     - 身份：有 hostname 用 hostname，否则回落 `IP:端口`；
+    - **纯连接不算被访问方**（2026-10 实机修正，见下）：既无 Host/SNI、又一条请求都没有的连接
+      （只有 `conn`/`weird`/`files`）直接丢弃 —— 否则资产表会被「收到过连接的目标 IP:高位端口」
+      灌满：实测 95,443 个资产里 94,642 个是 `IP:端口`，其中 **48,971 个端口 ≥32768**
+      （P2P/IM/客户端侧高位端口，如 `172.16.199.106:53650` 只有 305 条 conn、零请求）；
+      反过来真正带 Host 的站点只有一两千个。界面上的「资产数」因此虚高几十倍。
+      这个基线的特征是「请求数 / 不同 URI / 不同客户端」，只有请求类连接才算得出来。
     - 一条连接都没有可用的身份（既无 Host/SNI 也无目的地址）→ 丢弃；
     - **中继自身不作为资产**（端口 53 除外）：前跳的 dst 就是中继，非 HTTP 流量没有 Host/SNI，
       身份会落到它身上 —— 按端口判而不是按「检测器推算的角色」判，免得依赖角色回写的时序。
@@ -182,6 +188,10 @@ def finalize(records: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, An
         port = record.get("port")
         key = host or (f"{ip}:{port}" if port else ip)
         if not key:
+            dropped += 1
+            continue
+        if not host and not int(record.get("requests") or 0):
+            # 无域名 + 零请求 = 只是「有过一条 TCP 连接」，不是被访问方
             dropped += 1
             continue
         if not host and ip and port != _DNS_PORT and relay_nodes.is_relay(ip):

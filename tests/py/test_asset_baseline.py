@@ -131,14 +131,40 @@ def test_keepalive_requests_counted_but_visit_once(asset: ModuleType) -> None:
     assert buckets["a.example"]["targets"] == {"/a", "/b", "/c"}
 
 
-def test_conn_only_falls_back_to_ip_port(asset: ModuleType) -> None:
-    """纯 TCP 业务（没有应用层日志）：身份就是 `IP:端口`，请求数为 0。"""
+def test_conn_only_is_not_an_asset(asset: ModuleType) -> None:
+    """纯 TCP 连接（无 Host/SNI、零请求）**不算被访问方**（v4 口径）。
+
+    实机依据（2026-10）：资产表 95,443 个资产里 94,642 个是 `IP:端口`，其中 48,971 个端口
+    ≥32768（如 `172.16.199.106:53650` 只有 305 条 conn、零请求）—— 那是「收到过连接的目标」，
+    不是「被访问的站点」，界面上的资产数因此虚高几十倍。
+    """
     records: dict[str, dict[str, Any]] = {}
     asset.observe_entry(records, _entry(uid="C3", log_type="conn", hostname=None))
     buckets, dropped = asset.finalize(records)
+    assert buckets == {}, "只有 conn、没有任何请求的连接不该进资产表"
+    assert dropped == 1
+
+
+def test_conn_only_with_hostname_is_still_an_asset(asset: ModuleType) -> None:
+    """但同一连接里带 Host/SNI（如纯 TLS 站点）：即使没有 http 日志，也还是被访问方。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(records, _entry(uid="C3b", log_type="conn", hostname=None))
+    asset.observe_entry(records, _entry(uid="C3b", log_type="ssl", hostname="tls.example"))
+    buckets, dropped = asset.finalize(records)
     assert dropped == 0
-    assert buckets["10.0.0.80:80"]["visits"] == 1
-    assert buckets["10.0.0.80:80"]["requests"] == 0
+    assert buckets["tls.example"]["visits"] == 1
+    assert buckets["tls.example"]["requests"] == 0
+
+
+def test_dns_resolver_is_an_asset_even_without_hostname(asset: ModuleType) -> None:
+    """内网 DNS 转发器（`IP:53`）有 dns 请求 → 仍是资产（不能因为没域名就被丢掉）。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records, _entry(uid="C3c", log_type="dns", hostname=None, dst_port=53, query="a.example")
+    )
+    buckets, dropped = asset.finalize(records)
+    assert dropped == 0
+    assert buckets["10.0.0.80:53"]["requests"] == 1
 
 
 def test_real_client_ip_wins_over_src_ip(asset: ModuleType) -> None:

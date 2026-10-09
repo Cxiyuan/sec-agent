@@ -44,11 +44,14 @@ _MIGRATIONS: tuple[str, ...] = (
 #: - v2：`visits` 的含义从「每条事件」改成「每条连接（uid）」；
 #: - v3：`distinct_clients` 从「每条连接只记一个客户端」改成「收一组」（WAF/反代的一条长连接
 #:   会复用/承载很多个真实客户端 —— 实测 206 个请求只走 11 条连接、XFF 里 112 个客户端）。
+#: - v4：**纯连接不算被访问方** —— 既无 Host/SNI、又零请求的连接（只有 conn/weird/files）不再入库。
+#:   v3 及以前的资产表里 95,443 个资产有 94,642 个是 `IP:端口`，其中 48,971 个端口 ≥32768
+#:   （P2P/IM/客户端高位端口），界面上的「资产数」因此虚高几十倍。
 #: 两种语义的样本混在同一个 Welford 里会把均值/标准差拉偏（那边是无法区分的），所以版本落后
 #: 就把 `asset_stats` 清空重学 —— 它只是统计缓存（判据用的均值/方差），不含原始事件，
 #: 清了不丢数据，只是重新攒观测期。
 _ASSET_SEMANTICS_KEY = "asset.semantics_version"
-_ASSET_SEMANTICS_VERSION = 3
+_ASSET_SEMANTICS_VERSION = 4
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}

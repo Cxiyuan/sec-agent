@@ -241,6 +241,8 @@ export interface LogstashParams {
 export interface LogstashStatus {
   params: LogstashParams;
   params_applied: boolean;
+  /** 是否在后台存过参数：区分「真自定义内容」与「只是模板升级后文件过时」 */
+  params_stored?: boolean;
   pipeline: string;
   default_pipeline: string;
   config_path: string;
