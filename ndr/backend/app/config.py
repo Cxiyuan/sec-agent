@@ -215,6 +215,11 @@ class Settings(BaseSettings):
     detector_rule_cap_key: str = "shentong:detector:rulecap"
     detector_queue_max: int = 20000
     detector_raw_queue_max: int = 30000
+    # 最近命中（摘要）在 Redis 里保留多少条：界面「最近命中」卡片吃它。
+    # 为什么要它（2026-10 调研）：摘要把唯一出口是「推给智能体」，现场没配推送地址时
+    # 界面完全看不到检测器报了什么（只有 undelivered 在涨）。有了它，规则覆盖调优与
+    # 「这台主机被打了没」当场可查，且不需要外部目标。
+    detector_recent_max: int = 200
     detector_coverage_warn_ratio: float = 0.6
     detector_consume_batch: int = 1000
     # ---- 摘要压缩 ----

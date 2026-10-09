@@ -699,6 +699,41 @@ export interface DetectorCoverage {
   es_error?: string;
 }
 
+/**
+ * `GET /api/detector/recent` 里的一条命中摘要。
+ *
+ * 由检测器写进 Redis（不依赖推送地址），是「哪条规则、打了谁、多少次」的唯一现场出口。
+ * 时间字段是北京时间展示，后端存的是 UTC ISO。
+ */
+export interface DetectorRecentItem {
+  ts: string;
+  first_seen: string;
+  rule: string;
+  severity: string;
+  source: string;
+  src_ip: string;
+  count: number;
+  dst_ips: string[];
+  dst_ports: string[];
+  event_types: string[];
+  conn_states: string[];
+  real_client_ips: string[];
+  proxied: boolean;
+  excluded: boolean;
+  exclude_reason: string;
+}
+
+/** `GET /api/detector/recent`：最近命中摘要（最新在前；只是当前保留窗口，不是全量历史） */
+export interface DetectorRecent {
+  items: DetectorRecentItem[];
+  count: number;
+  /** 本次实际返回上限（请求 limit 与保留窗口取小） */
+  limit: number;
+  /** Redis 环形列表的键名，排查现场时用 */
+  key: string;
+  error?: string;
+}
+
 export interface TrafficPoint {
   ts: string;
   docs: number;

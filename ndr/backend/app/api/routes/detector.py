@@ -14,7 +14,7 @@ from app import triage_policy
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
-from app.detector import health
+from app.detector import health, recent
 from app.detector.history import read as history_read
 from app.detector.runner import FAILED_KEY, PAUSED_KEY, rate_bucket
 from app.workers.log import get_logger
@@ -376,6 +376,35 @@ def detector_history(
         out["error"] = str(exc)[:200]
         return out
     items = history_read(client, key=settings.detector_history_key, limit=want)
+    out["items"] = items
+    out["count"] = len(items)
+    return out
+
+
+@router.get("/recent")
+def detector_recent(
+    _: Annotated[User, Depends(get_current_user)],
+    limit: int = 50,
+):
+    """**最近命中摘要**（Redis 环形记录，最新在前，**不依赖推送给智能体**）。
+
+    为什么单独一个端点（2026-10 实机调研）：摘要的唯一出口是「推给智能体」，现场没配推送
+    地址时，界面上完全看不到检测器报了什什么、报了谁 —— 只有 `undelivered` 在涨。
+    这个端点让「哪条规则、打了谁、多少次」当场可查（也用来验证规则覆盖）。
+
+    注意口径：这是**当前保留窗口**（默认最近 200 条），不是全量历史；要按天统计请用
+    `/history` 采样。Redis 不可用时返回空表（可见性是辅助能力，不能把接口变成错误页）。
+    """
+    want = max(1, min(int(limit or 50), max(10, int(settings.detector_recent_max))))
+    out: dict[str, Any] = {"items": [], "count": 0, "limit": want, "key": recent.RECENT_KEY}
+    try:
+        import redis
+
+        client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)[:200]
+        return out
+    items = recent.load(client, want)
     out["items"] = items
     out["count"] = len(items)
     return out

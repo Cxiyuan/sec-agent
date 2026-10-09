@@ -1,7 +1,24 @@
 "use client";
 
 import * as React from "react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Chart, formatDateTime, formatTime } from "@shentong/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chart,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  formatDateTime,
+  formatTime,
+  severityVariant,
+} from "@shentong/ui";
 import type {
   AgentPushPayload,
   BaselinePayload,
@@ -11,6 +28,7 @@ import type {
   DetectorCoverage,
   DetectorHistory,
   DetectorRate,
+  DetectorRecent,
   DetectorStats,
   EsStatus,
   LogstashStatus,
@@ -56,6 +74,7 @@ const SRC = {
   history: "检测器历史采样",
   rate: "检测器速率",
   coverage: "投递覆盖率",
+  recent: "最近命中摘要",
   stats: "检测器队列",
   push: "摘要推送",
   baseline: "基线观测",
@@ -104,6 +123,19 @@ function Kpi({
       {hint ? <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p> : null}
     </div>
   );
+}
+
+const SEVERITY_TEXT: Record<string, string> = {
+  critical: "紧急",
+  high: "高危",
+  medium: "中危",
+  low: "低危",
+  info: "提示",
+};
+
+function severityBadge(sev: string): React.ReactElement {
+  const key = (sev || "info").toLowerCase();
+  return <Badge variant={severityVariant(key)}>{SEVERITY_TEXT[key] || sev || "—"}</Badge>;
 }
 
 /** 页内区块：`scroll-mt-20` 让锚点跳转不被固定页头（h-14）挡住标题。 */
@@ -187,6 +219,7 @@ export function StatusPanel() {
   const [history, setHistory] = React.useState<DetectorHistory | null>(null);
   const [rate, setRate] = React.useState<DetectorRate | null>(null);
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
+  const [recent, setRecent] = React.useState<DetectorRecent | null>(null);
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
   const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
@@ -205,6 +238,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.history, "/api/detector/history?limit=288", setHistory),
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
+      loadInto(errs, SRC.recent, "/api/detector/recent?limit=50", setRecent),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
@@ -404,6 +438,69 @@ export function StatusPanel() {
               empty={historyItems.length ? undefined : noHistory}
             />
           </div>
+
+          {/* 最近命中：现场没配推送地址时，「报了什么规则、打了谁、多少次」的唯一出口。
+              数据来自检测器实时写进 Redis 的摘要（不是历史采样），只看当前保留窗口。 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                最近命中（检测器实时）
+                {recent?.items?.length ? (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    窗口内 {recent.count} 条 · 不依赖推送地址
+                  </span>
+                ) : null}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {recent?.items?.length ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>最近时间</TableHead>
+                      <TableHead>规则</TableHead>
+                      <TableHead>严重度</TableHead>
+                      <TableHead>源 IP</TableHead>
+                      <TableHead className="text-right">次数</TableHead>
+                      <TableHead>目的</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {recent.items.map((row, i) => (
+                      <TableRow key={`${row.rule}-${row.src_ip}-${i}`}>
+                        <TableCell className="whitespace-nowrap text-xs">
+                          {row.ts ? formatDateTime(row.ts) : "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {row.rule || "—"}
+                          {row.excluded ? (
+                            <Badge variant="outline" className="ml-1">
+                              已排除
+                            </Badge>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>{severityBadge(row.severity)}</TableCell>
+                        <TableCell className="text-xs">{row.src_ip || "—"}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums">
+                          {row.count}
+                        </TableCell>
+                        <TableCell className="max-w-[22rem] truncate text-xs text-muted-foreground">
+                          {row.dst_ips?.length ? row.dst_ips.join("、") : "—"}
+                          {row.dst_ports?.length ? ` : ${row.dst_ports.join("/")}` : ""}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {recent?.error
+                    ? `读取失败：${recent.error}`
+                    : "窗口内暂无命中（检测器未运行，或还没到聚合窗口）"}
+                </p>
+              )}
+            </CardContent>
+          </Card>
         </Section>
 
         {/* ---------- D. 24 小时流量与协议 ---------- */}

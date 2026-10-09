@@ -30,7 +30,8 @@ SIGNATURE_RULES = ("内置-签名命中(高危)", "内置-签名命中(中危)",
 
 
 def test_builtin_rule_count() -> None:
-    assert len(builtin_mod.BUILTIN_RULES) == 21
+    # 2026-10 调研新增 1 条：`内置-内网漏洞利用探测`（扇出 ≥10 个内网目的 + 利用特征）
+    assert len(builtin_mod.BUILTIN_RULES) == 22
 
 
 def test_deleted_rules_do_not_come_back() -> None:

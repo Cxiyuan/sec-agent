@@ -272,6 +272,54 @@ BUILTIN_RULES: list[dict] = [
             ],
         },
     },
+    # ================= C2. 内网利用特征 =================
+    {
+        "name": "内置-内网漏洞利用探测",
+        "description": (
+            "同源 6 小时内对 ≥10 个不同内网目的发起带利用特征的请求"
+            "（Shellshock/Log4Shell 类载荷头、Nacos/Solr/Tomcat 管理页等被批量利用的端点）"
+        ),
+        "source": "builtin",
+        "priority": 6,
+        "severity": "high",
+        "conditions": {
+            "mode": "count",
+            "key": ["src_ip"],
+            "window": 21600,
+            "min_count": 10,
+            "distinct": "dst_ip",
+            "min_distinct": 10,
+            "logic": "and",
+            # 为什么要这条（2026-10 实机调研）：现有扫描类规则只数「不同端口/不同主机」
+            # 而且只认未建立的连接；实测一台内网主机（172.16.199.106，后确认是授权漏扫设备）
+            # 24h 内在 43 个内网目标上打了 2,905 个端口，UA 里带着 Shellshock 载荷、
+            # 路径是 /nacos/v1/cs/ops/data/removal、/solr、/manager/html 这些**利用型端点**，
+            # 但没有任何一条规则看「利用特征」。这条把两个维度合起来：**扇出（≥10 个内网目的）
+            # ＋ 利用特征（载荷头或利用端点）**，避免单次探测就报。
+            "rules": [
+                {"field": "src_internal", "op": "eq", "value": True},
+                {"field": "dst_internal", "op": "eq", "value": True},
+                {
+                    "logic": "or",
+                    "rules": [
+                        # Shellshock：UA / 头里带 `() { :; };` 形式的函数定义载荷
+                        {"field": "user_agent", "op": "regex", "value": r"\(\s*\)\s*\{"},
+                        # Log4Shell / JNDI 注入
+                        {"field": "user_agent", "op": "regex", "value": r"\$\{jndi:"},
+                        # 被批量利用的管理/未授权端点
+                        {
+                            "field": "uri_path",
+                            "op": "regex",
+                            "value": (
+                                r"(?i)(?:/nacos/v1|/solr/|/manager/html|/actuator/(?:env|heapdump|gateway)"
+                                r"|/druid/index\.html|/weblogic/|/struts/|\.\./)"
+                            ),
+                        },
+                    ],
+                },
+            ],
+        },
+    },
     # ================= D. 凭证 / 会话 =================
     {
         "name": "内置-密码喷洒(同源多账号)",
