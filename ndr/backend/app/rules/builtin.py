@@ -276,7 +276,7 @@ BUILTIN_RULES: list[dict] = [
     {
         "name": "内置-内网漏洞利用探测",
         "description": (
-            "同源 6 小时内对 ≥10 个不同内网目的发起带利用特征的请求"
+            "同源 30 分钟内对 ≥10 个不同内网目的发起带利用特征的请求"
             "（Shellshock/Log4Shell 类载荷头、Nacos/Solr/Tomcat 管理页等被批量利用的端点）"
         ),
         "source": "builtin",
@@ -285,7 +285,10 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "mode": "count",
             "key": ["src_ip"],
-            "window": 21600,
+            # 窗口取 30 分钟而不是 6 小时：聚合摘要在窗口到期时才产出，窗口越长告警越慢
+            # （实测那台漏扫设备几分钟内就能打满 43 个内网目标 —— 30 分钟足够判扇出，
+            #  正常运维不会有"半小时内带利用载荷打 10 台内网设备"的行为）。
+            "window": 1800,
             "min_count": 10,
             "distinct": "dst_ip",
             "min_distinct": 10,

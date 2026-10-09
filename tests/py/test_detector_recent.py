@@ -150,21 +150,27 @@ def test_recent_endpoint_reads_redis(route: ModuleType, monkeypatch: pytest.Monk
     assert out["count"] == 1 and out["items"][0]["rule"] == "内置-协议异常"
 
 
-def test_internal_exploit_rule_shape() -> None:
+def test_internal_exploit_rule_shape(request: pytest.FixtureRequest) -> None:
     """新规则必须是「扇出 + 利用特征」：只对内网→内网、≥10 个不同内网目的才算。"""
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("这条内置规则只在 NDR 侧")
     builtin = importlib.import_module("app.rules.builtin")
     rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-内网漏洞利用探测")
     cond = rule["conditions"]
     assert cond["mode"] == "count" and cond["key"] == ["src_ip"]
     assert cond["distinct"] == "dst_ip" and cond["min_distinct"] >= 10
-    assert cond["window"] >= 3600, "利用探测是慢速行为，窗口不能太短"
+    # 窗口是「扇出判定的观察期」，也是告警延迟：太长（如 6h）会让利用告警迟到，
+    # 太短（<10min）会把正常批量运维也算进来 —— 30 分钟是实测后的折中
+    assert 1800 <= cond["window"] <= 7200, f"窗口应在 30~120 分钟，实际 {cond['window']}"
     assert rule["severity"] == "high"
     flat = json.dumps(cond, ensure_ascii=False)
     assert "src_internal" in flat and "dst_internal" in flat, "只对内网横向判（内外有别）"
 
 
-def test_internal_exploit_rule_matches_payloads() -> None:
+def test_internal_exploit_rule_matches_payloads(request: pytest.FixtureRequest) -> None:
     """Shellshock / Log4Shell 载荷头、Nacos/Solr/Tomcat 管理页要能命中；普通 UA 不能。"""
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("这条内置规则只在 NDR 侧")
     builtin = importlib.import_module("app.rules.builtin")
     engine = importlib.import_module("app.rules.engine")
     schemas = importlib.import_module("app.schemas")
