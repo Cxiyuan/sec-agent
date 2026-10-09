@@ -188,7 +188,7 @@ function ChainInner() {
                       {chain.suspicious ? "可疑" : "常规"}
                     </Badge>
                     <span className="font-mono">
-                      {displayName(chain.client) || "未知请求IP"}
+                      {displayName(chain.client) || "客户端未记录"}
                       {chain.relay_path.length
                         ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${displayName(chain.origin) || "源站"}`
                         : ` → ${displayName(chain.origin) || "源站"}`}
@@ -197,6 +197,9 @@ function ChainInner() {
                       {facts.events ?? 0} 条事件
                       {facts.first_seen ? ` · 起 ${formatDateTime(facts.first_seen)}` : ""}
                       {facts.last_seen ? ` · 止 ${formatDateTime(facts.last_seen)}` : ""}
+                      {chain.client_state === "not_recorded" && chain.client_reason
+                        ? ` · ${chain.client_reason}`
+                        : ""}
                     </span>
                     <div className="ml-auto flex gap-2">
                       <Button

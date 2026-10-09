@@ -157,6 +157,7 @@ export default function TopologyPage() {
                 events?: number;
                 kind?: string;
                 last_seen?: string;
+                window_hits?: number;
                 entry?: string;
               };
             }
@@ -177,6 +178,7 @@ export default function TopologyPage() {
             alias ? `真实 IP：${node.id}` : "",
             `类型：${kindLabel(String(node.kind || ""))}`,
             `事件：${node.events ?? 0}`,
+            node.window_hits ? `本轮证据：${node.window_hits} 条（累计值只用来判角色，不代表现在还活跃）` : "",
             // 节点列表已删（图占满内容区），时效与入口证据改在悬停提示里给
             node.last_seen ? `最近活跃：${ago(node.last_seen)}` : "",
             node.entry || "",
@@ -216,6 +218,7 @@ export default function TopologyPage() {
               events: n.events,
               kind: n.kind,
               last_seen: n.kind === "relay" ? n.last_seen : undefined,
+              window_hits: n.kind === "relay" ? n.window_hits : undefined,
               entry:
                 n.kind === "relay"
                   ? data?.entries?.[n.id]?.entry_state === "entry"

@@ -154,6 +154,10 @@ def _side_of(ip: str) -> str:
     return relay_nodes.side_override(ip) or relay_nodes.SIDE_AUTO
 
 
+#: 请求方确实取不到时的显示名（不是出错，是这批事件本来就没带代理头）
+UNKNOWN_CLIENT = "客户端未记录"
+
+
 def _kept(doc: dict[str, Any]) -> bool:
     """这条事件是否**通过了中继去重**（即检测器/画像真正看到的那一批）。
 
@@ -365,16 +369,51 @@ def _facts(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _peer_by_uid(docs: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """同一连接（uid）里带请求语义的那条事件留下的「请求方 + 主机名」。
+
+    为什么要这个（2026-10 实机）：一次访问往往有**多条事件** —— `http`（带 Host/URI/XFF）与
+    `files`/`conn`/`weird`（同一 uid 的旁证，**不带代理头**）。后者单独还原时只能得到「客户端为空」
+    的链（界面原本显示「未知请求IP」），而它的 http 兄弟就在同一批事件里。实测（.203 后跳、
+    5 分钟窗口）：客户端为空的有 files 200 条 + http 92 条，抽查 34 个这样的 uid，**30 个**能靠
+    同 uid 的明文事件取回客户端。同 uid = 同一次访问，不是猜。
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for doc in docs:
+        uid = str(doc.get("uid") or "")
+        if not uid:
+            continue
+        client = str(doc.get("real_client_ip") or "")
+        host = str(doc.get("hostname") or "")
+        if not client and not host:
+            continue
+        old_client, old_host = out.get(uid, ("", ""))
+        out[uid] = (client or old_client, host or old_host)
+    return out
+
+
 def _build(
     start: datetime, end: datetime, *, ip: str, host: str, suspicious_only: bool
 ) -> dict[str, Any]:
     docs, truncated = _fetch(start, end, settings.chain_max_events)
     edges, levels = _edges()
+    # 同一连接的明文事件：用来给不带代理头的旁证事件（files/conn/weird）补回请求方与主机名
+    peers = _peer_by_uid(docs)
     buckets: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
     for doc in docs:
         chain = _chain_of(doc, edges)
         if chain is None:
             continue
+        uid = str(doc.get("uid") or "")
+        peer_client, peer_host = peers.get(uid, ("", ""))
+        if not chain["client"] and peer_client:
+            chain["client"] = peer_client
+            chain["client_source"] = "xff_same_uid"
+        if chain["origin_kind"] == "ip" and peer_host:
+            # 同一次访问的主机名（`files`/`conn` 事件没有 Host，但同一 uid 的 http 有）
+            chain["origin"] = peer_host
+            chain["origin_kind"] = "hostname"
+            chain["origin_source"] = "same_uid"
         if ip and ip not in {
             chain["client"],
             chain["relay"],
@@ -400,9 +439,9 @@ def _build(
         # 每条链的逐段证据：入口段用第一段边的证据，本跳用 relay_evidence
         segs: list[dict[str, Any]] = []
         if not path:
-            segs.append({"from": client or "?", "to": origin or "?", "kind": "direct"})
+            segs.append({"from": client or UNKNOWN_CLIENT, "to": origin or "?", "kind": "direct"})
         else:
-            prev = client or "?"
+            prev = client or UNKNOWN_CLIENT
             for idx, node in enumerate(path):
                 ev = next((e for e in chain["relay_evidence"] if e["to"] == node), None)
                 segs.append(
@@ -423,8 +462,14 @@ def _build(
             {
                 "client": client,
                 "client_source": chain["client_source"],
+                # 请求方是不是真的不知道（界面据此说话，不再拿「未知请求IP」当出错一样展示）
+                "client_state": "known" if client else "not_recorded",
+                "client_reason": ""
+                if client
+                else f"该批事件（{chain['hop']} 跳）不带代理头，无法定位请求方",
                 "origin": origin,
                 "origin_kind": chain["origin_kind"],
+                "origin_source": chain.get("origin_source") or ("observed" if origin else ""),
                 "relay_path": list(path),
                 "segments": segs,
                 "suspicious": bool(bucket["suspicious"]),

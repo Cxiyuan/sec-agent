@@ -950,6 +950,10 @@ export interface ChainSegment {
 export interface ChainItem {
   client: string;
   client_source?: string;
+  /** known = 取到了请求方；not_recorded = 这批事件不带代理头，确实没记下（不是出错） */
+  client_state?: string;
+  client_reason?: string;
+  origin_source?: string;
   origin: string;
   origin_kind?: string;
   relay_path: string[];
