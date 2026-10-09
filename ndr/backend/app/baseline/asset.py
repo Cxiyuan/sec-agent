@@ -63,6 +63,31 @@ _SET_LIMIT = 200
 #: DNS 端口：用来给资产标一个粗粒度角色（站点 / DNS 服务），只为界面可读，不参与判定
 _DNS_PORT = 53
 
+#: 资产归属（用户 2026-10 口径 C）：
+#: - `internal`：目标在监控网段/内网（**我们自己的源站、DNS 转发器**）—— 行为基线有意义；
+#: - `external`：目标在公网（含公共 DNS 解析器，实机 `114.114.114.114`/`223.5.5.5`/
+#:   `183.221.253.100` 三台就占了公网请求的 91%）—— 那是「我们的客户端去访问人家」，
+#:   行为不由我们控制，**异常判定只对 internal 做**；两块都保留，界面分组展示。
+SCOPE_INTERNAL = "internal"
+SCOPE_EXTERNAL = "external"
+
+
+def scope_of_ip(ip: Any) -> str:
+    """目标 IP 属于内网还是公网（组播/链路本地/回环都算内网：它们只在本段内活动）。"""
+    import ipaddress
+
+    text = str(ip or "").strip()
+    if not text:
+        return SCOPE_INTERNAL
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        # 不是 IP（域名等其他形式）：保守当成内网，不把未知归到「外部」
+        return SCOPE_INTERNAL
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+        return SCOPE_INTERNAL
+    return SCOPE_EXTERNAL
+
 
 #: 一个观测区间多少秒（界面展示「平均每区间」用）：与基线落库节奏一致，不写死。
 def window_seconds() -> int:
@@ -205,7 +230,11 @@ def finalize(records: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, An
                 "clients": set(),
                 "client_ports": set(),
                 "targets": set(),
+                # 归属：同一身份出现内网与外网两种 IP 时（CDN/双线）算内网（宁可对内判，不漏）
+                "scope": SCOPE_EXTERNAL if ip else SCOPE_INTERNAL,
             }
+        if scope_of_ip(ip) == SCOPE_INTERNAL:
+            bucket["scope"] = SCOPE_INTERNAL
         bucket["visits"] += 1
         bucket["requests"] += int(record.get("requests") or 0)
         # 真实客户端优先（有不只一个就是一组）；一个都没有才回落连接的 src
@@ -242,11 +271,24 @@ def window_values(buckets: dict[str, dict[str, Any]]) -> dict[str, list[float]]:
 
 
 def apply_window(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """把一个窗口的观测落进 `asset_stats`（复用数值基线那套 Welford）。"""
+    """把一个窗口的观测落进 `asset_stats`（复用数值基线那套 Welford）。
+
+    Welford 那层按 key 写均值/方差，不认归属；`scope` 通过 `attrs` 跟 `:visits` 行
+    一起写进同一会话（口径换代后重学时也会重新写上），不另开连接。
+    """
     values = window_values(buckets)
     if not values:
         return {}
-    return stats_mod.apply_stats(values, model=AssetStat)
+    return stats_mod.apply_stats(values, model=AssetStat, attrs=_scope_attrs(buckets))
+
+
+def _scope_attrs(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """把每个资产的归属写到它的 `:visits` 行。"""
+    return {
+        f"{key}:visits": {"scope": str(bucket.get("scope") or SCOPE_INTERNAL)}
+        for key, bucket in buckets.items()
+        if key
+    }
 
 
 def cleanup(retention_days: int | None = None) -> dict[str, int]:
@@ -275,24 +317,38 @@ def state_of(row: Any, now: datetime) -> str:
 
 
 def list_assets(
-    *, q: str = "", sort: str = "visits", limit: int = 50, offset: int = 0
+    *, q: str = "", sort: str = "visits", limit: int = 50, offset: int = 0, scope: str = ""
 ) -> dict[str, Any]:
     """资产列表（分页）。
 
     以 `:visits` 那一行为“主线”（每个资产必有），按它的**均值**排序（= 平均每窗口被访问次数），
     再把这批资产的其它特征一起取出来。`q` 匹配资产标识子串。
+
+    `scope`：`internal`（内网被访问方，**异常判定只看这一块**）/ `external`（公网目标，含公共 DNS）；
+    留空 = 全部（界面分组展示用）。返回里同时给两块的数量，免得前端再发两次请求。
     """
     cap = max(1, min(int(limit or 50), 500))
     start = max(0, int(offset or 0))
     now = datetime.now(UTC)
     visits_like = "%:visits"
-    conds = [AssetStat.key.like(visits_like)]
+    conds: list[Any] = [AssetStat.key.like(visits_like)]
     if (q or "").strip():
         conds.append(AssetStat.key.like(stats_mod.like_pattern(q), escape="\\"))
+    wanted = str(scope or "").strip().lower()
+    if wanted in (SCOPE_INTERNAL, SCOPE_EXTERNAL):
+        conds.append(AssetStat.scope == wanted)
     order = AssetStat.mean.desc() if (sort or "visits").strip() != "asset" else AssetStat.key.asc()
     try:
         with SessionLocal() as db:
             total = int(db.scalar(select(func.count()).select_from(AssetStat).where(*conds)) or 0)
+            by_scope = {
+                str(k or ""): int(n)
+                for k, n in db.execute(
+                    select(AssetStat.scope, func.count())
+                    .where(AssetStat.key.like(visits_like))
+                    .group_by(AssetStat.scope)
+                ).all()
+            }
             rows = db.scalars(
                 select(AssetStat).where(*conds).order_by(order).limit(cap).offset(start)
             ).all()
@@ -323,6 +379,8 @@ def list_assets(
                 "windows": int(visits.count or 0),
                 "first_seen": visits.first_seen.isoformat() if visits.first_seen else "",
                 "visits_mean": visits.mean,
+                # internal（内网被访问方） / external（公网目标）：界面分组、异常判定只看 internal
+                "scope": str(getattr(visits, "scope", "") or SCOPE_INTERNAL),
                 "requests_mean": (
                     features["requests"].mean if features.get("requests") is not None else 0.0
                 ),
@@ -335,6 +393,14 @@ def list_assets(
         "total": total,
         "returned": len(items),
         "items": items,
+        # 按归属的数量（口径 C）：界面直接用它渲染「内网 / 外部」两个分组
+        "by_scope": {
+            "internal": int(by_scope.get(SCOPE_INTERNAL, 0)),
+            "external": int(by_scope.get(SCOPE_EXTERNAL, 0)),
+            "unknown": int(
+                sum(n for k, n in by_scope.items() if k not in (SCOPE_INTERNAL, SCOPE_EXTERNAL))
+            ),
+        },
         "window_seconds": window_seconds(),
     }
 
@@ -389,12 +455,26 @@ def snapshot() -> dict[str, Any]:
                 )
                 or 0
             )
+            by_scope = {
+                str(k or ""): int(n)
+                for k, n in db.execute(
+                    select(AssetStat.scope, func.count())
+                    .where(AssetStat.key.like("%:visits"))
+                    .group_by(AssetStat.scope)
+                ).all()
+            }
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读被访问方基线失败：{exc}", "total_assets": 0}
     return {
         "total_assets": total,
         "ready_assets": ready,
         "learning_assets": max(0, total - ready),
+        # 分归属计数（口径 C）：内网被访问方是异常判定的对象，外部目标（含公共 DNS）只展示
+        "internal_assets": int(by_scope.get(SCOPE_INTERNAL, 0)),
+        "external_assets": int(by_scope.get(SCOPE_EXTERNAL, 0)),
+        "scope_unknown_assets": int(
+            sum(n for k, n in by_scope.items() if k not in (SCOPE_INTERNAL, SCOPE_EXTERNAL))
+        ),
         "observe_days": days,
         "window_seconds": window_seconds(),
         "checked_at": now.isoformat(),

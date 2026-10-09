@@ -187,15 +187,19 @@ def baseline_assets(
     sort: str = "visits",
     limit: int = 50,
     offset: int = 0,
+    scope: str = "",
 ):
-    """**被访问方（内网源站 / 内网 DNS 转发器）列表**：分页 + 搜索。
+    """**被访问方（内网源站 / 内网 DNS 转发器）列表**：分页 + 搜索 + 归属过滤。
 
     与源头数值基线的区别：那份是按**发起方（源 IP）**建的，服务器被访问这件事在那里没有归属
     （外网打内网服务器时事件都记在客户端那侧）；这份按**被访问方**建，看的是
     「被访问连接数 / 请求数 / 不同真实客户端数 / 不同目标数」的窗口间波动
     （访问数按 **Zeek 连接（uid）**算：同一连接里的 conn 与 http/ssl 只算一次）。
+
+    `scope`：`internal` = 内网被访问方（**异常判定只看这一块**）/ `external` = 公网目标
+    （含公共 DNS 解析器，如 `114.114.114.114`、`223.5.5.5`）；留空 = 全部。
     """
-    return list_assets(q=q, sort=sort, limit=limit, offset=offset)
+    return list_assets(q=q, sort=sort, limit=limit, offset=offset, scope=scope)
 
 
 @router.get("/assets/stats")

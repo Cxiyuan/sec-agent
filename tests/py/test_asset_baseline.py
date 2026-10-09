@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import importlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
@@ -378,7 +381,12 @@ class _Session:
         return len(self.by_scalars or self.rows)
 
     def execute(self, _stmt: Any) -> Any:
-        return SimpleNamespace(one=lambda: (1, 0, None), rowcount=0)
+        # 同时支持 `.one()`（旧用法）与 `.all()`（按归属分组计数用）
+        return SimpleNamespace(
+            one=lambda: (1, 0, None),
+            all=list,
+            rowcount=0,
+        )
 
     def add(self, row: Any) -> None:
         self.added.append(row)
@@ -578,8 +586,8 @@ def test_assets_route_passes_filters(
         return {"total": 0, "items": []}
 
     monkeypatch.setattr(baseline_route, "list_assets", fake_list)
-    baseline_route.baseline_assets(_=None, q="nczy", sort="visits", limit=5, offset=10)
-    assert seen == {"q": "nczy", "sort": "visits", "limit": 5, "offset": 10}
+    baseline_route.baseline_assets(_=None, q="nczy", sort="visits", limit=5, offset=10, scope="")
+    assert seen == {"q": "nczy", "sort": "visits", "limit": 5, "offset": 10, "scope": ""}
 
 
 def test_asset_stats_route_passes_asset(
@@ -605,3 +613,74 @@ def test_overview_includes_asset_snapshot(
     monkeypatch.setattr(baseline_route, "_detector_counters", lambda: {"alive": False})
     out = baseline_route._build_overview(10)
     assert out["assets"] == {"total_assets": 7}
+
+
+# ---------- 归属（口径 C，2026-10）：内网被访问方 / 外部目标 ----------
+
+
+def test_scope_of_ip_splits_internal_and_external(asset: ModuleType) -> None:
+    """内网（含组播/链路本地/回环）算 internal；公网算 external；空/未知保守算 internal。"""
+    assert asset.scope_of_ip("172.16.199.186") == asset.SCOPE_INTERNAL
+    assert asset.scope_of_ip("10.91.21.5") == asset.SCOPE_INTERNAL
+    assert asset.scope_of_ip("192.168.1.1") == asset.SCOPE_INTERNAL
+    assert asset.scope_of_ip("224.0.0.252") == asset.SCOPE_INTERNAL, "组播只在本段内活动"
+    assert asset.scope_of_ip("127.0.0.1") == asset.SCOPE_INTERNAL
+    # 实机里的公共 DNS 解析器
+    assert asset.scope_of_ip("114.114.114.114") == asset.SCOPE_EXTERNAL
+    assert asset.scope_of_ip("223.5.5.5") == asset.SCOPE_EXTERNAL
+    assert asset.scope_of_ip("") == asset.SCOPE_INTERNAL, "取不到就保守算内网，不误判成外部"
+
+
+def test_finalize_marks_scope_per_asset(asset: ModuleType) -> None:
+    """同一窗口里：内网源站标 internal、公共 DNS 标 external。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records,
+        _entry(uid="S1", log_type="http", hostname="portal.example", dst_ip="172.16.199.20"),
+    )
+    asset.observe_entry(
+        records,
+        _entry(uid="S2", log_type="dns", hostname=None, dst_ip="114.114.114.114", dst_port=53),
+    )
+    buckets, _ = asset.finalize(records)
+    assert buckets["portal.example"]["scope"] == asset.SCOPE_INTERNAL
+    assert buckets["114.114.114.114:53"]["scope"] == asset.SCOPE_EXTERNAL
+
+
+def test_finalize_prefers_internal_when_ip_mixed(asset: ModuleType) -> None:
+    """同一域名同时解析到内网与外网（双线/CDN）：算内网 —— 宁可对内判，不漏。"""
+    records: dict[str, dict[str, Any]] = {}
+    asset.observe_entry(
+        records, _entry(uid="M1", log_type="http", hostname="dual.example", dst_ip="8.8.8.8")
+    )
+    asset.observe_entry(
+        records, _entry(uid="M2", log_type="http", hostname="dual.example", dst_ip="172.16.199.20")
+    )
+    buckets, _ = asset.finalize(records)
+    assert buckets["dual.example"]["scope"] == asset.SCOPE_INTERNAL
+
+
+def test_assets_route_forwards_scope(asset: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """路由要把 scope 原样传给数据层（界面三个过滤按钮靠它）。"""
+    baseline_route = importlib.import_module("app.api.routes.baseline")
+    seen: dict[str, Any] = {}
+
+    def _fake(**kw: Any) -> dict[str, Any]:
+        seen.update(kw)
+        return {"total": 0, "items": []}
+
+    monkeypatch.setattr(baseline_route, "list_assets", _fake)
+    baseline_route.baseline_assets(
+        None, q="x", sort="visits", limit=10, offset=20, scope="external"
+    )  # type: ignore[arg-type]
+    assert seen == {"q": "x", "sort": "visits", "limit": 10, "offset": 20, "scope": "external"}
+
+
+def test_panel_groups_assets_by_scope() -> None:
+    """界面要把两块分开说清楚：内网被访问方（判异常）/ 外部目标（含公共 DNS，只展示）。"""
+    src = (ROOT / "ndr" / "frontend" / "components" / "behavior-panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "内网被访问方" in src and "外部目标" in src
+    assert "by_scope" in src
+    assert "异常判定只看这一块" in src or "只展示" in src

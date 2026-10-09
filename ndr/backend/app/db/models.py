@@ -208,6 +208,10 @@ class AssetStat(Base):
     first_seen: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    #: 资产归属：internal（监控网段/内网 —— 我们自己的源站、DNS 转发器）/ external（公网目标，
+    #: 含公共 DNS 解析器）。**异常判定只对 internal 判**（外部站点行为不由我们控制）。
+    #: 口径 C（2026-10）：两块都保留，界面分组展示。
+    scope: Mapped[str] = mapped_column(String(16), default="", index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
     )

@@ -244,6 +244,8 @@ export function BehaviorPanel() {
   const [profiles, setProfiles] = React.useState<BaselineProfilesPayload | null>(null);
   const [numeric, setNumeric] = React.useState<NumericGroupedPayload | null>(null);
   const [assets, setAssets] = React.useState<AssetListPayload | null>(null);
+  /** 被访问方归属过滤（口径 C）：内网被访问方 = 异常判定的对象；外部目标只展示 */
+  const [ascope, setAscope] = React.useState<"" | "internal" | "external">("");
   const [apage, setApage] = React.useState(0);
   const [aq, setAq] = React.useState("");
   const [auto, setAuto] = React.useState(true);
@@ -278,6 +280,7 @@ export function BehaviorPanel() {
     `&limit=${PAGE_SIZE}&offset=${npage * PAGE_SIZE}`;
   const assetsUrl =
     `/api/baseline/assets?q=${encodeURIComponent(aq)}` +
+    `&scope=${ascope}` +
     `&limit=${PAGE_SIZE}&offset=${apage * PAGE_SIZE}`;
 
   async function load() {
@@ -805,8 +808,30 @@ export function BehaviorPanel() {
               }}
             />
             <span className="text-xs text-muted-foreground">
-              共 {assets?.total ?? 0} 个资产 · 每个观测区间 {assets?.window_seconds ?? "-"} 秒
+              共 {assets?.total ?? 0} 个资产（内网 {assets?.by_scope?.internal ?? 0} / 外部{" "}
+              {assets?.by_scope?.external ?? 0}）· 每个观测区间 {assets?.window_seconds ?? "-"} 秒
             </span>
+            <div className="flex gap-1">
+              {(
+                [
+                  ["", `全部（${assets?.by_scope ? (assets.by_scope.internal ?? 0) + (assets.by_scope.external ?? 0) + (assets.by_scope.unknown ?? 0) : 0}）`],
+                  ["internal", `内网被访问方（${assets?.by_scope?.internal ?? 0}）`],
+                  ["external", `外部目标（${assets?.by_scope?.external ?? 0}）`],
+                ] as const
+              ).map(([value, label]) => (
+                <Button
+                  key={value}
+                  size="sm"
+                  variant={ascope === value ? "default" : "outline"}
+                  onClick={() => {
+                    setAscope(value);
+                    setApage(0);
+                  }}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
           </div>
           {assets?.items?.length ? (
             <Table>
@@ -828,6 +853,16 @@ export function BehaviorPanel() {
                     <TableCell className="text-xs">{row.asset}</TableCell>
                     <TableCell>
                       <Badge variant="outline">{row.role === "dns" ? "内网 DNS" : "站点"}</Badge>
+                      <Badge
+                        variant={row.scope === "external" ? "outline" : "default"}
+                        title={
+                          row.scope === "external"
+                            ? "公网目标（含公共 DNS 解析器）：只展示，异常判定不看它"
+                            : "内网被访问方：异常判定只看这一块"
+                        }
+                      >
+                        {row.scope === "external" ? "外部" : "内网"}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <StateBadge

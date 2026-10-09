@@ -33,6 +33,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS risk_at TIMESTAMPTZ",
     # 服务端 IP（被访问的监控资产）：界面展示「账号 + 关联服务端 IP」靠它
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS dst_ips JSONB NOT NULL DEFAULT '{}'::jsonb",
+    # 被访问方资产的归属（口径 C，2026-10）：internal（内网，异常判定只看它）/ external（公网目标）
+    "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
@@ -51,7 +54,7 @@ _MIGRATIONS: tuple[str, ...] = (
 #: 就把 `asset_stats` 清空重学 —— 它只是统计缓存（判据用的均值/方差），不含原始事件，
 #: 清了不丢数据，只是重新攒观测期。
 _ASSET_SEMANTICS_KEY = "asset.semantics_version"
-_ASSET_SEMANTICS_VERSION = 4
+_ASSET_SEMANTICS_VERSION = 5
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
 _CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}

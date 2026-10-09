@@ -834,6 +834,8 @@ export interface AssetRow {
   first_seen: string;
   /** 平均每个观测区间被访问多少次（**连接数**：同一连接内的多条日志只算一次） */
   visits_mean: number;
+  /** internal = 内网被访问方（异常判定只看它）；external = 公网目标（含公共 DNS），只展示 */
+  scope?: string;
   /** 平均每区间请求数（应用层日志：http/dns；纯 TCP 服务为 0） */
   requests_mean: number;
   /** 平均每区间不同真实客户端数 */
@@ -847,6 +849,8 @@ export interface AssetListPayload {
   total: number;
   returned: number;
   items: AssetRow[];
+  /** 按归属的数量（口径 C）：界面用它渲染「内网 / 外部」分组 */
+  by_scope?: { internal?: number; external?: number; unknown?: number };
   window_seconds: number;
   error?: string;
 }

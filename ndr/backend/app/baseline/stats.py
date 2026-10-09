@@ -79,11 +79,17 @@ def load_stats(keys: list[str], *, model: Any = BaselineStat) -> dict[str, dict[
 
 
 def apply_stats(
-    values: dict[str, list[float]], *, model: Any = BaselineStat
+    values: dict[str, list[float]],
+    *,
+    model: Any = BaselineStat,
+    attrs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """把一批观测并进基线（Welford 增量），返回并入后的状态。
 
     `model` 可换成 `AssetStat`（被访问方基线）。
+    `attrs`：随行一起落的附加列（key → 列名/值），新建与已存在的行都会写；
+    被访问方基线用它把 `scope`（内网/公网归属）跟 `:visits` 行一起写，
+    免得为这点信息再开一次会话/连接。
     """
     merged: dict[str, list[float]] = {k: v for k, v in values.items() if k and v}
     if not merged:
@@ -103,6 +109,8 @@ def apply_stats(
                 if row is None:
                     row = model(key=key, count=0, mean=0.0, m2=0.0, first_seen=now)
                     db.add(row)
+                for field, value in (attrs or {}).get(key, {}).items():
+                    setattr(row, field, value)
                 count = int(row.count or 0)
                 mean = float(row.mean or 0.0)
                 m2 = float(row.m2 or 0.0)
