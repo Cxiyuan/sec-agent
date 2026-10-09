@@ -247,7 +247,7 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 
 ## 上线后专项检查（日志与协议解析）
 
-> 状态：**已在实机（172.16.196.77，Zeek 9.0.0，iface=ens160）做过一遍**，2026-10。
+> 状态：**已在实机（10.1.2.250，Zeek 9.0.0，iface=eth0）做过一遍**，2026-10。
 > 结论见下表后的「实机结果」；脚本改动只在纸面 + 单进程归一化侧验证过，首次上线必须逐条核。
 
 | # | 检查项 | 怎么核 | 期望 |
@@ -264,7 +264,7 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 
 | 10 | **文件提取（批 4）** | 经 HTTP 传一个白名单文件，看 `docker exec <zeek> ls -l /extract`、`files.log` 的 `extracted`/`extracted_size` 与 `GET /api/files/<fuid>` | `/extract/<fuid>` 存在且字节数与 `files.log` 的 `total_bytes` 一致（`extracted` 的值就是 fuid；**完整件的 `extracted_size` 是 NULL**）；传图片等白名单外类型 → 5 分钟内被清理助手删掉（files.log 记录仍在），下载返回 404；**只覆盖 HTTP/FTP 明文**，TLS 里的文件不会出现；超 16 MiB 的文件被截断（`extracted_cutoff=true`、`extracted_size`=上限）且响应带 `X-Extract-Cutoff: 1` |
 
-### 实机结果（2026-10，172.16.196.77）
+### 实机结果（2026-10，10.1.2.250）
 
 | # | 结果 | 证据 |
 |---|---|---|
@@ -272,7 +272,7 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 | 2 | ⚠️ 已修（2026-10 QA） | 轮转是**同目录平铺改名**：`conn.2026-10-01.log`（121MB）、`ssl.2026-10-02.log`、`packet_filter.2026-10-02.log`、`reporter.2026-10-02.log`、`dhcp.2026-10-02.log` 等都在 `/logs` 顶层，没有日期子目录。**但当时格式只到「天」，同一天启动两次是拿同名文件互相覆盖**：2026-10-02 02:55 与 06:21 两次重建，后一次的 `*.2026-10-02.log` 覆盖了前一次（本机用 `zeek/zeek:9.0` 独立复现：`rot.2026-10-02.log` 第二次覆盖第一次，sha256 `0d87e368…`→`0e5c3186…`）→ 已把 `Log::default_rotation_date_format` 改成带时分秒的 `%Y-%m-%d-%H-%M-%S`，Filebeat 的 `log_type` 剥离规则同步（`tests/py/test_filebeat_yml.py` 断言规则内容与顺序）。清理由 `entrypoint.sh` 的 `cleanup_once()` 两条 `find` 做（顶层与子目录布局都只删轮转命名件、不动活动日志；保留期用 `-mmin` 精确到分钟；**Filebeat 不在时不删**），按 `ZEEK_RETENTION_DAYS=3` 每 `ZEEK_CLEAN_INTERVAL=3600` 秒跑一次。**2026-10-02 探针实测**：`zzoldprobe.2026-09-20.log`（mtime 10 天前）与 `zznewprobe.2026-10-01.log`（mtime 1 天前）放进 `/logs` 后重建容器 → 启动清理循环自动删掉旧的那个、留下新的那个 |
 | 3 | ✅（批 2 起含指纹） | dns 有 query/qtype/qtype_name/rcode/rcode_name/opcode/rejected；ssl 有 server_name/version/cipher/curve/established/resumed/ssl_history；http 字段齐全；带 `X-Forwarded-For` 的请求另有 `proxied`（见第 9 行）。**`ja3`/`ja3s` 在 Zeek 9.0 自带分析器里不存在**（见「已知限制」），批 2 起由 `site/vendor/` 里 vendor 的上游 BSD-3 脚本产出 `ja3`/`ja3s`/`ja4`（容器内实测：`ja3:"284deaeae14ea5ddc96c5d7e59855422"`、`ja3s:"15af977ce25de452b96affa2addb1036"`、`ja4:"t13d301200_1d37bd780c83_ecd0401ec68b"`），`files.log` 另带 `md5`/`sha1`/`sha256` |
 | 4 | ✅ 已修 + 已扩到响应体 | 上线实测 POST 无 body：ASCII 体 `{"probe":"ascii","n":1}` 有 `body`、UTF-8 体 `{"text":"中文请求体"}` 无 → 判据 `[^\x09\x0a\x0d\x20-\x7e]` 把中文整块丢了；已改为只拦 NUL/C0（见 `site/shentong-httpbody.zeek`）。2026-10-02 又加响应体：`resp_body` + Zeek 自带 `response_body_len`，容器内 Zeek 单测 9 项全过（请求/响应分块截断、GET 只采响应体、NUL 双向拦、UTF-8 双向放行、PUT 采请求体） |
-| 5 | ✅ | 界面配 `172.16.196.0/24` 后启动命令变为 `zeek -C -i ens160 -f net 172.16.196.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 172.16.196.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 172.16.196.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
+| 5 | ✅ | 界面配 `10.1.2.0/24` 后启动命令变为 `zeek -C -i eth0 -f net 10.1.2.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 10.1.2.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 10.1.2.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
 | 6 | ✅ | 无 notice.log（未加载 `policy/protocols/*`），符合预期 |
 | 7 | ✅ | ES 聚合：log_type = conn 3168 / dhcp 18 / dns 8 / ssl 8 / http 2；event_type = rejected_connection 3140 / dhcp_activity 18 / conn_established 17 / scan_attempt 11 / dns_query 8 / tls_session 8 / http_request 2 |
 | 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内置-内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |
@@ -342,7 +342,7 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
   files.log `extracted_size=1000` + `extracted_cutoff=true`、ES 同步（`exists extracted_size`=2、
   `extracted_cutoff=true`=2）、下载响应带 `x-extract-cutoff: 1` + `x-extract-size: 1000` +
   `content-length: 1000`；测完按容器内备份覆盖回 `16777216`（sha256 校验一致），Zeek 重启后命令仍是
-  `zeek -C -i ens160 -f net 172.16.196.0/24 …`。16 MiB 这个具体数值由 `tests/zeek/batch4_test.zeek` 断言。
+  `zeek -C -i eth0 -f net 10.1.2.0/24 …`。16 MiB 这个具体数值由 `tests/zeek/batch4_test.zeek` 断言。
 - **ES 字段**：`exists fuid` 91637、`exists extracted` 2119、`exists extracted_size` 0（= 完整件不写）、
   `extracted_cutoff=true` 0 → 调小上限验证后两者各变成 2。
 - **两个部署/环境坑**：① `shentong-ndr` 镜像被 backend / normalizer / detector / ndr-mcp 四个服务共用，
@@ -356,8 +356,8 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 - `zeek-config` / `zeek-logs` / `zeek-extract` 清空后 Zeek 回落默认：`interface.conf` 只剩 `interface=ens160`
   与两个默认上限（`body_max_bytes=16384` / `resp_body_max_bytes=65536`），启动命令**不带** `-f`
   （`packet_filter.log` = `"filter":"ip or not ip"`）——**网段是人工配置，删卷后必须重新下发**。
-- 经 `PUT /api/zeek/interface` 重下发 `172.16.196.0/24` + 16 KB / 64 KB 后：启动命令回到
-  `zeek -C -i ens160 -f net 172.16.196.0/24 …`，`packet_filter.log` `"filter":"net 172.16.196.0/24" … "success":true`，
+- 经 `PUT /api/zeek/interface` 重下发 `10.1.2.0/24` + 16 KB / 64 KB 后：启动命令回到
+  `zeek -C -i eth0 -f net 10.1.2.0/24 …`，`packet_filter.log` `"filter":"net 10.1.2.0/24" … "success":true`，
   容器内 `shentong-limits.zeek` 重新渲染成 16384 / 65536。
 - 提取/下载链路在空白卷上照样自愈：2400 B `text/plain` 与 2208 B `application/json` 上传 → 落盘
   sha256 与原文件逐字一致、`GET /api/files/<fuid>` 200 且 `content-length` 与落盘一致、无令牌 401；

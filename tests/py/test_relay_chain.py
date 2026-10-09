@@ -312,7 +312,7 @@ def test_dedup_passes_direct_and_drops_relay_internal(dedup_mod: ModuleType) -> 
 
 def test_dedup_drops_back_only_when_front_visible(dedup_mod: ModuleType) -> None:
     dedup = dedup_mod.RelayDedup(visibility_seconds=60)
-    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="172.16.196.112")
+    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="10.1.2.20")
     # 从没见过该中继的前跳（抓包点只在源站侧）→ 后跳照常处理，不丢数据
     assert dedup.decide(back, now=0.0) == "pass"
     assert dedup.counts["relay_back_kept"] == 1
@@ -327,7 +327,7 @@ def test_dedup_drops_back_only_when_front_visible(dedup_mod: ModuleType) -> None
 def test_dedup_visibility_expires(dedup_mod: ModuleType) -> None:
     dedup = dedup_mod.RelayDedup(visibility_seconds=30)
     dedup.decide(_entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77"), now=0.0)
-    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="172.16.196.112")
+    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="10.1.2.20")
     # 超出可见期：不再认定为重复（拓扑变化的兜底）
     assert dedup.decide(back, now=100.0) == "pass"
 
@@ -411,7 +411,7 @@ def test_dedup_side_back_keeps_content_side(dedup_mod: ModuleType, set_relays: A
     front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77", log_type="ssl")
     assert dedup.decide(front) == "drop"
     assert dedup.counts["relay_front_dropped"] == 1
-    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="172.16.196.112", log_type="http")
+    back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="10.1.2.20", log_type="http")
     assert dedup.decide(back) == "pass"
     assert dedup.counts["relay_back_kept"] == 1
     inner_tls = _entry(
@@ -431,7 +431,7 @@ def test_dedup_side_front_keeps_today_behaviour(dedup_mod: ModuleType, set_relay
     dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "front")
     front = _entry(hop="front", src_ip="192.0.2.9", dst_ip="10.0.0.53", log_type="dns")
     assert dedup.decide(front) == "pass"
-    back = _entry(hop="back", src_ip="10.0.0.53", dst_ip="223.5.5.5", log_type="dns")
+    back = _entry(hop="back", src_ip="10.0.0.53", dst_ip="8.8.8.8", log_type="dns")
     assert dedup.decide(back) == "drop"  # 前跳可见 → 后跳去重
     assert dedup.counts["relay_back_dropped"] == 1
 
@@ -468,34 +468,32 @@ def test_chain_peer_ips_reads_sender_side_values(dedup_mod: ModuleType) -> None:
 
 def test_dedup_drops_chain_continuation(dedup_mod: ModuleType, set_relays: Any) -> None:
     """链的下游续跳：src 不是中继、但代理头说上一跳是清单内中继 → 丢掉（同一次访问已记）。"""
-    set_relays("172.16.199.203")
+    set_relays("10.1.2.10")
     dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "back")
     chain = {
         "proxied": [
-            "X-FORWARDED-FOR -> 101.133.144.79, 172.16.199.203",
-            "X-REAL-IP -> 172.16.199.203",
+            "X-FORWARDED-FOR -> 101.133.144.79, 10.1.2.10",
+            "X-REAL-IP -> 10.1.2.10",
         ]
     }
     cont = _entry(
         hop="direct",
-        src_ip="172.16.196.112",
-        dst_ip="172.16.196.111",
+        src_ip="10.1.2.20",
+        dst_ip="10.1.2.21",
         log_type="http",
         raw=chain,
     )
     assert dedup.decide(cont) == "drop"
     assert dedup.counts["relay_chain_continuation_dropped"] == 1
     # 证据跳（src 就是中继）不在续跳判据范围内 —— 它的代理头里同样带着中继
-    keep = _entry(
-        hop="back", src_ip="172.16.199.203", dst_ip="172.16.196.112", log_type="http", raw=chain
-    )
+    keep = _entry(hop="back", src_ip="10.1.2.10", dst_ip="10.1.2.20", log_type="http", raw=chain)
     assert dedup.decide(keep) == "pass"
     assert dedup.counts["relay_chain_continuation_dropped"] == 1
     # 链里没有中继 → 不是续跳
     plain = _entry(
         hop="direct",
-        src_ip="172.16.196.112",
-        dst_ip="172.16.196.111",
+        src_ip="10.1.2.20",
+        dst_ip="10.1.2.21",
         log_type="http",
         raw={"proxied": ["X-REAL-IP -> 203.0.113.9"]},
     )

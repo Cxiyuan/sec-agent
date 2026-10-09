@@ -36,9 +36,9 @@ def chain_mod(request: pytest.FixtureRequest) -> ModuleType:
     return importlib.import_module("app.api.routes.chain")
 
 
-A = "172.16.199.214"
-B = "172.16.199.203"
-ORIGIN = "172.16.196.65"
+A = "10.1.2.11"
+B = "10.1.2.10"
+ORIGIN = "10.1.2.23"
 
 
 def _net(ip: str) -> Any:
@@ -252,7 +252,7 @@ def test_chain_of_fills_relay_path_from_topology(
             "src_ip": B,
             "dst_ip": ORIGIN,
             "real_client_ip": "8.8.8.8",
-            "hostname": "oanew.nczy.edu.cn",
+            "hostname": "app.example.com",
             "log_type": "http",
             "event_type": "http_request",
         },
@@ -260,7 +260,7 @@ def test_chain_of_fills_relay_path_from_topology(
     )
     assert chain is not None
     assert chain["client"] == "8.8.8.8"
-    assert chain["origin"] == "oanew.nczy.edu.cn"
+    assert chain["origin"] == "app.example.com"
     assert chain["relay_path"] == [A, B]  # 中间那跳由拓扑补上
     assert chain["relay_evidence"][0]["direct"] == 30
 
@@ -289,7 +289,7 @@ def test_build_groups_and_marks_suspicious(
             "src_ip": B,
             "dst_ip": ORIGIN,
             "real_client_ip": "8.8.8.8",
-            "hostname": "oanew.nczy.edu.cn",
+            "hostname": "app.example.com",
             "log_type": "http",
             "event_type": "http_upload",
             "status_code": 200,
@@ -302,7 +302,7 @@ def test_build_groups_and_marks_suspicious(
             "src_ip": B,
             "dst_ip": ORIGIN,
             "real_client_ip": "8.8.8.8",
-            "hostname": "oanew.nczy.edu.cn",
+            "hostname": "app.example.com",
             "log_type": "http",
             "event_type": "http_request",
             "status_code": 200,
@@ -339,7 +339,7 @@ def test_dispatch_requires_push_config(
                     "src_ip": B,
                     "dst_ip": ORIGIN,
                     "real_client_ip": "8.8.8.8",
-                    "hostname": "oanew.nczy.edu.cn",
+                    "hostname": "app.example.com",
                     "log_type": "http",
                     "event_type": "http_upload",
                     "filename": "x.jsp",
@@ -353,7 +353,7 @@ def test_dispatch_requires_push_config(
 
     with pytest.raises(HTTPException) as excinfo:
         chain_mod.dispatch_chain(
-            chain_mod.DispatchIn(client="8.8.8.8", origin="oanew.nczy.edu.cn", minutes=30),
+            chain_mod.DispatchIn(client="8.8.8.8", origin="app.example.com", minutes=30),
             db=None,
             _=None,
         )
@@ -379,7 +379,7 @@ def test_dispatch_builds_chain_digest(
                     "src_ip": B,
                     "dst_ip": ORIGIN,
                     "real_client_ip": "8.8.8.8",
-                    "hostname": "oanew.nczy.edu.cn",
+                    "hostname": "app.example.com",
                     "log_type": "suricata",
                     "event_type": "signature_hit",
                     "signature": "ET WEB_SERVER SQL Injection",
@@ -403,14 +403,14 @@ def test_dispatch_builds_chain_digest(
 
     monkeypatch.setattr(chain_mod.digest_push, "push_batch", fake_push)
     out = chain_mod.dispatch_chain(
-        chain_mod.DispatchIn(client="8.8.8.8", origin="oanew.nczy.edu.cn", minutes=30),
+        chain_mod.DispatchIn(client="8.8.8.8", origin="app.example.com", minutes=30),
         db=None,
         _=None,
     )
     assert out["delivered"] is True
     digest = sent["digest"]
     assert digest["src_ip"] == "8.8.8.8"
-    assert digest["dst_ips"] == ["oanew.nczy.edu.cn"]
+    assert digest["dst_ips"] == ["app.example.com"]
     assert digest["aggregate"]["chain"]["relay_path"] == [A, B]
     assert digest["samples"], "样本要带给智能体，否则它看不到证据"
 
@@ -452,7 +452,7 @@ def test_chain_ignores_cycle_broken_edge(
             "src_ip": B,
             "dst_ip": ORIGIN,
             "real_client_ip": "8.8.8.8",
-            "hostname": "oanew.nczy.edu.cn",
+            "hostname": "app.example.com",
             "log_type": "http",
         },
         edges,

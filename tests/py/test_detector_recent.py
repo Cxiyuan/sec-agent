@@ -63,12 +63,12 @@ class _Client:
 
 def _digest(**kw: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "src_ip": "172.16.199.106",
+        "src_ip": "10.1.2.66",
         "rule": "内置-内网漏洞利用探测",
         "rule_severity": "high",
         "rule_source": "builtin",
         "count": 42,
-        "dst_ips": ["172.16.196.97", "172.16.195.70"],
+        "dst_ips": ["10.1.2.22", "10.1.2.24"],
         "dst_ports": ["8080", "8088"],
         "event_types": ["http_error"],
         "conn_states": ["SF"],
@@ -90,7 +90,7 @@ def test_compact_keeps_display_fields_and_drops_samples(recent: ModuleType) -> N
     assert out["severity"] == "high"
     assert out["count"] == 42
     assert out["ts"] == "2026-10-09T14:54:31+00:00", "时间取最近一次命中"
-    assert out["dst_ips"] == ["172.16.196.97", "172.16.195.70"]
+    assert out["dst_ips"] == ["10.1.2.22", "10.1.2.24"]
     assert "samples" not in out, "样例文档不放进 Redis 环形记录（体积）"
 
 
@@ -182,8 +182,8 @@ def test_internal_exploit_rule_matches_payloads(request: pytest.FixtureRequest) 
             ts="2026-10-09T14:28:29+00:00",
             event_type="http_request",
             log_type="http",
-            src_ip="172.16.199.106",
-            dst_ip="172.16.196.97",
+            src_ip="10.1.2.66",
+            dst_ip="10.1.2.22",
             dst_port=8080,
             user_agent=user_agent,
             uri_path=uri_path,
@@ -204,7 +204,7 @@ def test_internal_exploit_rule_matches_payloads(request: pytest.FixtureRequest) 
         event_type="http_request",
         log_type="http",
         src_ip="8.8.8.8",
-        dst_ip="172.16.196.97",
+        dst_ip="10.1.2.22",
         user_agent="() { :; }; /bin/sleep 5;",
         uri_path="/",
     )

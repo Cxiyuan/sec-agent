@@ -91,7 +91,7 @@ def test_untrusted_peer_drops_proxy_headers(set_relays) -> None:
     assert (
         normalizer._real_client_ip({"proxied": PROBE["proxied"]}, TRUSTED_PEER) == "198.51.100.77"
     )
-    for peer in ("10.9.9.9", "172.16.197.1", None, "", "not-an-ip"):
+    for peer in ("10.9.9.9", "10.1.3.1", None, "", "not-an-ip"):
         assert normalizer._real_client_ip({"proxied": PROBE["proxied"]}, peer) is None
     # 清单为空 = 谁都不信（连正确的对端也不信）——PG 里没配就是「网络里没有中继」
     set_relays("")
@@ -106,7 +106,7 @@ def test_trusted_proxies_accepts_host_cidr_and_list(set_relays) -> None:
         ("192.0.2.0/24", "192.0.2.77", "198.51.100.77"),  # 代理是一个网段
         ("10.0.0.0/8, 192.0.2.77", "192.0.2.77", "198.51.100.77"),  # 多项/逗号分隔
         ("# 注释行\n192.0.2.77", "192.0.2.77", "198.51.100.77"),
-        ("192.0.2.0/24", "172.16.197.77", None),
+        ("192.0.2.0/24", "10.1.3.77", None),
         ("not-a-cidr", "192.0.2.77", None),  # 非法项被忽略 ⇒ 等于没配
     ):
         set_relays(cfg)

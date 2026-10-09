@@ -197,7 +197,7 @@ def baseline_assets(
     （访问数按 **Zeek 连接（uid）**算：同一连接里的 conn 与 http/ssl 只算一次）。
 
     `scope`：`internal` = 内网被访问方（**异常判定只看这一块**）/ `external` = 公网目标
-    （含公共 DNS 解析器，如 `114.114.114.114`、`223.5.5.5`）；留空 = 全部。
+    （含公共 DNS 解析器，如 `1.1.1.1`、`8.8.8.8`）；留空 = 全部。
     """
     return list_assets(q=q, sort=sort, limit=limit, offset=offset, scope=scope)
 

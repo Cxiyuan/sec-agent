@@ -197,7 +197,7 @@ export function RelayNodesPanel() {
         <textarea
           className="min-h-[120px] w-full rounded-md border bg-transparent p-2 font-mono text-xs"
           spellCheck={false}
-          placeholder={"172.16.199.203\n172.16.196.112\n10.0.0.53   # 内网 DNS 转发器"}
+          placeholder={"10.1.2.10\n10.1.2.20\n10.0.0.53   # 内网 DNS 转发器"}
           value={text}
           onChange={(e) => setText(e.target.value)}
         />

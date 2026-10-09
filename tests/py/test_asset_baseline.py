@@ -66,7 +66,7 @@ def _entry(**kw: Any) -> SimpleNamespace:
 
 def test_asset_key_prefers_hostname_and_lowercases(asset: ModuleType) -> None:
     assert (
-        asset.asset_key(_entry(hostname="WWW.NCZY.edu.cn", dst_ip="10.0.0.1")) == "www.nczy.edu.cn"
+        asset.asset_key(_entry(hostname="WWW.EXAMPLE.com", dst_ip="10.0.0.1")) == "www.example.com"
     )
 
 
@@ -79,8 +79,8 @@ def test_asset_key_falls_back_to_ip_port(asset: ModuleType) -> None:
 
 def test_role_of_marks_dns_by_port(asset: ModuleType) -> None:
     assert asset.role_of("10.0.0.53:53") == "dns"
-    assert asset.role_of("www.nczy.edu.cn") == "site"
-    assert asset.role_of("172.16.196.112:443") == "site"
+    assert asset.role_of("www.example.com") == "site"
+    assert asset.role_of("10.1.2.20:443") == "site"
 
 
 # ---------- 按连接（uid）累计 ----------
@@ -138,7 +138,7 @@ def test_conn_only_is_not_an_asset(asset: ModuleType) -> None:
     """纯 TCP 连接（无 Host/SNI、零请求）**不算被访问方**（v4 口径）。
 
     实机依据（2026-10）：资产表 95,443 个资产里 94,642 个是 `IP:端口`，其中 48,971 个端口
-    ≥32768（如 `172.16.199.106:53650` 只有 305 条 conn、零请求）—— 那是「收到过连接的目标」，
+    ≥32768（如 `10.1.2.66:53650` 只有 305 条 conn、零请求）—— 那是「收到过连接的目标」，
     不是「被访问的站点」，界面上的资产数因此虚高几十倍。
     """
     records: dict[str, dict[str, Any]] = {}
@@ -185,7 +185,7 @@ def test_real_client_ip_wins_over_src_ip(asset: ModuleType) -> None:
 def test_one_connection_can_carry_many_real_clients(asset: ModuleType) -> None:
     """一条长连接上可以有很多个真实客户端（WAF 复用/承载）——只记一个会把客户端数压成 1。
 
-    实测：`www.nczy.edu.cn` 近 5 分钟 206 个请求只走了 11 条连接，XFF 里却有 112 个不同客户端。
+    实测：`www.example.com` 近 5 分钟 206 个请求只走了 11 条连接，XFF 里却有 112 个不同客户端。
     """
     records: dict[str, dict[str, Any]] = {}
     for i in range(3):
@@ -236,11 +236,11 @@ def test_many_connections_aggregate_by_asset(asset: ModuleType) -> None:
 
 def test_front_hop_to_relay_is_dropped(asset: ModuleType, set_relays: Any) -> None:
     """前跳的 dst 就是中继：非 HTTP 没有 Host/SNI 时身份会落到它身上 —— 那是「代理被连接」。"""
-    set_relays("172.16.199.203")
+    set_relays("10.1.2.10")
     records: dict[str, dict[str, Any]] = {}
     asset.observe_entry(
         records,
-        _entry(uid="F1", log_type="conn", hostname=None, dst_ip="172.16.199.203", dst_port=8000),
+        _entry(uid="F1", log_type="conn", hostname=None, dst_ip="10.1.2.10", dst_port=8000),
     )
     buckets, dropped = asset.finalize(records)
     assert buckets == {} and dropped == 1
@@ -248,26 +248,26 @@ def test_front_hop_to_relay_is_dropped(asset: ModuleType, set_relays: Any) -> No
 
 def test_relay_hop_with_hostname_is_kept(asset: ModuleType, set_relays: Any) -> None:
     """有 Host/SNI 时身份是站点（不是中继），照常计入 —— 这正是「经代理的访问归到站点上」。"""
-    set_relays("172.16.199.203")
+    set_relays("10.1.2.10")
     records: dict[str, dict[str, Any]] = {}
     asset.observe_entry(
         records,
         _entry(
             uid="F2",
             log_type="http",
-            hostname="www.nczy.edu.cn",
-            dst_ip="172.16.199.203",
+            hostname="www.example.com",
+            dst_ip="10.1.2.10",
             dst_port=8000,
         ),
     )
     buckets, dropped = asset.finalize(records)
     assert dropped == 0
-    assert set(buckets) == {"www.nczy.edu.cn"}
+    assert set(buckets) == {"www.example.com"}
 
 
 def test_dns_relay_kept_on_port_53(asset: ModuleType, set_relays: Any) -> None:
     """端口 53 的中继要保留：内网 DNS 被多少客户端查询正是要看的东西。"""
-    set_relays("172.16.199.211")
+    set_relays("10.1.2.12")
     records: dict[str, dict[str, Any]] = {}
     asset.observe_entry(
         records,
@@ -275,7 +275,7 @@ def test_dns_relay_kept_on_port_53(asset: ModuleType, set_relays: Any) -> None:
             uid="D1",
             log_type="dns",
             hostname=None,
-            dst_ip="172.16.199.211",
+            dst_ip="10.1.2.12",
             dst_port=53,
             query="evil.example",
         ),
@@ -286,16 +286,16 @@ def test_dns_relay_kept_on_port_53(asset: ModuleType, set_relays: Any) -> None:
             uid="D2",
             log_type="dns",
             hostname=None,
-            dst_ip="172.16.199.211",
+            dst_ip="10.1.2.12",
             dst_port=53,
             query="good.example",
         ),
     )
     buckets, dropped = asset.finalize(records)
     assert dropped == 0
-    assert buckets["172.16.199.211:53"]["visits"] == 2
-    assert buckets["172.16.199.211:53"]["requests"] == 2
-    assert buckets["172.16.199.211:53"]["targets"] == {"evil.example", "good.example"}
+    assert buckets["10.1.2.12:53"]["visits"] == 2
+    assert buckets["10.1.2.12:53"]["requests"] == 2
+    assert buckets["10.1.2.12:53"]["targets"] == {"evil.example", "good.example"}
 
 
 def test_finalize_drops_connection_without_identity(asset: ModuleType) -> None:
@@ -586,8 +586,8 @@ def test_assets_route_passes_filters(
         return {"total": 0, "items": []}
 
     monkeypatch.setattr(baseline_route, "list_assets", fake_list)
-    baseline_route.baseline_assets(_=None, q="nczy", sort="visits", limit=5, offset=10, scope="")
-    assert seen == {"q": "nczy", "sort": "visits", "limit": 5, "offset": 10, "scope": ""}
+    baseline_route.baseline_assets(_=None, q="portal", sort="visits", limit=5, offset=10, scope="")
+    assert seen == {"q": "portal", "sort": "visits", "limit": 5, "offset": 10, "scope": ""}
 
 
 def test_asset_stats_route_passes_asset(
@@ -620,14 +620,14 @@ def test_overview_includes_asset_snapshot(
 
 def test_scope_of_ip_splits_internal_and_external(asset: ModuleType) -> None:
     """内网（含组播/链路本地/回环）算 internal；公网算 external；空/未知保守算 internal。"""
-    assert asset.scope_of_ip("172.16.199.186") == asset.SCOPE_INTERNAL
-    assert asset.scope_of_ip("10.91.21.5") == asset.SCOPE_INTERNAL
+    assert asset.scope_of_ip("10.1.2.13") == asset.SCOPE_INTERNAL
+    assert asset.scope_of_ip("10.3.2.5") == asset.SCOPE_INTERNAL
     assert asset.scope_of_ip("192.168.1.1") == asset.SCOPE_INTERNAL
     assert asset.scope_of_ip("224.0.0.252") == asset.SCOPE_INTERNAL, "组播只在本段内活动"
     assert asset.scope_of_ip("127.0.0.1") == asset.SCOPE_INTERNAL
     # 实机里的公共 DNS 解析器
-    assert asset.scope_of_ip("114.114.114.114") == asset.SCOPE_EXTERNAL
-    assert asset.scope_of_ip("223.5.5.5") == asset.SCOPE_EXTERNAL
+    assert asset.scope_of_ip("1.1.1.1") == asset.SCOPE_EXTERNAL
+    assert asset.scope_of_ip("8.8.8.8") == asset.SCOPE_EXTERNAL
     assert asset.scope_of_ip("") == asset.SCOPE_INTERNAL, "取不到就保守算内网，不误判成外部"
 
 
@@ -636,15 +636,15 @@ def test_finalize_marks_scope_per_asset(asset: ModuleType) -> None:
     records: dict[str, dict[str, Any]] = {}
     asset.observe_entry(
         records,
-        _entry(uid="S1", log_type="http", hostname="portal.example", dst_ip="172.16.199.20"),
+        _entry(uid="S1", log_type="http", hostname="portal.example", dst_ip="10.1.2.31"),
     )
     asset.observe_entry(
         records,
-        _entry(uid="S2", log_type="dns", hostname=None, dst_ip="114.114.114.114", dst_port=53),
+        _entry(uid="S2", log_type="dns", hostname=None, dst_ip="1.1.1.1", dst_port=53),
     )
     buckets, _ = asset.finalize(records)
     assert buckets["portal.example"]["scope"] == asset.SCOPE_INTERNAL
-    assert buckets["114.114.114.114:53"]["scope"] == asset.SCOPE_EXTERNAL
+    assert buckets["1.1.1.1:53"]["scope"] == asset.SCOPE_EXTERNAL
 
 
 def test_finalize_prefers_internal_when_ip_mixed(asset: ModuleType) -> None:
@@ -654,7 +654,7 @@ def test_finalize_prefers_internal_when_ip_mixed(asset: ModuleType) -> None:
         records, _entry(uid="M1", log_type="http", hostname="dual.example", dst_ip="8.8.8.8")
     )
     asset.observe_entry(
-        records, _entry(uid="M2", log_type="http", hostname="dual.example", dst_ip="172.16.199.20")
+        records, _entry(uid="M2", log_type="http", hostname="dual.example", dst_ip="10.1.2.31")
     )
     buckets, _ = asset.finalize(records)
     assert buckets["dual.example"]["scope"] == asset.SCOPE_INTERNAL

@@ -19,9 +19,9 @@ from typing import Any, Self
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-A = "172.16.199.214"
-B = "172.16.199.203"
-ORIGIN = "172.16.196.65"
+A = "10.1.2.11"
+B = "10.1.2.10"
+ORIGIN = "10.1.2.23"
 CLIENT = "8.8.8.8"
 
 
@@ -202,7 +202,7 @@ def test_full_shaping_keeps_top_edges(topo: ModuleType) -> None:
 
 
 def test_alias_validation_is_strict(aliases: ModuleType) -> None:
-    assert aliases.validate_ip("172.16.199.203") == ""
+    assert aliases.validate_ip("10.1.2.10") == ""
     assert aliases.validate_ip("not-an-ip"), "非法 IP 必须报错"
     assert aliases.validate_name("核心WAF") == ""
     assert aliases.validate_name("") == "", "空名 = 删除别名，合法"

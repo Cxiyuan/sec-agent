@@ -229,8 +229,8 @@ def _conn_events(
     ports: list[int],
     *,
     conn_state: str = "S0",
-    dst: str = "172.16.196.111",
-    src: str = "172.16.199.50",
+    dst: str = "10.1.2.21",
+    src: str = "10.1.2.50",
 ) -> list[UnifiedLog]:
     """造一组 conn 事件（走真归一化，连 event_type/虚拟字段一起验）。"""
     out: list[UnifiedLog] = []
@@ -295,9 +295,9 @@ def test_session_rule_keys_on_session_id_not_whole_cookie() -> None:
     """
     rule = _builtin("内置-会话跨IP复用")
     # 同一个真会话 cookie 从两个源 IP 来 → 触发
-    assert _fires(rule, _http_events("JSESSIONID=abc", ["172.16.199.1", "172.16.199.2"])) is True
+    assert _fires(rule, _http_events("JSESSIONID=abc", ["10.1.2.1", "10.1.2.2"])) is True
     # 常量 cookie 跨 100 个源 IP → 不触发（session_id 为空 ⇒ 条件就不成立）
-    many = [f"172.16.199.{i}" for i in range(1, 101)]
+    many = [f"10.1.2.{i}" for i in range(1, 101)]
     assert _fires(rule, _http_events("Path=/; Path=/", many)) is False
     assert _fires(rule, _http_events("EPORTAL_COOKIE_PASSWORD=; X=1", many)) is False
 

@@ -247,9 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    allow: tuple[str, ...] = tuple(
-        part.strip() for part in args.mime_allow.split(",") if part.strip()
-    ) or DEFAULT_MIME_ALLOW
+    allow: tuple[str, ...] = (
+        tuple(part.strip() for part in args.mime_allow.split(",") if part.strip())
+        or DEFAULT_MIME_ALLOW
+    )
 
     index = load_fuid_mime(args.logs)
     stats = cleanup(
@@ -267,8 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         f"files.log 记录={len(index)} "
         f"保留={stats['keep']} 白名单外删除={stats['drop_mime']} "
         f"无记录删除={stats['drop_no_record']} 超限淘汰={stats['evict']} "
-        f"释放={_human(stats['freed_bytes'])}"
-        + ("（dry-run）" if args.dry_run else "")
+        f"释放={_human(stats['freed_bytes'])}" + ("（dry-run）" if args.dry_run else "")
     )
     return 0
 

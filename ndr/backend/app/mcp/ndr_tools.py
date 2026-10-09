@@ -504,7 +504,7 @@ def _octet_prefix(net: Any) -> str | None:
     """按字节对齐的 IPv4 网段（/8 /16 /24）→ keyword 前缀串，其他返回 None。
 
     ``str(network_address)`` 在非对齐网段上会给出「网络地址」而非调用方原串（例如
-    172.16.196.5/24 → 172.16.196.0），拿它做前缀会多匹配，所以只接受对齐网段。
+    10.1.2.5/24 → 10.1.2.0），拿它做前缀会多匹配，所以只接受对齐网段。
     """
     if getattr(net, "version", 0) != 4 or net.prefixlen not in (8, 16, 24):
         return None
