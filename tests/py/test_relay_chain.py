@@ -172,18 +172,103 @@ def test_describe_reports_roles_and_configured(
 # ---------- 角色推算 ----------
 
 
-def test_roles_count_evidence_by_log_type(roles_mod: ModuleType, set_relays) -> None:
+def _np(roles_mod: ModuleType, **kw: Any) -> Any:
+    """造一条证据够量的角色事件（默认阈值 200，所以批量观察）。"""
+    return kw
+
+
+def test_roles_only_count_traffic_it_forwards(roles_mod: ModuleType, set_relays) -> None:
+    """角色证据 = **它在替别人转发**，不是「它出现过这种日志」。
+
+    实机踩到（2026-10）：.186 是纯 DNS 转发器，却因为自己用 apt 拉 Ubuntu 镜像（1,150 条
+    http/ssl、全 hop=back、无代理头）被标成「反向代理 / DNS 转发」；.203 是 nginx WAF，
+    因为自己查过 DNS（经 .211 转发 158 条）被标成「DNS 转发」。
+    """
     set_relays("192.0.2.0/24")
     det = roles_mod.RelayRoleDetector()
-    det.observe(_entry(log_type="http", src_ip="192.0.2.77"))
-    det.observe(_entry(log_type="ssl", dst_ip="192.0.2.77"))
-    det.observe(_entry(log_type="dns", dst_ip="192.0.2.77"))
-    det.observe(_entry(log_type="conn", src_ip="192.0.2.77"))  # 覆盖所有流量、判不出角色
-    det.observe(_entry(log_type="http", src_ip="172.16.1.1"))  # 不在清单里
-    snap = det.snapshot()
-    assert (snap["192.0.2.77"]["proxy"], snap["192.0.2.77"]["dns"]) == (2, 1)
-    assert snap["192.0.2.77"]["roles"] == ["proxy", "dns"]
-    assert "172.16.1.1" not in snap
+    # ① 有人来访问它的服务（它作目的地）→ 算反代
+    det.observe(_entry(log_type="ssl", dst_ip="192.0.2.77", hop="front"))
+    # ② 中继↔中继直连跳 → 算（唯一能认下「客户端直连、首跳无代理头」那类中继的判据）
+    det.observe(
+        _entry(log_type="http", src_ip="192.0.2.77", dst_ip="192.0.2.88", hop="relay_internal")
+    )
+    # ③ 它替客户端去源站（带代理头）→ 算
+    det.observe(
+        _entry(
+            log_type="http",
+            src_ip="192.0.2.77",
+            dst_ip="10.1.1.1",
+            hop="back",
+            real_client_ip="203.0.113.7",
+        )
+    )
+    # ④ 它自己上网（hop=back、没有代理头）→ **不算**
+    det.observe(_entry(log_type="http", src_ip="192.0.2.77", dst_ip="91.189.91.83", hop="back"))
+    # ⑤ 它自己直连上网（hop=direct）→ **不算**
+    det.observe(_entry(log_type="ssl", src_ip="192.0.2.77", dst_ip="1.2.3.4", hop="direct"))
+    # ⑥ 有人来问它 DNS → 算 DNS 转发
+    det.observe(_entry(log_type="dns", dst_ip="192.0.2.77", dst_port=53, hop="front"))
+    # ⑦ 它自己发 DNS 查询（hop=direct → 不算；哪怕走中继跳也过不了占比门槛）
+    det.observe(_entry(log_type="dns", src_ip="192.0.2.77", dst_ip="8.8.8.8", hop="direct"))
+    # ⑧ conn 覆盖所有流量、判不出角色
+    det.observe(_entry(log_type="conn", src_ip="192.0.2.77"))
+    # ⑨ 不在清单里
+    det.observe(
+        _entry(log_type="http", src_ip="172.16.1.1", hop="back", real_client_ip="203.0.113.9")
+    )
+    snap = det.snapshot()["192.0.2.77"]
+    assert (snap["proxy"], snap["dns"]) == (3, 1), "只算它替别人转发的流量"
+    assert snap["roles"] == [], "证据太少（不足 200 条）→ 宁可不判，也不给一个错的角色"
+    assert snap["role_reason"] == roles_mod.REASON_WEAK_EVIDENCE
+    assert "172.16.1.1" not in det.snapshot()
+
+
+def test_roles_need_share_and_volume(roles_mod: ModuleType, set_relays) -> None:
+    """角色要「有量 + 占得住」：186 的 64 条反代噪音 vs 206 万 DNS 转发，不能同时成立。"""
+    set_relays("192.0.2.0/24")
+    det = roles_mod.RelayRoleDetector()
+    for _ in range(300):
+        det.observe(_entry(log_type="dns", dst_ip="192.0.2.77", dst_port=53, hop="front"))
+    for _ in range(60):  # 确有反代证据（有人访问它的 443），但量太少
+        det.observe(_entry(log_type="ssl", dst_ip="192.0.2.77", dst_port=443, hop="front"))
+    snap = det.snapshot()["192.0.2.77"]
+    assert snap["roles"] == ["dns"], "量小的那类不该跟着展示（60 < 200）"
+    assert snap["hits_total"] == {"proxy": 60, "dns": 300}
+
+    # 量够（250 > 200）但占比过低（250/3250 = 7.7% < 10%）→ 仍只认 DNS
+    set_relays("192.0.2.0/24")
+    det2 = roles_mod.RelayRoleDetector()
+    for _ in range(3000):
+        det2.observe(_entry(log_type="dns", dst_ip="192.0.2.99", dst_port=53, hop="front"))
+    for _ in range(250):
+        det2.observe(_entry(log_type="ssl", dst_ip="192.0.2.99", dst_port=443, hop="front"))
+    det2._reset_if_list_changed()
+    assert det2.snapshot()["192.0.2.99"]["roles"] == ["dns"]
+
+
+def test_roles_drop_stale_totals_from_old_evidence_version(
+    roles_mod: ModuleType, set_relays
+) -> None:
+    """口径换代（evidence_version）后，旧累计值不许参与判定 —— 否则错误角色永远纠正不过来。"""
+    set_relays("192.0.2.0/24")
+    det = roles_mod.RelayRoleDetector()
+    det._counts["192.0.2.77"] = {"dns": 3000}
+    det._pending_roles["192.0.2.77"] = {"dns": 3000}
+    old = {
+        "hits_total": {"proxy": 1500, "dns": 3000},  # 旧口径：自己上网也被算成反代
+        "roles": ["proxy", "dns"],
+        "evidence_version": 1,
+        "side": "front",
+    }
+    merged = det._merge_one("192.0.2.77", det._counts["192.0.2.77"], old)
+    assert merged["hits_total"] == {"proxy": 0, "dns": 3000}, "旧口径的反代累计值必须作废"
+    assert merged["roles"] == ["dns"]
+    assert merged["evidence_version"] == roles_mod.ROLE_EVIDENCE_VERSION
+
+    # 同版本才继续累加（重启不掉历史）
+    fresh = dict(old, evidence_version=roles_mod.ROLE_EVIDENCE_VERSION)
+    merged2 = det._merge_one("192.0.2.77", det._counts["192.0.2.77"], fresh)
+    assert merged2["hits_total"] == {"proxy": 1500, "dns": 6000}
 
 
 def test_roles_reset_when_list_changes(
@@ -197,7 +282,7 @@ def test_roles_reset_when_list_changes(
     monkeypatch.setattr(roles_mod.relay_nodes, "raw_text", lambda: "192.0.2.0/24")
     monkeypatch.setattr(roles_mod.relay_nodes, "is_relay", lambda ip: str(ip) == "192.0.2.77")
     det = roles_mod.RelayRoleDetector()
-    det.observe(_entry(log_type="http", src_ip="192.0.2.77"))
+    det.observe(_entry(log_type="dns", dst_ip="192.0.2.77", hop="front"))
     assert det.snapshot()
     monkeypatch.setattr(roles_mod.relay_nodes, "raw_text", lambda: "10.0.0.0/8")
     det._reset_if_list_changed()

@@ -153,7 +153,8 @@ def test_merge_keeps_history_and_does_not_double_count(
     """库里已有历史累计：本轮只加增量，且角色不会因为这一轮没流量而丢。"""
     stub_relays["roles"] = {
         B: {
-            "hits_total": {"proxy": 100, "dns": 0},
+            "hits_total": {"proxy": 500, "dns": 0},
+            "evidence_version": roles_mod.ROLE_EVIDENCE_VERSION,
             "roles": ["proxy"],
             "side": "back",
             "side_source": "auto",
@@ -164,14 +165,14 @@ def test_merge_keeps_history_and_does_not_double_count(
     }
     det = roles_mod.RelayRoleDetector()
     det._reset_if_list_changed()
-    det.observe(_entry(log_type="ssl", src_ip=B, dst_ip="9.9.9.9"))
+    det.observe(_entry(log_type="ssl", src_ip="9.9.9.9", dst_ip=B))
     snap = det.snapshot()
-    assert snap[B]["hits_total"]["proxy"] == 101  # 历史 100 + 本轮 1
+    assert snap[B]["hits_total"]["proxy"] == 501  # 历史 500 + 本轮 1（有人来访问它的 443）
     assert snap[B]["roles"] == ["proxy"]
     assert snap[B]["side"] == "back"  # 本轮没内容 → 沿用已判对的侧向（不退回默认）
     # 再把增量清零（模拟一次写回），重复快照不应重复计数
     det._pending_roles = {}
-    assert det.snapshot()[B]["hits_total"]["proxy"] == 100
+    assert det.snapshot()[B]["hits_total"]["proxy"] == 500
 
 
 def test_reason_for_never_seen_node(roles_mod: ModuleType, stub_relays: dict[str, Any]) -> None:
@@ -187,9 +188,10 @@ def test_reason_for_no_content(roles_mod: ModuleType, stub_relays: dict[str, Any
     """有握手证据但两侧都无明文内容（实测 .214 的情形）。"""
     det = roles_mod.RelayRoleDetector()
     det._reset_if_list_changed()
-    det.observe(_entry(log_type="ssl", src_ip="8.8.8.8", dst_ip=A))
+    for _ in range(roles_mod.settings.relay_role_min_hits):
+        det.observe(_entry(log_type="ssl", src_ip="8.8.8.8", dst_ip=A, dst_port=443))
     snap = det.snapshot()
-    assert snap[A]["roles"] == ["proxy"]
+    assert snap[A]["roles"] == ["proxy"], "有人来访问它的 443（握手证据）"
     assert snap[A]["side_reason"] == roles_mod.REASON_NO_CONTENT
 
 

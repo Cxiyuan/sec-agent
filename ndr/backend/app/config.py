@@ -234,6 +234,11 @@ class Settings(BaseSettings):
     # 必须按**哪一侧有明文内容**判，不能按跳的名字判。数据得足够悬殊才翻转（默认客户端侧）。
     relay_side_min: int = 50  # 另一侧内容条数至少这么多才考虑翻转
     relay_side_ratio: int = 10  # 且至少是本侧的这么多倍
+    # 中继角色展示门槛（2026-10 实机踩到）：角色证据只算「它替别人转发」的流量，且要**有量 +
+    # 占得住**才展示 —— 否则中继自己上网/自己查 DNS 留下的零星流量会永远挂着第二个角色
+    # （实机：.186 纯 DNS 转发被标成「反向代理 / DNS 转发」）。见 detector/relay_roles.py
+    relay_role_min_hits: int = 200  # 某个角色的转发证据至少这么多条
+    relay_role_min_share: float = 0.1  # 且至少占该地址全部角色证据的这么多比例
 
     # ---- 总览页（/admin/status）需要的采样与缓存 ----
     # 检测器历史采样：每 detector_stats_log_seconds 追加一条，LPUSH + LTRIM 固定条数。

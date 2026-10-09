@@ -48,12 +48,28 @@ from app.workers.log import get_logger
 log = get_logger(__name__)
 
 #: 日志类型 → 角色证据。http/ssl 归「反代/WAF」；dns 归「内网 DNS 转发器」。
+#: 注意：**光出现这些类型不够** —— 还得是它在「替别人转发」，见 `observe()`。
 _ROLE_BY_LOG_TYPE: dict[str, str] = {
     "http": "proxy",
     "ssl": "proxy",
     "dns": "dns",
 }
 ROLE_LABELS: dict[str, str] = {"proxy": "反向代理", "dns": "DNS 转发"}
+
+#: 中继链路上的跳（与 `ingestion/normalizer._relay_hop` 同口径）
+HOP_RELAY_INTERNAL = "relay_internal"
+HOP_BACK = "back"
+
+#: 角色证据口径版本。改口径就 +1：旧累计值是按旧语义数的，混着用就永远纠正不过来。
+#: v2（2026-10）：从「该地址出现在 http/ssl/dns 日志里」改成「该地址在替别人转发」——
+#: v1 把中继**自己上网**算成反代（.186 用 apt 拉 Ubuntu 镜像 1,150 条 http/ssl）、
+#: 把中继**自己查 DNS** 算成 DNS 转发（.203 查 ntp.ubuntu.com 158 条），界面因此显示
+#: 「反向代理 / DNS 转发」两个角色，与运维认知不符。
+ROLE_EVIDENCE_VERSION = 2
+
+#: 角色判定失败原因（两个都直接展示在界面上，所以写成人话）
+REASON_NEVER_SEEN = "从未观测到 http/ssl/dns 流量"
+REASON_WEAK_EVIDENCE = "证据不足（转发流量太少或占比过低，判不出角色）"
 
 #: 算「内容」的日志类型：有请求语义的**明文**日志（规则/画像/资产真正要读的东西）。
 #: **不含 ssl** —— 加密流量里读不到 Host/URI/body（无 SNI 的 ssl 只是一次握手）。
@@ -64,7 +80,6 @@ SIDE_FRONT = relay_nodes.SIDE_FRONT
 SIDE_BACK = relay_nodes.SIDE_BACK
 
 #: 未判定原因（界面直接展示，所以写成人话）
-REASON_NEVER_SEEN = "从未观测到 http/ssl/dns 流量"
 REASON_NO_CONTENT = "两侧均无明文内容，按保守默认保留客户端侧"
 
 #: 拓扑里最多保留多少条链（防病态数据把界面撑爆）
@@ -95,6 +110,28 @@ def _role_override_list(override: str, evidence: list[str]) -> list[str]:
     if override == relay_nodes.ROLE_BOTH:
         return ["proxy", "dns"]
     return evidence
+
+
+def decide_roles(totals: dict[str, int]) -> list[str]:
+    """按「证据量 + 占比」决定展示哪些角色（把残留噪音挡在门外）。
+
+    为什么要占比：累计值是跨重启的历史合计，少量噪音会永远挂着第二个角色 —— 实机：.186 是纯
+    DNS 转发（dns 206 万），自己 apt 上网留下 64 条 http/ssl 就被标成「反向代理 / DNS 转发」；
+    .203 是 nginx WAF（proxy 225 万），自己查过 66 次 DNS 就被标成「DNS 转发」。改口径后这类
+    噪音不再计数，占比门槛再兜一层（比如 .203 经 .211 转发时留下的 152 条 dns 也不足以成角色）。
+    """
+    proxy = max(0, int(totals.get("proxy") or 0))
+    dns = max(0, int(totals.get("dns") or 0))
+    total = proxy + dns
+    if total <= 0:
+        return []
+    minimum = max(1, int(settings.relay_role_min_hits))
+    share = max(0.0, float(settings.relay_role_min_share))
+    picked: list[str] = []
+    for role, hits in (("proxy", proxy), ("dns", dns)):
+        if hits >= minimum and hits >= share * total:
+            picked.append(role)
+    return picked
 
 
 def _side_from_counts(override: str, front: int, back: int, previous: str) -> tuple[str, str]:
@@ -250,7 +287,19 @@ class RelayRoleDetector:
         self._last_flush = 0.0
 
     def observe(self, entry: UnifiedLog) -> None:
-        """逐条事件累计证据（只对清单内的地址算）。"""
+        """逐条事件累计证据（只对清单内的地址算）。
+
+        **只算「它在替别人转发」的证据**（2026-10 实机踩到并修正）：中继自己发起的流量不算。
+        判据来自实机数据（见模块头）：
+
+        - 它作**目的地**：有人来访问它的服务（http/ssl）或来问它 DNS（dns）—— 这是转发器本色；
+        - 它作**源**：只有走转发链才算 ——
+          ① 中继↔中继直连跳（`hop=relay_internal`）：它必定是转发链的一环。
+             这条是唯一能认下 .214 的判据：它作源的 TLS 不带代理头（客户端直连它、首跳没人加 XFF），
+             但 6 小时 153 万次 TLS 全打在中继 .203 上；
+          ② `hop=back` **且带代理头**（`real_client_ip` 非空）：它替客户端去源站。自己上网的请求
+             不会带代理头 —— .186 的 1,150 条 apt 流量正是这一条把它们挡掉的。
+        """
         log_type = str(entry.log_type or "")
         if log_type in CONTENT_LOG_TYPES:
             self._count_content(entry)
@@ -258,15 +307,26 @@ class RelayRoleDetector:
         role = _ROLE_BY_LOG_TYPE.get(log_type)
         if role is None:
             return
+        hop = str(getattr(entry, "hop", "") or "")
+        src = str(entry.src_ip or "")
+        dst = str(entry.dst_ip or "")
         seen_at = _iso(getattr(entry, "ts", None))
-        for ip in (entry.src_ip, entry.dst_ip):
-            if ip and relay_nodes.is_relay(ip):
-                addr = str(ip)
-                counts = self._counts.setdefault(addr, {})
-                counts[role] = counts.get(role, 0) + 1
-                pending = self._pending_roles.setdefault(addr, {})
-                pending[role] = pending.get(role, 0) + 1
-                self._last_seen[addr] = max(self._last_seen.get(addr, ""), seen_at)
+        addrs: list[str] = []
+        if relay_nodes.is_relay(dst):
+            addrs.append(dst)
+        if relay_nodes.is_relay(src):
+            # ① 中继↔中继直连跳，或 ② 带代理头地替客户端去源站（自己上网的请求没有代理头）
+            forwards = hop == HOP_RELAY_INTERNAL or (
+                hop == HOP_BACK and bool(getattr(entry, "real_client_ip", None))
+            )
+            if forwards:
+                addrs.append(src)
+        for addr in dict.fromkeys(addrs):
+            counts = self._counts.setdefault(addr, {})
+            counts[role] = counts.get(role, 0) + 1
+            pending = self._pending_roles.setdefault(addr, {})
+            pending[role] = pending.get(role, 0) + 1
+            self._last_seen[addr] = max(self._last_seen.get(addr, ""), seen_at)
 
     def _count_content(self, entry: UnifiedLog) -> None:
         """记「哪一侧带明文请求内容」：目的地是中继 → 客户端侧；来源是中继 → 源站侧。"""
@@ -351,6 +411,7 @@ class RelayRoleDetector:
                 {},
                 {
                     "hits_total": {"proxy": 0, "dns": 0},
+                    "evidence_version": ROLE_EVIDENCE_VERSION,
                     "roles": [],
                     "role_reason": REASON_NEVER_SEEN,
                 },
@@ -364,11 +425,14 @@ class RelayRoleDetector:
         pending = self._pending_roles.get(ip) or {}
         raw_totals = stored.get("hits_total")
         old_totals = raw_totals if isinstance(raw_totals, dict) else {}
+        if int(stored.get("evidence_version") or 0) != ROLE_EVIDENCE_VERSION:
+            # 口径换代：旧累计值语义不同，不能混用（否则错误角色永远纠正不过来）
+            old_totals = {}
         totals = {
             role: int(old_totals.get(role) or 0) + int(pending.get(role) or 0)
             for role in ("proxy", "dns")
         }
-        evidence = [role for role in ("proxy", "dns") if int(totals.get(role) or 0) > 0]
+        evidence = decide_roles(totals)
 
         content = self._content.get(ip) or {}
         pending_content = self._pending_content.get(ip) or {}
@@ -392,6 +456,8 @@ class RelayRoleDetector:
             role_reason = ""
         elif not any(int(totals.get(r) or 0) for r in ("proxy", "dns")):
             role_reason = REASON_NEVER_SEEN
+        elif not roles:
+            role_reason = REASON_WEAK_EVIDENCE
         else:
             role_reason = ""
         enough_content = max(int(content.get("front") or 0), int(content.get("back") or 0)) >= max(
@@ -403,6 +469,8 @@ class RelayRoleDetector:
         return {
             "proxy": int(counts.get("proxy", 0)),
             "dns": int(counts.get("dns", 0)),
+            # 证据口径版本：换代时旧累计值作废（见 ROLE_EVIDENCE_VERSION）
+            "evidence_version": ROLE_EVIDENCE_VERSION,
             "hits_total": totals,
             "window_hits": int(sum(int(counts.get(r, 0)) for r in ("proxy", "dns"))),
             "roles": roles,
