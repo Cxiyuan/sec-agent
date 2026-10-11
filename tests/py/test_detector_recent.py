@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
@@ -209,3 +212,35 @@ def test_internal_exploit_rule_matches_payloads(request: pytest.FixtureRequest) 
         uri_path="/",
     )
     assert not engine.evaluate_conditions(rule["conditions"], external)
+
+
+def test_compact_uses_real_client_when_proxied(recent: ModuleType) -> None:
+    """中继链路：`src_ip` 是代理/WAF 自己，展示用的请求方必须取真实客户端（XFF）。
+
+    实机依据（2026-10 用户反馈）：「多路径探测」命中里 `src_ip` 显示成 WAF 地址，
+    而真实请求方在 XFF 里（如 113.0.87.111）—— 界面上把 WAF 当成了发起方。
+    """
+    out = recent.compact(
+        _digest(src_ip="10.1.2.10", real_client_ips=["113.0.87.111"], proxied=True)
+    )
+    assert out["client"] == "113.0.87.111"
+    assert out["client_source"] == "xff"
+    assert out["via"] == "10.1.2.10", "要能看出这一跳经过了谁"
+    assert out["src_ip"] == "10.1.2.10", "原始字段保留不动（聚合/去重仍用它）"
+
+
+def test_compact_falls_back_to_src_when_direct(recent: ModuleType) -> None:
+    """没有可信代理头（直连）时：请求方就是 src_ip，且不标「经 …」。"""
+    out = recent.compact(_digest(src_ip="10.1.2.66", real_client_ips=[], proxied=False))
+    assert out["client"] == "10.1.2.66"
+    assert out["client_source"] == "src_ip"
+    assert out["via"] == ""
+
+
+def test_panel_shows_real_client_and_via() -> None:
+    """界面守卫：源那一列显示真实请求方，并在经过中继时标注「经 …」。"""
+    src = (ROOT / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "row.client" in src, "源列必须优先显示真实请求 IP"
+    assert "经 {row.via}" in src, "经过代理/中继时要在界面上说明"

@@ -298,15 +298,19 @@ def _chain_of(doc: dict[str, Any], edges: list[dict[str, Any]]) -> dict[str, Any
     # 源站：本跳目的就是源站（direct / back）；front 那一跳的目的还是中继，源站要由下游补
     origin = ""
     origin_kind = ""
+    # 展示用：源站的 **IP:端口**（界面默认显示 IP、hostname 只作补充 —— 与拓扑页同口径）。
+    # 为什么需要单独一个字段：中继链路上 `hostname` 是 HTTP Host / SNI（例如内网服务的
+    # `master:5000`），拿它当主显示会让人看不到到底是哪台机器（2026-10 用户反馈）。
+    origin_ip = f"{dst}:{doc.get('dst_port')}" if dst and doc.get("dst_port") else dst
     if hop in ("direct", "back", "relay_internal"):
         origin = str(doc.get("hostname") or "")
         if not origin:
-            port = doc.get("dst_port")
-            origin = f"{dst}:{port}" if dst and port else dst
+            origin = origin_ip
         origin_kind = "hostname" if doc.get("hostname") else "ip"
     elif hop == "front":
         origin = str(doc.get("hostname") or "")
         origin_kind = "hostname" if origin else ""
+        origin_ip = ""  # 这一跳的目的还是中继，源站本跳看不到
     return {
         "client": client,
         "client_source": client_source or "",
@@ -314,6 +318,7 @@ def _chain_of(doc: dict[str, Any], edges: list[dict[str, Any]]) -> dict[str, Any
         "relay_path": relay_path,
         "relay_evidence": evidence,
         "origin": origin,
+        "origin_ip": origin_ip,
         "origin_kind": origin_kind,
         "hop": hop,
     }
@@ -438,8 +443,10 @@ def _build(
         chain = bucket["chain"]
         # 每条链的逐段证据：入口段用第一段边的证据，本跳用 relay_evidence
         segs: list[dict[str, Any]] = []
+        # 展示用源站：IP 优先（域名/Host 只作补充）
+        origin_label = str(chain.get("origin_ip") or chain["origin"] or "")
         if not path:
-            segs.append({"from": client or UNKNOWN_CLIENT, "to": origin or "?", "kind": "direct"})
+            segs.append({"from": client or UNKNOWN_CLIENT, "to": origin_label or "?", "kind": "direct"})
         else:
             prev = client or UNKNOWN_CLIENT
             for idx, node in enumerate(path):
@@ -457,7 +464,7 @@ def _build(
                     }
                 )
                 prev = node
-            segs.append({"from": prev, "to": origin or "（源站，本跳不可见）", "kind": "origin"})
+            segs.append({"from": prev, "to": origin_label or "（源站，本跳不可见）", "kind": "origin"})
         chains.append(
             {
                 "client": client,
@@ -468,6 +475,8 @@ def _build(
                 if client
                 else f"该批事件（{chain['hop']} 跳）不带代理头，无法定位请求方",
                 "origin": origin,
+                # 展示用源站（IP:端口）：界面默认显示它，`origin`（域名/Host）只作补充
+                "origin_ip": str(chain.get("origin_ip") or ""),
                 "origin_kind": chain["origin_kind"],
                 "origin_source": chain.get("origin_source") or ("observed" if origin else ""),
                 "relay_path": list(path),

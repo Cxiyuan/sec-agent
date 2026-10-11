@@ -32,8 +32,23 @@ def _top(value: Any, limit: int = _MAX_LIST) -> list[str]:
 
 
 def compact(digest: dict[str, Any]) -> dict[str, Any]:
-    """摘要 → 界面用的小记录（只留展示要用的字段，丢掉样例文档）。"""
+    """摘要 → 界面用的小记录（只留展示要用的字段，丢掉样例文档）。
+
+    **展示用哪个 IP 是这里的重点**（2026-10 用户反馈）：中继链路里 `src_ip` 是**代理/WAF 自己**
+    （实测：命中「多路径探测」的 `src_ip` 显示成 WAF `…203`，而真实请求方在 XFF 里，
+    例如 `113.0.87.111`）。所以另给两个展示字段，原始 `src_ip` 保留不动：
+
+    - `client`：真实请求 IP（可信代理头 `real_client_ips` 有就用它，没有才回落 `src_ip`）；
+    - `via`：当 `client` 与 `src_ip` 不同时，说明这跳经过了谁（中继/反代）。
+    """
+    reals = [str(x) for x in (digest.get("real_client_ips") or []) if str(x or "").strip()]
+    raw_src = str(digest.get("src_ip") or "")
+    client = reals[0] if reals else raw_src
     return {
+        # 展示用（优先真实请求方）
+        "client": client,
+        "client_source": "xff" if reals else "src_ip",
+        "via": raw_src if reals and raw_src and raw_src != client else "",
         "ts": str(digest.get("last_seen") or digest.get("first_seen") or ""),
         "first_seen": str(digest.get("first_seen") or ""),
         "rule": str(digest.get("rule") or ""),

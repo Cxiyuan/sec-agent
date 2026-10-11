@@ -119,7 +119,7 @@ function Kpi({
   return (
     <div className="rounded-md border p-3">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={"mt-1 text-xl font-bold " + (danger ? "text-destructive" : "")}>{value}</p>
+      <p className={`mt-1 text-xl font-bold ${danger ? "text-destructive" : ""}`}>{value}</p>
       {hint ? <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p> : null}
     </div>
   );
@@ -199,7 +199,7 @@ function Light({ item }: { item: ComponentHealthItem }) {
     <div className="flex items-start gap-2 rounded-md border p-3">
       <span
         aria-hidden
-        className={"mt-1 h-2.5 w-2.5 shrink-0 rounded-full " + (LIGHT_CLS[item.state] || LIGHT_CLS.unknown)}
+        className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${LIGHT_CLS[item.state] || LIGHT_CLS.unknown}`}
       />
       <div className="min-w-0">
         <p className="text-sm">
@@ -387,11 +387,11 @@ export function StatusPanel() {
             {(health?.items || []).map((item) => (
               <Light key={item.key} item={item} />
             ))}
-            {!health?.items?.length ? (
+            {health?.items?.length ? null : (
               <p className="text-xs text-muted-foreground">
                 {emptyOrFailed(errs, SRC.health, "还没有探测结果")}
               </p>
-            ) : null}
+            )}
           </div>
         </Section>
 
@@ -480,7 +480,20 @@ export function StatusPanel() {
                           ) : null}
                         </TableCell>
                         <TableCell>{severityBadge(row.severity)}</TableCell>
-                        <TableCell className="text-xs">{row.src_ip || "—"}</TableCell>
+                        <TableCell className="text-xs">
+                          {/* 真实请求方优先：中继链路上 src_ip 是代理/WAF 自己（实测踩到） */}
+                          <span title={row.client_source === "xff" ? "来自可信代理头（XFF/X-Real-IP）" : "直连对端"}>
+                            {row.client || row.src_ip || "—"}
+                          </span>
+                          {row.via ? (
+                            <span
+                              className="ml-1 text-muted-foreground"
+                              title={`这一跳经过 ${row.via}（代理/中继），它不是发起方`}
+                            >
+                              经 {row.via}
+                            </span>
+                          ) : null}
+                        </TableCell>
                         <TableCell className="text-right text-xs tabular-nums">
                           {row.count}
                         </TableCell>

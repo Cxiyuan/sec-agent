@@ -146,3 +146,32 @@ def test_page_does_not_say_unknown_client(request: pytest.FixtureRequest) -> Non
     assert "未知请求IP" not in src
     assert "客户端未记录" in src
     assert "client_reason" in src
+
+
+def test_origin_shows_ip_primary(chain: ModuleType, stub: dict[str, Any]) -> None:
+    """源站展示：**IP:端口 优先**，域名/Host 只作补充。
+
+    实机依据（2026-10 用户反馈）：内网服务的 HTTP Host 是 `master:5000`，只显示它就看不出
+    是哪台机器；`origin` 字段语义保持不变（分组、交智能体仍按域名/Host），另给 origin_ip。
+    """
+    stub["docs"] = [
+        _doc(
+            log_type="http",
+            real_client_ip=CLIENT,
+            hostname="master:5000",
+            dst_ip="10.1.2.30",
+            dst_port=5000,
+        )
+    ]
+    row = _build(chain)["chains"][0]
+    assert row["origin"] == "master:5000" and row["origin_kind"] == "hostname"
+    assert row["origin_ip"] == "10.1.2.30:5000", "展示用的源站必须是 IP:端口"
+    assert row["segments"][-1]["to"] == "10.1.2.30:5000", "链路图最后一段也显示 IP"
+
+
+def test_chain_page_shows_origin_ip_first() -> None:
+    """界面守卫：源站优先用 origin_ip 渲染（域名作括号补充）。"""
+    src = (ROOT / "ndr" / "frontend" / "app" / "admin" / "chain" / "page.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "origin_ip" in src and "originLabel" in src

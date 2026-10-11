@@ -711,6 +711,15 @@ export interface DetectorRecentItem {
   rule: string;
   severity: string;
   source: string;
+  /**
+   * 展示用的「请求方」：真实请求 IP（可信代理头里取）优先，没有才回落 `src_ip`。
+   * 中继链路上 `src_ip` 是**代理/WAF 自己**（实测命中里显示成 WAF 地址，真实请求方在 XFF 里）。
+   */
+  client?: string;
+  /** client 的来源：xff = 代理头（可信中继写的）；src_ip = 直连对端 */
+  client_source?: string;
+  /** 当请求方与 `src_ip` 不同：这一跳经过了谁（中继/反代），用于在界面上标注「经 …」 */
+  via?: string;
   src_ip: string;
   count: number;
   dst_ips: string[];
@@ -990,6 +999,8 @@ export interface ChainSegment {
 /** 攻击链还原：一条链（真实请求IP →（中继…）→ 源站） */
 export interface ChainItem {
   client: string;
+  /** 展示用源站：`IP:端口`（界面默认显示它；`origin` 是域名/Host，只作补充） */
+  origin_ip?: string;
   client_source?: string;
   /** known = 取到了请求方；not_recorded = 这批事件不带代理头，确实没记下（不是出错） */
   client_state?: string;
