@@ -1,0 +1,116 @@
+{
+  "source": "规则全集.rules",
+  "total": 11190,
+  "categories": [
+    {
+      "category": "10-web-attack",
+      "label": "Web 应用攻击",
+      "file": "10-web-attack.rules",
+      "rules": 6775,
+      "classtypes": {
+        "web-application-attack": 6003,
+        "xss-attack": 338,
+        "web-application-activity": 165,
+        "sql-injection": 104,
+        "file-read-attempt": 72,
+        "java-deserialization": 33,
+        "file-upload-attempt": 23,
+        "webshell-activity": 19,
+        "xxe-attack": 9,
+        "shellcode-detect": 7,
+        "rce-attempt": 2
+      }
+    },
+    {
+      "category": "20-exploit",
+      "label": "漏洞利用（exploit-kit）",
+      "file": "20-exploit.rules",
+      "rules": 2586,
+      "classtypes": {
+        "exploit-kit": 2574,
+        "CVE-exploit": 12
+      }
+    },
+    {
+      "category": "30-credential",
+      "label": "凭证窃取 / 未授权访问",
+      "file": "30-credential.rules",
+      "rules": 1566,
+      "classtypes": {
+        "credential-theft": 1545,
+        "unauthorized-access": 21
+      }
+    },
+    {
+      "category": "40-scan",
+      "label": "扫描探测",
+      "file": "40-scan.rules",
+      "rules": 45,
+      "classtypes": {
+        "vuln-scanner": 37,
+        "dir-scan": 8
+      }
+    },
+    {
+      "category": "50-malware-c2",
+      "label": "恶意软件 / 挖矿 / 隧道外联",
+      "file": "50-malware-c2.rules",
+      "rules": 133,
+      "classtypes": {
+        "coin-mining": 77,
+        "C2_trojan-activity": 28,
+        "tunnel-activity": 14,
+        "trojan-activity": 10,
+        "dns-exfiltration": 4
+      }
+    },
+    {
+      "category": "60-sensitive-data",
+      "label": "敏感信息 / 文件泄露",
+      "file": "60-sensitive-data.rules",
+      "rules": 83,
+      "classtypes": {
+        "sensitive-str": 60,
+        "sensitive-file-access": 23
+      }
+    },
+    {
+      "category": "90-other",
+      "label": "其它",
+      "file": "90-other.rules",
+      "rules": 2,
+      "classtypes": {
+        "policy-violation": 1,
+        "misc-activity": 1
+      }
+    }
+  ],
+  "classtypes": {
+    "web-application-attack": 6003,
+    "exploit-kit": 2574,
+    "credential-theft": 1545,
+    "xss-attack": 338,
+    "web-application-activity": 165,
+    "sql-injection": 104,
+    "coin-mining": 77,
+    "file-read-attempt": 72,
+    "sensitive-str": 60,
+    "vuln-scanner": 37,
+    "java-deserialization": 33,
+    "C2_trojan-activity": 28,
+    "sensitive-file-access": 23,
+    "file-upload-attempt": 23,
+    "unauthorized-access": 21,
+    "webshell-activity": 19,
+    "tunnel-activity": 14,
+    "CVE-exploit": 12,
+    "trojan-activity": 10,
+    "xxe-attack": 9,
+    "dir-scan": 8,
+    "shellcode-detect": 7,
+    "dns-exfiltration": 4,
+    "rce-attempt": 2,
+    "policy-violation": 1,
+    "misc-activity": 1
+  }
+}

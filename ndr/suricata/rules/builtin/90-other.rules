@@ -1,0 +1,8 @@
+# ============================================================
+# 深瞳签名引擎 · 内置默认规则 · 其它（90-other）
+# 来源: 开发者提供的规则全集.rules（按 classtype 分类，规则原文未改）
+# 本类条数: 2；原始 classtype: policy-violation×1, misc-activity×1
+# 生成方式: python3 ndr/suricata/tools/classify_rules.py <规则全集文件>
+# ============================================================
+alert tcp $EXTERNAL_NET any -> $HOME_NET 23 (msg:"检测到Telnet连接"; flow:established,to_server;classtype:policy-violation;sid:1000864;rev:2;)
+alert tls any any -> any any (msg:"sliver https debian"; flow:established; ja3.hash; content:"19e29534fd49dd27d09234e639c4057e"; classtype:misc-activity; sid:1000881; rev:2;)

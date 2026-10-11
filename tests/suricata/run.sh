@@ -1,10 +1,10 @@
 #!/bin/sh
 # 签名引擎（Suricata）配置与规则加载的自检（**只在 CI 跑**）。
 #
-# 规则来源已改成「开发人员提供的 rules 文件 + manifest 在线更新」：镜像里**没有任何内置规则集**，
-# 也不联网自动更新；引擎自带事件规则（SURICATA *）一律不加载。这个脚本验证的都是容易静默失效的点：
-#   ① 空占位能起得来（0 条规则 ⇒ 不产生告警）；
-#   ② 开发人员写的规则文件能被加载（语法/变量/字段都过）；
+# 规则来源是「开发者提供的规则全集 → 按攻击类型分类 → 作为**内置默认**加载」，另有 manifest
+# 在线更新路径；引擎自带事件规则（SURICATA *）一律不加载。这个脚本验证的都是容易静默失效的点：
+#   ① **内置默认规则集全量能被 suricata -T 加载**（11k+ 条；任何一条语法/关键字不被支持就红）；
+#   ② 渲染出的配置确实引用了全部 7 个分类文件、并把分类索引抄进了卷（界面按攻击类型展示）；
 #   ③ 渲染出的配置只引用 active/ 里的规则、不引用任何 *-events.rules（引擎事件确实关掉了）；
 #   ④ staging 校验与 activate 切换这套共享卷协议真的能跑通。
 set -eu
@@ -23,6 +23,13 @@ monitored_nets=10.10.0.0/16,172.16.0.0/12
 tls_ports=8000,8011
 EOF
 
+# 期望条数从分类索引里读（与镜像里的内置规则集同源，避免手写数字漂移）
+INDEX="$ROOT/ndr/suricata/rules/builtin/index.json"
+[ -f "$INDEX" ] || { echo "缺少分类索引 $INDEX（先跑 ndr/suricata/tools/classify_rules.py）" >&2; exit 1; }
+EXPECT_TOTAL=$(sed -n 's/^  "total": \([0-9]*\),$/\1/p' "$INDEX" | head -1)
+EXPECT_FILES=$(grep -c '"file":' "$INDEX")
+[ -n "$EXPECT_TOTAL" ] && [ "$EXPECT_TOTAL" -gt 0 ] || { echo "索引里读不到 total" >&2; exit 1; }
+
 RUN() {
   # 加超时：一次性模式如果忘了实现，容器会掉进抓包主循环不退出（CI 上挂过 20+ 分钟）
   timeout 600 docker run --rm -v "$WORK/config:/config:ro" -v "$WORK/rules:/rules" "$@"
@@ -37,10 +44,10 @@ count_from_entry() {
 echo "== 构建签名引擎镜像（CI 里构建，本地禁止）=="
 docker build -t "$IMG" "$ROOT/ndr/suricata"
 
-echo "== ① 空占位：渲染 + suricata -T（应为 0 条规则）=="
+echo "== ① 内置默认规则集：全量加载（$EXPECT_TOTAL 条，$EXPECT_FILES 个分类文件）=="
 OUT=$(RUN "$IMG" --render-only 2>&1) || {
-  printf '%s\n' "$OUT" | tail -20 >&2
-  echo "空规则状态下 suricata -T 就失败了" >&2
+  printf '%s\n' "$OUT" | tail -40 >&2
+  echo "内置默认规则集让 suricata -T 失败了（语法/关键字不被支持）——看上面的原始报错定位规则" >&2
   exit 1
 }
 N=$(count_from_entry "$OUT")
@@ -49,9 +56,14 @@ if [ -z "$N" ]; then
   echo "没能从入口日志里解析出规则条数" >&2
   exit 1
 fi
-[ "$N" = "0" ] || { echo "空占位状态下加载了 $N 条规则，应为 0" >&2; exit 1; }
-# 0 条规则时 Suricata 会打一条 warning，但不能因为 warning 就判失败（退出码才是结果）
-echo "空占位：0 条规则，suricata -T 通过 ✓"
+[ "$N" = "$EXPECT_TOTAL" ] || {
+  printf '%s\n' "$OUT" | tail -30 >&2
+  echo "入口统计 $N 条，索引里是 $EXPECT_TOTAL 条（分类文件有没有漏拷/重复？）" >&2
+  exit 1
+}
+# 分类索引要抄进卷里，后端/界面据此按攻击类型展示
+[ -f "$WORK/rules/builtin-index.json" ] || { echo "没有把 builtin-index.json 抄进规则卷" >&2; exit 1; }
+echo "内置默认规则集：$N 条，suricata -T 通过 ✓"
 
 echo "== ② 渲染结果的关键形状 =="
 RENDERED=$(RUN --entrypoint sh "$IMG" -c '/usr/local/bin/shentong-suricata-entrypoint.sh --render-config')
@@ -63,8 +75,10 @@ printf '%s\n' "$RENDERED" | grep -q 'HTTP_PORTS: "80,81,88,8008,8010,8048,8080,8
 printf '%s\n' "$RENDERED" | grep -q 'community-id: yes' || { echo "community-id 没开" >&2; exit 1; }
 printf '%s\n' "$RENDERED" | grep -q 'unix-command:' || { echo "没开热重载用的 unix socket" >&2; exit 1; }
 # 规则列表只含 active 里的文件；引擎自带事件规则（*-events.rules）一个都不能引用
-printf '%s\n' "$RENDERED" | grep -q 'rule-files: \["shentong.rules"\]' \
-  || { echo "rule-files 没按 active 目录渲染" >&2; exit 1; }
+for f in 10-web-attack 20-exploit 30-credential 40-scan 50-malware-c2 60-sensitive-data 90-other; do
+  printf '%s\n' "$RENDERED" | grep -q "$f.rules" \
+    || { echo "rule-files 里缺少分类文件 $f.rules" >&2; exit 1; }
+done
 if printf '%s\n' "$RENDERED" | grep -q 'events.rules'; then
   echo "配置里引用了引擎自带事件规则（本项目口径：不加载）" >&2
   exit 1
@@ -116,15 +130,16 @@ RUN "$IMG" --handle-requests 2>&1 | tail -15 || true
 [ -f "$WORK/rules/active/manifest.json" ] || { echo "activate 没有把 staging 切到 active" >&2; exit 1; }
 grep -q '"ci-test-1"' "$WORK/rules/active/manifest.json" || { echo "生效版本不对" >&2; exit 1; }
 [ -f "$WORK/rules/active/shentong-sample.rules" ] || { echo "规则文件没切过去" >&2; exit 1; }
-[ -f "$WORK/rules/previous/shentong.rules" ] || { echo "上一版（空占位）没有留到 previous" >&2; exit 1; }
+ls "$WORK"/rules/previous/*.rules >/dev/null 2>&1 || { echo "上一版（内置默认集）没有留到 previous" >&2; exit 1; }
 echo "校验与生效协议 ✓"
 
-echo "== ⑤ 清空规则：回到空占位 =="
+echo "== ⑤ 清空规则：回到内置默认规则集 =="
 printf 'reset\n' > "$WORK/rules/reset.request"
 RUN "$IMG" --handle-requests 2>&1 | tail -10 || true
-[ ! -f "$WORK/rules/active/manifest.json" ] || { echo "清空后 active 里还有 manifest（应为空占位）" >&2; exit 1; }
-[ -f "$WORK/rules/active/shentong.rules" ] || { echo "清空后没有回落到空占位规则" >&2; exit 1; }
-echo "清空规则 ✓"
+[ ! -f "$WORK/rules/active/manifest.json" ] || { echo "清空后 active 里还有 manifest（应为内置默认）" >&2; exit 1; }
+N=$(RUN "$IMG" --render-only 2>&1 | sed -n 's/.*规则=\([0-9][0-9]*\) 条.*/\1/p' | tail -1)
+[ "$N" = "$EXPECT_TOTAL" ] || { echo "清空后加载 $N 条，应为内置默认的 $EXPECT_TOTAL 条" >&2; exit 1; }
+echo "清空规则 → 回到内置默认 ✓"
 
 # 容器以 root 写的文件，CI 用户删不掉：收尾把权限放开（免得 trap 里 rm 报一堆 Permission denied）
 RUN --entrypoint sh "$IMG" -c 'chmod -R a+rwX /rules' >/dev/null 2>&1 || true

@@ -23,3 +23,7 @@ data/
 # 系统
 .DS_Store
 *.log
+
+# 开发者提供的规则全集（源文件留在本地；产品里只带分类后的内置规则集 ndr/suricata/rules/builtin/）
+规则全集.rules
+*.rules.source

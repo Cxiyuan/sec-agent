@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""把开发者提供的规则全集按**攻击类型**分类到 `rules/builtin/`（可重复运行，结果稳定）。
+
+为什么按 classtype 分：规则集自带 `classtype` 元数据（实测 11,190 条、24 类，0 条缺失），
+这就是规则作者给出的攻击类型；我们只做**归类 + 分层文件**，**不改规则内容**（原文逐行保留），
+便于：① 界面按攻击类型展示与盘查；② 出问题时能定位到某一类；③ 关掉某一类规则时不必改文件。
+
+用法::
+
+    python3 ndr/suricata/tools/classify_rules.py 规则全集.rules            # 生成
+    python3 ndr/suricata/tools/classify_rules.py 规则全集.rules --check    # 只校验是否已同步
+
+输出:
+- `rules/builtin/NN-<category>.rules`：每类一个文件（只加文件头注释）；
+- `rules/builtin/index.json`：分类索引（每类的条数、原始 classtype、说明）—— 容器读它、
+  后端把它抄进 `/rules` 卷供界面展示。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+BUILTIN_DIR = HERE.parent / "rules" / "builtin"
+
+#: 原始 classtype → 我们的攻击类型分类（一条 classtype 只能落一类）
+CATEGORY_OF: dict[str, str] = {
+    # Web 应用攻击（含注入/上传/WebShell/反序列化等）
+    "web-application-attack": "10-web-attack",
+    "web-application-activity": "10-web-attack",
+    "xss-attack": "10-web-attack",
+    "sql-injection": "10-web-attack",
+    "xxe-attack": "10-web-attack",
+    "rce-attempt": "10-web-attack",
+    "file-upload-attempt": "10-web-attack",
+    "file-read-attempt": "10-web-attack",
+    "webshell-activity": "10-web-attack",
+    "java-deserialization": "10-web-attack",
+    "shellcode-detect": "10-web-attack",
+    # 漏洞利用套件
+    "exploit-kit": "20-exploit",
+    "CVE-exploit": "20-exploit",
+    # 凭证 / 未授权访问
+    "credential-theft": "30-credential",
+    "unauthorized-access": "30-credential",
+    # 扫描探测
+    "vuln-scanner": "40-scan",
+    "dir-scan": "40-scan",
+    # 恶意软件 / 挖矿 / 隧道外联
+    "trojan-activity": "50-malware-c2",
+    "C2_trojan-activity": "50-malware-c2",
+    "coin-mining": "50-malware-c2",
+    "tunnel-activity": "50-malware-c2",
+    "dns-exfiltration": "50-malware-c2",
+    # 敏感信息 / 文件泄露
+    "sensitive-str": "60-sensitive-data",
+    "sensitive-file-access": "60-sensitive-data",
+    # 其它
+    "policy-violation": "90-other",
+    "misc-activity": "90-other",
+}
+
+#: 分类 → 中文名（界面展示）
+CATEGORY_LABELS: dict[str, str] = {
+    "10-web-attack": "Web 应用攻击",
+    "20-exploit": "漏洞利用（exploit-kit）",
+    "30-credential": "凭证窃取 / 未授权访问",
+    "40-scan": "扫描探测",
+    "50-malware-c2": "恶意软件 / 挖矿 / 隧道外联",
+    "60-sensitive-data": "敏感信息 / 文件泄露",
+    "90-other": "其它",
+}
+
+ACTION_RE = re.compile(r"^\s*(alert|drop|reject|pass)\s")
+CLASSTYPE_RE = re.compile(r"classtype:\s*([a-zA-Z0-9_-]+)")
+SID_RE = re.compile(r"\bsid:\s*(\d+)")
+
+HEADER = """# ============================================================
+# 深瞳签名引擎 · 内置默认规则 · {label}（{category}）
+# 来源: 开发者提供的规则全集.rules（按 classtype 分类，规则原文未改）
+# 本类条数: {count}；原始 classtype: {types}
+# 生成方式: python3 ndr/suricata/tools/classify_rules.py <规则全集文件>
+# ============================================================
+"""
+
+
+def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list[str], list[str]]:
+    """规则行 → 分类桶。返回 (分类→规则行, 原始 classtype 计数, 无分类的 classtype, 重复 sid)。"""
+    buckets: dict[str, list[str]] = defaultdict(list)
+    types: Counter[str] = Counter()
+    unknown: list[str] = []
+    seen_sid: set[str] = set()
+    dup: list[str] = []
+    for line in lines:
+        if not ACTION_RE.match(line):
+            continue  # 注释/空行不进分类文件（文件头由我们生成）
+        match = CLASSTYPE_RE.search(line)
+        raw = match.group(1) if match else ""
+        types[raw or "(无)"] += 1
+        category = CATEGORY_OF.get(raw, "90-other")
+        if raw and raw not in CATEGORY_OF:
+            unknown.append(raw)
+        buckets[category].append(line.rstrip("\n"))
+        sid = SID_RE.search(line)
+        if sid:
+            if sid.group(1) in seen_sid:
+                dup.append(sid.group(1))
+            seen_sid.add(sid.group(1))
+    return buckets, types, sorted(set(unknown)), sorted(set(dup))
+
+
+def _classtype_of(row: str) -> str:
+    match = CLASSTYPE_RE.search(row)
+    return match.group(1) if match else "(无)"
+
+
+def _classtype_counts(rows: list[str]) -> Counter[str]:
+    return Counter(_classtype_of(row) for row in rows)
+
+
+def render(buckets: dict[str, list[str]], types: Counter[str]) -> dict[str, str]:
+    """分类桶 → {文件名: 文件内容}。"""
+    out: dict[str, str] = {}
+    for category in sorted(buckets):
+        rows = buckets[category]
+        # 这一类的原始 classtype 分布（写进文件头，方便盘查）
+        by_type = _classtype_counts(rows)
+        label = CATEGORY_LABELS.get(category, category)
+        body = "".join(f"{row}\n" for row in sorted(rows, key=_sid_key))
+        out[f"{category}.rules"] = HEADER.format(
+            label=label,
+            category=category,
+            count=len(rows),
+            types=", ".join(f"{k}×{v}" for k, v in by_type.most_common()),
+        ) + body
+    return out
+
+
+def _sid_key(row: str) -> tuple[int, str]:
+    match = SID_RE.search(row)
+    return (int(match.group(1)) if match else 1 << 60, row)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="按攻击类型分类 Suricata 规则集")
+    parser.add_argument("source", type=Path, help="规则全集文件（如 规则全集.rules）")
+    parser.add_argument("--check", action="store_true", help="只校验已生成的分类是否与源一致")
+    args = parser.parse_args(argv)
+
+    lines = args.source.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    buckets, types, unknown, dup = classify(lines)
+    rendered = render(buckets, types)
+    total = sum(len(v) for v in buckets.values())
+
+    index = {
+        "source": args.source.name,
+        "total": total,
+        "categories": [
+            {
+                "category": category,
+                "label": CATEGORY_LABELS.get(category, category),
+                "file": f"{category}.rules",
+                "rules": len(buckets[category]),
+                "classtypes": dict(_classtype_counts(buckets[category]).most_common()),
+            }
+            for category in sorted(buckets)
+        ],
+        "classtypes": dict(types.most_common()),
+    }
+
+    problems: list[str] = []
+    if unknown:
+        problems.append(f"未登记的 classtype（已归入 90-other）: {unknown}")
+    if dup:
+        problems.append(f"重复 sid（源文件可能没有去重）: {dup[:5]}（共 {len(dup)}）")
+    for row in rendered.values():
+        if "sid:" not in row:
+            problems.append("有规则缺 sid")
+            break
+    if problems:
+        print("提示:\n  " + "\n  ".join(problems), file=sys.stderr)
+
+    print(f"源规则 {total} 条 → {len(rendered)} 类：")
+    for category in sorted(buckets):
+        print(f"  {category:20s} {CATEGORY_LABELS.get(category, ''):22s} {len(buckets[category]):6d} 条")
+
+    if args.check:
+        bad = 0
+        for name, text in rendered.items():
+            path = BUILTIN_DIR / name
+            if not path.exists() or path.read_text(encoding="utf-8") != text:
+                print(f"未同步: {path.relative_to(BUILTIN_DIR.parent.parent.parent)}", file=sys.stderr)
+                bad += 1
+        idx = BUILTIN_DIR / "index.json"
+        want = json.dumps(index, ensure_ascii=False, indent=2) + "\n"
+        if not idx.exists() or idx.read_text(encoding="utf-8") != want:
+            print("未同步: index.json", file=sys.stderr)
+            bad += 1
+        return 1 if bad else 0
+
+    BUILTIN_DIR.mkdir(parents=True, exist_ok=True)
+    for name, text in rendered.items():
+        (BUILTIN_DIR / name).write_text(text, encoding="utf-8")
+    (BUILTIN_DIR / "index.json").write_text(
+        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"已写入 {BUILTIN_DIR}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

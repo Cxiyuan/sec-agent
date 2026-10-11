@@ -5,7 +5,7 @@
 #      支持后端下发的三个请求标记（后端不碰 docker socket，只写共享卷）：
 #        validate.request  → 对 /rules/staging 跑 `suricata -T` 并写校验结果
 #        activate.request  → 复校验 staging，通过则切到 active 并重载规则
-#        reset.request     → 清空规则（回到空占位）
+#        reset.request     → 清空规则（回到内置默认规则集）
 #   3) 渲染 /etc/suricata/suricata.yaml：网卡 / HOME_NET / 明文 HTTP 端口 / 规则文件列表
 #   4) 守护 Suricata；配置或规则变化 → `suricatasc reload-rules`（不可用则重启，主循环重拉）
 #   5) eve.json 按天/按大小轮转进 archive/（Suricata 自己不做日志过期）
@@ -154,17 +154,32 @@ count_rules_in() {
   echo "$total"
 }
 
-# 首次启动（或规则被清空后）必须保证 active/ 里至少有一个可加载的文件，
-# 否则 Suricata 的 rule-files 为空会起不来。占位文件来自镜像（内容只有注释 ⇒ 0 条规则）。
+# 首次启动（或规则被清空后）必须保证 active/ 里有可加载的文件，否则 rule-files 为空起不来。
+#
+# 默认加载**内置默认规则集**（镜像里按攻击类型分类的开发者规则，见 rules/builtin/ 与
+# tools/classify_rules.py）；只有内置目录缺失时才回落到空占位（0 条）。
+# 在线更新（manifest）走 staging→校验→activate，仍可整体替换这套默认规则。
 bootstrap_rules() {
   mkdir -p "$ACTIVE_DIR" "$STAGING_DIR" "$PREVIOUS_DIR" "$REJECTED_DIR"
   local existing
   existing="$(rule_files_in "$ACTIVE_DIR")"
-  if [ -z "$existing" ]; then
-    cp -f "${PLACEHOLDER_DIR}/shentong.rules" "${ACTIVE_DIR}/shentong.rules" 2>/dev/null \
-      || : > "${ACTIVE_DIR}/shentong.rules"
-    log "规则目录为空，已放置空占位规则文件（当前加载 0 条规则）"
+  [ -n "$existing" ] && return 0
+  local builtin_dir="${PLACEHOLDER_DIR}/builtin" copied=0
+  if [ -d "$builtin_dir" ]; then
+    for f in "$builtin_dir"/*.rules; do
+      [ -f "$f" ] || continue
+      cp -f "$f" "${ACTIVE_DIR}/$(basename "$f")" && copied=$((copied + 1))
+    done
+    # 分类索引抄进卷里：后端/界面据此按攻击类型展示（镜像内的文件容器外部读不到）
+    cp -f "$builtin_dir/index.json" "${RULES_DIR}/builtin-index.json" 2>/dev/null || true
   fi
+  if [ "$copied" -gt 0 ]; then
+    log "规则目录为空，已加载内置默认规则集（${copied} 个分类文件，$(count_rules_in "$ACTIVE_DIR") 条）"
+    return 0
+  fi
+  cp -f "${PLACEHOLDER_DIR}/shentong.rules" "${ACTIVE_DIR}/shentong.rules" 2>/dev/null \
+    || : > "${ACTIVE_DIR}/shentong.rules"
+  log "规则目录为空，且镜像里没有内置规则集，已放置空占位（当前加载 0 条）"
 }
 
 # ---------- 渲染配置 ----------
@@ -295,7 +310,7 @@ reset_rules() {
   bootstrap_rules
   render_config
   write_runtime_auto
-  log "规则已清空（回到空占位，$(count_rules_in "$ACTIVE_DIR") 条）"
+  log "规则已清空，已回到内置默认规则集（$(count_rules_in "$ACTIVE_DIR") 条）"
 }
 
 reload_suricata() {

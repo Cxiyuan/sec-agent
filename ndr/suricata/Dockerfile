@@ -13,7 +13,8 @@ FROM ${SURICATA_BASE}
 
 USER root
 
-# 空占位规则 / manifest 示例 / 配置模板 / 入口（网卡、网段、HTTP 端口、规则列表都由入口渲染）
+# 规则（内置默认分类集 + 空占位兜底）/ manifest 示例 / 配置模板 / 入口
+#（网卡、网段、HTTP 端口、规则列表都由入口渲染）
 COPY rules/ /usr/local/share/shentong/rules/
 COPY manifest.example.json /usr/local/share/shentong/manifest.example.json
 COPY suricata.yaml.tmpl /usr/local/share/shentong/suricata.yaml.tmpl
@@ -22,6 +23,8 @@ COPY healthcheck.sh /usr/local/bin/shentong-suricata-healthcheck.sh
 RUN set -eux; \
     chmod +x /usr/local/bin/shentong-suricata-entrypoint.sh /usr/local/bin/shentong-suricata-healthcheck.sh; \
     test -f /usr/local/share/shentong/rules/shentong.rules; \
+    test "$(ls /usr/local/share/shentong/rules/builtin/*.rules | wc -l)" -ge 1; \
+    test -f /usr/local/share/shentong/rules/builtin/index.json; \
     mkdir -p /rules/active /rules/staging /rules/previous /rules/rejected
 
 # /rules：规则集与状态（后端与本容器共写各自的文件，见 README 的目录约定）
