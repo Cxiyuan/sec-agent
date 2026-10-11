@@ -30,7 +30,7 @@ from typing import Any
 from urllib.parse import unquote, unquote_plus
 
 from app.schemas import UnifiedLog
-from app.tools.context import is_public_ip
+from app.tools.context import is_internal_ip, is_public_ip
 
 # 对这些字段做 contains/regex 时，额外匹配 URL 解码后的文本
 # （攻击者常对 payload 做 URL 编码，只匹配原文会漏报）
@@ -38,11 +38,12 @@ _DECODE_FIELDS = {"query", "query_string", "uri_path", "body", "referer", "filen
 
 
 def _is_internal(ip: Any) -> bool:
-    """是否内网地址（非公网）。地址缺失返回 False（不把脏数据当内网放行）。"""
-    value = str(ip or "").strip()
-    if not value:
-        return False
-    return not is_public_ip(value)
+    """是否**监控网段内**的地址（地址缺失返回 False，不把脏数据当内网放行）。
+
+    口径与采集器 `Site::local_nets`（Zeek `local_orig`/`local_resp`）、检测器 scope 同源；
+    不能只看「非公网」—— 实测 13% 的侧判定分歧，全是把监控范围外的私网当成内网。
+    """
+    return is_internal_ip(str(ip or ""))
 
 
 # **内外网方向虚拟字段**。
