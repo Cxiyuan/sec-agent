@@ -32,11 +32,11 @@ const WINDOWS: Array<{ label: string; minutes: number }> = [
 /** 源站展示名：**IP:端口 优先**，域名/Host 只作补充（与拓扑页「默认显示 IP」同口径）。
  *  为什么要这样：中继链路上 hostname 是 HTTP Host/SNI（如内网服务的 `master:5000`），
  *  只显示它就看不出到底是哪台机器（2026-10 用户反馈）。 */
-function originLabel(chain: ChainItem): string {
+function originLabel(chain: ChainItem, name: (ip: string) => string): string {
   const ip = chain.origin_ip || "";
   const host = chain.origin_kind === "hostname" ? chain.origin : "";
-  if (ip && host && ip !== host) return `${displayName(ip)}（${host}）`;
-  return displayName(ip || host) || "源站";
+  if (ip && host && ip !== host) return `${name(ip)}（${host}）`;
+  return name(ip || host) || "源站";
 }
 
 function segText(seg: ChainItem["segments"][number]): string {
@@ -200,8 +200,8 @@ function ChainInner() {
                     <span className="font-mono">
                       {displayName(chain.client) || "客户端未记录"}
                       {chain.relay_path.length
-                        ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${originLabel(chain)}`
-                        : ` → ${originLabel(chain)}`}
+                        ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${originLabel(chain, displayName)}`
+                        : ` → ${originLabel(chain, displayName)}`}
                     </span>
                     <span className="text-xs font-normal text-muted-foreground">
                       {facts.events ?? 0} 条事件
