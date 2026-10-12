@@ -230,6 +230,14 @@ function fieldLabel(key: string): string {
   return FIELD_LABELS[key] ?? key;
 }
 
+/** 事件时间：Zeek 的 `ts` 可能是数字、也可能是字符串化的秒级时间戳（实测 "1791816302.15616"），
+ *  统一按北京时间显示；不是时间戳就按原字符串交给共享格式化。 */
+function eventTime(value: unknown): string {
+  const num = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(num) && num > 1e9) return formatDateTime(new Date(num * 1000));
+  return formatDateTime(String(value));
+}
+
 const SEVERITY_TEXT: Record<string, string> = {
   critical: "紧急",
   high: "高危",
@@ -792,9 +800,7 @@ export function StatusPanel() {
                               <div key={i} className="rounded-md border px-2 py-1">
                                 <div className="mb-1 text-muted-foreground">
                                   样例 {i + 1}
-                                  {at !== undefined && at !== null
-                                    ? ` · ${typeof at === "number" ? formatDateTime(new Date(at * 1000)) : formatDateTime(String(at))}`
-                                    : ""}
+                                  {at !== undefined && at !== null ? ` · ${eventTime(at)}` : ""}
                                   {ev["source"] ? ` · 来源 ${String(ev["source"])}` : ""}
                                 </div>
                                 <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
