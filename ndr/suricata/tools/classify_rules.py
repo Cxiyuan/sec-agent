@@ -147,6 +147,61 @@ def _threshold_to_detection_filter(token: str) -> str:
     return f"detection_filter: track {track}, count {count}, seconds {seconds}"
 
 
+#: Suricata 7 的**旧写法关键字** → 点号式缓冲区。实测下划线旧名会被拒（报错信息有误导：
+#: `"http_uri" keyword found inside the rule without a content context`）。同义替换，判据不变。
+LEGACY_KEYWORDS: dict[str, str] = {
+    "http_uri": "http.uri",
+    "http_header": "http.header",
+    "http_user_agent": "http.user.agent",
+    "http_host": "http.host",
+    "http_cookie": "http.cookie",
+    "http_stat_code": "http.stat_code",
+    "http_stat_msg": "http.stat_msg",
+    "tls_sni": "tls.sni",
+    "dns_query": "dns.query",
+    "file_data": "file.data",
+}
+
+#: JA3/JA3S 的方向约束：`ja3.hash` 取自**客户端** hello（flow:to_server），
+#: `ja3s.hash` 取自**服务端** hello（flow:to_client）。方向写反时 Suricata 直接拒绝：
+#: `rule N mixes keywords with conflicting directions`。这里按缓冲区把 flow 纠正过来。
+DIRECTION_BY_BUFFER: dict[str, str] = {"ja3.hash": "to_server", "ja3s.hash": "to_client"}
+
+
+def _rename_legacy_keywords(tokens: list[str], applied: list[str]) -> list[str]:
+    out: list[str] = []
+    for tok in tokens:
+        name = tok.strip().lower()
+        if name in LEGACY_KEYWORDS:
+            out.append(" " + LEGACY_KEYWORDS[name])
+            applied.append(f"legacy_keyword:{name}")
+            continue
+        out.append(tok)
+    return out
+
+
+def _fix_flow_direction(tokens: list[str], applied: list[str]) -> list[str]:
+    """按缓冲区纠正 flow 方向（ja3.hash → to_server，ja3s.hash → to_client）。"""
+    names = {tok.strip().lower() for tok in tokens}
+    want = next((DIRECTION_BY_BUFFER[b] for b in DIRECTION_BY_BUFFER if b in names), None)
+    if want is None:
+        return tokens
+    for i, tok in enumerate(tokens):
+        s = tok.strip()
+        if not s.lower().startswith("flow:"):
+            continue
+        parts = [x.strip() for x in _split_top(s.split(":", 1)[1], ",") if x.strip()]
+        dirs = {"to_server", "to_client"}
+        if want in parts:
+            return tokens
+        kept = [p for p in parts if p not in dirs]
+        kept.insert(0, want)
+        tokens[i] = " flow:" + ",".join(["established", *kept]) if "established" not in kept else " flow:" + ",".join(kept)
+        applied.append(f"flow_direction:{want}")
+        return tokens
+    return tokens
+
+
 def fix_rule(row: str) -> tuple[str, list[str]]:
     """修规则的**语法**问题（不改判据）。返回 (修复后的行, 做了哪些修复)。"""
     applied: list[str] = []
@@ -184,6 +239,8 @@ def fix_rule(row: str) -> tuple[str, list[str]]:
         if tok.strip().lower().startswith(THRESHOLD_KEYWORD):
             tokens[i] = " " + _threshold_to_detection_filter(tok)
             applied.append("threshold_to_detection_filter")
+    tokens = _rename_legacy_keywords(tokens, applied)
+    tokens = _fix_flow_direction(tokens, applied)
     body = ";".join(tok.strip() for tok in tokens)
     return f"{row[: start + 1]}{body};{row[end:]}", applied
 
