@@ -161,6 +161,7 @@ LEGACY_KEYWORDS: dict[str, str] = {
     "dns_query": "dns.query",
     "file_data": "file.data",
     "http_client_body": "http.request_body",
+    "http_server_body": "http.response_body",
 }
 
 #: JA3/JA3S 的方向约束：`ja3.hash` 取自**客户端** hello（flow:to_server），
@@ -240,6 +241,88 @@ def _fix_semicolons(tokens: list[str], applied: list[str]) -> list[str]:
     return out
 
 
+#: PCRE 合法标志位（Suricata 只认这些；写别的会被拒，实测 `pcre:"/x/Vi"`）
+PCRE_FLAGS = set("ismxAEGKORU")
+
+
+def _fix_flow_redundancy(tokens: list[str], applied: list[str]) -> list[str]:
+    """`flow:to_client,established,from_server` —— `from_server` 与 `to_client` 重复，
+    Suricata 7 直接报 `cannot set DETECT_FLOW_FLAG_TOCLIENT flag is already set`。
+    处理：两者都在时去掉 from_*；只有 from_* 时把它换成对应的 to_*。
+    """
+    for i, tok in enumerate(tokens):
+        s = tok.strip()
+        if not s.lower().startswith("flow:"):
+            continue
+        parts = [x.strip() for x in _split_top(s.split(":", 1)[1], ",") if x.strip()]
+        low = [x.lower() for x in parts]
+        changed = False
+        if "from_server" in low and "to_client" in low:
+            parts = [x for x in parts if x.lower() != "from_server"]
+            changed = True
+        elif "from_client" in low and "to_server" in low:
+            parts = [x for x in parts if x.lower() != "from_client"]
+            changed = True
+        elif "from_server" in low:
+            parts = ["to_client" if x.lower() == "from_server" else x for x in parts]
+            changed = True
+        elif "from_client" in low:
+            parts = ["to_server" if x.lower() == "from_client" else x for x in parts]
+            changed = True
+        if changed:
+            tokens[i] = " flow:" + ",".join(parts)
+            applied.append("flow_dedupe_from_flag")
+        return tokens
+    return tokens
+
+
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _decode_unicode_escapes(text: str) -> str:
+    """`\u0040` → `@`：Suricata 不认这种转义（实测报 `'\' has to be escaped`），
+    直接还原成字符（或按需写 |40|）语义等价、且能加载。"""
+    return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _fix_content_escapes(tokens: list[str], applied: list[str]) -> list[str]:
+    out: list[str] = []
+    for tok in tokens:
+        s = tok.strip()
+        low = s.lower()
+        if low.startswith(("content", "msg")) and ":" in s:
+            name, _, raw = s.partition(":")
+            raw = raw.strip()
+            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' and "\\u" in raw[1:-1]:
+                out.append(f'{name}: "{_decode_unicode_escapes(raw[1:-1])}"')
+                applied.append("unicode_escape_decoded")
+                continue
+        out.append(tok)
+    return out
+
+
+def _fix_pcre_flags(tokens: list[str], applied: list[str]) -> list[str]:
+    """pcre 尾部的标志位只保留 Suricata 认得的（其余丢掉，不影响正则本体）。"""
+    out: list[str] = []
+    for tok in tokens:
+        s = tok.strip()
+        if s.lower().startswith("pcre") and ":" in s:
+            name, _, raw = s.partition(":")
+            raw = raw.strip()
+            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+                expr = raw[1:-1]
+                end = expr.rfind("/")
+                if end > 0:
+                    body, flags = expr[: end + 1], expr[end + 1 :]
+                    kept = "".join(ch for ch in flags if ch in PCRE_FLAGS)
+                    if kept != flags:
+                        out.append(f'{name}: "{body}{kept}"')
+                        applied.append("pcre_flag_dropped")
+                        continue
+        out.append(tok)
+    return out
+
+
 def fix_rule(row: str) -> tuple[str, list[str]]:
     """修规则的**语法**问题（不改判据）。返回 (修复后的行, 做了哪些修复)。"""
     applied: list[str] = []
@@ -279,7 +362,10 @@ def fix_rule(row: str) -> tuple[str, list[str]]:
             applied.append("threshold_to_detection_filter")
     tokens = _rename_legacy_keywords(tokens, applied)
     tokens = _fix_semicolons(tokens, applied)
+    tokens = _fix_content_escapes(tokens, applied)
+    tokens = _fix_pcre_flags(tokens, applied)
     tokens = _fix_flow_direction(tokens, applied)
+    tokens = _fix_flow_redundancy(tokens, applied)
     body = ";".join(tok.strip() for tok in tokens)
     return f"{row[: start + 1]}{body};{row[end:]}", applied
 

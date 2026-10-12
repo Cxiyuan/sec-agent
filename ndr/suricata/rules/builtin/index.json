@@ -120,10 +120,14 @@
     "legacy_keyword:http_uri": 19,
     "msg_semicolon_stripped": 4,
     "flow_direction:to_client": 6,
+    "flow_dedupe_from_flag": 2,
+    "unicode_escape_decoded": 1,
     "legacy_keyword:dns_query": 63,
     "flow_direction:to_server": 4,
     "legacy_keyword:http_header": 6,
+    "pcre_flag_dropped": 6,
     "legacy_keyword:http_user_agent": 1,
+    "legacy_keyword:http_server_body": 6,
     "legacy_keyword:http_stat_code": 5,
     "legacy_keyword:http_client_body": 3
   }
