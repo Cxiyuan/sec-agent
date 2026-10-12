@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   Chart,
+  Dialog,
   Table,
   TableBody,
   TableCell,
@@ -18,6 +19,9 @@ import {
   formatDateTime,
   formatTime,
   severityVariant,
+  apiFetch,
+  ApiError,
+  errorText,
 } from "@shentong/ui";
 import type {
   AgentPushPayload,
@@ -28,7 +32,8 @@ import type {
   DetectorCoverage,
   DetectorHistory,
   DetectorRate,
-  DetectorRecent,
+  HitEventItem,
+  HitEventList,
   DetectorStats,
   EsStatus,
   LogstashStatus,
@@ -74,7 +79,7 @@ const SRC = {
   history: "检测器历史采样",
   rate: "检测器速率",
   coverage: "投递覆盖率",
-  recent: "最近命中摘要",
+  hits: "命中事件",
   stats: "检测器队列",
   push: "摘要推送",
   baseline: "基线观测",
@@ -219,7 +224,12 @@ export function StatusPanel() {
   const [history, setHistory] = React.useState<DetectorHistory | null>(null);
   const [rate, setRate] = React.useState<DetectorRate | null>(null);
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
-  const [recent, setRecent] = React.useState<DetectorRecent | null>(null);
+  const [hits, setHits] = React.useState<HitEventList | null>(null);
+  /** 详情弹窗：打开的那条命中事件（含证据） */
+  const [hitDetail, setHitDetail] = React.useState<HitEventItem | null>(null);
+  const [hitBusy, setHitBusy] = React.useState(false);
+  const [hitMsg, setHitMsg] = React.useState("");
+  const [whitelistScope, setWhitelistScope] = React.useState<"src" | "src_dst">("src");
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
   const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
@@ -228,6 +238,40 @@ export function StatusPanel() {
   const [overview, setOverview] = React.useState<StatsOverview | null>(null);
   const [auto, setAuto] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
+
+  /** 详情弹窗里的动作：忽略 / 加白名单（加白会自动刷新列表与消息） */
+  async function hitAction(kind: "ignore" | "whitelist") {
+    if (!hitDetail) return;
+    setHitBusy(true);
+    setHitMsg("");
+    try {
+      const out = await apiFetch<{
+        ok?: boolean;
+        filter_id?: string;
+        name?: string;
+        note?: string;
+        error?: string;
+      }>(`/api/detector/hits/${hitDetail.id}/${kind}`, {
+        method: "POST",
+        body: JSON.stringify(kind === "whitelist" ? { scope: whitelistScope } : { reason: "" }),
+      });
+      if (out.error) {
+        setHitMsg(out.error);
+        return;
+      }
+      setHitMsg(
+        kind === "ignore"
+          ? `已忽略事件 ${hitDetail.id.slice(0, 8)}（行保留，可在数据库/接口查回）`
+          : `已加白名单「${out.name || ""}」：库里降噪 → 排除过滤器可查可撤`,
+      );
+      setHitDetail(null);
+      await load();
+    } catch (e) {
+      setHitMsg(e instanceof ApiError ? errorText(e.body) : "操作失败");
+    } finally {
+      setHitBusy(false);
+    }
+  }
 
   async function load() {
     setBusy(true);
@@ -238,7 +282,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.history, "/api/detector/history?limit=288", setHistory),
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
-      loadInto(errs, SRC.recent, "/api/detector/recent?limit=50", setRecent),
+      loadInto(errs, SRC.hits, "/api/detector/hits?limit=50", setHits),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
@@ -439,49 +483,60 @@ export function StatusPanel() {
             />
           </div>
 
-          {/* 最近命中：现场没配推送地址时，「报了什么规则、打了谁、多少次」的唯一出口。
-              数据来自检测器实时写进 Redis 的摘要（不是历史采样），只看当前保留窗口。 */}
+          {/* 命中事件：每条都有**系统唯一事件 ID**（存 PG），可看详情/证据、可忽略、可加白名单。
+              为什么不再用 Redis 流水：事件要能被长期引用与关联分析（用户 2026-10 要求）。 */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-                最近命中（检测器实时）
-                {recent?.items?.length ? (
+                命中事件（最近）
+                {hits?.total ? (
                   <span className="text-xs font-normal text-muted-foreground">
-                    窗口内 {recent.count} 条 · 不依赖推送地址
+                    共 {hits.total} 条 · 每条有唯一事件 ID · 点「详情」看证据
                   </span>
                 ) : null}
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {recent?.items?.length ? (
+              {hitMsg ? <p className="mb-2 text-xs text-muted-foreground">{hitMsg}</p> : null}
+              {hits?.items?.length ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>最近时间</TableHead>
+                      <TableHead>事件 ID</TableHead>
                       <TableHead>规则</TableHead>
                       <TableHead>严重度</TableHead>
-                      <TableHead>源 IP</TableHead>
+                      <TableHead>请求方</TableHead>
                       <TableHead className="text-right">次数</TableHead>
-                      <TableHead>目的</TableHead>
+                      <TableHead>目的（IP:端口）</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {recent.items.map((row, i) => (
-                      <TableRow key={`${row.rule}-${row.src_ip}-${i}`}>
+                    {hits.items.map((row) => (
+                      <TableRow key={row.id}>
                         <TableCell className="whitespace-nowrap text-xs">
-                          {row.ts ? formatDateTime(row.ts) : "—"}
+                          {formatDateTime(row.last_seen || row.created_at)}
+                        </TableCell>
+                        <TableCell className="font-mono text-[11px] text-muted-foreground">
+                          <span title={row.id}>{row.id.slice(0, 8)}</span>
                         </TableCell>
                         <TableCell className="text-xs">
                           {row.rule || "—"}
-                          {row.excluded ? (
+                          {row.ignored ? (
                             <Badge variant="outline" className="ml-1">
-                              已排除
+                              已忽略
+                            </Badge>
+                          ) : null}
+                          {row.whitelist_id ? (
+                            <Badge variant="outline" className="ml-1">
+                              已加白
                             </Badge>
                           ) : null}
                         </TableCell>
                         <TableCell>{severityBadge(row.severity)}</TableCell>
                         <TableCell className="text-xs">
-                          {/* 真实请求方优先：中继链路上 src_ip 是代理/WAF 自己（实测踩到） */}
+                          {/* 真实请求方优先：中继链路上 src_ip 是代理/WAF 自己 */}
                           <span title={row.client_source === "xff" ? "来自可信代理头（XFF/X-Real-IP）" : "直连对端"}>
                             {row.client || row.src_ip || "—"}
                           </span>
@@ -497,9 +552,24 @@ export function StatusPanel() {
                         <TableCell className="text-right text-xs tabular-nums">
                           {row.count}
                         </TableCell>
-                        <TableCell className="max-w-[22rem] truncate text-xs text-muted-foreground">
-                          {row.dst_ips?.length ? row.dst_ips.join("、") : "—"}
-                          {row.dst_ports?.length ? ` : ${row.dst_ports.join("/")}` : ""}
+                        <TableCell className="max-w-[20rem] text-xs text-muted-foreground">
+                          {row.dst_pairs?.length
+                            ? row.dst_pairs.slice(0, 3).join("、") +
+                              (row.dst_pairs.length > 3 ? ` 等 ${row.dst_pairs.length} 个` : "")
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setHitMsg("");
+                              setWhitelistScope("src");
+                              setHitDetail(row);
+                            }}
+                          >
+                            详情
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -507,11 +577,118 @@ export function StatusPanel() {
                 </Table>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  {recent?.error
-                    ? `读取失败：${recent.error}`
-                    : "窗口内暂无命中（检测器未运行，或还没到聚合窗口）"}
+                  {hits?.error ? `读取失败：${hits.error}` : "还没有命中事件（检测器未运行，或还没到聚合窗口）"}
                 </p>
               )}
+
+              {/* 详情弹窗：事件信息 + 证据样例 + 忽略 / 加白名单 */}
+              <Dialog
+                open={hitDetail !== null}
+                title="命中事件详情"
+                onClose={() => setHitDetail(null)}
+                footer={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={hitBusy}
+                      onClick={() => void hitAction("ignore")}
+                    >
+                      忽略这条
+                    </Button>
+                    <select
+                      className="h-8 rounded-md border bg-transparent px-2 text-xs"
+                      value={whitelistScope}
+                      onChange={(e) => setWhitelistScope(e.target.value as "src" | "src_dst")}
+                    >
+                      <option value="src">白名单：同源 + 同规则</option>
+                      <option value="src_dst">白名单：同源 + 同规则 + 同目的</option>
+                    </select>
+                    <Button size="sm" disabled={hitBusy} onClick={() => void hitAction("whitelist")}>
+                      加入白名单
+                    </Button>
+                  </div>
+                }
+              >
+                {hitDetail ? (
+                  <div className="space-y-3 text-xs">
+                    <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      <div>
+                        <span className="text-muted-foreground">事件 ID：</span>
+                        <span className="font-mono">{hitDetail.id}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">规则：</span>
+                        {hitDetail.rule}（{hitDetail.severity}）
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">首次/最近：</span>
+                        {formatDateTime(hitDetail.first_seen)} / {formatDateTime(hitDetail.last_seen)}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">次数：</span>
+                        {hitDetail.count}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">请求方：</span>
+                        {hitDetail.client || hitDetail.src_ip}
+                        {hitDetail.via ? `（经 ${hitDetail.via}）` : ""}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">目的：</span>
+                        {hitDetail.dst_pairs?.join("、") || "—"}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">事件类型：</span>
+                        {hitDetail.event_types?.join("、") || "—"}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">连接状态：</span>
+                        {hitDetail.conn_states?.join("、") || "—"}
+                      </div>
+                      {hitDetail.real_client_ips?.length ? (
+                        <div className="sm:col-span-2">
+                          <span className="text-muted-foreground">代理头里的真实客户端：</span>
+                          {hitDetail.real_client_ips.join("、")}
+                        </div>
+                      ) : null}
+                      {hitDetail.ignored_reason ? (
+                        <div className="sm:col-span-2">
+                          <span className="text-muted-foreground">处理记录：</span>
+                          {hitDetail.ignored_reason}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div>
+                      <p className="mb-1 font-medium">证据（样例事件关键字段）</p>
+                      {hitDetail.evidence?.length ? (
+                        <div className="space-y-2">
+                          {hitDetail.evidence.map((ev, i) => (
+                            <div key={i} className="rounded-md border px-2 py-1">
+                              <div className="mb-1 text-muted-foreground">
+                                #{i + 1} {String(ev["ts"] ?? "")}
+                                {ev["source"] ? ` · 来源 ${String(ev["source"])}` : ""}
+                              </div>
+                              <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+                                {Object.entries(ev)
+                                  .filter(([k]) => k !== "other_fields" && k !== "source")
+                                  .map(([k, v]) => (
+                                    <div key={k} className="truncate">
+                                      <span className="text-muted-foreground">{k}: </span>
+                                      <span className="font-mono">{String(v)}</span>
+                                    </div>
+                                  ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-muted-foreground">这条命中没有留下样例事件</p>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </Dialog>
             </CardContent>
           </Card>
         </Section>

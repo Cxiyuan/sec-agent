@@ -1427,3 +1427,39 @@ vs 反向 `203 → 214` **614 次**（2600 倍）；`203 → 源站` 的请求�
 
 **现场配套（数据，不写进代码）**：授权扫描设备按产品口径走"降噪"排除（界面可查、可撤销），
 而不是把规则判据放宽 —— 代码里不出现任何客户环境的 IP/网段。
+
+### 2026-10 签名引擎内置默认规则集（开发者规则全集 → 按攻击类型分类 → 离线可用）
+
+**来源与分类**：开发者提供的 `规则全集.rules`（11,190 条，自带 `classtype`，0 条缺分类）。
+`ndr/suricata/tools/classify_rules.py` 按 classtype 归到 7 个攻击类型分类，**规则原文逐行保留**：
+
+| 分类 | 条数 | 覆盖的原始 classtype |
+|---|---|---|
+| `10-web-attack` Web 应用攻击 | 6774 | web-application-attack / xss / sql-injection / xxe / rce / file-upload / webshell / java-deserialization / shellcode… |
+| `20-exploit` 漏洞利用 | 2586 | exploit-kit / CVE-exploit |
+| `30-credential` 凭证与未授权 | 1566 | credential-theft / unauthorized-access |
+| `40-scan` 扫描探测 | 45 | vuln-scanner / dir-scan |
+| `50-malware-c2` 恶意软件/挖矿/隧道 | 133 | trojan-activity / C2_trojan-activity / coin-mining / tunnel-activity / dns-exfiltration |
+| `60-sensitive-data` 敏感信息 | 83 | sensitive-str / sensitive-file-access |
+| `90-other` 其它 | 2 | policy-violation / misc-activity |
+
+**语法修复（CI 用真实 Suricata 8 轮迭代发现，共约 250 处；只改写法不改判据）**：
+content 修饰符位置（`http_method` 必须在 content 之后）、Suricata 7 已移除的 `threshold` → `detection_filter`、
+旧关键字 → 点号式（`http_uri`→`http.uri`、`http_server_body`→`http.response_body`…）、
+JA3/JA3S 方向纠正、content/pcre 里的裸分号（→ `|3b|` / `\x3b`）、content 里不支持的转义（`\"`→`|22|`、`\`→`|5c|`）、
+`\uXXXX` 解码、pcre 非法标志位与非法字符类区间、`msg` 里手误的分号。
+
+**隔离（3 条，留痕不静默）**：`index.json.quarantined` + 同目录 `quarantine.rules.txt`，原因是
+写法坏到无法在不改判据的前提下修（Fastjson 规则 content 没加引号、msfconsole 规则 file.data 无匹配、
+netstat 规则 depth 无 context）。**注意隔离文件必须叫 `.rules.txt`**：入口是 `cp builtin/*.rules`，
+叫 `.rules` 会让被隔离的规则自己又被加载、把整个规则集搞挂（踩过）。
+
+**内置默认与更新路径**：镜像带这套分类规则；入口在 `/rules/active` 为空时加载它并把索引抄成
+`/rules/builtin-index.json`；界面「清空规则」= **回到内置默认集**；原有的 manifest 在线更新
+（staging → `suricata -T` → 人工确认生效）不变，仍可整体替换。
+
+**CI 守卫**（`tests/suricata/run.sh`，只在 CI 跑）：用真实 suricata 对**全量内置集**跑 `-T`
+（期望条数从 `index.json` 读，任何一条加载不了就红）、渲染出的 `rule-files` 必须含 7 个分类文件、
+索引已抄进卷、staging/activate 协议、清空后回到内置默认。
+**本地守卫**（`tests/py/test_suricata_builtin.py`）：索引与文件条数一致、sid 全局唯一、规则外形完整、
+出现过的 classtype 都有登记。

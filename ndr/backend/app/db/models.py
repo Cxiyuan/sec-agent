@@ -256,3 +256,57 @@ class EntityProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class HitEvent(Base):
+    """命中事件：检测器交付侧的一次规则命中 —— **系统内唯一事件 ID 的载体**。
+
+    为什么必须落 PG（2026-10 用户要求）：命中原来只活在 Redis 的「最近命中」流水里
+    （重启即丢、没有稳定标识），而事件需要被长期引用与关联分析：忽略、加白名单、
+    把 ID 交给智能体/人工追溯，都要求一个稳定唯一的 ID。所以每条命中在**摘要定型时**
+    写一行，主键（UUID）就是那个 ID。
+
+    `evidence` 存的是样例事件的**关键字段**（不是整份原始文档）：够界面展示与判断，
+    又不把 PG 撑爆；完整原始文档仍在 ES（`uid` 可回查）。
+    """
+
+    __tablename__ = "hit_events"
+    __table_args__ = (
+        Index("ix_hit_events_created", "created_at"),
+        Index("ix_hit_events_rule", "rule"),
+        Index("ix_hit_events_ignored", "ignored"),
+    )
+
+    #: **系统唯一事件 ID**（关联分析的锚点）
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rule: Mapped[str] = mapped_column(String(200), default="")
+    rule_severity: Mapped[str] = mapped_column(String(16), default="medium")
+    rule_source: Mapped[str] = mapped_column(String(32), default="builtin")
+    #: 直连对端；中继链路上它是代理/WAF，真实请求方在 real_client_ips
+    src_ip: Mapped[str] = mapped_column(String(64), default="")
+    client: Mapped[str] = mapped_column(String(64), default="")
+    client_source: Mapped[str] = mapped_column(String(16), default="")
+    via: Mapped[str] = mapped_column(String(64), default="")
+    proxied: Mapped[bool] = mapped_column(Boolean, default=False)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    #: 目的 **IP:端口 成对**列表（分开存 ips/ports 会让人看不出谁配谁）
+    dst_pairs: Mapped[list] = mapped_column(JSONB, default=list)
+    dst_ips: Mapped[list] = mapped_column(JSONB, default=list)
+    dst_ports: Mapped[list] = mapped_column(JSONB, default=list)
+    event_types: Mapped[list] = mapped_column(JSONB, default=list)
+    conn_states: Mapped[list] = mapped_column(JSONB, default=list)
+    log_types: Mapped[list] = mapped_column(JSONB, default=list)
+    real_client_ips: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 样例事件的关键字段（时间/类型/URI/UA/状态码/账号…）
+    evidence: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 已忽略：不再出现在默认列表里（行保留，可追溯、可撤回）
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
+    ignored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ignored_reason: Mapped[str] = mapped_column(Text, default="")
+    #: 由本条事件生成的白名单（排除过滤器）ID：留痕，便于「这条为什么不再报」
+    whitelist_id: Mapped[str] = mapped_column(String(64), default="")

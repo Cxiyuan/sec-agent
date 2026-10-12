@@ -9,12 +9,16 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from app import triage_policy
 from app.api.deps import get_current_user
 from app.config import settings
-from app.db.models import User
-from app.detector import health, recent
+from app.db.base import SessionLocal
+from app.db.models import ExclusionFilter, User
+from app.detector import health, hits
 from app.detector.history import read as history_read
 from app.detector.runner import FAILED_KEY, PAUSED_KEY, rate_bucket
 from app.workers.log import get_logger
@@ -381,30 +385,107 @@ def detector_history(
     return out
 
 
-@router.get("/recent")
-def detector_recent(
+@router.get("/hits")
+def detector_hits(
     _: Annotated[User, Depends(get_current_user)],
     limit: int = 50,
+    offset: int = 0,
+    include_ignored: bool = False,
 ):
-    """**最近命中摘要**（Redis 环形记录，最新在前，**不依赖推送给智能体**）。
+    """**命中事件列表**（PG，最新在前）—— 每条都有**系统唯一事件 ID**。
 
-    为什么单独一个端点（2026-10 实机调研）：摘要的唯一出口是「推给智能体」，现场没配推送
-    地址时，界面上完全看不到检测器报了什什么、报了谁 —— 只有 `undelivered` 在涨。
-    这个端点让「哪条规则、打了谁、多少次」当场可查（也用来验证规则覆盖）。
-
-    注意口径：这是**当前保留窗口**（默认最近 200 条），不是全量历史；要按天统计请用
-    `/history` 采样。Redis 不可用时返回空表（可见性是辅助能力，不能把接口变成错误页）。
+    为什么落 PG（2026-10 用户要求）：命中以前只是 Redis 里的一段「最近命中」流水（重启即丢、
+    没有稳定标识），而事件需要被长期引用与关联分析。现在每条命中有唯一 ID，界面详情、忽略、
+    白名单、交智能体追溯都引用它。默认不返回已忽略的事件（`include_ignored=true` 可看全量）。
     """
-    want = max(1, min(int(limit or 50), max(10, int(settings.detector_recent_max))))
-    out: dict[str, Any] = {"items": [], "count": 0, "limit": want, "key": recent.RECENT_KEY}
-    try:
-        import redis
+    return hits.list_hits(limit=limit, offset=offset, include_ignored=include_ignored)
 
-        client: Any = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+@router.get("/hits/{hit_id}")
+def detector_hit_detail(_: Annotated[User, Depends(get_current_user)], hit_id: str):
+    """单条命中事件详情（含**证据样例**：时间/类型/URI/UA/状态码/账号等关键字段）。"""
+    return hits.get_hit(hit_id)
+
+
+class HitIgnoreIn(BaseModel):
+    reason: str = ""
+
+
+@router.post("/hits/{hit_id}/ignore")
+def detector_hit_ignore(
+    _: Annotated[User, Depends(get_current_user)],
+    hit_id: str,
+    body: HitIgnoreIn | None = None,
+):
+    """忽略这条命中事件（行保留、可追溯；默认列表不再显示）。"""
+    return hits.mark_ignored(hit_id, reason=(body.reason if body else ""))
+
+
+class HitWhitelistIn(BaseModel):
+    #: `src` = 同源 + 同规则；`src_dst` = 再加目的（IP:端口）
+    scope: str = "src"
+    note: str = ""
+
+
+@router.post("/hits/{hit_id}/whitelist")
+def detector_hit_whitelist(
+    _: Annotated[User, Depends(get_current_user)],
+    hit_id: str,
+    body: HitWhitelistIn | None = None,
+):
+    """按这条事件生成**白名单**（落在排除过滤器里，界面「降噪」可查可撤），并把这行标记为已处理。
+
+    白名单条件 = 真实请求方 + 命中规则（可选再加目的 IP:端口）——**只放行这条规则的这个来源**，
+    不是把整个来源全放掉（那是入库前降噪的用法，风险更大）。
+    """
+    item = hits.get_hit(hit_id)
+    if item.get("error"):
+        return JSONResponse(
+            status_code=404, content={"conflict": "not_found", "detail": item["error"]}
+        )
+    scope = str((body.scope if body else "src") or "src").strip()
+    note = str((body.note if body else "") or "").strip()
+    client = str(item.get("client") or item.get("src_ip") or "").strip()
+    rule = str(item.get("rule") or "").strip()
+    conds: list[dict[str, Any]] = [
+        {"field": "src_ip", "op": "eq", "value": client},
+        {"field": "hit_rule", "op": "eq", "value": rule},
+    ]
+    if scope == "src_dst" and item.get("dst_pairs"):
+        first = str(item["dst_pairs"][0])
+        ip, _sep, port = first.partition(":")  # 不能叫 _：本函数的 _ 是 User 依赖参数
+        if ip:
+            conds.append({"field": "dst_ip", "op": "eq", "value": ip})
+        if port.isdigit():
+            conds.append({"field": "dst_port", "op": "eq", "value": int(port)})
+    name = f"白名单-{rule[:40]}-{client}"[:128]
+    try:
+        with SessionLocal() as db:
+            row = db.scalars(select(ExclusionFilter).where(ExclusionFilter.name == name)).first()
+            if row is None:
+                row = ExclusionFilter(
+                    name=name,
+                    description=(
+                        f"由命中事件 {item.get('id')} 生成（{item.get('created_at', '')[:19]}）"
+                        + (f"；备注：{note}" if note else "")
+                    ),
+                    conditions={"logic": "and", "rules": conds},
+                    enabled=True,
+                    priority=50,
+                )
+                db.add(row)
+                db.commit()
+                db.refresh(row)
+            filter_id = str(row.id)
     except Exception as exc:  # noqa: BLE001
-        out["error"] = str(exc)[:200]
-        return out
-    items = recent.load(client, want)
-    out["items"] = items
-    out["count"] = len(items)
-    return out
+        return JSONResponse(
+            status_code=500, content={"conflict": "server_error", "detail": f"建白名单失败：{exc}"}
+        )
+    hits.attach_whitelist(hit_id, filter_id)
+    return {
+        "ok": True,
+        "filter_id": filter_id,
+        "name": name,
+        "conditions": {"logic": "and", "rules": conds},
+        "note": "已加入「降噪 → 排除过滤器」，可随时停用或删除",
+    }

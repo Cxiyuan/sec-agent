@@ -705,43 +705,47 @@ export interface DetectorCoverage {
  * 由检测器写进 Redis（不依赖推送地址），是「哪条规则、打了谁、多少次」的唯一现场出口。
  * 时间字段是北京时间展示，后端存的是 UTC ISO。
  */
-export interface DetectorRecentItem {
-  ts: string;
+export interface HitEventItem {
+  /** **系统唯一事件 ID**（PG 主键）：关联分析、忽略、白名单都引用它 */
+  id: string;
+  created_at: string;
   first_seen: string;
+  last_seen: string;
   rule: string;
   severity: string;
   source: string;
-  /**
-   * 展示用的「请求方」：真实请求 IP（可信代理头里取）优先，没有才回落 `src_ip`。
-   * 中继链路上 `src_ip` 是**代理/WAF 自己**（实测命中里显示成 WAF 地址，真实请求方在 XFF 里）。
-   */
-  client?: string;
-  /** client 的来源：xff = 代理头（可信中继写的）；src_ip = 直连对端 */
-  client_source?: string;
-  /** 当请求方与 `src_ip` 不同：这一跳经过了谁（中继/反代），用于在界面上标注「经 …」 */
-  via?: string;
+  /** 直连对端；中继链路上它是代理/WAF */
   src_ip: string;
+  /** 展示用请求方：真实请求 IP（可信代理头）优先，没有才回落 src_ip */
+  client: string;
+  client_source?: string;
+  /** 与 src_ip 不同时表示这一跳经过了谁（中继/反代） */
+  via?: string;
   count: number;
+  /** 目的 **IP:端口 成对**（分开存 ips/ports 看不出谁配谁） */
+  dst_pairs: string[];
   dst_ips: string[];
   dst_ports: string[];
   event_types: string[];
   conn_states: string[];
+  log_types: string[];
   real_client_ips: string[];
-  proxied: boolean;
-  excluded: boolean;
-  exclude_reason: string;
-}
-
-/** `GET /api/detector/recent`：最近命中摘要（最新在前；只是当前保留窗口，不是全量历史） */
-export interface DetectorRecent {
-  items: DetectorRecentItem[];
-  count: number;
-  /** 本次实际返回上限（请求 limit 与保留窗口取小） */
-  limit: number;
-  /** Redis 环形列表的键名，排查现场时用 */
-  key: string;
+  ignored: boolean;
+  ignored_at?: string;
+  ignored_reason?: string;
+  whitelist_id?: string;
+  /** 详情才有：样例事件的关键字段（时间/类型/URI/UA/状态码/账号…） */
+  evidence?: Array<Record<string, unknown>>;
   error?: string;
 }
+
+export interface HitEventList {
+  items: HitEventItem[];
+  total: number;
+  returned: number;
+  error?: string;
+}
+
 
 export interface TrafficPoint {
   ts: string;

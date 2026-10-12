@@ -21,7 +21,7 @@ from app import triage_policy
 from app.baseline.engine import BaselineEngine
 from app.config import settings
 from app.db.base import SessionLocal
-from app.detector import health, push, recent
+from app.detector import health, hits, push
 from app.detector.aggregate import Aggregator
 from app.detector.fingerprint import digest_age
 from app.detector.frequency import FreqWindow
@@ -275,10 +275,12 @@ def run() -> None:
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
-            # 可见性（2026-10 用户要求）：先把摘要记进 Redis 的「最近命中」，再走打标/入队/投递
-            # —— 现场没配推送地址时，界面仍能看到「报了什么规则、打了谁、多少次」。
-            # 放在最前面：限速/超龄丢弃也不会让它从界面上消失（那正是需要被看到的）。
-            recent.record(client, digest)
+            # 命中事件落 PG（2026-10 用户要求）：每条命中一个**系统唯一事件 ID**（主键），
+            # 界面详情、忽略、白名单、交智能体关联分析都用它。放在最前面 —— 限速/超龄丢弃
+            # 也不该让事件从记录里消失（那正是需要被看到的）。ID 同时塞回摘要，随投递一起走。
+            hit_id = hits.save_from_digest(digest)
+            if hit_id:
+                digest["event_id"] = hit_id
             # 基线打标（第 8 期）：2σ 偏离 + 账号/会话画像异常随摘要一起推给智能体；
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):

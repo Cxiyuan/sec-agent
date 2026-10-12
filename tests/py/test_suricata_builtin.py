@@ -62,7 +62,9 @@ def test_every_category_file_matches_index(index: dict) -> None:
         path = BUILTIN / cat["file"]
         assert path.exists(), f"缺少分类文件 {cat['file']}"
         rules = [ln for ln in path.read_text(encoding="utf-8").splitlines() if _ACTION_RE.match(ln)]
-        assert len(rules) == cat["rules"], f"{cat['file']} 实际 {len(rules)} 条，索引写 {cat['rules']}"
+        assert len(rules) == cat["rules"], (
+            f"{cat['file']} 实际 {len(rules)} 条，索引写 {cat['rules']}"
+        )
 
 
 def test_sids_are_globally_unique(index: dict) -> None:
@@ -96,7 +98,9 @@ def _balanced_quotes(line: str) -> bool:
 def test_rules_look_syntactically_complete(index: dict) -> None:
     """规则外形：动作 + msg + sid + 成对的引号 + 以 `)` 收尾（真实语法由 CI 的 suricata -T 判）。"""
     for cat in index["categories"]:
-        for no, line in enumerate((BUILTIN / cat["file"]).read_text(encoding="utf-8").splitlines(), 1):
+        for no, line in enumerate(
+            (BUILTIN / cat["file"]).read_text(encoding="utf-8").splitlines(), 1
+        ):
             if not _ACTION_RE.match(line):
                 continue
             where = f"{cat['file']}:{no}"
