@@ -245,6 +245,8 @@ def test_evidence_includes_matched_content(hits: Any) -> None:
                         "status": 200,
                     },
                     "tls": {"sni": "c2.example.net", "version": "TLS 1.2"},
+                    "ja3s": "abc123",
+                    "ja3": "def456",
                     "body": "x" * 900,
                     "alert": {"signature": "测试签名", "signature_id": 42},
                 },
@@ -257,5 +259,6 @@ def test_evidence_includes_matched_content(hits: Any) -> None:
     assert ev["http.http_user_agent"] == "curl/8.0" and ev["http.http_method"] == "GET"
     assert ev["tls.sni"] == "c2.example.net" and ev["tls.version"] == "TLS 1.2"
     assert ev["payload_printable"].startswith("GET /admin/")
+    assert "ja3s" in ev and ev["ja3s"] == "abc123", "JA3/JA3S 类规则要看指纹值本身"
     assert "已截断" in ev["body"], "长正文要截断（否则界面/数据库都被撑爆）"
     assert len(ev["body"]) < 900

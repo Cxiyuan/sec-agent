@@ -68,6 +68,12 @@ _EVIDENCE_FIELDS = (
     "req_headers",
     "content_type",
     "payload_printable",
+    # TLS 指纹：JA3/JA3S/JA4 类规则的**判定依据本身就是这几串哈希**（载荷是二进制，看不出问题）
+    "ja3",
+    "ja3s",
+    "ja4",
+    "tls_version",
+    "cert_issuer",
 )
 
 #: 会被截断的长文本字段（用户反馈「证据看不出因为什么内容被命中」）
