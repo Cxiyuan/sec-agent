@@ -89,6 +89,105 @@ HEADER = """# ============================================================
 """
 
 
+#: content 修饰符：**必须写在 content 之后**。写成 `http_method; content:"GET";` 时 Suricata 7
+#: 直接拒绝解析整条规则（实测报错：`"http_method" keyword found inside the rule without a
+#: content context. Please use a "content" keyword before using the "http_method" keyword`）。
+CONTENT_MODIFIERS = ("http_method", "http_cookie", "http_server_body")
+
+#: Suricata 7 已移除 `threshold`（换成 `detection_filter`）。不换掉的话这些规则会让整个规则集
+#: 加载失败 —— 一条规则加载不了 = 零覆盖，比丢一点节流语义严重得多。
+#: 语义差异（记在案）：`threshold type limit` 是「每个时间窗最多报一次」，`detection_filter`
+#: 是「达到次数后每次都报」——节流更松，但不会漏掉后续命中。
+THRESHOLD_KEYWORD = "threshold"
+
+
+def _split_top(text: str, sep: str = ";") -> list[str]:
+    """按分隔符切分，**忽略引号内的分隔符**（规则里有 `content:"a;b"` 这种）。"""
+    out: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            buf.append(text[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            buf.append(ch)
+        elif ch in ('"', "'"):
+            quote = ch
+            buf.append(ch)
+        elif ch == sep:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return out
+
+
+def _threshold_to_detection_filter(token: str) -> str:
+    """`threshold: type both, count 5, seconds 60, track by_src` → `detection_filter: track ...`"""
+    opts = token.split(":", 1)[1] if ":" in token else ""
+    kv: dict[str, str] = {}
+    for part in _split_top(opts, ","):
+        bits = part.strip().split()
+        if not bits:
+            continue
+        kv[bits[0].lower()] = bits[1] if len(bits) > 1 else ""
+    track = kv.get("track") or "by_src"
+    if track not in ("by_src", "by_dst"):  # by_rule / by_both 不被 detection_filter 支持
+        track = "by_src"
+    count = kv.get("count") or "1"
+    seconds = kv.get("seconds") or "60"
+    return f"detection_filter: track {track}, count {count}, seconds {seconds}"
+
+
+def fix_rule(row: str) -> tuple[str, list[str]]:
+    """修规则的**语法**问题（不改判据）。返回 (修复后的行, 做了哪些修复)。"""
+    applied: list[str] = []
+    start = row.find("(")
+    end = row.rfind(")")
+    if start < 0 or end <= start:
+        return row, applied
+    tokens = [tok for tok in _split_top(row[start + 1 : end], ";") if tok.strip()]
+    first_content = next(
+        (i for i, tok in enumerate(tokens) if tok.strip().lower().startswith("content")), None
+    )
+    if first_content is not None:
+        moved = [
+            tok
+            for i, tok in enumerate(tokens)
+            if i < first_content and tok.strip().lower() in CONTENT_MODIFIERS
+        ]
+        if moved:
+            tokens = [
+                tok
+                for i, tok in enumerate(tokens)
+                if not (i < first_content and tok.strip().lower() in CONTENT_MODIFIERS)
+            ]
+            at = (
+                next(
+                    i
+                    for i, tok in enumerate(tokens)
+                    if tok.strip().lower().startswith("content")
+                )
+                + 1
+            )
+            tokens[at:at] = moved
+            applied.append("modifier_order")
+    for i, tok in enumerate(tokens):
+        if tok.strip().lower().startswith(THRESHOLD_KEYWORD):
+            tokens[i] = " " + _threshold_to_detection_filter(tok)
+            applied.append("threshold_to_detection_filter")
+    body = ";".join(tok.strip() for tok in tokens)
+    return f"{row[: start + 1]}{body};{row[end:]}", applied
+
+
 def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list[str], list[str]]:
     """规则行 → 分类桶。返回 (分类→规则行, 原始 classtype 计数, 无分类的 classtype, 重复 sid)。"""
     buckets: dict[str, list[str]] = defaultdict(list)
@@ -96,9 +195,14 @@ def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list
     unknown: list[str] = []
     seen_sid: set[str] = set()
     dup: list[str] = []
-    for line in lines:
+    fixed: Counter[str] = Counter()
+    for raw_line in lines:
+        line = raw_line
         if not ACTION_RE.match(line):
             continue  # 注释/空行不进分类文件（文件头由我们生成）
+        line, applied = fix_rule(line.rstrip("\n"))
+        for name in applied:
+            fixed[name] += 1
         match = CLASSTYPE_RE.search(line)
         raw = match.group(1) if match else ""
         types[raw or "(无)"] += 1
@@ -111,7 +215,7 @@ def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list
             if sid.group(1) in seen_sid:
                 dup.append(sid.group(1))
             seen_sid.add(sid.group(1))
-    return buckets, types, sorted(set(unknown)), sorted(set(dup))
+    return buckets, types, sorted(set(unknown)), sorted(set(dup)), fixed
 
 
 def _classtype_of(row: str) -> str:
@@ -153,7 +257,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     lines = args.source.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-    buckets, types, unknown, dup = classify(lines)
+    buckets, types, unknown, dup, fixed = classify(lines)
     rendered = render(buckets, types)
     total = sum(len(v) for v in buckets.values())
 
@@ -171,6 +275,8 @@ def main(argv: list[str]) -> int:
             for category in sorted(buckets)
         ],
         "classtypes": dict(types.most_common()),
+        # 语法修复记录（只改写法、不改判据）：口径与数量都留痕，便于审计
+        "fixes": dict(fixed),
     }
 
     problems: list[str] = []
@@ -185,6 +291,8 @@ def main(argv: list[str]) -> int:
     if problems:
         print("提示:\n  " + "\n  ".join(problems), file=sys.stderr)
 
+    if fixed:
+        print("语法修复（不改判据）: " + ", ".join(f"{k}×{v}" for k, v in fixed.items()))
     print(f"源规则 {total} 条 → {len(rendered)} 类：")
     for category in sorted(buckets):
         print(f"  {category:20s} {CATEGORY_LABELS.get(category, ''):22s} {len(buckets[category]):6d} 条")

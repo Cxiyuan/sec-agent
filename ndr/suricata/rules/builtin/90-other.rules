@@ -4,5 +4,5 @@
 # 本类条数: 2；原始 classtype: policy-violation×1, misc-activity×1
 # 生成方式: python3 ndr/suricata/tools/classify_rules.py <规则全集文件>
 # ============================================================
-alert tcp $EXTERNAL_NET any -> $HOME_NET 23 (msg:"检测到Telnet连接"; flow:established,to_server;classtype:policy-violation;sid:1000864;rev:2;)
-alert tls any any -> any any (msg:"sliver https debian"; flow:established; ja3.hash; content:"19e29534fd49dd27d09234e639c4057e"; classtype:misc-activity; sid:1000881; rev:2;)
+alert tcp $EXTERNAL_NET any -> $HOME_NET 23 (msg:"检测到Telnet连接";flow:established,to_server;classtype:policy-violation;sid:1000864;rev:2;)
+alert tls any any -> any any (msg:"sliver https debian";flow:established;ja3.hash;content:"19e29534fd49dd27d09234e639c4057e";classtype:misc-activity;sid:1000881;rev:2;)

@@ -112,5 +112,9 @@
     "rce-attempt": 2,
     "policy-violation": 1,
     "misc-activity": 1
+  },
+  "fixes": {
+    "modifier_order": 36,
+    "threshold_to_detection_filter": 66
   }
 }
