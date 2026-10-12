@@ -292,6 +292,44 @@ def _decode_unicode_escapes(text: str) -> str:
     return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 
+def _fix_content_backslashes(value: str, applied: list[str]) -> str:
+    """content 里的双引号/反斜杠要用十六进制表达（Suricata content 不支持 `\"` 这类转义，
+    实测报 `'\' has to be escaped`）。已有的 |..| 字节段不动。"""
+    if '"' not in value and "\\" not in value:
+        return value
+    out: list[str] = []
+    i = 0
+    in_bytes = False
+    changed = False
+    while i < len(value):
+        ch = value[i]
+        if ch == "|":
+            in_bytes = not in_bytes
+            out.append(ch)
+            i += 1
+            continue
+        if not in_bytes and ch == "\\":
+            if value[i + 1 : i + 2] == '"':
+                out.append("|22|")
+                i += 2
+                changed = True
+                continue
+            if value[i + 1 : i + 2] == "\\":
+                out.append("|5c|")
+                i += 2
+                changed = True
+                continue
+            out.append("|5c|")
+            i += 1
+            changed = True
+            continue
+        out.append(ch)
+        i += 1
+    if changed:
+        applied.append("content_backslash_hex")
+    return "".join(out)
+
+
 def _fix_content_escapes(tokens: list[str], applied: list[str]) -> list[str]:
     out: list[str] = []
     for tok in tokens:
@@ -300,9 +338,14 @@ def _fix_content_escapes(tokens: list[str], applied: list[str]) -> list[str]:
         if low.startswith(("content", "msg")) and ":" in s:
             name, _, raw = s.partition(":")
             raw = raw.strip()
-            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' and "\\u" in raw[1:-1]:
-                out.append(f'{name}: "{_decode_unicode_escapes(raw[1:-1])}"')
-                applied.append("unicode_escape_decoded")
+            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+                value = raw[1:-1]
+                if "\\u" in value:
+                    value = _decode_unicode_escapes(value)
+                    applied.append("unicode_escape_decoded")
+                if name.strip().lower().startswith("content"):
+                    value = _fix_content_backslashes(value, applied)
+                out.append(f'{name}: "{value}"')
                 continue
         out.append(tok)
     return out
@@ -337,7 +380,9 @@ def _fix_pcre_flags(tokens: list[str], applied: list[str]) -> list[str]:
 #: （index.json 的 quarantined + 同目录 quarantine.rules 原文），等人工修好后再放回来。
 QUARANTINED: dict[str, str] = {
     "1000749": "content 值没加引号（Fastjson 规则），改对等于重写判据 —— 待人工核",
+    "3013003": "http.response_body 缓冲区内没有 content 就用 depth（可疑 netstat 规则）—— 待人工核",
     "3016005": "file.data 缓冲区里没有任何匹配（msfconsole 规则）—— 待人工核",
+    "": "http.response_body 缓冲区内没有 content 就用了 depth（可疑 netstat 规则）—— 待人工核",
 }
 
 #: pcre 体里的常见坏写法（都按「等价、可编译」处理，判据不变）：
@@ -351,6 +396,11 @@ def _fix_pcre_body(body: str, applied: list[str]) -> str:
     if "\\\\u" in out:
         out = re.sub("\\\\\\\\u([0-9a-fA-F]{4})", lambda m: "\\x{" + m.group(1) + "}", out)
         applied.append("pcre_body_normalized")
+    if ";" in out:
+        # pcre 里的裸分号会被引擎当选项分隔符切断（实测 XSS 规则报 bad option value
+        # formatting）；PCRE 用 \x3b 表达分号，等价且能加载。
+        out = out.replace(";", "\\x3b")
+        applied.append("pcre_semicolon_hex")
     for bad in ("\\w-_", "\\d-_"):
         if bad in out:
             out = out.replace(bad, bad[:-2] + "_-")
@@ -551,10 +601,10 @@ def main(argv: list[str]) -> int:
             if not path.exists() or path.read_text(encoding="utf-8") != text:
                 print(f"未同步: {path.relative_to(BUILTIN_DIR.parent.parent.parent)}", file=sys.stderr)
                 bad += 1
-        qpath = BUILTIN_DIR / "quarantine.rules"
+        qpath = BUILTIN_DIR / "quarantine.rules.txt"
         want_q = QUARANTINE_HEADER + "".join(f"{row}\n" for _sid, row in quarantined)
         if not qpath.exists() or qpath.read_text(encoding="utf-8") != want_q:
-            print("未同步: quarantine.rules", file=sys.stderr)
+            print("未同步: quarantine.rules.txt", file=sys.stderr)
             bad += 1
         idx = BUILTIN_DIR / "index.json"
         want = json.dumps(index, ensure_ascii=False, indent=2) + "\n"
@@ -566,7 +616,7 @@ def main(argv: list[str]) -> int:
     BUILTIN_DIR.mkdir(parents=True, exist_ok=True)
     for name, text in rendered.items():
         (BUILTIN_DIR / name).write_text(text, encoding="utf-8")
-    (BUILTIN_DIR / "quarantine.rules").write_text(
+    (BUILTIN_DIR / "quarantine.rules.txt").write_text(
         QUARANTINE_HEADER + "".join(f"{row}\n" for _sid, row in quarantined), encoding="utf-8"
     )
     (BUILTIN_DIR / "index.json").write_text(
