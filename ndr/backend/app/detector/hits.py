@@ -56,6 +56,11 @@ _EVIDENCE_FIELDS = (
     "md5",
     "summary",
     "uid",
+    # 签名引擎（Suricata EVE）的字段名
+    "dest_ip",
+    "dest_port",
+    "app_proto",
+    "direction",
 )
 
 
@@ -75,8 +80,9 @@ def _pairs(digest: dict[str, Any]) -> list[str]:
         doc = (sample or {}).get("doc") if isinstance(sample, dict) else None
         if not isinstance(doc, dict):
             continue
-        ip = str(doc.get("dst_ip") or "").strip()
-        port = doc.get("dst_port")
+        # Suricata 原始 EVE 用 dest_ip/dest_port（不是 dst_ip/dst_port）——不认这个别名就配不上对
+        ip = str(doc.get("dst_ip") or doc.get("dest_ip") or "").strip()
+        port = doc.get("dst_port") or doc.get("dest_port")
         if not ip:
             continue
         item = f"{ip}:{port}" if port else ip
@@ -101,6 +107,26 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         item = {k: doc.get(k) for k in _EVIDENCE_FIELDS if doc.get(k) not in (None, "", [], {})}
         if isinstance(sample, dict) and sample.get("source"):
             item["source"] = sample["source"]
+        # 签名引擎的告警在原始 EVE 里是嵌套的 alert 对象（signature/signature_id/category/
+        # severity/metadata.threat_type）——不提上来，详情里就看不出「命中了哪条签名」
+        # （实测：只显示"内置-签名命中(高危)"，看不出是 Cobalt Strike JA3S 还是别的）。
+        alert = doc.get("alert")
+        if isinstance(alert, dict):
+            for src_key, dst_key in (
+                ("signature", "signature"),
+                ("signature_id", "signature_id"),
+                ("category", "signature_category"),
+                ("severity", "signature_severity"),
+                ("action", "alert_action"),
+            ):
+                if alert.get(src_key) not in (None, "", [], {}):
+                    item[dst_key] = alert[src_key]
+            meta = alert.get("metadata")
+            if isinstance(meta, dict) and meta.get("threat_type"):
+                item["signature_threat_type"] = meta["threat_type"]
+        for key in ("app_proto", "direction"):
+            if doc.get(key) not in (None, "", [], {}):
+                item[key] = doc[key]
         # 其余字段名列出来（便于知道还能查什么），不落值
         extra = sorted(set(doc) - set(_EVIDENCE_FIELDS))
         if extra:

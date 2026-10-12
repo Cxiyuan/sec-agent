@@ -48,11 +48,28 @@ def _digest(**kw: Any) -> dict[str, Any]:
         "first_seen": "2026-10-12T00:20:00+00:00",
         "last_seen": "2026-10-12T00:26:22+00:00",
         "samples": [
-            {"source": "es", "doc": {"dst_ip": "10.1.2.20", "dst_port": 46220, "log_type": "http",
-                                     "uri_path": "/a", "status_code": 404, "uid": "C1",
-                                     "raw_extra": "x"}},
-            {"source": "es", "doc": {"dst_ip": "10.1.2.21", "dst_port": 60384, "log_type": "http",
-                                     "uri_path": "/b", "status_code": 403}},
+            {
+                "source": "es",
+                "doc": {
+                    "dst_ip": "10.1.2.20",
+                    "dst_port": 46220,
+                    "log_type": "http",
+                    "uri_path": "/a",
+                    "status_code": 404,
+                    "uid": "C1",
+                    "raw_extra": "x",
+                },
+            },
+            {
+                "source": "es",
+                "doc": {
+                    "dst_ip": "10.1.2.21",
+                    "dst_port": 60384,
+                    "log_type": "http",
+                    "uri_path": "/b",
+                    "status_code": 403,
+                },
+            },
         ],
     }
     base.update(kw)
@@ -154,10 +171,54 @@ def test_ignore_marks_row(hits: Any, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_panel_shows_pairs_id_and_detail() -> None:
     """界面守卫：目的按 `IP:端口` 成对显示、列表有事件 ID 列、有详情按钮与弹窗动作。"""
-    src = (importlib.import_module("pathlib").Path(__file__).resolve().parents[2]
-           / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(encoding="utf-8")
+    src = (
+        importlib.import_module("pathlib").Path(__file__).resolve().parents[2]
+        / "ndr"
+        / "frontend"
+        / "components"
+        / "status-panel.tsx"
+    ).read_text(encoding="utf-8")
     assert "dst_pairs" in src, "目的要用成对字段渲染"
     assert 'row.dst_ips.join("、")' not in src, "不能再用「IP : 端口/端口」那种拼法"
     assert "row.id.slice(0, 8)" in src, "列表要有事件 ID"
     assert "详情" in src and "加入白名单" in src and "忽略这条" in src
     assert "/api/detector/hits" in src
+
+
+def test_evidence_extracts_suricata_signature(hits: Any) -> None:
+    """签名命中的证据要能看出**是哪条签名**（Suricata 原始 EVE 把签名放在嵌套 alert 里）。
+
+    实测背景：某条命中只显示「内置-签名命中(高危)」，看不出是 Cobalt Strike JA3S 还是别的 ——
+    因为证据取的是顶层字段，而签名在 `alert.signature` / `alert.signature_id` 里。
+    """
+    digest = _digest(
+        samples=[
+            {
+                "source": "suricata",
+                "doc": {
+                    "event_type": "alert",
+                    "src_ip": "20.1.1.1",
+                    "dest_ip": "10.1.2.59",
+                    "dest_port": 64881,
+                    "app_proto": "tls",
+                    "alert": {
+                        "signature": "检测到 Cobalt Strike Server JA3S 特征",
+                        "signature_id": 1000371,
+                        "category": "Unknown Classtype",
+                        "severity": 1,
+                        "metadata": {"threat_type": ["C2"]},
+                    },
+                },
+            }
+        ],
+        dst_ips=["10.1.2.59"],
+        dst_ports=["64881"],
+    )
+    ev = hits._evidence(digest)[0]
+    assert ev["signature"] == "检测到 Cobalt Strike Server JA3S 特征"
+    assert ev["signature_id"] == 1000371
+    assert ev["signature_category"] == "Unknown Classtype"
+    assert ev["signature_severity"] == 1
+    assert ev["signature_threat_type"] == ["C2"]
+    assert ev["app_proto"] == "tls"
+    assert hits._pairs(digest) == ["10.1.2.59:64881"], "EVE 用 dest_ip/dest_port，也要能配对"
