@@ -90,6 +90,8 @@ fi
 echo "渲染形状 ✓"
 
 echo "== ③ 开发人员写的规则：能加载（样例断言 2 条）=="
+# 先清空 active：默认是内置规则集（1.1 万条），不清会把样例和它加在一起（踩过：数出 11189）
+rm -f "$WORK"/rules/active/*.rules
 cp "$ROOT/tests/suricata/sample/shentong-sample.rules" "$WORK/rules/active/"
 OUT=$(RUN "$IMG" --render-only 2>&1) || {
   printf '%s\n' "$OUT" | tail -30 >&2
