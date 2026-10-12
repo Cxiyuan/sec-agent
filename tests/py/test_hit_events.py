@@ -264,3 +264,52 @@ def test_evidence_includes_matched_content(hits: Any) -> None:
     assert "ja3s" in ev and ev["ja3s"] == "abc123", "JA3/JA3S 类规则要看指纹值本身"
     assert "已截断" in ev["body"], "长正文要截断（否则界面/数据库都被撑爆）"
     assert len(ev["body"]) < 900
+
+
+def test_agg_key_separates_signatures(request: pytest.FixtureRequest) -> None:
+    """同一源 IP 的**不同签名**必须落成不同事件（实测一条事件里出现只差 signature_id 的两条证据）。"""
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("检测器聚合只在 NDR 侧")
+    agg = importlib.import_module("app.detector.aggregate")
+    same = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000844")
+    other = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000845")
+    again = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000844")
+    assert same != other, "不同签名不能并进同一条事件"
+    assert same == again, "同源同签名仍应是同一条事件"
+    assert same != agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, ""), "非签名规则不受影响"
+
+
+def test_runner_scopes_suricata_hits_by_signature(request: pytest.FixtureRequest) -> None:
+    """runner 必须给签名命中带上 scope=具体签名，否则三条包装规则会把不同签名混在一起。"""
+    if request.config.getoption("--stack") != "ndr":
+        pytest.skip("检测器 runner 只在 NDR 侧")
+    runner = importlib.import_module("app.detector.runner")
+    schemas = importlib.import_module("app.schemas")
+    captured: dict[str, Any] = {}
+
+    class _Agg:
+        def add(self, **kw: Any) -> bool:
+            captured.update(kw)
+            return True
+
+    entry = schemas.UnifiedLog(
+        source_system="suricata",
+        ts="2026-10-12T21:00:00+00:00",
+        event_type="signature_hit",
+        log_type="suricata",
+        src_ip="10.0.0.9",
+        dst_ip="10.0.0.20",
+        signature="Sliver JA3s 特征",
+        signature_id="1000845",
+        raw={"alert": {"signature_id": 1000845}},
+    )
+    runner._aggregate(
+        _Agg(),
+        entry,
+        {"name": "内置-签名命中(高危)", "severity": "high"},
+        entry.raw,
+        "es",
+        stats=__import__("collections").Counter(),
+    )
+    assert captured.get("scope") == "sig:1000845"
+    assert captured.get("rule") == "内置-签名命中(高危)"

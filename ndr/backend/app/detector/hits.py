@@ -61,6 +61,8 @@ _EVIDENCE_FIELDS = (
     "dest_port",
     "app_proto",
     "direction",
+    "timestamp",  # Suricata EVE 的时间字段（顶层叫 timestamp，不是 ts）
+    "flow_id",
     # 「因为什么内容被命中」——正文/查询串/请求头（会截断）
     "body",
     "resp_body",

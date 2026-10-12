@@ -35,13 +35,18 @@ _FULL_LOG_INTERVAL = 60.0
 _last_full_log = 0.0
 
 
-def _agg_key(src_ip: str, rule: str, excluded: bool = False) -> str:
-    """聚合键：源IP + 规则（+ 排除位）。
+def _agg_key(src_ip: str, rule: str, excluded: bool = False, scope: str = "") -> str:
+    """聚合键：源IP + 规则（+ 排除位 + **细分范围**）。
 
     排除位必须入键：一条排除条件可能只针对部分命中（如“只排 dst_port=22”），
     若与未排除的命中共用聚合态，会把两类事件混进同一份摘要。
+
+    `scope` 是「同一规则内的细分」：签名引擎把上千条签名归到三条包装规则
+    （签名命中 高/中/低危），若只按源 IP + 包装规则聚合，**同一源的不同签名会被并进
+    同一条事件**（实测：一条事件里有两条只差 signature_id 的证据，SID 1000844/1000845）。
+    所以签名命中要用具体签名做 scope ⇒ 一条事件 = 一个源 + 一个签名。
     """
-    raw = f"{src_ip}|{rule}|{'x' if excluded else '-'}".encode()
+    raw = f"{src_ip}|{rule}|{'x' if excluded else '-'}|{scope}".encode()
     return f"{_PREFIX}:{hashlib.sha256(raw).hexdigest()[:20]}"
 
 
@@ -71,6 +76,7 @@ class Aggregator:
         log_source: str,
         excluded: bool = False,
         exclude_reason: str = "",
+        scope: str = "",
         now: float | None = None,
     ) -> bool:
         """累计一次命中（含样例文档，供后续分析构造事件）。
@@ -88,7 +94,7 @@ class Aggregator:
         """
         global _last_full_log
         ts = time.time() if now is None else now
-        key = _agg_key(src_ip, rule, excluded)
+        key = _agg_key(src_ip, rule, excluded, scope)
         state = self._load(key)
         if state is None:
             state = {

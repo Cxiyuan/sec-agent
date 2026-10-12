@@ -914,10 +914,18 @@ def _aggregate(
     再跑一次 `normalize()` 做证据展示（`agent/backend/app/agents/nodes.py`）。
     `stats` 只用来统计「聚合态满导致本条命中没被聚合」——这属于静默降级，必须可见（QA 应修 6）。
     """
+    # 签名引擎的命中按**具体签名**分组：三条包装规则（签名命中 高/中/低危）会把同一源的
+    # 不同签名混在一起（实测一条事件里两条只差 signature_id 的证据）。
+    scope = ""
+    if str(getattr(entry, "source_system", "")) == "suricata":
+        sig_id = getattr(entry, "signature_id", "") or ""
+        sig_name = str(getattr(entry, "signature", "") or "")
+        scope = f"sig:{sig_id or sig_name}"
     added = agg.add(
         # 源 IP 缺失时用 "-"（未知）归并；不能用 dst_ip 代替——那是目标，语义错位
         src_ip=str(entry.src_ip or "-"),
         rule=str(rule.get("name") or ""),
+        scope=scope,
         severity=str(rule.get("severity") or "medium"),
         source=str(rule.get("source") or "builtin"),
         entry=entry,
