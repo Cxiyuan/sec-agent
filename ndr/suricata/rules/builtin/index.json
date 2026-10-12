@@ -116,12 +116,15 @@
   "fixes": {
     "modifier_order": 36,
     "threshold_to_detection_filter": 66,
+    "content_semicolon_hex": 5,
     "legacy_keyword:http_uri": 19,
+    "msg_semicolon_stripped": 4,
     "flow_direction:to_client": 6,
     "legacy_keyword:dns_query": 63,
     "flow_direction:to_server": 4,
     "legacy_keyword:http_header": 6,
     "legacy_keyword:http_user_agent": 1,
-    "legacy_keyword:http_stat_code": 5
+    "legacy_keyword:http_stat_code": 5,
+    "legacy_keyword:http_client_body": 3
   }
 }

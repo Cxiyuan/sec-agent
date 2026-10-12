@@ -152,7 +152,7 @@ def _threshold_to_detection_filter(token: str) -> str:
 LEGACY_KEYWORDS: dict[str, str] = {
     "http_uri": "http.uri",
     "http_header": "http.header",
-    "http_user_agent": "http.user.agent",
+    "http_user_agent": "http.user_agent",  # 一个点，不是两个（写错会被判 unknown keyword）
     "http_host": "http.host",
     "http_cookie": "http.cookie",
     "http_stat_code": "http.stat_code",
@@ -160,6 +160,7 @@ LEGACY_KEYWORDS: dict[str, str] = {
     "tls_sni": "tls.sni",
     "dns_query": "dns.query",
     "file_data": "file.data",
+    "http_client_body": "http.request_body",
 }
 
 #: JA3/JA3S 的方向约束：`ja3.hash` 取自**客户端** hello（flow:to_server），
@@ -202,6 +203,43 @@ def _fix_flow_direction(tokens: list[str], applied: list[str]) -> list[str]:
     return tokens
 
 
+#: Suricata 解析器按 `;` 切分选项，**引号内的裸 `;` 也不放过**（实测报错
+#: `bad option value formatting (possible missing semicolon) for keyword content: '"..'`）。
+#: 约定写法：content 里要匹配分号得写 `|3b|`；msg 只是展示文本，直接去掉即可。
+def _fix_semicolons(tokens: list[str], applied: list[str]) -> list[str]:
+    out: list[str] = []
+    for tok in tokens:
+        s = tok.strip()
+        low = s.lower()
+        if low.startswith("content") and ":" in s:
+            name, _, raw = s.partition(":")
+            raw = raw.strip()
+            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' and ";" in raw[1:-1]:
+                value = raw[1:-1]
+                buf: list[str] = []
+                in_bytes = False
+                for ch in value:
+                    if ch == "|":
+                        in_bytes = not in_bytes
+                    if ch == ";" and not in_bytes:
+                        buf.append("|3b|")
+                    else:
+                        buf.append(ch)
+                out.append(f'{name}: "{"".join(buf)}"')
+                applied.append("content_semicolon_hex")
+                continue
+        if low.startswith("msg") and ":" in s:
+            name, _, raw = s.partition(":")
+            raw = raw.strip()
+            if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' and ";" in raw[1:-1]:
+                # msg 是给人看的：分号去掉即可（源规则里多是手误多打）
+                out.append(f'{name}: "{raw[1:-1].replace(";", "")}"')
+                applied.append("msg_semicolon_stripped")
+                continue
+        out.append(tok)
+    return out
+
+
 def fix_rule(row: str) -> tuple[str, list[str]]:
     """修规则的**语法**问题（不改判据）。返回 (修复后的行, 做了哪些修复)。"""
     applied: list[str] = []
@@ -240,6 +278,7 @@ def fix_rule(row: str) -> tuple[str, list[str]]:
             tokens[i] = " " + _threshold_to_detection_filter(tok)
             applied.append("threshold_to_detection_filter")
     tokens = _rename_legacy_keywords(tokens, applied)
+    tokens = _fix_semicolons(tokens, applied)
     tokens = _fix_flow_direction(tokens, applied)
     body = ";".join(tok.strip() for tok in tokens)
     return f"{row[: start + 1]}{body};{row[end:]}", applied
