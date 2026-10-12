@@ -222,3 +222,40 @@ def test_evidence_extracts_suricata_signature(hits: Any) -> None:
     assert ev["signature_threat_type"] == ["C2"]
     assert ev["app_proto"] == "tls"
     assert hits._pairs(digest) == ["10.1.2.59:64881"], "EVE 用 dest_ip/dest_port，也要能配对"
+
+
+def test_evidence_includes_matched_content(hits: Any) -> None:
+    """证据要能看出「**因为什么内容**被命中」：签名事件的 payload、TLS SNI、HTTP 头等。
+
+    用户反馈：签名命中点详情时看不出判定内容。原因之一是证据只取顶层字段，而 Suricata 的
+    http/tls 信息在子对象里（`http.*` / `tls.*`），payload 也只在 `payload_printable`。
+    """
+    digest = _digest(
+        samples=[
+            {
+                "source": "suricata",
+                "doc": {
+                    "event_type": "alert",
+                    "payload_printable": "GET /admin/../../etc/passwd HTTP/1.1\r\nHost: x\r\n",
+                    "http": {
+                        "hostname": "evil.example.com",
+                        "url": "/admin/../../etc/passwd",
+                        "http_user_agent": "curl/8.0",
+                        "http_method": "GET",
+                        "status": 200,
+                    },
+                    "tls": {"sni": "c2.example.net", "version": "TLS 1.2"},
+                    "body": "x" * 900,
+                    "alert": {"signature": "测试签名", "signature_id": 42},
+                },
+            }
+        ]
+    )
+    ev = hits._evidence(digest)[0]
+    assert ev["signature"] == "测试签名" and ev["signature_id"] == 42
+    assert ev["http.hostname"] == "evil.example.com" and ev["http.url"] == "/admin/../../etc/passwd"
+    assert ev["http.http_user_agent"] == "curl/8.0" and ev["http.http_method"] == "GET"
+    assert ev["tls.sni"] == "c2.example.net" and ev["tls.version"] == "TLS 1.2"
+    assert ev["payload_printable"].startswith("GET /admin/")
+    assert "已截断" in ev["body"], "长正文要截断（否则界面/数据库都被撑爆）"
+    assert len(ev["body"]) < 900

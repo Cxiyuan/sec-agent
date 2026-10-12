@@ -61,7 +61,21 @@ _EVIDENCE_FIELDS = (
     "dest_port",
     "app_proto",
     "direction",
+    # 「因为什么内容被命中」——正文/查询串/请求头（会截断）
+    "body",
+    "resp_body",
+    "query_string",
+    "req_headers",
+    "content_type",
+    "payload_printable",
 )
+
+#: 会被截断的长文本字段（用户反馈「证据看不出因为什么内容被命中」）
+_TRUNCATE_FIELDS = ("body", "resp_body", "req_headers", "query_string", "payload_printable")
+#: 单个长文本最多留多少字符（够判断，又不会把界面撑爆）
+_MAX_TEXT = 400
+#: 嵌套块里要提上来的字段（Suricata EVE 把 http/tls 信息放在子对象里）
+_NESTED_BLOCKS = ("http", "tls")
 
 
 def _iso(value: Any) -> datetime | None:
@@ -97,8 +111,33 @@ def _pairs(digest: dict[str, Any]) -> list[str]:
     return ips[:20]
 
 
+def _truncate(value: Any) -> Any:
+    """长文本截断（保留长度提示），其余原样。"""
+    if isinstance(value, str) and len(value) > _MAX_TEXT:
+        return value[:_MAX_TEXT] + f"…（已截断，原长 {len(value)}）"
+    return value
+
+
+def _matched_content(doc: dict[str, Any], item: dict[str, Any]) -> None:
+    """把「因为什么内容被命中」提上来：Suricata 的 http/tls 子对象 + 长文本截断。"""
+    for block_name in _NESTED_BLOCKS:
+        block = doc.get(block_name)
+        if not isinstance(block, dict):
+            continue
+        for key, value in block.items():
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                item[f"{block_name}.{key}"] = _truncate(value)
+            elif isinstance(value, list) and all(isinstance(v, (str, int, float)) for v in value):
+                item[f"{block_name}.{key}"] = [_truncate(v) for v in value]
+    for key in _TRUNCATE_FIELDS:
+        if key in item:
+            item[key] = _truncate(item[key])
+
+
 def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
-    """样例事件 → 关键字段（丢空值，控制体积）。"""
+    """样例事件 → 关键字段（丢空值，控制体积；长文本截断）。"""
     out: list[dict[str, Any]] = []
     for sample in (digest.get("samples") or [])[:_MAX_EVIDENCE]:
         doc = (sample or {}).get("doc") if isinstance(sample, dict) else None
@@ -127,6 +166,7 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         for key in ("app_proto", "direction"):
             if doc.get(key) not in (None, "", [], {}):
                 item[key] = doc[key]
+        _matched_content(doc, item)
         # 其余字段名列出来（便于知道还能查什么），不落值
         extra = sorted(set(doc) - set(_EVIDENCE_FIELDS))
         if extra:

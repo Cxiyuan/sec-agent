@@ -22,5 +22,10 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/ndr/frontend/.next ./.next
 COPY --from=builder /app/ndr/frontend/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/ndr/frontend/public ./public
-EXPOSE 3000
-CMD ["npm", "start"]
+# 站点强制 HTTPS：TLS 终结（443）+ HTTP 跳转（80）在容器内，应用仍监听 3000（仅容器内部）
+COPY ndr/frontend/tls-server.mjs ./tls-server.mjs
+COPY ndr/frontend/docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh \
+    && apk add --no-cache openssl
+EXPOSE 3000 443 80
+CMD ["sh", "./docker-entrypoint.sh"]

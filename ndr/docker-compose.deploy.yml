@@ -266,7 +266,12 @@ services:
     environment:
       TZ: Asia/Shanghai  # 服务端渲染与容器日志统一北京时间
     ports:
-      - "3000:3000"
+      # 强制 HTTPS：443 对外唯一入口（自签名证书，入口生成并持久化在 frontend-certs 卷），
+      # 80 只做 308 跳转；3000 仅容器内部
+      - "443:443"
+      - "80:80"
+    volumes:
+      - frontend-certs:/certs
     depends_on:
       - backend
     restart: unless-stopped
@@ -279,6 +284,7 @@ volumes:
   zeek-config:
   zeek-filebeat:
   zeek-extract:
+  frontend-certs:
   # 签名引擎规则集与状态（后端 rw + 容器 rw，各写自己的文件）
   suricata-rules:
   logstash-pipeline:
