@@ -183,6 +183,8 @@ def test_panel_shows_pairs_id_and_detail() -> None:
     assert "row.id.slice(0, 8)" in src, "列表要有事件 ID"
     assert "详情" in src and "加入白名单" in src and "忽略这条" in src
     assert "/api/detector/hits" in src
+    # 列表按设计不带证据 —— 点详情必须再拉一次详情接口，否则弹窗显示"没有留下样例事件"
+    assert "openHitDetail" in src and "/api/detector/hits/${row.id}" in src
 
 
 def test_evidence_extracts_suricata_signature(hits: Any) -> None:

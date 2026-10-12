@@ -239,6 +239,29 @@ export function StatusPanel() {
   const [auto, setAuto] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
 
+  /**
+   * 打开详情：**必须再拉一次详情接口** —— 列表按设计不带证据（证据只随详情返回），
+   * 直接把列表行塞进弹窗会显示「这条命中没有留下样例事件」（2026-10 用户反馈）。
+   */
+  async function openHitDetail(row: HitEventItem) {
+    setHitMsg("");
+    setWhitelistScope("src");
+    setHitDetail(row); // 先显示已有字段，避免空白等待
+    setHitBusy(true);
+    try {
+      const full = await apiFetch<HitEventItem>(`/api/detector/hits/${row.id}`);
+      if (full?.error) {
+        setHitMsg(full.error);
+        return;
+      }
+      setHitDetail(full);
+    } catch (e) {
+      setHitMsg(e instanceof ApiError ? errorText(e.body) : "读取详情失败");
+    } finally {
+      setHitBusy(false);
+    }
+  }
+
   /** 详情弹窗里的动作：忽略 / 加白名单（加白会自动刷新列表与消息） */
   async function hitAction(kind: "ignore" | "whitelist") {
     if (!hitDetail) return;
@@ -562,11 +585,7 @@ export function StatusPanel() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => {
-                              setHitMsg("");
-                              setWhitelistScope("src");
-                              setHitDetail(row);
-                            }}
+                            onClick={() => void openHitDetail(row)}
                           >
                             详情
                           </Button>
@@ -675,7 +694,12 @@ export function StatusPanel() {
                                   .map(([k, v]) => (
                                     <div key={k} className="truncate">
                                       <span className="text-muted-foreground">{k}: </span>
-                                      <span className="font-mono">{String(v)}</span>
+                                      <span className="font-mono">
+                                        {/* Zeek 的 ts 是秒级时间戳：按北京时间显示（直接打印是 1791811426.67） */}
+                                        {k === "ts" && typeof v === "number"
+                                          ? formatDateTime(new Date(v * 1000))
+                                          : String(v)}
+                                      </span>
                                     </div>
                                   ))}
                               </div>
