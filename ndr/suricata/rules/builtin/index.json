@@ -1,19 +1,19 @@
 {
   "source": "规则全集.rules",
-  "total": 11190,
+  "total": 11188,
   "categories": [
     {
       "category": "10-web-attack",
       "label": "Web 应用攻击",
       "file": "10-web-attack.rules",
-      "rules": 6775,
+      "rules": 6774,
       "classtypes": {
         "web-application-attack": 6003,
         "xss-attack": 338,
         "web-application-activity": 165,
         "sql-injection": 104,
         "file-read-attempt": 72,
-        "java-deserialization": 33,
+        "java-deserialization": 32,
         "file-upload-attempt": 23,
         "webshell-activity": 19,
         "xxe-attack": 9,
@@ -25,9 +25,9 @@
       "category": "20-exploit",
       "label": "漏洞利用（exploit-kit）",
       "file": "20-exploit.rules",
-      "rules": 2586,
+      "rules": 2585,
       "classtypes": {
-        "exploit-kit": 2574,
+        "exploit-kit": 2573,
         "CVE-exploit": 12
       }
     },
@@ -87,7 +87,7 @@
   ],
   "classtypes": {
     "web-application-attack": 6003,
-    "exploit-kit": 2574,
+    "exploit-kit": 2573,
     "credential-theft": 1545,
     "xss-attack": 338,
     "web-application-activity": 165,
@@ -96,7 +96,7 @@
     "file-read-attempt": 72,
     "sensitive-str": 60,
     "vuln-scanner": 37,
-    "java-deserialization": 33,
+    "java-deserialization": 32,
     "C2_trojan-activity": 28,
     "sensitive-file-access": 23,
     "file-upload-attempt": 23,
@@ -117,18 +117,29 @@
     "modifier_order": 36,
     "threshold_to_detection_filter": 66,
     "content_semicolon_hex": 5,
+    "pcre_body_normalized": 20,
+    "http_method_space_stripped": 2,
     "legacy_keyword:http_uri": 19,
     "msg_semicolon_stripped": 4,
     "flow_direction:to_client": 6,
     "flow_dedupe_from_flag": 2,
-    "unicode_escape_decoded": 1,
     "legacy_keyword:dns_query": 63,
     "flow_direction:to_server": 4,
     "legacy_keyword:http_header": 6,
     "pcre_flag_dropped": 6,
     "legacy_keyword:http_user_agent": 1,
-    "legacy_keyword:http_server_body": 6,
+    "legacy_keyword:http_server_body": 4,
     "legacy_keyword:http_stat_code": 5,
     "legacy_keyword:http_client_body": 3
+  },
+  "quarantined": {
+    "1000749": {
+      "reason": "content 值没加引号（Fastjson 规则），改对等于重写判据 —— 待人工核",
+      "rule": "alert http any any -> any any (msg:\"检测到Fastjson反序列化流量特征\";flow:to_server,established;  content:\"\\u0040\\u0074\\u0079\\u0070\\u0065\":\"\\u0063\\u006f\\u006d\\u002e\\u0073\\u0075\\u006e\\u002e\\u0072\\u006f\\u0077\\u0073\\u0074\\u002e\\u004a\\u0064\\u0062\\u0063\\u0052\\u006f\\u0077\\u0053\\u0065\\u0049\\u006d\\u0070\\u006c\",\"\\u0064\\u0061\\u0074\\u0061\\u0053\\u006f\\u0075\\u0072\\u0063\\u0065\\u004e\\u0061\\u006d\\u0065\";classtype:java-deserialization;priority:1; sid:1000749;rev:1;)"
+    },
+    "3016005": {
+      "reason": "file.data 缓冲区里没有任何匹配（msfconsole 规则）—— 待人工核",
+      "rule": "alert http any any -> any any (msg:\"msfconsole powershell 响应\"; flow:established; content:!\"<html>\"; content:!\"<script>\"; content:\"|70 6f 77 65 72 73 68 65 6c 6c 2e 65 78 65|\"; http_server_body; content:\"|46 72 6f 6d 42 61 73 65 36 34 53 74 72 69 6e 67|\"; http_server_body; classtype:exploit-kit; sid:3016005; rev:1;)"
+    }
   }
 }

@@ -80,6 +80,13 @@ ACTION_RE = re.compile(r"^\s*(alert|drop|reject|pass)\s")
 CLASSTYPE_RE = re.compile(r"classtype:\s*([a-zA-Z0-9_-]+)")
 SID_RE = re.compile(r"\bsid:\s*(\d+)")
 
+QUARANTINE_HEADER = """# ============================================================
+# 隔离的规则（**不加载**）：写法坏到无法在不改判据的前提下修好。
+# 一条规则加载不了会让整个规则集失败，所以先隔离并留痕；人工修好后从
+# classify_rules.py 的 QUARANTINED 里删掉、重新生成即可。
+# ============================================================
+"""
+
 HEADER = """# ============================================================
 # 深瞳签名引擎 · 内置默认规则 · {label}（{category}）
 # 来源: 开发者提供的规则全集.rules（按 classtype 分类，规则原文未改）
@@ -314,12 +321,57 @@ def _fix_pcre_flags(tokens: list[str], applied: list[str]) -> list[str]:
                 end = expr.rfind("/")
                 if end > 0:
                     body, flags = expr[: end + 1], expr[end + 1 :]
+                    fixed_body = _fix_pcre_body(body, applied)
                     kept = "".join(ch for ch in flags if ch in PCRE_FLAGS)
-                    if kept != flags:
-                        out.append(f'{name}: "{body}{kept}"')
-                        applied.append("pcre_flag_dropped")
+                    if kept != flags or fixed_body != body:
+                        if kept != flags:
+                            applied.append("pcre_flag_dropped")
+                        out.append(f'{name}: "{fixed_body}{kept}"')
                         continue
         out.append(tok)
+    return out
+
+
+#: 隔离名单：写法坏到**无法在不改判据的前提下**修好的规则（缺引号、空缓冲区、depth 无 context…）。
+#: 为什么必须隔离：一条规则加载不了 = 整个规则集加载失败 = 零覆盖。隔离会留痕
+#: （index.json 的 quarantined + 同目录 quarantine.rules 原文），等人工修好后再放回来。
+QUARANTINED: dict[str, str] = {
+    "1000749": "content 值没加引号（Fastjson 规则），改对等于重写判据 —— 待人工核",
+    "3016005": "file.data 缓冲区里没有任何匹配（msfconsole 规则）—— 待人工核",
+}
+
+#: pcre 体里的常见坏写法（都按「等价、可编译」处理，判据不变）：
+#: ① 转义双引号 → 十六进制（引擎切选项时会被引号截断）；② `\u0061` → `\x{0061}`
+#: （PCRE 不认 \u）；③ 字符类里 `\w-_` / `\d-_` 是非法区间（pcre2 编译直接失败）→ 挪到末尾。
+def _fix_pcre_body(body: str, applied: list[str]) -> str:
+    out = body
+    if '\\"' in out:
+        out = out.replace('\\"', "\\x22")
+        applied.append("pcre_body_normalized")
+    if "\\\\u" in out:
+        out = re.sub("\\\\\\\\u([0-9a-fA-F]{4})", lambda m: "\\x{" + m.group(1) + "}", out)
+        applied.append("pcre_body_normalized")
+    for bad in ("\\w-_", "\\d-_"):
+        if bad in out:
+            out = out.replace(bad, bad[:-2] + "_-")
+            applied.append("pcre_body_normalized")
+    return out
+
+
+def _fix_http_method_space(tokens: list[str], applied: list[str]) -> list[str]:
+    """`content:"-- ";http_method;` —— 方法里不可能有空格，引擎报 `http_method pattern with
+    trailing space`。把该 content 值尾部的空格去掉（判据仍是「方法含 --」）。"""
+    out = list(tokens)
+    for i, tok in enumerate(tokens[:-1]):
+        nxt = tokens[i + 1].strip().lower()
+        s = tok.strip()
+        if not nxt.startswith("http_method") or not s.lower().startswith("content") or ":" not in s:
+            continue
+        name, _, raw = s.partition(":")
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"' and raw[1:-1] != raw[1:-1].rstrip():
+            out[i] = f'{name}: "{raw[1:-1].rstrip()}"'
+            applied.append("http_method_space_stripped")
     return out
 
 
@@ -364,6 +416,7 @@ def fix_rule(row: str) -> tuple[str, list[str]]:
     tokens = _fix_semicolons(tokens, applied)
     tokens = _fix_content_escapes(tokens, applied)
     tokens = _fix_pcre_flags(tokens, applied)
+    tokens = _fix_http_method_space(tokens, applied)
     tokens = _fix_flow_direction(tokens, applied)
     tokens = _fix_flow_redundancy(tokens, applied)
     body = ";".join(tok.strip() for tok in tokens)
@@ -378,10 +431,16 @@ def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list
     seen_sid: set[str] = set()
     dup: list[str] = []
     fixed: Counter[str] = Counter()
+    quarantined: list[tuple[str, str]] = []
     for raw_line in lines:
         line = raw_line
         if not ACTION_RE.match(line):
             continue  # 注释/空行不进分类文件（文件头由我们生成）
+        sid_match = SID_RE.search(line)
+        sid = sid_match.group(1) if sid_match else ""
+        if sid and sid in QUARANTINED:
+            quarantined.append((sid, line.rstrip("\n")))
+            continue
         line, applied = fix_rule(line.rstrip("\n"))
         for name in applied:
             fixed[name] += 1
@@ -397,7 +456,7 @@ def classify(lines: list[str]) -> tuple[dict[str, list[str]], Counter[str], list
             if sid.group(1) in seen_sid:
                 dup.append(sid.group(1))
             seen_sid.add(sid.group(1))
-    return buckets, types, sorted(set(unknown)), sorted(set(dup)), fixed
+    return buckets, types, sorted(set(unknown)), sorted(set(dup)), fixed, quarantined
 
 
 def _classtype_of(row: str) -> str:
@@ -439,7 +498,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     lines = args.source.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-    buckets, types, unknown, dup, fixed = classify(lines)
+    buckets, types, unknown, dup, fixed, quarantined = classify(lines)
     rendered = render(buckets, types)
     total = sum(len(v) for v in buckets.values())
 
@@ -459,6 +518,10 @@ def main(argv: list[str]) -> int:
         "classtypes": dict(types.most_common()),
         # 语法修复记录（只改写法、不改判据）：口径与数量都留痕，便于审计
         "fixes": dict(fixed),
+        # 隔离的规则（sid → 原因）：留痕，人工修好后从 QUARANTINED 里去掉、重新生成即可
+        "quarantined": {
+            sid: {"reason": QUARANTINED[sid], "rule": row} for sid, row in quarantined
+        },
     }
 
     problems: list[str] = []
@@ -473,6 +536,8 @@ def main(argv: list[str]) -> int:
     if problems:
         print("提示:\n  " + "\n  ".join(problems), file=sys.stderr)
 
+    if quarantined:
+        print(f"隔离（加载不了、待人工修）: {len(quarantined)} 条 → {[s for s, _ in quarantined]}")
     if fixed:
         print("语法修复（不改判据）: " + ", ".join(f"{k}×{v}" for k, v in fixed.items()))
     print(f"源规则 {total} 条 → {len(rendered)} 类：")
@@ -486,6 +551,11 @@ def main(argv: list[str]) -> int:
             if not path.exists() or path.read_text(encoding="utf-8") != text:
                 print(f"未同步: {path.relative_to(BUILTIN_DIR.parent.parent.parent)}", file=sys.stderr)
                 bad += 1
+        qpath = BUILTIN_DIR / "quarantine.rules"
+        want_q = QUARANTINE_HEADER + "".join(f"{row}\n" for _sid, row in quarantined)
+        if not qpath.exists() or qpath.read_text(encoding="utf-8") != want_q:
+            print("未同步: quarantine.rules", file=sys.stderr)
+            bad += 1
         idx = BUILTIN_DIR / "index.json"
         want = json.dumps(index, ensure_ascii=False, indent=2) + "\n"
         if not idx.exists() or idx.read_text(encoding="utf-8") != want:
@@ -496,6 +566,9 @@ def main(argv: list[str]) -> int:
     BUILTIN_DIR.mkdir(parents=True, exist_ok=True)
     for name, text in rendered.items():
         (BUILTIN_DIR / name).write_text(text, encoding="utf-8")
+    (BUILTIN_DIR / "quarantine.rules").write_text(
+        QUARANTINE_HEADER + "".join(f"{row}\n" for _sid, row in quarantined), encoding="utf-8"
+    )
     (BUILTIN_DIR / "index.json").write_text(
         json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
