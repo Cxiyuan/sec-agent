@@ -78,6 +78,26 @@ _EVIDENCE_FIELDS = (
     "cert_issuer",
 )
 
+#: 证据里**不重复输出**的字段（2026-10 用户要求）：这些在详情里已经有专门的位置 ——
+#: 源/目的地址在「请求方/目的」、时间在「首次/最近」、类型在「事件类型」、
+#: log_type/flow_id/alert_action/community_id 属实现细节，放在事件内容里只会干扰阅读。
+_HIDDEN_IN_EVIDENCE = frozenset(
+    {
+        "src_ip",
+        "src_port",
+        "dst_ip",
+        "dst_port",
+        "dest_ip",
+        "dest_port",
+        "flow_id",
+        "log_type",
+        "event_type",
+        "timestamp",
+        "alert_action",
+        "community_id",
+    }
+)
+
 #: 会被截断的长文本字段（用户反馈「证据看不出因为什么内容被命中」）
 _TRUNCATE_FIELDS = ("body", "resp_body", "req_headers", "query_string", "payload_printable")
 #: 单个长文本最多留多少字符（够判断，又不会把界面撑爆）
@@ -151,7 +171,11 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         doc = (sample or {}).get("doc") if isinstance(sample, dict) else None
         if not isinstance(doc, dict):
             continue
-        item = {k: doc.get(k) for k in _EVIDENCE_FIELDS if doc.get(k) not in (None, "", [], {})}
+        item = {
+            k: doc.get(k)
+            for k in _EVIDENCE_FIELDS
+            if k not in _HIDDEN_IN_EVIDENCE and doc.get(k) not in (None, "", [], {})
+        }
         if isinstance(sample, dict) and sample.get("source"):
             item["source"] = sample["source"]
         # 签名引擎的告警在原始 EVE 里是嵌套的 alert 对象（signature/signature_id/category/
@@ -175,6 +199,9 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
             if doc.get(key) not in (None, "", [], {}):
                 item[key] = doc[key]
         _matched_content(doc, item)
+        for key in list(item):
+            if key in _HIDDEN_IN_EVIDENCE or key.startswith(("http.dest", "http.src")):
+                item.pop(key, None)
         # 其余字段名列出来（便于知道还能查什么），不落值
         extra = sorted(set(doc) - set(_EVIDENCE_FIELDS))
         if extra:

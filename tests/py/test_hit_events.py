@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -313,3 +314,57 @@ def test_runner_scopes_suricata_hits_by_signature(request: pytest.FixtureRequest
     )
     assert captured.get("scope") == "sig:1000845"
     assert captured.get("rule") == "内置-签名命中(高危)"
+
+
+def test_evidence_hides_redundant_fields(hits: Any) -> None:
+    """事件内容里不再重复输出这些字段（详情别处已有，或属实现细节）——用户 2026-10 指定。"""
+    digest = _digest(
+        samples=[
+            {
+                "source": "suricata",
+                "doc": {
+                    "ts": 1791811426.67,
+                    "timestamp": "2026-10-12T21:23:46+08:00",
+                    "src_ip": "20.1.1.1",
+                    "src_port": 443,
+                    "dest_ip": "10.1.2.59",
+                    "dest_port": 64881,
+                    "flow_id": 12345,
+                    "log_type": "suricata",
+                    "event_type": "alert",
+                    "community_id": "1:AAA=",
+                    "app_proto": "tls",
+                    "ja3s": "abc123",
+                    "alert": {"signature": "S", "signature_id": 1, "action": "allowed"},
+                },
+            }
+        ]
+    )
+    ev = hits._evidence(digest)[0]
+    for key in (
+        "src_ip",
+        "src_port",
+        "dest_ip",
+        "dest_port",
+        "flow_id",
+        "log_type",
+        "event_type",
+        "timestamp",
+        "alert_action",
+        "community_id",
+    ):
+        assert key not in ev, f"事件内容里不应再显示 {key}"
+    assert ev.get("ja3s") == "abc123" and ev.get("app_proto") == "tls", "判定内容仍要在"
+
+
+def test_panel_renames_section_and_translates_labels() -> None:
+    """界面守卫：标题叫「事件内容」、字段名走中文映射、连接状态给出可读说明而不是破折号。"""
+    src = (
+        Path(__file__).resolve().parents[2] / "ndr" / "frontend" / "components" / "status-panel.tsx"
+    ).read_text(encoding="utf-8")
+    assert "证据（样例事件关键字段）" not in src
+    assert ">事件内容<" in src
+    assert "FIELD_LABELS" in src and "fieldLabel(" in src
+    assert '"tls.sni": "TLS 域名（SNI）"' in src, "字段名要有中文名"
+    assert "HIDDEN_FIELDS" in src, "冗余字段要在前端也过滤（老数据的证据是定格的）"
+    assert "不适用（签名引擎告警不带连接状态）" in src, "连接状态不能再只显示一个破折号"

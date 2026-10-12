@@ -130,6 +130,106 @@ function Kpi({
   );
 }
 
+/** 「事件内容」里字段名的中文名（用户要求：显示出来的字段一律中文）。
+ *  覆盖实测出现过的全部字段（Zeek 与 Suricata EVE 两套命名），未收录的按原名显示。 */
+const FIELD_LABELS: Record<string, string> = {
+  ts: "事件时间",
+  timestamp: "事件时间",
+  uid: "连接标识（Zeek uid）",
+  source: "来源",
+  app_proto: "应用协议",
+  direction: "方向",
+  protocol: "协议",
+  conn_state: "连接状态",
+  signature: "命中签名",
+  signature_id: "签名编号（SID）",
+  signature_category: "签名类别",
+  signature_severity: "签名严重度",
+  signature_threat_type: "威胁类型",
+  alert_action: "引擎动作",
+  payload_printable: "命中载荷",
+  summary: "摘要",
+  "tls.sni": "TLS 域名（SNI）",
+  "tls.version": "TLS 版本",
+  tls_version: "TLS 版本",
+  "tls.subject": "证书主体",
+  "tls.issuerdn": "证书签发者",
+  cert_issuer: "证书签发者",
+  "tls.serial": "证书序列号",
+  "tls.fingerprint": "证书指纹",
+  "tls.notbefore": "证书生效时间",
+  "tls.notafter": "证书到期时间",
+  "tls.session_resumed": "会话复用",
+  ja3: "JA3 客户端指纹",
+  ja3s: "JA3S 服务端指纹",
+  ja4: "JA4 指纹",
+  "http.url": "请求 URL",
+  "http.hostname": "域名（Host）",
+  "http.http_method": "请求方法",
+  "http.status": "状态码",
+  "http.length": "响应长度",
+  "http.protocol": "HTTP 版本",
+  "http.http_user_agent": "User-Agent",
+  "http.http_content_type": "内容类型",
+  "http.http_refer": "来源页（Referer）",
+  "http.xff": "代理头（XFF）",
+  "http.http_port": "HTTP 端口",
+  uri_path: "请求路径",
+  query_string: "查询串",
+  method: "方法",
+  status_code: "状态码",
+  user_agent: "User-Agent",
+  referer: "来源页",
+  content_type: "内容类型",
+  body: "请求体",
+  resp_body: "响应体",
+  req_headers: "请求头",
+  account: "账号",
+  session_id: "会话 ID",
+  query: "DNS 查询名",
+  qtype: "查询类型",
+  filename: "文件名",
+  md5: "MD5",
+  sha1: "SHA1",
+  sha256: "SHA256",
+  // Zeek 原始字段（出现在「其它字段」里）
+  client_version: "客户端版本",
+  client_ciphers: "客户端密码套件",
+  client_comp_methods: "客户端压缩方法",
+  client_curves: "客户端曲线",
+  client_key_share_groups: "客户端密钥共享组",
+  client_supported_versions: "客户端支持版本",
+  cipher: "密码套件",
+  curve: "椭圆曲线",
+  hashalgs: "哈希算法",
+  established: "握手完成",
+  server_name: "服务器名",
+  resumed: "会话复用",
+};
+
+/** 不在「事件内容」里重复显示的字段（详情别处已有，或属实现细节）——用户 2026-10 指定。 */
+const HIDDEN_FIELDS = new Set([
+  "src_ip",
+  "src_port",
+  "dst_ip",
+  "dst_port",
+  "dest_ip",
+  "dest_port",
+  "flow_id",
+  "log_type",
+  "event_type",
+  "timestamp",
+  "alert_action",
+  "community_id",
+  "other_fields",
+  "source",
+]);
+
+/** 字段名 → 中文名（未收录的按原名，界面其它地方不会出现纯英文标签） */
+function fieldLabel(key: string): string {
+  return FIELD_LABELS[key] ?? key;
+}
+
 const SEVERITY_TEXT: Record<string, string> = {
   critical: "紧急",
   high: "高危",
@@ -655,15 +755,19 @@ export function StatusPanel() {
                       </div>
                       <div>
                         <span className="text-muted-foreground">目的：</span>
-                        {hitDetail.dst_pairs?.join("、") || "—"}
+                        {hitDetail.dst_pairs?.length ? hitDetail.dst_pairs.join("、") : "无"}
                       </div>
                       <div>
                         <span className="text-muted-foreground">事件类型：</span>
-                        {hitDetail.event_types?.join("、") || "—"}
+                        {hitDetail.event_types?.length ? hitDetail.event_types.join("、") : "无"}
                       </div>
                       <div>
                         <span className="text-muted-foreground">连接状态：</span>
-                        {hitDetail.conn_states?.join("、") || "—"}
+                        {hitDetail.conn_states?.length
+                          ? hitDetail.conn_states.join("、")
+                          : hitDetail.log_types?.includes("suricata")
+                            ? "不适用（签名引擎告警不带连接状态）"
+                            : "未记录"}
                       </div>
                       {hitDetail.real_client_ips?.length ? (
                         <div className="sm:col-span-2">
@@ -679,32 +783,39 @@ export function StatusPanel() {
                       ) : null}
                     </div>
                     <div>
-                      <p className="mb-1 font-medium">证据（样例事件关键字段）</p>
+                      <p className="mb-1 font-medium">事件内容</p>
                       {hitDetail.evidence?.length ? (
                         <div className="space-y-2">
-                          {hitDetail.evidence.map((ev, i) => (
-                            <div key={i} className="rounded-md border px-2 py-1">
-                              <div className="mb-1 text-muted-foreground">
-                                #{i + 1} {String(ev["ts"] ?? "")}
-                                {ev["source"] ? ` · 来源 ${String(ev["source"])}` : ""}
+                          {hitDetail.evidence.map((ev, i) => {
+                            const at = ev["ts"] ?? ev["timestamp"];
+                            return (
+                              <div key={i} className="rounded-md border px-2 py-1">
+                                <div className="mb-1 text-muted-foreground">
+                                  样例 {i + 1}
+                                  {at !== undefined && at !== null
+                                    ? ` · ${typeof at === "number" ? formatDateTime(new Date(at * 1000)) : formatDateTime(String(at))}`
+                                    : ""}
+                                  {ev["source"] ? ` · 来源 ${String(ev["source"])}` : ""}
+                                </div>
+                                <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+                                  {Object.entries(ev)
+                                    .filter(([k]) => !HIDDEN_FIELDS.has(k))
+                                    .map(([k, v]) => (
+                                      <div key={k} className="truncate" title={`${fieldLabel(k)}：${String(v)}`}>
+                                        <span className="text-muted-foreground">{fieldLabel(k)}：</span>
+                                        <span className="font-mono">{String(v)}</span>
+                                      </div>
+                                    ))}
+                                </div>
+                                {Array.isArray(ev["other_fields"]) && ev["other_fields"].length ? (
+                                  <div className="mt-1 text-muted-foreground">
+                                    其它字段：
+                                    {(ev["other_fields"] as string[]).map((k) => fieldLabel(k)).join("、")}
+                                  </div>
+                                ) : null}
                               </div>
-                              <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
-                                {Object.entries(ev)
-                                  .filter(([k]) => k !== "other_fields" && k !== "source")
-                                  .map(([k, v]) => (
-                                    <div key={k} className="truncate">
-                                      <span className="text-muted-foreground">{k}: </span>
-                                      <span className="font-mono">
-                                        {/* Zeek 的 ts 是秒级时间戳：按北京时间显示（直接打印是 1791811426.67） */}
-                                        {k === "ts" && typeof v === "number"
-                                          ? formatDateTime(new Date(v * 1000))
-                                          : String(v)}
-                                      </span>
-                                    </div>
-                                  ))}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <p className="text-muted-foreground">这条命中没有留下样例事件</p>
