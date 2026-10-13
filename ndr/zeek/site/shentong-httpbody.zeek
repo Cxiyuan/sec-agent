@@ -51,7 +51,7 @@ event http_entity_data(c: connection, is_orig: bool, length: count, data: string
     # 跳过真正的二进制块（上传文件、gzip 响应等），避免日志膨胀：只有出现 NUL、
     # C0 控制字符（tab/CR/LF 除外）或 DEL 才放弃。
     #
-    # 2026-10 实机（172.16.196.77）踩到：原判据是 /[^\x09\x0a\x0d\x20-\x7e]/
+    # 2026-10 实机（10.1.2.250）踩到：原判据是 /[^\x09\x0a\x0d\x20-\x7e]/
     # （只放行可打印 ASCII），而 UTF-8 多字节（中文）的字节都 >0x7e，于是
     # **中文请求体整块被丢**，日志里连 body 字段都不出现。同一 POST 路径只换 body
     # 内容的上线对照：

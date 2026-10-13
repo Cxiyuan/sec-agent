@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 
@@ -77,3 +78,79 @@ def test_ui_placeholders_use_generic_addresses() -> None:
         if not ip:
             continue
         assert re.match(r"^(10\.|192\.168\.)", ip), f"占位符应使用通用内网地址，实际 {ip!r}"
+
+#: **允许出现的 IPv4**（只有这些能在仓库里出现）。为什么用白名单而不是黑名单：
+#: 2026-10 实机踩到 —— 上一次部署的固定 IP（redis 端口绑定 `10.255.12.4`）被写进 .env 带到了
+#: 新环境，docker 起不来（"cannot assign requested address"），normalizer 跟着无限重启。
+#: 黑名单只能挡住已知的地址，白名单能挡住**将来任何一个**环境特有的地址。
+_ALLOWED_NETS: tuple[str, ...] = (
+    "0.0.0.0/8",          # 通配
+    "127.0.0.0/8",        # 回环（本地/容器内部地址）
+    "169.254.0.0/16",     # 链路本地：含云元数据服务 169.254.169.254（产品常量，规则要判 SSRF）
+    "192.0.2.0/24",       # RFC5737 文档保留段（示例地址一律用这些）
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "1.2.3.0/24",         # 教科书示例
+    "2.2.2.0/24",
+    "3.3.3.0/24",
+    "1.1.1.0/24",         # 公共 DNS 常量
+    "8.8.8.0/24",
+    "9.9.9.0/24",
+    "100.100.100.0/24",   # 阿里云元数据/DNS 常量（产品要能判这类 SSRF）
+    "224.0.0.0/4",        # 组播（mDNS 等）
+    "255.255.255.255/32",
+    # 通用内网示例（测试/文档里当"某个内网"用，不是任何现场的真实网段）
+    "10.0.0.0/24",
+    "10.1.0.0/16",
+    "10.2.0.0/24",
+    "10.3.0.0/16",   # 通用示例（10.3.x.x）
+    "10.4.0.0/24",
+    "10.9.0.0/16",   # 通用示例（10.9.x.x）
+    "10.10.0.0/16",
+    "10.100.0.0/16",
+    "192.168.0.0/16",
+    "172.16.0.0/24",      # 仅通用示例（172.16.0.x / 172.16.1.x / 172.16.5.x 这几个）
+    "172.16.1.0/24",
+    "172.16.5.0/24",
+)
+_ALLOWED = tuple(ipaddress.ip_network(n) for n in _ALLOWED_NETS)
+_IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_IP_SKIP_EXT = {".rules", ".map", ".lock", ".png", ".jpg", ".ico", ".woff", ".woff2"}
+#: 规则文件里出现现场的地址属"数据"（由开发人员维护），这里只看产品与文档
+_IP_ROOTS = ("ndr", "agent", "tests", "docs", "packages", "README.md", "AGENTS.md")
+
+
+def test_no_environment_specific_ipv4() -> None:
+    """全仓（代码/测试/编排/文档）不得出现白名单之外的 IPv4。
+
+    允许清单见 `_ALLOWED_NETS`：通配、回环、文档保留段、云元数据等**产品常量**、以及
+    明确标注为"通用示例"的内网段。**任何现场地址**（上一次部署的固定 IP、客户站点网段、
+    抓包里出现的公网地址）都不许进仓库 —— 它们会让产品换一个环境就起不来。
+    """
+    bad: list[str] = []
+    for root in _IP_ROOTS:
+        base = ROOT / root
+        if not base.exists():
+            continue
+        targets = [base] if base.is_file() else list(base.rglob("*"))
+        for path in targets:
+            if not path.is_file() or path.suffix in _IP_SKIP_EXT:
+                continue
+            if _SKIP_PARTS & set(path.parts) or path.name in _SKIP_NAMES:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for no, line in enumerate(text.splitlines(), 1):
+                for ip in _IPV4.findall(line):
+                    try:
+                        addr = ipaddress.ip_address(ip)
+                    except ValueError:
+                        continue
+                    if any(addr in net for net in _ALLOWED):
+                        continue
+                    bad.append(f"{path.relative_to(ROOT)}:{no} 出现 {ip}")
+    assert not bad, "仓库里出现了环境特有的 IPv4（换成通用示例或按环境配置）：\n  " + "\n  ".join(
+        bad[:40]
+    )

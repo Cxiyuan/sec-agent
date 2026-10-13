@@ -36,7 +36,7 @@ def route(request: pytest.FixtureRequest) -> Any:
 def _digest(**kw: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "src_ip": "10.1.2.10",
-        "real_client_ips": ["113.0.87.111"],
+        "real_client_ips": ["198.51.100.111"],
         "proxied": True,
         "rule": "内置-多路径探测(漏洞挖掘)",
         "rule_severity": "high",
@@ -121,7 +121,7 @@ def test_save_writes_unique_id_and_paired_dst(hits: Any, monkeypatch: pytest.Mon
     assert hit_id == "11111111-2222-3333-4444-555555555555"
     assert captured.get("committed") is True
     assert row.dst_pairs == ["10.1.2.20:46220", "10.1.2.21:60384"]
-    assert row.client == "113.0.87.111", "展示用请求方取真实客户端"
+    assert row.client == "198.51.100.111", "展示用请求方取真实客户端"
     assert row.via == "10.1.2.10", "中继链路上要记住这一跳经过谁"
     assert row.client_source == "xff"
     assert row.ignored in (None, False), "新建事件默认未忽略（列默认值在落库时生效）"
@@ -200,7 +200,7 @@ def test_evidence_extracts_suricata_signature(hits: Any) -> None:
                 "source": "suricata",
                 "doc": {
                     "event_type": "alert",
-                    "src_ip": "20.1.1.1",
+                    "src_ip": "198.51.100.1",
                     "dest_ip": "10.1.2.59",
                     "dest_port": 64881,
                     "app_proto": "tls",
@@ -325,7 +325,7 @@ def test_evidence_hides_redundant_fields(hits: Any) -> None:
                 "doc": {
                     "ts": 1791811426.67,
                     "timestamp": "2026-10-12T21:23:46+08:00",
-                    "src_ip": "20.1.1.1",
+                    "src_ip": "198.51.100.1",
                     "src_port": 443,
                     "dest_ip": "10.1.2.59",
                     "dest_port": 64881,

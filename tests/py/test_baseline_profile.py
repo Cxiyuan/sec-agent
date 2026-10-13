@@ -129,9 +129,9 @@ def test_hour_reason_skipped_when_hour_is_common(profiles: ModuleType) -> None:
 
 def test_dual_stack_v4_v6_is_not_session_hijack(profiles: ModuleType) -> None:
     """实机被判的 5 条全是这种：v4 一个 + v6 一个 = 同一客户端双栈，不是劫持。"""
-    prof = _profile(profiles, src_ips={"110.185.129.127": 100})
+    prof = _profile(profiles, src_ips={"198.51.100.127": 100})
     out = profiles.detect(
-        "session", _obs(src_ips=["110.185.129.127", "240e:398:66b9:7ac0:5e02:14ff:feee:a0e7"]), prof
+        "session", _obs(src_ips=["198.51.100.127", "240e:398:66b9:7ac0:5e02:14ff:feee:a0e7"]), prof
     )
     assert "会话跨" not in _reasons(out)
     # v6 是新地址但同前缀也没见过 → 会有「新源 IP」，但风险不该到 0.45

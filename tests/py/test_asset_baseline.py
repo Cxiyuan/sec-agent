@@ -176,10 +176,10 @@ def test_real_client_ip_wins_over_src_ip(asset: ModuleType) -> None:
     asset.observe_entry(records, _entry(uid="C4", log_type="conn", hostname=None))
     asset.observe_entry(
         records,
-        _entry(uid="C4", log_type="http", hostname="a.example", real_client_ip="202.120.8.186"),
+        _entry(uid="C4", log_type="http", hostname="a.example", real_client_ip="198.51.100.186"),
     )
     buckets, _ = asset.finalize(records)
-    assert buckets["a.example"]["clients"] == {"202.120.8.186"}
+    assert buckets["a.example"]["clients"] == {"198.51.100.186"}
 
 
 def test_one_connection_can_carry_many_real_clients(asset: ModuleType) -> None:

@@ -52,7 +52,7 @@ Zeek(Filebeat) ─┐
 前置：Linux 宿主、Docker + Compose；NDR 宿主还需 `vm.max_map_count=262144`（ES 硬要求）。
 两条线路各自一个 compose 文件，可同机（端口已错开）或分机部署。
 镜像在**私有 GHCR** 里，服务器上要先 `docker login ghcr.io`（PAT 需带 `read:packages`）才拉得动。
-实机部署过程、验收结果与上线时踩到的六个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，172.16.196.77）」。
+实机部署过程、验收结果与上线时踩到的六个坑见 [docs/ndr-redesign.md](docs/ndr-redesign.md) 的「实机部署记录（2026-10，10.1.2.250）」。
 
 **NDR 线路**（`ndr/docker-compose.deploy.yml`）：
 
@@ -73,8 +73,8 @@ docker compose -f docker-compose.deploy.yml up -d
 本身无额外鉴权）。**智能体线路要连这台机器的 Redis 时**（`NDR_REDIS_URL`），在 `.env` 里加：
 
 ```bash
-REDIS_BIND=10.255.12.4   # Redis 监听的宿主地址（换成两边互通的地址）
-REDIS_HOST=10.255.12.4   # zeek 容器是 host 网络，它的 Filebeat 用这个地址投采集队列
+REDIS_BIND=127.0.0.1   # Redis 监听的宿主地址（换成两边互通的地址）
+REDIS_HOST=127.0.0.1   # zeek 容器是 host 网络，它的 Filebeat 用这个地址投采集队列
 ```
 
 两行必须指向同一个可访问地址：`REDIS_BIND` 决定 Redis 发布在哪，`REDIS_HOST` 决定采集侧往哪投；
@@ -90,7 +90,7 @@ JWT_SECRET=<随机 64 位>
 CORS_ORIGINS=http://<智能体服务器IP>:3000
 NDR_MCP_URL=http://<NDR服务器IP>:8090/mcp
 NDR_MCP_TOKEN=<在 NDR 后台「智能体对接 → MCP 服务」生成的令牌>
-NDR_REDIS_URL=redis://10.255.12.4:6379/0   # 必须是 NDR 侧 REDIS_BIND 放开的那个地址
+NDR_REDIS_URL=redis://127.0.0.1:6379/0   # 必须是 NDR 侧 REDIS_BIND 放开的那个地址
 EOF
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d

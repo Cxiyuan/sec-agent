@@ -203,7 +203,7 @@ def test_roles_only_count_traffic_it_forwards(roles_mod: ModuleType, set_relays)
         )
     )
     # ④ 它自己上网（hop=back、没有代理头）→ **不算**
-    det.observe(_entry(log_type="http", src_ip="192.0.2.77", dst_ip="91.189.91.83", hop="back"))
+    det.observe(_entry(log_type="http", src_ip="192.0.2.77", dst_ip="198.51.100.83", hop="back"))
     # ⑤ 它自己直连上网（hop=direct）→ **不算**
     det.observe(_entry(log_type="ssl", src_ip="192.0.2.77", dst_ip="1.2.3.4", hop="direct"))
     # ⑥ 有人来问它 DNS → 算 DNS 转发
@@ -317,7 +317,7 @@ def test_dedup_drops_back_only_when_front_visible(dedup_mod: ModuleType) -> None
     assert dedup.decide(back, now=0.0) == "pass"
     assert dedup.counts["relay_back_kept"] == 1
     # 见到前跳之后 → 同一中继的后跳判为重复
-    front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77")
+    front = _entry(hop="front", src_ip="198.51.100.186", dst_ip="192.0.2.77")
     assert dedup.decide(front, now=10.0) == "pass"
     assert dedup.counts["relay_front"] == 1
     assert dedup.decide(back, now=11.0) == "drop"
@@ -326,7 +326,7 @@ def test_dedup_drops_back_only_when_front_visible(dedup_mod: ModuleType) -> None
 
 def test_dedup_visibility_expires(dedup_mod: ModuleType) -> None:
     dedup = dedup_mod.RelayDedup(visibility_seconds=30)
-    dedup.decide(_entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77"), now=0.0)
+    dedup.decide(_entry(hop="front", src_ip="198.51.100.186", dst_ip="192.0.2.77"), now=0.0)
     back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="10.1.2.20")
     # 超出可见期：不再认定为重复（拓扑变化的兜底）
     assert dedup.decide(back, now=100.0) == "pass"
@@ -408,7 +408,7 @@ def test_dedup_side_back_keeps_content_side(dedup_mod: ModuleType, set_relays: A
     """
     set_relays("192.0.2.77")
     dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "back")
-    front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77", log_type="ssl")
+    front = _entry(hop="front", src_ip="198.51.100.186", dst_ip="192.0.2.77", log_type="ssl")
     assert dedup.decide(front) == "drop"
     assert dedup.counts["relay_front_dropped"] == 1
     back = _entry(hop="back", src_ip="192.0.2.77", dst_ip="10.1.2.20", log_type="http")
@@ -446,7 +446,7 @@ def test_dedup_side_judgement_failure_falls_back_to_front(
         raise RuntimeError("side judge down")
 
     dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=boom)
-    front = _entry(hop="front", src_ip="202.120.8.186", dst_ip="192.0.2.77")
+    front = _entry(hop="front", src_ip="198.51.100.186", dst_ip="192.0.2.77")
     assert dedup.decide(front) == "pass"
 
 
@@ -472,7 +472,7 @@ def test_dedup_drops_chain_continuation(dedup_mod: ModuleType, set_relays: Any) 
     dedup = dedup_mod.RelayDedup(visibility_seconds=60, side_of=lambda _ip: "back")
     chain = {
         "proxied": [
-            "X-FORWARDED-FOR -> 101.133.144.79, 10.1.2.10",
+            "X-FORWARDED-FOR -> 198.51.100.79, 10.1.2.10",
             "X-REAL-IP -> 10.1.2.10",
         ]
     }

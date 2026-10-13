@@ -119,7 +119,7 @@
 - **字段**：两侧 `schemas.py` 加 `extracted` / `extracted_size` / `extracted_cutoff`（`tests/py/test_stack_consistency.py` 要求两侧 UnifiedLog 字段集一致，所以两侧都加），两侧 `normalizer.py` 取值入库（`extracted` 截 128 字符），两侧 `rules/engine.py` 的 `_FIELD_TYPES` 与 `investigation/catalog.py` 同步注册。
 - **测试**：`tests/py/test_extract_cleanup.py`（白名单、日志覆盖顺序、半行容忍、在写保护、容量淘汰、dry-run、CLI 端到端、entrypoint/Dockerfile/local.zeek 接线）与 `tests/py/test_files_api.py`（路径安全：穿越/符号链接/下载名头注入/ fuid 正则；Zeek prefix 与后端 `extract_dir` 一致性）；`tests/zeek/batch4_test.zeek`（prefix/limit/来源集合/三个新字段）。
 - 本地质量门：`pytest --stack=ndr` **179 passed**、`--stack=agent` **160 passed / 19 skipped**（下载接口测试仅 NDR 侧）、ruff/pyright 全绿、`sh tests/zeek/run.sh` 四套 Zeek 单测 `ZEEK TESTS: ALL PASS`。
-- **实机复验（2026-10-02，172.16.196.77，镜像 `sha256:9adedfe6053d`）**：三段上传（2400B `text/plain`、3000B `application/octet-stream`、18.7MB `text/plain`）→ 白名单件落盘且 sha256 与本机原文一致、`GET /api/files/<fuid>` 200（`content-type` 取自 `mime_type`、`content-length` 与落盘字节一致）、无令牌 401、非法 fuid（`short` / 带空格 / 编码斜杠）400 或 404；二进制件（`mime_type` 为空）被清理助手判为白名单外删除、清理后下载回 404；`--max-bytes 2000` 从最老淘汰 8 件留 1 件；**截断链路**用容器内临时把 `default_limit` 改成 1000 验证（`extracted_size=1000`、`extracted_cutoff=true` 落 ES，下载响应带 `X-Extract-Cutoff: 1` + `X-Extract-Size: 1000`），测后按备份复原并校验 sha256 一致。
+- **实机复验（2026-10-02，10.1.2.250，镜像 `sha256:9adedfe6053d`）**：三段上传（2400B `text/plain`、3000B `application/octet-stream`、18.7MB `text/plain`）→ 白名单件落盘且 sha256 与本机原文一致、`GET /api/files/<fuid>` 200（`content-type` 取自 `mime_type`、`content-length` 与落盘字节一致）、无令牌 401、非法 fuid（`short` / 带空格 / 编码斜杠）400 或 404；二进制件（`mime_type` 为空）被清理助手判为白名单外删除、清理后下载回 404；`--max-bytes 2000` 从最老淘汰 8 件留 1 件；**截断链路**用容器内临时把 `default_limit` 改成 1000 验证（`extracted_size=1000`、`extracted_cutoff=true` 落 ES，下载响应带 `X-Extract-Cutoff: 1` + `X-Extract-Size: 1000`），测后按备份复原并校验 sha256 一致。
 - **实机复验暴露的三件事**（已分别修正/登记）：① `DEFAULT_MIME_ALLOW` 缺 `text/json`（Zeek 对 JSON 请求体实测报 `text/json` 而非 `application/json`）→ 已补 + 测试；② `shentong-ndr` 镜像被 backend/normalizer/detector/ndr-mcp **四个服务共用**，只 `up -d zeek backend` 会让 normalizer 继续跑旧镜像、新字段永远进不了 ES → 必须四个一起重建（本次执行 `up -d normalizer detector ndr-mcp` 后才在 ES 里看到 `extracted`）；③ 镜像口对**采集机自身**的部分外网目标（Cloudflare/postman-echo）不可见，且高带宽流丢包严重（18.7MB 上传 Zeek 只见到 184432 字节、落盘 5.3MB 而 `extracted_cutoff` 仍是 false）→ 实机验收必须挑可见目标（`mirrors.aliyun.com`），并把「落盘件可能因丢包不完整」记进 `ndr/zeek/README.md` 已知限制。
 
 ### 收尾
@@ -146,7 +146,7 @@
 ## 六、后续未决
 
 - 智能体侧对等适配（下一轮）。
-- 智能体线路部署：`NDR_REDIS_URL` 写 `redis://10.255.12.4:6379/0`，推送需配地址+令牌并开启。
+- 智能体线路部署：`NDR_REDIS_URL` 写 `redis://127.0.0.1:6379/0`，推送需配地址+令牌并开启。
 - Zeek 检查表第 2 项（24h 轮转与 3 天清理）**已实机复验（2026-10-04）**：在跑的生产容器上放 mtime 4 天前、轮转命名、两层子目录的探针 → 到点的清理轮把它删掉（观察任务 `18:57Z` 命中），同期活动 `conn.log` 仍在增长、Filebeat 存活 ⇒ 「保留 3 天」端到端成立。轮转形态（同目录平铺改名、时间戳带时分秒）已在 2026-10-02 核对。
 - Zeek 检查表第 9 项（反向代理的原始客户端 IP）**已收口（2026-10-04）**：可信代理白名单 `ST_ZEEK_TRUSTED_PROXIES` + `X-Real-IP` 进采集清单；四层代理的 PROXY protocol 明确不做（Zeek 9.0 无该分析器）。
 - Filebeat `ndjson` 解析失败产生的空壳文档**已修（2026-10-04）**：normalizer 认得 `zeek.error.type=json` 后从顶层 `message` 抢救，拼不回就进死信，不再落空壳（未改 Filebeat 链路配置）。
