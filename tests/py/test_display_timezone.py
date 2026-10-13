@@ -61,3 +61,24 @@ def test_no_browser_local_time_patterns(pattern: str) -> None:
         "formatDateTime / formatDate / formatTime / formatClock / formatShort / formatHourSlot）：\n"
         + "\n".join(offenders)
     )
+
+
+def test_traffic_is_per_second_with_minute_marks() -> None:
+    """流量曲线按**每秒**打点，仪表盘只显示**整分钟**刻度（用户 2026-10 口径）。
+
+    - 后端：桶用 `fixed_interval: "1s"`（10 分钟 = 600 点），并返回 `minute_marks`（整分钟）；
+    - 前端：x 轴只在 `:00` 处显示刻度，且不打点（600 个点打点会糊成一片）。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    backend = (root / "ndr" / "backend" / "app" / "api" / "routes" / "stats_overview.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"fixed_interval": "1s"' in backend, "流量桶必须是每秒"
+    assert "minute_marks" in backend, "要给出整分钟刻度"
+    frontend = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
+        encoding="utf-8"
+    )
+    assert 'value.endsWith(":00")' in frontend, "刻度只在整分钟显示"
+    assert 'symbol: "none"' in frontend and "showSymbol: false" in frontend, "600 个点不该打点"

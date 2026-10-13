@@ -270,7 +270,12 @@ def clamp_minutes(value: Any) -> int:
 
 
 def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
-    """按分钟出流量桶（只统计 conn —— HTTP 的 bytes 会重复计入）。"""
+    """按 **1 秒** 出流量桶（只统计 conn —— HTTP 的 bytes 会重复计入）。
+
+    为什么是每秒而不是每分钟（2026-10 用户口径）：曲线要**按每秒打点**画成心电图式，
+    10 分钟 = 600 个点；仪表盘上只显示 **10 个时间段刻度**（整分钟），刻度由
+    `shape_minute_traffic` 额外给出的 `minute_marks` 决定。
+    """
     return {
         "size": 0,
         "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
@@ -278,10 +283,10 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
-                    "per_minute": {
+                    "per_second": {
                         "date_histogram": {
                             "field": "@timestamp",
-                            "fixed_interval": "1m",
+                            "fixed_interval": "1s",
                             "min_doc_count": 0,
                             "extended_bounds": {"min": start, "max": end},
                         },
@@ -298,10 +303,11 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
 
 def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str, Any]:
     """分钟桶 → 点（含"进行中的这一分钟"按时长折算，避免右端假性塌陷）。"""
-    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_minute") or {}).get(
+    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_second") or {}).get(
         "buckets"
     ) or []
     points: list[dict[str, Any]] = []
+    minute_marks: list[str] = []
     for bucket in buckets:
         if not isinstance(bucket, dict):
             continue
@@ -310,14 +316,17 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         total = bytes_out + bytes_in
         start_at = str(bucket.get("key_as_string") or "")
         # 进行中的那一分钟：只过了 x 秒 → 用 x 秒折算速率（否则看上去像流量骤降）
+        # 每秒一桶：已经过完的秒就是 1 秒；**当前这一秒**是不完整的 → 标 partial 且不做放大折算
+        # （对"1 秒"做按比例放大只会制造尖刺，反而更容易被误读成流量突增）
         partial = False
-        elapsed = 60.0
+        elapsed = 1.0
         try:
             began = datetime.fromisoformat(start_at)  # py3.11+ 认 Z
-            elapsed = max(1.0, min(60.0, (now - began).total_seconds()))
-            partial = elapsed < 59.0
+            partial = (now - began).total_seconds() < 0.95
         except (TypeError, ValueError):
-            pass
+            partial = False  # 时间不合法就按"已过完"处理（只影响最后一点的高亮）
+        if start_at[14:16] == "00" or not minute_marks:
+            minute_marks.append(start_at)
         points.append(
             {
                 "ts": start_at,
@@ -330,6 +339,9 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
     total_bytes = sum(int(p["bytes_total"]) for p in points)
     return {
         "points": points,
+        # 仪表盘上的 10 个时间段刻度（整分钟）；曲线本身是每秒一个点
+        "minute_marks": minute_marks,
+        "per_second": True,
         "minutes": minutes,
         "total_bytes": total_bytes,
         "avg_bytes_per_sec": round(total_bytes / max(1, minutes * 60), 1),
@@ -341,10 +353,10 @@ def stats_traffic(
     _: Annotated[User, Depends(get_current_user)],
     minutes: int = TRAFFIC_MINUTES_DEFAULT,
 ):
-    """**近 N 分钟流量**（默认 10 分钟、每分钟一个点）—— 给总览页的"心电图"用。
+    """**近 N 分钟流量**（默认 10 分钟、**每秒一个点**）—— 给总览页的"心电图"用。
 
-    与 24h 口径的区别：窗口短、桶细，看得出"现在在不在传"；已过完的分钟按 60 秒折算，
-    **进行中的那一分钟按实际经过秒数折算**（并标 `partial`），所以右端不会假性塌陷。
+    曲线按秒打点（10 分钟 = 600 点）；仪表盘只显示 `minute_marks`（每整分钟一个）作为时间段刻度。
+    当前这一秒不完整 → 标 `partial`（不做放大折算，避免制造尖刺）。
     口径仍是 **Zeek conn 的应用层字节**（不含链路层开销/重传/未跟踪流），不是网卡收包量。
     """
     from datetime import UTC, datetime as _dt, timedelta as _td
@@ -359,6 +371,8 @@ def stats_traffic(
         "since": start_iso,
         "until": end_iso,
         "points": [],
+        "minute_marks": [],
+        "per_second": True,
         "total_bytes": 0,
         "avg_bytes_per_sec": 0.0,
         "computed_at": end_dt.isoformat(),

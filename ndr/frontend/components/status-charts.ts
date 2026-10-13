@@ -644,7 +644,17 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       },
     },
     grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
-    xAxis: { ...AXIS, boundaryGap: false, data: labels, axisLabel: { fontSize: 10 } },
+    // 每秒一个点（600 个），但**只在整分钟处显示刻度**（仪表盘上就是 10 个时间段）
+    xAxis: {
+      ...AXIS,
+      boundaryGap: false,
+      data: labels,
+      axisLabel: {
+        fontSize: 10,
+        interval: 0,
+        formatter: (value: string) => (value.endsWith(":00") ? value : ""),
+      },
+    },
     yAxis: {
       ...AXIS,
       type: "value",
@@ -654,10 +664,10 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       {
         type: "line",
         smooth: false,
-        symbol: "circle",
-        symbolSize: 4,
-        // 心电图观感：细线 + 不填充 + 只在点上有标记
-        lineStyle: { width: 1.6 },
+        // 心电图观感：细线 + 不填充 + **不打点**（600 个点打点会糊成一片）
+        symbol: "none",
+        showSymbol: false,
+        lineStyle: { width: 1.2 },
         areaStyle: undefined,
         data: points.map((p) => p.bytes_per_sec),
       },

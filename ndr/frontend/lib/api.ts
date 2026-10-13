@@ -1149,6 +1149,9 @@ export interface TrafficMinutes {
   since: string;
   until: string;
   points: TrafficMinutePoint[];
+  /** 仪表盘上显示的 10 个时间段刻度（整分钟；曲线本身是每秒一个点） */
+  minute_marks?: string[];
+  per_second?: boolean;
   total_bytes: number;
   avg_bytes_per_sec: number;
   computed_at: string;
