@@ -625,68 +625,105 @@ export function bytesLine(metrics: SystemMetrics | null): string {
  * 为什么这么画（2026-10 用户要求）：原来的 24h 波浪/面积图看不出"现在在不在传"，而且
  * 未过完的那个小时会让右端假性塌陷；换成按分钟打点，进行中的那一分钟用虚线点单独标出来。
  */
+/** 每秒字节数 → Mbps（网络口径用 bit） */
+export function mbpsOf(bytes: number): number {
+  return (Number(bytes) * 8) / 1e6;
+}
+
+/** 速率显示：0 显示 0bps、小的显示 Kbps、大的显示 Gbps（与参考图一致） */
+export function formatMbps(bytes: number): string {
+  const bps = Number(bytes) * 8;
+  if (!Number.isFinite(bps) || bps <= 0) return "0bps";
+  if (bps < 1e3) return `${bps.toFixed(0)}bps`;
+  if (bps < 1e6) return `${(bps / 1e3).toFixed(1)}Kbps`;
+  if (bps < 1e9) return `${(bps / 1e6).toFixed(2)}Mbps`;
+  return `${(bps / 1e9).toFixed(2)}Gbps`;
+}
+
+const TRAFFIC_GRID = "#e5e7eb"; // 网格线（横竖同一色，参考图就是浅灰）
+const TRAFFIC_LINE = "#5f9e52"; // 线条：绿色
+const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
+
+/**
+ * 近期流量图 —— **完全按 2026-10 用户给的参考图实现**：
+ * - 左上角单位 `Mbps`，横线每档一条（0/100/200…），竖线每分钟一条（正好 N 条 = 刻度）；
+ * - 线条：绿色**折线**（直连各点、不平滑、不填充、平时不打点）；
+ * - 悬停：白底 + 蓝框圆角提示框，内容两行 —— 第一行粗体「接收」，第二行「时间,值Mbps」；
+ *   悬停处显示一个蓝点（参考图里那个小蓝点）；
+ * - 滚动更新：只换数据不整份重画（Chart 传 merge）+ 线性更新动画。
+ */
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  // 刻度竖线的位置（后端给的整分钟）——只在窗口里那些分钟上画
+  // 竖线只画在整分钟上（后端给的 minute_marks），且必须落在窗口内的刻度位置
   const marks = (data?.minute_marks || []).filter((ts) => labels.includes(clockOf(Date.parse(ts))));
+  const recv = points.map((p) => mbpsOf(p.bytes_in ?? p.bytes_total));
   return {
+    animation: true,
+    animationDuration: 0,
+    animationDurationUpdate: 400,
+    animationEasingUpdate: "linear",
     tooltip: {
-      trigger: "axis", // 鼠标落到线条上，显示**那一秒**的流量
-      axisPointer: { type: "line" },
+      trigger: "axis",
+      axisPointer: { type: "line", lineStyle: { color: TRAFFIC_HOVER, width: 1 } },
+      backgroundColor: "#ffffff",
+      borderColor: TRAFFIC_HOVER,
+      borderWidth: 2,
+      borderRadius: 6,
+      padding: [8, 12],
+      textStyle: { color: "#1f2937", fontSize: 12 },
       formatter: (params: unknown) => {
-        const list = params as Array<{ dataIndex: number }>;
-        const idx = list?.[0]?.dataIndex ?? 0;
+        const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
-        return [
-          `${clockOf(Date.parse(p.ts))}${p.partial ? "（进行中）" : ""}`,
-          `该秒流量 ${formatBytes(p.bytes_per_sec)}`,
-          `秒内合计 ${formatBytes(p.bytes_total)} · ${p.docs} 条连接`,
-        ].join("<br/>");
+        // 参考图格式：第一行是曲线名，第二行是「时间,值」
+        return `<b>接收</b><br/>${clockOf(Date.parse(p.ts))},${formatMbps(p.bytes_in ?? p.bytes_total)}`;
       },
     },
-    grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
-    // 线条按**每秒**一个点画（15 分钟 = 900 个点）；X 轴只显示**每整分钟一个刻度**（正好 15 个），
-    // 并在每个整分钟处画一条**竖向刻度线**（跟 Y 轴的刻度线同款，用 markLine 画：
-    // 类目轴上 splitLine 会给每个秒点都画一条，那就成 900 条线了）。
+    grid: { left: 8, right: 14, top: 26, bottom: 4, containLabel: true },
     xAxis: {
       ...AXIS,
       boundaryGap: false,
       data: labels,
-      axisTick: { show: true, length: 6, lineStyle: { color: "#94a3b8" } },
+      axisTick: { show: true, length: 5, lineStyle: { color: "#94a3b8" } },
       axisLabel: {
         fontSize: 10,
         interval: 0,
+        // 只在整分钟显示刻度文字（HH:MM）
         formatter: (value: string) => (value.endsWith(":00") ? value.slice(0, 5) : ""),
       },
     },
     yAxis: {
       ...AXIS,
       type: "value",
-      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
+      min: 0,
+      // 左上角那个单位（参考图是 Mbps）
+      name: "Mbps",
+      nameLocation: "end",
+      nameGap: 12,
+      nameTextStyle: { fontSize: 10, color: "#475569" },
+      splitLine: { show: true, lineStyle: { color: TRAFFIC_GRID } },
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${Math.round(v)}` },
     },
-    // 滚动更新：只改数据不整份替换（Chart 传 merge）+ 线性更新动画 → 看起来是连续滚动
-    animation: true,
-    animationDuration: 0,
-    animationDurationUpdate: 400,
-    animationEasingUpdate: "linear",
     series: [
       {
+        name: "接收",
         type: "line",
-        smooth: false, // 折线条：直接连各点（不是心电图、也不做平滑）
-        symbol: "none", // 900 个点不打点，否则糊成一片
-        showSymbol: false,
-        lineStyle: { width: 1.5 },
+        smooth: false, // 折线条：直连各点
+        symbol: "circle",
+        symbolSize: 6,
+        showSymbol: false, // 平时不打点，悬停时才出现（蓝色小点）
+        itemStyle: { color: TRAFFIC_HOVER },
+        lineStyle: { width: 1.6, color: TRAFFIC_LINE },
         areaStyle: undefined,
-        data: points.map((p) => p.bytes_per_sec),
+        data: recv,
         markLine: {
           silent: true,
           symbol: "none",
           animation: false,
           label: { show: false },
-          lineStyle: { color: "#cbd5e1", type: "dashed", width: 1 },
-          // 每个整分钟一条竖线（刻度条），值用同一个时钟格式，才能落在对应类目上
+          // 每分钟一条竖线（跟横线同款浅灰实线）
+          lineStyle: { color: TRAFFIC_GRID, type: "solid", width: 1 },
           data: marks.map((ts) => ({ xAxis: clockOf(Date.parse(ts)) })),
         },
       },

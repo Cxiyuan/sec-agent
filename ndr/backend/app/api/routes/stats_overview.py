@@ -333,6 +333,9 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
                 "ts": start_at,
                 "docs": _int_of(bucket.get("doc_count")),
                 "bytes_total": total,
+                # 发送/接收分开给：仪表盘右上角要「实时发送 / 实时接收」分别显示（参考图口径）
+                "bytes_out": bytes_out,
+                "bytes_in": bytes_in,
                 "bytes_per_sec": round(total / elapsed, 1),
                 "partial": partial,
             }

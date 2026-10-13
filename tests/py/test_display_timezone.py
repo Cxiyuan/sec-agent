@@ -84,8 +84,11 @@ def test_traffic_is_per_second_with_minute_marks() -> None:
         encoding="utf-8"
     )
     assert 'value.endsWith(":00")' in frontend, "刻度只在整分钟显示"
-    assert 'symbol: "none"' in frontend and "showSymbol: false" in frontend, "600 个点不该打点"
-    assert "smooth: true" in frontend, "要普通线条，不是心电图尖刺"
-    assert "该秒流量" in frontend, "悬停要显示那一秒的流量"
+    assert "showSymbol: false" in frontend, "900 个点平时不打点（悬停才出蓝点）"
+    assert "smooth: false" in frontend, "折线条：直连各点（不是平滑、也不是心电图）"
+    assert 'name: "Mbps"' in frontend, "Y 轴左上角要有单位 Mbps（参考图）"
+    assert "接收" in frontend, "提示框第一行是曲线名「接收」（参考图）"
+    assert "#5f9e52" in frontend, "线条是绿色（参考图）"
+    assert "formatMbps" in frontend, "悬停要按参考图显示该秒的 Mbps 值"
     panel = (root / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(encoding="utf-8")
     assert 'title="近期流量"' in panel, "卡片名应为「近期流量」"

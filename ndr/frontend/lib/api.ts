@@ -1148,6 +1148,9 @@ export interface TrafficMinutePoint {
   ts: string;
   docs: number;
   bytes_total: number;
+  /** 该秒的发送/接收字节数（右上角「实时发送 / 实时接收」用它，参考图口径） */
+  bytes_out: number;
+  bytes_in: number;
   bytes_per_sec: number;
   /** true = 这一分钟还没过完（速率已按实际经过秒数折算） */
   partial: boolean;

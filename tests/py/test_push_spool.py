@@ -54,7 +54,9 @@ class _FakeRedis:
 
 @pytest.fixture
 def spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, push_mod: Any) -> Path:
-    monkeypatch.setattr(push_mod.settings, "detector_push_spool_dir", str(tmp_path / "spool"), raising=False)
+    monkeypatch.setattr(
+        push_mod.settings, "detector_push_spool_dir", str(tmp_path / "spool"), raising=False
+    )
     monkeypatch.setattr(push_mod.settings, "detector_push_age_seconds", 300, raising=False)
     monkeypatch.setattr(push_mod.settings, "detector_push_spool_max_mb", 8, raising=False)
     monkeypatch.setattr(push_mod, "record", lambda *a, **k: None)
@@ -90,11 +92,15 @@ def test_legacy_payload_without_timestamp_ages_out(spool: Path, push_mod: Any) -
     """老载荷没有 queued_at 字段：按已超龄处理（否则永远堵在队列里）。"""
     r = _FakeRedis()
     key = push_mod.settings.detector_push_retry_queue
-    r.lpush(key, json.dumps({"v": 2, "digests": [{"id": "legacy"}], "attempts": 3}, ensure_ascii=False))
+    r.lpush(
+        key, json.dumps({"v": 2, "digests": [{"id": "legacy"}], "attempts": 3}, ensure_ascii=False)
+    )
     assert push_mod.age_out_to_spool(r, {}, force=True) == 1
 
 
-def test_replay_after_agent_recovers(spool: Path, push_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replay_after_agent_recovers(
+    spool: Path, push_mod: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """智能体恢复（推送成功）后从磁盘按序补推；推成功的行从缓存删掉。"""
     r = _FakeRedis()
     key = push_mod.settings.detector_push_retry_queue
@@ -104,7 +110,7 @@ def test_replay_after_agent_recovers(spool: Path, push_mod: Any, monkeypatch: py
     assert push_mod.spool_stats()["spool_batches"] == 3
 
     sent: list[list[dict]] = []
-    monkeypatch.setattr(push_mod, "push_batch", lambda cfg, batch: (sent.append(batch) or (True, "")))
+    monkeypatch.setattr(push_mod, "push_batch", lambda cfg, batch: sent.append(batch) or (True, ""))
     stats: dict[str, int] = {}
     out = push_mod.replay_spool(r, stats, limit=1)
 
@@ -114,7 +120,9 @@ def test_replay_after_agent_recovers(spool: Path, push_mod: Any, monkeypatch: py
     assert stats["push_spool_sent"] == 1
 
 
-def test_replay_stops_when_agent_still_down(spool: Path, push_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replay_stops_when_agent_still_down(
+    spool: Path, push_mod: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """智能体还没恢复：补推失败就停，缓存一行都不删（下次继续）。"""
     r = _FakeRedis()
     key = push_mod.settings.detector_push_retry_queue
@@ -144,7 +152,9 @@ def test_compose_has_8g_redis_and_spool_volume() -> None:
     for name in ("ndr/docker-compose.yml", "ndr/docker-compose.deploy.yml"):
         text = (root / name).read_text(encoding="utf-8")
         assert "ST_DETECTOR_RAW_QUEUE_MAX" in text, f"{name}: 要能调大归一化队列上限"
-        assert "ST_DETECTOR_PUSH_SPOOL_DIR: /var/lib/shentong/push-spool" in text, f"{name}: 摘要磁盘缓存"
+        assert "ST_DETECTOR_PUSH_SPOOL_DIR: /var/lib/shentong/push-spool" in text, (
+            f"{name}: 摘要磁盘缓存"
+        )
         assert "- push-spool:/var/lib/shentong/push-spool" in text, f"{name}: 磁盘缓存必须挂卷"
     deploy = (root / "ndr" / "docker-compose.deploy.yml").read_text(encoding="utf-8")
     assert "      - 8gb\n" in deploy, "部署编排：Redis 内存上限应为 8gb"
