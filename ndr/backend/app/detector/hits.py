@@ -98,6 +98,19 @@ _HIDDEN_IN_EVIDENCE = frozenset(
     }
 )
 
+#: 证据去重的身份字段（同一次事件的两份文档这些字段一致，只有时间戳不同）
+_EVIDENCE_ID_FIELDS = (
+    "uid",
+    "community_id",
+    "flow_id",
+    "event_type",
+    "signature_id",
+    "src_ip",
+    "dst_ip",
+    "dst_port",
+    "uri_path",
+)
+
 #: 会被截断的长文本字段（用户反馈「证据看不出因为什么内容被命中」）
 _TRUNCATE_FIELDS = ("body", "resp_body", "req_headers", "query_string", "payload_printable")
 #: 单个长文本最多留多少字符（够判断，又不会把界面撑爆）
@@ -164,6 +177,30 @@ def _matched_content(doc: dict[str, Any], item: dict[str, Any]) -> None:
             item[key] = _truncate(item[key])
 
 
+
+def _evidence_key(ev: dict[str, Any]) -> str:
+    """证据条目的去重键（同一次事件的两份文档 @timestamp 不同，但身份字段一致）。"""
+    key = "|".join(str(ev.get(k) or "") for k in _EVIDENCE_ID_FIELDS)
+    if key.strip("|"):
+        return key
+    return repr(sorted((k, str(v)) for k, v in ev.items() if k != "other_fields"))
+
+
+def dedupe_evidence(items: list[Any]) -> list[dict[str, Any]]:
+    """对已入库的证据再按事件身份去重（旧记录是写入时定格的，读时兜一层）。"""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ev in items or []:
+        if not isinstance(ev, dict):
+            continue
+        key = _evidence_key(ev)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ev)
+    return out
+
+
 def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
     """样例事件 → 关键字段（丢空值、控制体积、长文本截断、**按事件去重**）。
 
@@ -190,7 +227,7 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         # 去重键：优先用能唯一标识「一次事件」的字段；都没有就退回内容本身
         key = "|".join(
             str(doc.get(k) or "")
-            for k in ("uid", "community_id", "flow_id", "event_type", "signature_id", "src_ip", "dst_ip", "dst_port", "uri_path")
+            for k in _EVIDENCE_ID_FIELDS
         )
         if not key.strip("|"):
             key = repr(sorted((k, str(v)) for k, v in item.items() if k != "other_fields"))
@@ -256,7 +293,8 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "whitelist_id": row.whitelist_id or "",
         }
         if detail:
-            item["evidence"] = list(row.evidence or [])
+            # 读时再去一次重：老记录的证据是写入时定格的，可能有同事件的重复文档
+            item["evidence"] = dedupe_evidence(list(row.evidence or []))
         out.append(item)
     return out
 
