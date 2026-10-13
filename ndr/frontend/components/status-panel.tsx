@@ -81,7 +81,7 @@ const SRC = {
   rate: "检测器速率",
   coverage: "投递覆盖率",
   hits: "命中事件",
-  traffic: "近 10 分钟流量",
+  traffic: "近期流量",
   stats: "检测器队列",
   push: "摘要推送",
   baseline: "基线观测",
@@ -335,7 +335,7 @@ export function StatusPanel() {
   const [rate, setRate] = React.useState<DetectorRate | null>(null);
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
   const [hits, setHits] = React.useState<HitEventList | null>(null);
-  /** 近 10 分钟流量（按分钟，心电图式折线） */
+  /** 近期流量（线条按秒画，X 轴每分钟一个刻度） */
   const [traffic, setTraffic] = React.useState<TrafficMinutes | null>(null);
   /** 详情弹窗：打开的那条命中事件（含证据） */
   const [hitDetail, setHitDetail] = React.useState<HitEventItem | null>(null);
@@ -844,7 +844,7 @@ export function StatusPanel() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <div className="lg:col-span-2">
               <ChartCard
-                title="近 10 分钟流量（按分钟 · 心电图）"
+                title="近期流量"
                 extra={
                   overview ? (
                     <span className="text-xs font-normal text-muted-foreground">

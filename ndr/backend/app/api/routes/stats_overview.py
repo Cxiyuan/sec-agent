@@ -326,7 +326,7 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         except (TypeError, ValueError):
             partial = False  # 时间不合法就按"已过完"处理（只影响最后一点的高亮）
         # ISO 形如 2026-10-13T14:30:00.000Z：[17:19] 是**秒**位，整分钟才记一个刻度
-        if start_at[17:19] == "00" or not minute_marks:
+        if start_at[17:19] == "00":
             minute_marks.append(start_at)
         points.append(
             {
@@ -337,6 +337,8 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
                 "partial": partial,
             }
         )
+    # 仪表盘要求「X 轴正好 N 个刻度、每分钟一个」：窗口两端会各多出一个，只留最后 N 个
+    minute_marks = minute_marks[-minutes:]
     total_bytes = sum(int(p["bytes_total"]) for p in points)
     return {
         "points": points,

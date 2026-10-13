@@ -425,6 +425,12 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
+                # 2026-10 实机核查：原判据只有「字节数 + 方向」⇒ 任何带 bytes_out 的事件都能命中。
+                # 实测 conn_state=S0（从未建连）、event_type=scan_attempt 的文档也带 2.1GB 字节，
+                # 结果「大流量外传」报了根本没传过数据的连接。补两道通用闸门：只看 conn 日志 +
+                # 只算真的建立过会话的连接（与 conn_states.ESTABLISHED_CONN_STATES 同口径）。
+                {"field": "log_type", "op": "eq", "value": "conn"},
+                {"field": "event_type", "op": "eq", "value": "conn_established"},
                 {"field": "bytes_out", "op": "gt", "value": 10485760},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_external", "op": "eq", "value": True},
@@ -440,6 +446,9 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
+                # 同「内置-大流量外传」：只看 conn 日志 + 已建立会话，否则 S0/scan_attempt 事件也命中
+                {"field": "log_type", "op": "eq", "value": "conn"},
+                {"field": "event_type", "op": "eq", "value": "conn_established"},
                 {"field": "bytes_out", "op": "gt", "value": 104857600},
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_external", "op": "eq", "value": True},
@@ -455,6 +464,9 @@ BUILTIN_RULES: list[dict] = [
         "conditions": {
             "logic": "and",
             "rules": [
+                # 同「内置-大流量外传」：只看 conn 日志 + 已建立会话
+                {"field": "log_type", "op": "eq", "value": "conn"},
+                {"field": "event_type", "op": "eq", "value": "conn_established"},
                 {"field": "bytes_in", "op": "gt", "value": 104857600},
                 {"field": "src_external", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
@@ -519,17 +531,21 @@ BUILTIN_RULES: list[dict] = [
                 {"field": "src_internal", "op": "eq", "value": True},
                 {"field": "dst_internal", "op": "eq", "value": True},
                 # 服务器回包/正常会话也会计入（评审 P1）：只看未建立的连接
+                # 2026-10 实机核查：原来把 OTH 也算枚举 —— OTH 是「没看到 SYN 的中间流」
+                # （conn_states.py 自己就标注「保守判为未建立」），镜像开始抓包时的在建连接
+                # 会大量落进这个状态 ⇒ 把「抓包边界」当成了「有人在摸端口」。枚举必然要发 SYN，
+                # 只看 S0/REJ/SH/SHR/RSTOS0/RSTRH 这些「发起过但没成」的状态。
                 {
                     "field": "conn_state",
                     "op": "in",
-                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH", "OTH"],
+                    "value": ["S0", "REJ", "SH", "SHR", "RSTOS0", "RSTRH"],
                 },
             ],
         },
     },
     {
         "name": "内置-内网慢速服务枚举",
-        "description": "同一内网源在 6 小时内对同一目标摸 ≥10 个不同端口（慢速端口枚举）",
+        "description": "同一内网源在 6 小时内对同一目标摸 ≥25 个不同端口（慢速端口枚举）",
         "source": "builtin",
         "priority": 26,
         "severity": "medium",

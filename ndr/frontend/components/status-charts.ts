@@ -630,7 +630,8 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
   return {
     tooltip: {
-      trigger: "axis",
+      trigger: "axis", // 鼠标落到线条上，显示**那一秒**的流量
+      axisPointer: { type: "line" },
       formatter: (params: unknown) => {
         const list = params as Array<{ dataIndex: number }>;
         const idx = list?.[0]?.dataIndex ?? 0;
@@ -638,13 +639,13 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         if (!p) return "";
         return [
           `${clockOf(Date.parse(p.ts))}${p.partial ? "（进行中）" : ""}`,
-          `${formatBytes(p.bytes_per_sec)}/秒`,
-          `合计 ${formatBytes(p.bytes_total)} · ${p.docs} 条连接`,
+          `该秒流量 ${formatBytes(p.bytes_per_sec)}`,
+          `秒内合计 ${formatBytes(p.bytes_total)} · ${p.docs} 条连接`,
         ].join("<br/>");
       },
     },
     grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
-    // 每秒一个点（600 个），但**只在整分钟处显示刻度**（仪表盘上就是 10 个时间段）
+    // 线条按**每秒**一个点画（10 分钟 = 600 个点）；X 轴只显示**每整分钟一个刻度**（正好 10 个）
     xAxis: {
       ...AXIS,
       boundaryGap: false,
@@ -652,7 +653,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       axisLabel: {
         fontSize: 10,
         interval: 0,
-        formatter: (value: string) => (value.endsWith(":00") ? value : ""),
+        formatter: (value: string) => (value.endsWith(":00") ? value.slice(0, 5) : ""),
       },
     },
     yAxis: {
@@ -663,11 +664,10 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
     series: [
       {
         type: "line",
-        smooth: false,
-        // 心电图观感：细线 + 不填充 + **不打点**（600 个点打点会糊成一片）
-        symbol: "none",
+        smooth: true, // 普通线条（不是心电图那类尖刺画法）
+        symbol: "none", // 600 个点不打点，否则糊成一片
         showSymbol: false,
-        lineStyle: { width: 1.2 },
+        lineStyle: { width: 1.5 },
         areaStyle: undefined,
         data: points.map((p) => p.bytes_per_sec),
       },

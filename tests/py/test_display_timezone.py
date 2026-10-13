@@ -79,8 +79,13 @@ def test_traffic_is_per_second_with_minute_marks() -> None:
     assert "minute_marks" in backend, "要给出整分钟刻度"
     # 刻度必须判"秒位"而不是"分钟位"（曾经写错成 [14:16]，结果只出 1 个刻度）
     assert 'start_at[17:19] == "00"' in backend, "整分钟刻度要按秒位判定"
+    assert "minute_marks[-minutes:]" in backend, "刻度要正好 N 个（每整分钟一个）"
     frontend = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
         encoding="utf-8"
     )
     assert 'value.endsWith(":00")' in frontend, "刻度只在整分钟显示"
     assert 'symbol: "none"' in frontend and "showSymbol: false" in frontend, "600 个点不该打点"
+    assert "smooth: true" in frontend, "要普通线条，不是心电图尖刺"
+    assert "该秒流量" in frontend, "悬停要显示那一秒的流量"
+    panel = (root / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(encoding="utf-8")
+    assert 'title="近期流量"' in panel, "卡片名应为「近期流量」"
