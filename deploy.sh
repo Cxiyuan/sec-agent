@@ -28,6 +28,7 @@ DEPLOY_SSH="${DEPLOY_SSH:-ssh}"
 COMPOSE_FILE="${COMPOSE_FILE:-ndr/docker-compose.deploy.yml}"
 SERVICES="${SERVICES:-}"
 PULL_RETRIES="${PULL_RETRIES:-5}"
+STRICT="${STRICT:-0}"
 
 [ -n "$DEPLOY_HOST" ] || { echo "缺少 DEPLOY_HOST（目标主机）" >&2; exit 2; }
 [ -f "$COMPOSE_FILE" ] || { echo "找不到编排文件：$COMPOSE_FILE" >&2; exit 2; }
@@ -62,6 +63,26 @@ if [ "$REMOTE_SUM" != "$LOCAL_SUM" ]; then
 fi
 echo "  校验和一致：$LOCAL_SUM"
 
+echo "== 2.5) 部署前体检（只读，不改任何配置）=="
+HOST_IP=$(deploy "ip route get 1.1.1.1 2>/dev/null | awk '{print \$7; exit}'" || true)
+[ -n "$HOST_IP" ] || HOST_IP=$(deploy "hostname -I 2>/dev/null | awk '{print \$1}'" || true)
+echo "  探测到宿主地址：${HOST_IP:-未知}（证书应覆盖它，否则浏览器会报证书不匹配）"
+deploy "docker exec shentong-ndr-frontend-1 sh -c 'openssl x509 -in /certs/tls.crt -noout -text 2>/dev/null | grep -q \"IP Address:${HOST_IP}\"' && echo '  证书已覆盖宿主地址 ✓' || echo '  ⚠ 证书未覆盖 ${HOST_IP}：请在部署配置里设置证书覆盖地址（TLS_SANS）后重启前端'" || true
+deploy "docker exec shentong-ndr-backend-1 python -c \"
+from app.config import settings
+jwt_bad = settings.jwt_secret in ('change-me-in-production', '')
+cors = settings.cors_origins or ''
+print('  ⚠ 登录密钥仍是默认占位值，必须更换' if jwt_bad else '  登录密钥已更换 ✓')
+print('  ⚠ 允许来源仍带 http/3000 写法：' + cors if ':3000' in cors or cors.startswith('http://') else '  允许来源 ✓ ' + (cors or '（空 = 只允许同源）'))
+\"" || true
+deploy "docker exec shentong-ndr-backend-1 python -c \"
+from app.detector.push import _load_config
+cfg = _load_config() or {}
+url = str(cfg.get('url') or '')
+print('  摘要推送已配置 ✓' if url else '  ⚠ 摘要推送未配置 → 摘要会一直未投递（智能体地址常量 10.44.77.249）')
+\"" || true
+echo "  （体检只读；有 ⚠ 不阻塞部署，可用 STRICT=1 让脚本遇到 ⚠ 直接失败）"
+
 echo "== 3) 拉取镜像（失败可见、可重试）=="
 i=1
 while : ; do
@@ -91,6 +112,10 @@ else
   echo "  前端本机 HTTPS 探活失败：请查 docker logs 前端容器（证书/端口/入口脚本）" >&2
 fi
 echo
+if [ "$STRICT" = "1" ]; then
+  echo
+  echo "STRICT=1：请确认上面体检里的 ⚠ 都已处理（缺项/占位值/证书未覆盖都会影响可用性）" >&2
+fi
 echo "部署完成。本次编排校验和：$LOCAL_SUM"
 echo "提示：目标上的编排已与仓库一致；若要回滚，执行"
 echo "  cp -f $DEPLOY_DIR/$BASE.bak.$STAMP $DEPLOY_DIR/$BASE && docker compose -f $BASE up -d"

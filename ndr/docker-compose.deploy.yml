@@ -96,7 +96,9 @@ services:
       # 备份放进去就会变成第二个管道（两个 beats 抢 5044）
       ST_LOGSTASH_PIPELINE_BACKUP: /logstash-backup/logstash.conf.bak
       ST_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      ST_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # 允许的跨源来源：留空 = 只允许同源（前端走 /api 同源代理，生产默认不需要跨源）。
+      # 部署脚本探测到访问地址后会给出建议值；要跨源访问再显式设置。
+      ST_CORS_ORIGINS: ${CORS_ORIGINS:-}
       # Zeek 网卡配置（写共享卷，Zeek 容器看门狗读取）
       ST_ZEEK_CONF_DIR: /config
       ST_ZEEK_IFACE_CONF: /config/interface.conf

@@ -51,10 +51,18 @@ def _brief(value: Any, limit: int = 120) -> str:
 
 
 def _env_source(name: str) -> str:
-    """这项是从环境变量读的，还是走的默认值？"""
+    """这项是从环境变量读的，还是走的默认值？
+
+    注意要同时看 `NAME` 与 `ST_NAME`：容器里 settings 绑定的是 `ST_` 前缀
+    （编排里 `ST_CORS_ORIGINS: ${CORS_ORIGINS:-}` 这种写法），只查原名会误报"代码默认值"
+    （实测踩到：CORS 明明由编排给了值，体检却显示"代码默认值"）。
+    """
     import os
 
-    return f"环境变量 {name}" if str(os.environ.get(name) or "").strip() else "代码默认值"
+    for candidate in (name, f"ST_{name}"):
+        if str(os.environ.get(candidate) or "").strip():
+            return f"环境变量 {candidate}"
+    return "代码默认值"
 
 
 def _db_value(key: str) -> Any:
@@ -104,7 +112,11 @@ def _networks_configured() -> str:
         from app.ingestion.scope import monitored_nets
 
         nets = monitored_nets()
-        return f"{len(nets)} 条：{', '.join(nets[:3])}" + ("…" if len(nets) > 3 else "") if nets else "未配置"
+        return (
+            f"{len(nets)} 条：{', '.join(nets[:3])}" + ("…" if len(nets) > 3 else "")
+            if nets
+            else "未配置"
+        )
     except Exception:  # noqa: BLE001
         return "读取失败"
 
@@ -197,7 +209,9 @@ def config_audit(_: Annotated[User, Depends(get_current_user)]) -> dict[str, Any
             "环境变量 ES_PASSWORD",
             settings.es_password,
             secret=True,
-            warn="" if str(settings.es_password or "").strip() else "未配置口令（ES 无鉴权时才会是空，注意不要对外暴露端口）",
+            warn=""
+            if str(settings.es_password or "").strip()
+            else "未配置口令（ES 无鉴权时才会是空，注意不要对外暴露端口）",
         )
     )
 
@@ -235,9 +249,15 @@ def config_audit(_: Annotated[User, Depends(get_current_user)]) -> dict[str, Any
             note="规则文件由开发人员维护；检查≠生效，需人工确认",
         )
     )
-    items.append(_item("nets", "监控网段", "数据库 zeek.monitored_nets（界面可改）", _networks_configured()))
-    items.append(_item("iface", "抓包网卡与网段", "共享配置卷（界面「监控网段」页维护）", _zeek_interface()))
-    items.append(_item("relay", "中继节点清单", "数据库 zeek.relay_nodes（界面可改）", _relay_configured()))
+    items.append(
+        _item("nets", "监控网段", "数据库 zeek.monitored_nets（界面可改）", _networks_configured())
+    )
+    items.append(
+        _item("iface", "抓包网卡与网段", "共享配置卷（界面「监控网段」页维护）", _zeek_interface())
+    )
+    items.append(
+        _item("relay", "中继节点清单", "数据库 zeek.relay_nodes（界面可改）", _relay_configured())
+    )
 
     # ---------- ③ 编排/引擎项：容器还不存在时就要定 ----------
     items.append(
@@ -268,7 +288,9 @@ def config_audit(_: Annotated[User, Depends(get_current_user)]) -> dict[str, Any
             "建议同步成 https://<访问地址>（前端同源代理一般不受影响，但直接调后端/跨源场景会被挡）"
         )
     if not push_url:
-        warnings.append(f"摘要推送未配置 → 摘要会一直「未投递」；智能体地址常量是 {DEFAULT_AGENT_HOST}")
+        warnings.append(
+            f"摘要推送未配置 → 摘要会一直「未投递」；智能体地址常量是 {DEFAULT_AGENT_HOST}"
+        )
     items.append(
         _item(
             "jwt",

@@ -69,6 +69,13 @@ def test_deploy_script_syncs_compose_and_verifies() -> None:
     assert "curl -sk" in src and "200" in src, "部署后要探活，不只看返回码"
     # 脚本里不许写死任何主机/地址（由环境变量传）
     assert "DEPLOY_HOST:-}" in src, "目标主机必须来自环境变量"
+    # 部署前体检（只读）：探测宿主地址 + 证书是否覆盖 + 占位密钥 + 允许来源 + 推送是否配置
+    assert "部署前体检" in src
+    assert "hostname -I" in src or "ip route get" in src, "要探测宿主地址（证书覆盖用）"
+    assert "IP Address:" in src and "证书未覆盖" in src
+    assert "change-me-in-production" in src and "登录密钥仍未" not in src
+    assert ":3000" in src, "要提示允许来源还带旧写法"
+    assert "STRICT" in src
 
 
 def test_config_audit_lists_source_and_masks_secrets() -> None:
