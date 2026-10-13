@@ -625,6 +625,19 @@ export function bytesLine(metrics: SystemMetrics | null): string {
  * 为什么这么画（2026-10 用户要求）：原来的 24h 波浪/面积图看不出"现在在不在传"，而且
  * 未过完的那个小时会让右端假性塌陷；换成按分钟打点，进行中的那一分钟用虚线点单独标出来。
  */
+/** 滑动平均（trailing window）：把秒级尖刺抹平，曲线才像参考图那样平滑攀升/下降。 */
+function movingAverage(values: number[], window: number): number[] {
+  const w = Math.max(1, Math.floor(window));
+  const out: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    sum += values[i];
+    if (i >= w) sum -= values[i - w];
+    out.push(sum / Math.min(i + 1, w));
+  }
+  return out;
+}
+
 /** 每秒字节数 → Mbps（网络口径用 bit） */
 export function mbpsOf(bytes: number): number {
   return (Number(bytes) * 8) / 1e6;
@@ -642,6 +655,9 @@ export function formatMbps(bytes: number): string {
 
 const TRAFFIC_GRID = "#e5e7eb"; // 网格线（横竖同一色，参考图就是浅灰）
 const TRAFFIC_LINE = "#5f9e52"; // 线条：绿色
+// 滑动平均窗口（秒）：窗口越长越平滑；20 秒能把尖刺抹平又留得住趋势
+const TRAFFIC_SMOOTH_SECONDS = 20;
+const TRAFFIC_SERIES_NAME = "合计流量（20 秒均）";
 const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 
 /**
@@ -657,7 +673,15 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
   // 竖线只画在整分钟上（后端给的 minute_marks），且必须落在窗口内的刻度位置
   const marks = (data?.minute_marks || []).filter((ts) => labels.includes(clockOf(Date.parse(ts))));
-  const recv = points.map((p) => mbpsOf(p.bytes_in ?? p.bytes_total));
+  // 画的是**合计流量（发送+接收）**：秒级的"接收"在这张网上中位数不到 1Mbps（大多是下行回包），
+  // 画出来会贴平 x 轴；合计更能反映"这条线在传多少"。
+  // 再做 **20 秒滑动平均**：实测每秒原始值中位数 1.7Mbps、尖峰 2564Mbps，直接用原始值画就是
+  // 心电图（平段贴轴 + 一根根尖刺），坐标轴也会被尖峰撑大而把平段压没。
+  const win = TRAFFIC_SMOOTH_SECONDS;
+  const series = movingAverage(
+    points.map((p) => mbpsOf((p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total))),
+    win,
+  );
   return {
     animation: true,
     animationDuration: 0,
@@ -676,8 +700,9 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
+        const moved = series[idx] ?? 0;
         // 参考图格式：第一行是曲线名，第二行是「时间,值」
-        return `<b>接收</b><br/>${clockOf(Date.parse(p.ts))},${formatMbps(p.bytes_in ?? p.bytes_total)}`;
+        return `<b>${TRAFFIC_SERIES_NAME}</b><br/>${clockOf(Date.parse(p.ts))},${moved.toFixed(2)}Mbps`;
       },
     },
     grid: { left: 8, right: 14, top: 26, bottom: 4, containLabel: true },
@@ -707,16 +732,17 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
     },
     series: [
       {
-        name: "接收",
+        name: TRAFFIC_SERIES_NAME,
         type: "line",
-        smooth: false, // 折线条：直连各点
+        smooth: true, // 平滑攀升/下降（参考图观感）
+        smoothMonotone: "x", // 单调平滑：不越过数据点、不会掉到 0 以下
         symbol: "circle",
         symbolSize: 6,
         showSymbol: false, // 平时不打点，悬停时才出现（蓝色小点）
         itemStyle: { color: TRAFFIC_HOVER },
         lineStyle: { width: 1.6, color: TRAFFIC_LINE },
         areaStyle: undefined,
-        data: recv,
+        data: series.map((v) => Number(v.toFixed(2))),
         markLine: {
           silent: true,
           symbol: "none",
