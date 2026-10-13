@@ -77,6 +77,8 @@ def test_traffic_is_per_second_with_minute_marks() -> None:
     )
     assert '"fixed_interval": "1s"' in backend, "流量桶必须是每秒"
     assert "minute_marks" in backend, "要给出整分钟刻度"
+    # 刻度必须判"秒位"而不是"分钟位"（曾经写错成 [14:16]，结果只出 1 个刻度）
+    assert 'start_at[17:19] == "00"' in backend, "整分钟刻度要按秒位判定"
     frontend = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
         encoding="utf-8"
     )

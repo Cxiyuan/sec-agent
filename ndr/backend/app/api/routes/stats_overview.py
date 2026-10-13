@@ -325,7 +325,8 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
             partial = (now - began).total_seconds() < 0.95
         except (TypeError, ValueError):
             partial = False  # 时间不合法就按"已过完"处理（只影响最后一点的高亮）
-        if start_at[14:16] == "00" or not minute_marks:
+        # ISO 形如 2026-10-13T14:30:00.000Z：[17:19] 是**秒**位，整分钟才记一个刻度
+        if start_at[17:19] == "00" or not minute_marks:
             minute_marks.append(start_at)
         points.append(
             {
