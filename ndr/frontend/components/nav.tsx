@@ -7,6 +7,7 @@ import {
   Activity,
   Bot,
   Database,
+  Settings,
   Filter,
   GitBranch,
   Share2,
@@ -35,6 +36,7 @@ const items = [
   // 拓扑发现：自动发现网络拓扑（转发链路 / 全量通信两视图）
   { href: "/admin/topology", label: "拓扑发现", icon: Share2 },
   { href: "/admin/storage", label: "数据存储", icon: Database },
+  { href: "/admin/config", label: "配置体检", icon: Settings },
   { href: "/admin/filters", label: "过滤规则", icon: Filter },
   { href: "/admin/agent", label: "智能体对接", icon: Bot },
   { href: "/admin/account", label: "账户", icon: UserRound },

@@ -1112,3 +1112,24 @@ export interface TopologyAliasesPayload {
   aliases: Record<string, string>;
   count: number;
 }
+
+/** `GET /api/config/audit`：配置体检的一项（口令/令牌已脱敏） */
+export interface ConfigAuditItem {
+  key: string;
+  name: string;
+  /** 这一项**从哪来**：环境变量 / 数据库（界面可改）/ 编排部署侧 / 代码默认值 */
+  source: string;
+  value: string;
+  secret: boolean;
+  warn?: string;
+  note?: string;
+}
+
+export interface ConfigAuditPayload {
+  items: ConfigAuditItem[];
+  warnings: string[];
+  default_agent_host: string;
+  checked_at: string;
+  note: string;
+  error?: string;
+}

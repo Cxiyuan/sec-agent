@@ -69,3 +69,26 @@ def test_deploy_script_syncs_compose_and_verifies() -> None:
     assert "curl -sk" in src and "200" in src, "部署后要探活，不只看返回码"
     # 脚本里不许写死任何主机/地址（由环境变量传）
     assert "DEPLOY_HOST:-}" in src, "目标主机必须来自环境变量"
+
+
+def test_config_audit_lists_source_and_masks_secrets() -> None:
+    """配置体检必须**标出来源**并**脱敏**（2026-10：排查时最耗时的是"哪个值生效"）。
+
+    同时钉住一条纪律：智能体地址是**产品常量**（换哪部署 NDR 都连它），
+    所以它作为内置默认值是允许的、且只出现一处。
+    """
+    src = (ROOT / "ndr" / "backend" / "app" / "api" / "routes" / "config_audit.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'DEFAULT_AGENT_HOST = "10.44.77.249"' in src, "智能体地址作为内置默认常量"
+    assert "def _mask(" in src and "已配置（长度" in src, "口令/令牌必须脱敏"
+    assert "环境变量" in src and "数据库" in src and "编排" in src, "每项都要说明来源"
+    assert "_PLACEHOLDER_SECRETS" in src and "change-me-in-production" in src, "占位密钥要报警"
+    router = (ROOT / "ndr" / "backend" / "app" / "api" / "router.py").read_text(encoding="utf-8")
+    assert "config_audit_router" in router
+    page = (ROOT / "ndr" / "frontend" / "app" / "admin" / "config" / "page.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "/api/config/audit" in page and "来源" in page
+    nav = (ROOT / "ndr" / "frontend" / "components" / "nav.tsx").read_text(encoding="utf-8")
+    assert "/admin/config" in nav
