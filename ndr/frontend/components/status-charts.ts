@@ -628,6 +628,8 @@ export function bytesLine(metrics: SystemMetrics | null): string {
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
+  // 刻度竖线的位置（后端给的整分钟）——只在窗口里那些分钟上画
+  const marks = (data?.minute_marks || []).filter((ts) => labels.includes(clockOf(Date.parse(ts))));
   return {
     tooltip: {
       trigger: "axis", // 鼠标落到线条上，显示**那一秒**的流量
@@ -645,11 +647,14 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       },
     },
     grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
-    // 线条按**每秒**一个点画（10 分钟 = 600 个点）；X 轴只显示**每整分钟一个刻度**（正好 10 个）
+    // 线条按**每秒**一个点画（15 分钟 = 900 个点）；X 轴只显示**每整分钟一个刻度**（正好 15 个），
+    // 并在每个整分钟处画一条**竖向刻度线**（跟 Y 轴的刻度线同款，用 markLine 画：
+    // 类目轴上 splitLine 会给每个秒点都画一条，那就成 900 条线了）。
     xAxis: {
       ...AXIS,
       boundaryGap: false,
       data: labels,
+      axisTick: { show: true, length: 6, lineStyle: { color: "#94a3b8" } },
       axisLabel: {
         fontSize: 10,
         interval: 0,
@@ -661,15 +666,29 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       type: "value",
       axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
     },
+    // 滚动更新：只改数据不整份替换（Chart 传 merge）+ 线性更新动画 → 看起来是连续滚动
+    animation: true,
+    animationDuration: 0,
+    animationDurationUpdate: 400,
+    animationEasingUpdate: "linear",
     series: [
       {
         type: "line",
-        smooth: true, // 普通线条（不是心电图那类尖刺画法）
-        symbol: "none", // 600 个点不打点，否则糊成一片
+        smooth: false, // 折线条：直接连各点（不是心电图、也不做平滑）
+        symbol: "none", // 900 个点不打点，否则糊成一片
         showSymbol: false,
         lineStyle: { width: 1.5 },
         areaStyle: undefined,
         data: points.map((p) => p.bytes_per_sec),
+        markLine: {
+          silent: true,
+          symbol: "none",
+          animation: false,
+          label: { show: false },
+          lineStyle: { color: "#cbd5e1", type: "dashed", width: 1 },
+          // 每个整分钟一条竖线（刻度条），值用同一个时钟格式，才能落在对应类目上
+          data: marks.map((ts) => ({ xAxis: clockOf(Date.parse(ts)) })),
+        },
       },
     ],
   };

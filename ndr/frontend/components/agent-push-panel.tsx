@@ -26,6 +26,19 @@ function backlog(st: AgentPushStatus): number {
   return st.retry_backlog_batches ?? (st.queue_depth ?? 0) + (st.processing_depth ?? 0);
 }
 
+/** 磁盘缓存占用：MB 以上用 MB，否则用 KB。 */
+function fmtBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/** 最老缓存待了多久：分钟以下用秒，小时以上用小时。 */
+function fmtAge(seconds: number): string {
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`;
+  return `${Math.max(1, Math.round(seconds))} 秒`;
+}
+
 /** 智能体推送：地址 / 令牌 / 开关 + 送达与失败计数 + 待重发队列 + 一键自检、立即重发。 */
 export function AgentPushPanel() {
   const [data, setData] = React.useState<AgentPushPayload | null>(null);
@@ -289,6 +302,15 @@ export function AgentPushPanel() {
               )}
               <span>待重发批数 {st.queue_depth}</span>
               <span>重发处理中 {st.processing_depth}</span>
+              {typeof st.spool_batches === "number" && st.spool_batches > 0 && (
+                <span
+                  className="text-amber-600"
+                  title="超龄摘要已从队列挪到磁盘缓存（不再占 Redis 内存），智能体恢复后自动按序补推、推成功即删"
+                >
+                  磁盘缓存 {st.spool_batches} 批（{fmtBytes(st.spool_bytes ?? 0)}）
+                  {(st.spool_oldest_age ?? 0) > 0 ? `，最久 ${fmtAge(st.spool_oldest_age ?? 0)}` : ""}
+                </span>
+              )}
             </div>
             <p className="text-xs text-muted-foreground">
               最近成功 {st.last_success_at || "—"}；最近失败 {st.last_error_at || "—"}

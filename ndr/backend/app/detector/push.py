@@ -436,7 +436,6 @@ def recover_pending(client: Any) -> int:
         return 0
 
 
-
 # ---------- 摘要老化与磁盘缓存 ----------
 # 2026-10 用户口径：摘要在队列里最多待 5 分钟。超时（推送不成功、或智能体没连上）就从 Redis
 # 挪到**磁盘缓存**，别再占 Redis 内存；等智能体能正常响应（任一批推送成功）后，从磁盘按**先
@@ -458,12 +457,16 @@ def _spool_path() -> Path:
 def _spool_append(payload: str) -> bool:
     """把一批摘要追加到磁盘缓存。返回是否写成功（写不进去就留在队列里，不做静默丢弃）。"""
     path = _spool_path()
-    line = json.dumps({"spooled_at": _spool_now_iso(), "payload": payload}, ensure_ascii=False, default=str)
+    line = json.dumps(
+        {"spooled_at": _spool_now_iso(), "payload": payload}, ensure_ascii=False, default=str
+    )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         limit = max(1, int(settings.detector_push_spool_max_mb)) * 1024 * 1024
         if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > limit:
-            log.warning("磁盘缓存已满（%s MB），摘要保留在队列中", settings.detector_push_spool_max_mb)
+            log.warning(
+                "磁盘缓存已满（%s MB），摘要保留在队列中", settings.detector_push_spool_max_mb
+            )
             return False
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -489,7 +492,12 @@ def _spool_read() -> list[dict[str, str]]:
                 except ValueError:
                     continue
                 if isinstance(raw, dict) and raw.get("payload"):
-                    rows.append({"spooled_at": str(raw.get("spooled_at") or ""), "payload": str(raw["payload"])})
+                    rows.append(
+                        {
+                            "spooled_at": str(raw.get("spooled_at") or ""),
+                            "payload": str(raw["payload"]),
+                        }
+                    )
     except OSError as exc:
         log.debug("读磁盘缓存失败: %s", exc)
     return rows
@@ -511,23 +519,39 @@ def _spool_write(rows: list[dict[str, str]]) -> None:
         log.warning("重写磁盘缓存失败: %s", exc)
 
 
+# 磁盘缓存的规模缓存：键=路径，值=((mtime, size), 批数, 最早入缓存时间戳)。
+# 为什么缓存：`status()` 会被健康检查/界面反复调用，而缓存文件可能涨到很大；
+# 只要 mtime/size 没变就直接复用，避免每次把整个文件读一遍。
+_spool_stat_cache: dict[str, tuple[tuple[float, int], int, float]] = {}
+
+
 def spool_stats() -> dict[str, Any]:
     """磁盘缓存的当下规模（界面/体检要能看到“还有多少没补推”）。"""
     out: dict[str, Any] = {"spool_batches": 0, "spool_bytes": 0, "spool_oldest_age": 0}
-    rows = _spool_read()
-    out["spool_batches"] = len(rows)
+    path = _spool_path()
     try:
-        path = _spool_path()
-        if path.exists():
-            out["spool_bytes"] = int(path.stat().st_size)
+        st = path.stat()
     except OSError:
-        pass
-    if rows:
-        oldest = rows[0].get("spooled_at") or ""
-        try:
-            out["spool_oldest_age"] = max(0, int(time.time() - datetime.fromisoformat(oldest).timestamp()))
-        except (TypeError, ValueError):
-            out["spool_oldest_age"] = 0
+        _spool_stat_cache.pop(str(path), None)
+        return out
+    key = (st.st_mtime, st.st_size)
+    cached = _spool_stat_cache.get(str(path))
+    if cached is not None and cached[0] == key:
+        batches, oldest_ts = cached[1], cached[2]
+    else:
+        rows = _spool_read()
+        batches = len(rows)
+        oldest_ts = 0.0
+        if rows:
+            try:
+                oldest_ts = datetime.fromisoformat(rows[0].get("spooled_at") or "").timestamp()
+            except (TypeError, ValueError):
+                oldest_ts = 0.0
+        _spool_stat_cache[str(path)] = (key, batches, oldest_ts)
+    out["spool_batches"] = batches
+    out["spool_bytes"] = int(st.st_size)
+    if batches and oldest_ts:
+        out["spool_oldest_age"] = max(0, int(time.time() - oldest_ts))
     return out
 
 
@@ -580,7 +604,11 @@ def age_out_to_spool(client: Any, stats: dict[str, int], *, force: bool = False)
     if moved:
         record(client, "aged_to_spool", moved, "超龄摘要转入磁盘缓存")
         stats["push_spooled"] = stats.get("push_spooled", 0) + moved
-        log.info("摘要老化：%d 批转入磁盘缓存（队列剩 %d 批）", moved, status(client).get("queue_depth", 0))
+        log.info(
+            "摘要老化：%d 批转入磁盘缓存（队列剩 %d 批）",
+            moved,
+            status(client).get("queue_depth", 0),
+        )
     return moved
 
 
@@ -588,6 +616,8 @@ def replay_spool(client: Any, stats: dict[str, int], *, limit: int = 0) -> dict[
     """智能体确认可达后，把磁盘缓存里的摘要按序补推；成功的行删掉，第一批失败就停。
 
     返回 ``{"sent": n}``。只在**推送真的成功过**之后调用——失败就继续留在磁盘上等下次。
+    单轮最多补推 ``limit`` 批（默认取 ``detector_push_retry_max_per_round``）：补推是在检测
+    循环里同步做的，缓存厚的时候不能一轮全推完，否则把检测循环卡住。
     """
     out = {"sent": 0}
     cfg = load_config()
@@ -596,7 +626,8 @@ def replay_spool(client: Any, stats: dict[str, int], *, limit: int = 0) -> dict[
     rows = _spool_read()
     if not rows:
         return out
-    cap = int(limit) if int(limit) > 0 else len(rows)
+    default_cap = max(1, int(settings.detector_push_retry_max_per_round or 50))
+    cap = int(limit) if int(limit) > 0 else min(default_cap, len(rows))
     consumed = 0
     for row in rows[:cap]:
         batch, _attempts, _err = _unpack(row["payload"])
@@ -616,7 +647,6 @@ def replay_spool(client: Any, stats: dict[str, int], *, limit: int = 0) -> dict[
         stats["push_spool_sent"] = stats.get("push_spool_sent", 0) + int(out["sent"])
         log.info("磁盘缓存补推成功 %d 条摘要（缓存还剩 %d 批）", out["sent"], len(rows) - consumed)
     return out
-
 
 
 def deliver(client: Any, digests: list[dict[str, Any]], stats: dict[str, int]) -> tuple[str, str]:

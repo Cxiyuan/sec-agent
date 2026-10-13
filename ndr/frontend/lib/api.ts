@@ -435,6 +435,15 @@ export interface AgentPushStatus {
   processing_depth: number;
   /** 真积压批数（后端直接给的口径；老后端没有此字段时用上面两数之和） */
   retry_backlog_batches?: number;
+  /**
+   * 磁盘缓存：超龄（默认 5 分钟）摘要从 Redis 队列挪到磁盘的批数。
+   * 它**不占 Redis 内存**，智能体恢复后自动按序补推，推成功即从磁盘删。
+   */
+  spool_batches?: number;
+  /** 磁盘缓存文件占用字节数 */
+  spool_bytes?: number;
+  /** 磁盘缓存里最老一批已经待了多少秒 */
+  spool_oldest_age?: number;
   error?: string;
 }
 

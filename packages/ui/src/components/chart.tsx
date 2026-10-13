@@ -8,6 +8,8 @@ export interface ChartProps {
   className?: string;
   /** 数值 = 固定像素；字符串（如 "100%"）= 跟着容器走（外层用 flex 填满区域时用） */
   height?: number | string;
+  /** true = 合并更新（默认 false：整份替换，避免残留上一次的 series）。滚动类图表用 true，否则每次刷新等于重画。 */
+  merge?: boolean;
   /**
    * ECharts 事件回调：`{ click: (params) => ... }`。
    *
@@ -17,7 +19,7 @@ export interface ChartProps {
   onEvents?: Record<string, (params: unknown) => void>;
 }
 
-export function Chart({ option, className, height = 300, onEvents }: ChartProps) {
+export function Chart({ option, className, height = 300, onEvents, merge = false }: ChartProps) {
   const ref = React.useRef<HTMLDivElement>(null);
   const chartRef = React.useRef<echarts.ECharts | null>(null);
   // 实例只建一次：轮询类页面每 15 秒就会给一份新 option，如果每次变化都 dispose+init，
@@ -37,12 +39,12 @@ export function Chart({ option, className, height = 300, onEvents }: ChartProps)
 
   React.useEffect(() => {
     // notMerge=true：整份替换，不残留上一次的 series（例如条目数变少时）
-    chartRef.current?.setOption(option, true);
+    chartRef.current?.setOption(option, !merge);
   }, [option]);
 
   React.useEffect(() => {
     chartRef.current?.resize();
-  }, [height]);
+  }, [height, merge]);
 
   // 事件注册：图表实例只建一次，这里按**事件名列表**挂/摘。
   // 用 ref 存最新回调：页面每次渲染都会传个新的内联函数，如果直接当依赖重挂，

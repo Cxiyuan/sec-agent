@@ -282,11 +282,14 @@ function ChartCard({
   option,
   height = 220,
   empty,
+  merge = false,
 }: {
   title: string;
   extra?: React.ReactNode;
   option: React.ComponentProps<typeof Chart>["option"];
   height?: number;
+  /** 滚动类图表传 true：合并更新，看起来是连续滚动而不是每次重画 */
+  merge?: boolean;
   /** 有值就不画图、显示这段文案（趋势类接口在部署初期本来就是空的） */
   empty?: string;
 }) {
@@ -418,7 +421,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
       loadInto(errs, SRC.hits, "/api/detector/hits?limit=50", setHits),
-      loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=10", setTraffic),
+      loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=15", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
@@ -434,6 +437,17 @@ export function StatusPanel() {
     // 只在挂载时取一次；后续节奏由下面的定时器控制
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  React.useEffect(() => {
+    if (!auto) return;
+    // 近期流量：5 秒滚一次（比整页 15 秒快）。配合图表「合并更新 + 线性动画」，
+    // 新的一秒从右边进来、最老的一秒从左边出去 —— 看起来是连续滚动，不是到点重画。
+    const timer = setInterval(() => {
+      void loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=15", setTraffic);
+    }, 5000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto]);
 
   React.useEffect(() => {
     if (!auto) return;
@@ -853,6 +867,7 @@ export function StatusPanel() {
                   ) : null
                 }
                 option={charts.traffic}
+                merge
                 height={300}
                 empty={trafficPoints.length ? undefined : noTraffic}
               />
