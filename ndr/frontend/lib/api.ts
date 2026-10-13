@@ -1133,3 +1133,25 @@ export interface ConfigAuditPayload {
   note: string;
   error?: string;
 }
+
+/** `GET /api/stats/traffic?minutes=10`：近 N 分钟流量（每分钟一个点，进行中的点标 partial） */
+export interface TrafficMinutePoint {
+  ts: string;
+  docs: number;
+  bytes_total: number;
+  bytes_per_sec: number;
+  /** true = 这一分钟还没过完（速率已按实际经过秒数折算） */
+  partial: boolean;
+}
+
+export interface TrafficMinutes {
+  minutes: number;
+  since: string;
+  until: string;
+  points: TrafficMinutePoint[];
+  total_bytes: number;
+  avg_bytes_per_sec: number;
+  computed_at: string;
+  note?: string;
+  error?: string;
+}

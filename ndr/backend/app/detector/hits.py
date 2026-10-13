@@ -165,9 +165,15 @@ def _matched_content(doc: dict[str, Any], item: dict[str, Any]) -> None:
 
 
 def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
-    """样例事件 → 关键字段（丢空值，控制体积；长文本截断）。"""
+    """样例事件 → 关键字段（丢空值、控制体积、长文本截断、**按事件去重**）。
+
+    为什么要去重（2026-10 用户反馈）：同一条事件可能被采集侧重复投递（Filebeat 重投/重放），
+    两份文档的 `@timestamp` 略有差异 ⇒ 输入去重的哈希不同 ⇒ 都被聚合进同一条命中 ⇒
+    详情里就出现两条**内容完全一样**的"事件内容"。这里按事件身份去重，界面上只留一条。
+    """
     out: list[dict[str, Any]] = []
-    for sample in (digest.get("samples") or [])[:_MAX_EVIDENCE]:
+    seen: set[str] = set()
+    for sample in (digest.get("samples") or [])[:_MAX_EVIDENCE * 2]:
         doc = (sample or {}).get("doc") if isinstance(sample, dict) else None
         if not isinstance(doc, dict):
             continue
@@ -181,6 +187,16 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         # 签名引擎的告警在原始 EVE 里是嵌套的 alert 对象（signature/signature_id/category/
         # severity/metadata.threat_type）——不提上来，详情里就看不出「命中了哪条签名」
         # （实测：只显示"内置-签名命中(高危)"，看不出是 Cobalt Strike JA3S 还是别的）。
+        # 去重键：优先用能唯一标识「一次事件」的字段；都没有就退回内容本身
+        key = "|".join(
+            str(doc.get(k) or "")
+            for k in ("uid", "community_id", "flow_id", "event_type", "signature_id", "src_ip", "dst_ip", "dst_port", "uri_path")
+        )
+        if not key.strip("|"):
+            key = repr(sorted((k, str(v)) for k, v in item.items() if k != "other_fields"))
+        if key in seen:
+            continue
+        seen.add(key)
         alert = doc.get("alert")
         if isinstance(alert, dict):
             for src_key, dst_key in (

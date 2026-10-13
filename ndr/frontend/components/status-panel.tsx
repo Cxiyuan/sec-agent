@@ -38,6 +38,7 @@ import type {
   EsStatus,
   LogstashStatus,
   StatsOverview,
+  TrafficMinutes,
   SystemMetrics,
 } from "@/lib/api";
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
@@ -59,7 +60,7 @@ import {
   ringOption,
   ruleTopOption,
   severityOption,
-  trafficOption,
+  minuteTrafficOption,
 } from "@/components/status-charts";
 
 /**
@@ -80,6 +81,7 @@ const SRC = {
   rate: "检测器速率",
   coverage: "投递覆盖率",
   hits: "命中事件",
+  traffic: "近 10 分钟流量",
   stats: "检测器队列",
   push: "摘要推送",
   baseline: "基线观测",
@@ -333,6 +335,8 @@ export function StatusPanel() {
   const [rate, setRate] = React.useState<DetectorRate | null>(null);
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
   const [hits, setHits] = React.useState<HitEventList | null>(null);
+  /** 近 10 分钟流量（按分钟，心电图式折线） */
+  const [traffic, setTraffic] = React.useState<TrafficMinutes | null>(null);
   /** 详情弹窗：打开的那条命中事件（含证据） */
   const [hitDetail, setHitDetail] = React.useState<HitEventItem | null>(null);
   const [hitBusy, setHitBusy] = React.useState(false);
@@ -414,6 +418,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
       loadInto(errs, SRC.hits, "/api/detector/hits?limit=50", setHits),
+      loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=10", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
@@ -470,7 +475,7 @@ export function StatusPanel() {
       queueTrend: queueTrendOption(historyItems, queueMax),
       severity: severityOption(historyItems),
       ruleTop: ruleTopOption(historyItems),
-      traffic: overview ? trafficOption(overview) : rateTrendOption([]),
+      traffic: minuteTrafficOption(traffic),
       protocols: protocolPieOption(overview?.protocols),
       dropped: droppedOption(stats),
       pushCounters: pushCountersOption(push),
@@ -839,7 +844,7 @@ export function StatusPanel() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <div className="lg:col-span-2">
               <ChartCard
-                title="24h 流量捕捉（按小时字节/秒）"
+                title="近 10 分钟流量（按分钟 · 心电图）"
                 extra={
                   overview ? (
                     <span className="text-xs font-normal text-muted-foreground">

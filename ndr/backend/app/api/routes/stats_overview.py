@@ -254,3 +254,127 @@ def stats_overview(
         if not payload.get("error"):
             _cache[key] = (now, payload)
         return payload
+
+#: 近 N 分钟流量（心电图式按分钟打点）——为什么不用 24h/1h：1 小时的桶看不出"现在在不在传"，
+#: 而且**未过完的那个小时**会让图上右端假性塌陷（实测被用户当成"流量掉了"）。
+TRAFFIC_MINUTES_DEFAULT = 10
+TRAFFIC_MINUTES_MAX = 120
+
+
+def clamp_minutes(value: Any) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return TRAFFIC_MINUTES_DEFAULT
+    return max(1, min(minutes, TRAFFIC_MINUTES_MAX))
+
+
+def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
+    """按分钟出流量桶（只统计 conn —— HTTP 的 bytes 会重复计入）。"""
+    return {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
+        "aggs": {
+            "traffic": {
+                "filter": {"term": {"log_type.keyword": "conn"}},
+                "aggs": {
+                    "per_minute": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": "1m",
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start, "max": end},
+                        },
+                        "aggs": {
+                            "bytes_out": {"sum": {"field": "bytes_out"}},
+                            "bytes_in": {"sum": {"field": "bytes_in"}},
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+
+def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str, Any]:
+    """分钟桶 → 点（含"进行中的这一分钟"按时长折算，避免右端假性塌陷）。"""
+    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_minute") or {}).get(
+        "buckets"
+    ) or []
+    points: list[dict[str, Any]] = []
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        bytes_out = _int_of(bucket.get("bytes_out", {}).get("value"))
+        bytes_in = _int_of(bucket.get("bytes_in", {}).get("value"))
+        total = bytes_out + bytes_in
+        start_at = str(bucket.get("key_as_string") or "")
+        # 进行中的那一分钟：只过了 x 秒 → 用 x 秒折算速率（否则看上去像流量骤降）
+        partial = False
+        elapsed = 60.0
+        try:
+            began = datetime.fromisoformat(start_at)  # py3.11+ 认 Z
+            elapsed = max(1.0, min(60.0, (now - began).total_seconds()))
+            partial = elapsed < 59.0
+        except (TypeError, ValueError):
+            pass
+        points.append(
+            {
+                "ts": start_at,
+                "docs": _int_of(bucket.get("doc_count")),
+                "bytes_total": total,
+                "bytes_per_sec": round(total / elapsed, 1),
+                "partial": partial,
+            }
+        )
+    total_bytes = sum(int(p["bytes_total"]) for p in points)
+    return {
+        "points": points,
+        "minutes": minutes,
+        "total_bytes": total_bytes,
+        "avg_bytes_per_sec": round(total_bytes / max(1, minutes * 60), 1),
+    }
+
+
+@router.get("/traffic")
+def stats_traffic(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = TRAFFIC_MINUTES_DEFAULT,
+):
+    """**近 N 分钟流量**（默认 10 分钟、每分钟一个点）—— 给总览页的"心电图"用。
+
+    与 24h 口径的区别：窗口短、桶细，看得出"现在在不在传"；已过完的分钟按 60 秒折算，
+    **进行中的那一分钟按实际经过秒数折算**（并标 `partial`），所以右端不会假性塌陷。
+    口径仍是 **Zeek conn 的应用层字节**（不含链路层开销/重传/未跟踪流），不是网卡收包量。
+    """
+    from datetime import UTC, datetime as _dt, timedelta as _td
+
+    want = clamp_minutes(minutes)
+    end_dt = _dt.now(UTC)
+    start_dt = end_dt - _td(minutes=want)
+    start_iso = start_dt.isoformat().replace("+00:00", "Z")
+    end_iso = end_dt.isoformat().replace("+00:00", "Z")
+    out: dict[str, Any] = {
+        "minutes": want,
+        "since": start_iso,
+        "until": end_iso,
+        "points": [],
+        "total_bytes": 0,
+        "avg_bytes_per_sec": 0.0,
+        "computed_at": end_dt.isoformat(),
+        "note": "口径：Zeek conn 的应用层字节（orig+resp），不是网卡收包量",
+    }
+    try:
+        from app.ingestion import es_config
+        from app.ingestion.es_client import get_es
+
+        cfg = es_config.current()
+        pattern = str(cfg.get("es.events_index") or settings.es_events_index)
+        resp = get_es().search(
+            index=pattern, body=build_minute_query(want, start=start_iso, end=end_iso)
+        )
+        out.update(shape_minute_traffic(resp, minutes=want, now=end_dt))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("近 %s 分钟流量聚合失败: %s", want, exc)
+        out["error"] = str(exc)[:200]
+    return out

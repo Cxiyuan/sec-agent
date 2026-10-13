@@ -13,6 +13,7 @@ import type {
   StatsOverview,
   SystemMetrics,
 } from "@/lib/api";
+import type { TrafficMinutes } from "@/lib/api";
 
 /**
  * 总览页的图表选项：**纯函数**（数据进、EChartsOption 出），不碰 React、不发请求。
@@ -616,4 +617,50 @@ export function bytesLine(metrics: SystemMetrics | null): string {
     );
   }
   return parts.join(" · ");
+}
+
+/**
+ * 近 N 分钟流量（**心电图式折线**）：每分钟一个点、不平滑、不填充。
+ *
+ * 为什么这么画（2026-10 用户要求）：原来的 24h 波浪/面积图看不出"现在在不在传"，而且
+ * 未过完的那个小时会让右端假性塌陷；换成按分钟打点，进行中的那一分钟用虚线点单独标出来。
+ */
+export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
+  const points = data?.points || [];
+  const labels = points.map((p) => clockOf(Date.parse(p.ts)));
+  return {
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const list = params as Array<{ dataIndex: number }>;
+        const idx = list?.[0]?.dataIndex ?? 0;
+        const p = points[idx];
+        if (!p) return "";
+        return [
+          `${clockOf(Date.parse(p.ts))}${p.partial ? "（进行中）" : ""}`,
+          `${formatBytes(p.bytes_per_sec)}/秒`,
+          `合计 ${formatBytes(p.bytes_total)} · ${p.docs} 条连接`,
+        ].join("<br/>");
+      },
+    },
+    grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
+    xAxis: { ...AXIS, boundaryGap: false, data: labels, axisLabel: { fontSize: 10 } },
+    yAxis: {
+      ...AXIS,
+      type: "value",
+      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
+    },
+    series: [
+      {
+        type: "line",
+        smooth: false,
+        symbol: "circle",
+        symbolSize: 4,
+        // 心电图观感：细线 + 不填充 + 只在点上有标记
+        lineStyle: { width: 1.6 },
+        areaStyle: undefined,
+        data: points.map((p) => p.bytes_per_sec),
+      },
+    ],
+  };
 }
