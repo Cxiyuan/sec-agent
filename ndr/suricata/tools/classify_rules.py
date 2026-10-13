@@ -382,7 +382,14 @@ QUARANTINED: dict[str, str] = {
     "1000749": "content 值没加引号（Fastjson 规则），改对等于重写判据 —— 待人工核",
     "3013003": "http.response_body 缓冲区内没有 content 就用 depth（可疑 netstat 规则）—— 待人工核",
     "3016005": "file.data 缓冲区里没有任何匹配（msfconsole 规则）—— 待人工核",
-    "": "http.response_body 缓冲区内没有 content 就用了 depth（可疑 netstat 规则）—— 待人工核",
+    "1000371": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000372": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000842": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000843": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000844": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000845": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000854": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
+    "1000855": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
 }
 
 #: pcre 体里的常见坏写法（都按「等价、可编译」处理，判据不变）：

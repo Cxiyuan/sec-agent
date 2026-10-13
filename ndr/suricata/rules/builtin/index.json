@@ -1,6 +1,6 @@
 {
   "source": "规则全集.rules",
-  "total": 11187,
+  "total": 11179,
   "categories": [
     {
       "category": "10-web-attack",
@@ -55,7 +55,7 @@
       "category": "50-malware-c2",
       "label": "恶意软件 / 挖矿 / 隧道外联",
       "file": "50-malware-c2.rules",
-      "rules": 132,
+      "rules": 124,
       "classtypes": {
         "coin-mining": 77,
         "C2_trojan-activity": 28,
@@ -132,20 +132,33 @@
     "legacy_keyword:http_user_agent": 1,
     "legacy_keyword:http_stat_code": 5,
     "legacy_keyword:http_client_body": 3,
-    "legacy_keyword:http_server_body": 2
+    "legacy_keyword:http_server_body": 2,
+    "quarantined_ja3s": 8
   },
   "quarantined": {
-    "1000749": {
-      "reason": "content 值没加引号（Fastjson 规则），改对等于重写判据 —— 待人工核",
-      "rule": "alert http any any -> any any (msg:\"检测到Fastjson反序列化流量特征\";flow:to_server,established;  content:\"\\u0040\\u0074\\u0079\\u0070\\u0065\":\"\\u0063\\u006f\\u006d\\u002e\\u0073\\u0075\\u006e\\u002e\\u0072\\u006f\\u0077\\u0073\\u0074\\u002e\\u004a\\u0064\\u0062\\u0063\\u0052\\u006f\\u0077\\u0053\\u0065\\u0049\\u006d\\u0070\\u006c\",\"\\u0064\\u0061\\u0074\\u0061\\u0053\\u006f\\u0075\\u0072\\u0063\\u0065\\u004e\\u0061\\u006d\\u0065\";classtype:java-deserialization;priority:1; sid:1000749;rev:1;)"
+    "1000371": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
     },
-    "3013003": {
-      "reason": "http.response_body 缓冲区内没有 content 就用 depth（可疑 netstat 规则）—— 待人工核",
-      "rule": "alert http $EXTERNAL_NET any -> $HOME_NET any (msg: \"可疑 netstat 命令 traffic\"; flow: established,to_client; content:\"Active Internet connections\"; http_server_body; depth:28; content:\"tcp\"; http_server_body; distance:0; classtype:trojan-activity; sid: 3013003; rev: 1; metadata:created_at 2018_09_26,by al0ne;)"
+    "1000372": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
     },
-    "3016005": {
-      "reason": "file.data 缓冲区里没有任何匹配（msfconsole 规则）—— 待人工核",
-      "rule": "alert http any any -> any any (msg:\"msfconsole powershell 响应\"; flow:established; content:!\"<html>\"; content:!\"<script>\"; content:\"|70 6f 77 65 72 73 68 65 6c 6c 2e 65 78 65|\"; http_server_body; content:\"|46 72 6f 6d 42 61 73 65 36 34 53 74 72 69 6e 67|\"; http_server_body; classtype:exploit-kit; sid:3016005; rev:1;)"
+    "1000842": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
+    },
+    "1000843": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
+    },
+    "1000844": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
+    },
+    "1000845": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
+    },
+    "1000854": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
+    },
+    "1000855": {
+      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
     }
   }
 }
