@@ -65,7 +65,7 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 1536mb
+      - 8gb
       - --maxmemory-policy
       - noeviction
     ports:
@@ -111,10 +111,16 @@ services:
       # 第 5 期：检测器命中后经 HTTP 推给智能体（地址形如 http://<agent-host>:8000/api/push/digests）
       ST_AGENT_PUSH_URL: ${NDR_AGENT_PUSH_URL:-}
       ST_AGENT_PUSH_TOKEN: ${NDR_AGENT_PUSH_TOKEN:-}
+      # 归一化→检测器 队列上限（条）：调大只是少丢一点，真正的瓶颈是检测器消费速度（单 leader）
+      ST_DETECTOR_RAW_QUEUE_MAX: ${NDR_DETECTOR_RAW_QUEUE_MAX:-120000}
+      # 推送摘要老化时间（秒）与磁盘缓存目录：超龄摘要从 Redis 挪到磁盘，智能体恢复后自动补推
+      ST_DETECTOR_PUSH_AGE_SECONDS: ${NDR_DETECTOR_PUSH_AGE_SECONDS:-300}
+      ST_DETECTOR_PUSH_SPOOL_DIR: /var/lib/shentong/push-spool
       # 管理面只显示状态、没有填写入口（改了这里要 `up -d` 让 backend 重新读环境变量）。
     ports:
       - "8000:8000"
     volumes:
+      - push-spool:/var/lib/shentong/push-spool
       - zeek-config:/config
       # 采集侧管道配置：后端写、Logstash 读（自动重载）
       - logstash-pipeline:/logstash
@@ -282,6 +288,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  push-spool:  # 推送摘要磁盘缓存（超龄摘要落这里，等智能体恢复再补推）
   es-data:
   pg-data:
   redis-data:

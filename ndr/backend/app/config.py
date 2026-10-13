@@ -214,7 +214,14 @@ class Settings(BaseSettings):
     # 规则级摘要限速的 Redis 键前缀（每分钟一个桶，TTL 180s）
     detector_rule_cap_key: str = "shentong:detector:rulecap"
     detector_queue_max: int = 20000
+    # 归一化→检测器 的队列上限（条）。原来 3 万：实测网络侧 ~800 事件/秒、检测器 ~80~200 条/秒，
+    # 队列长期顶在上限并丢最老的（dropped.raw_trimmed）。2026-10 用户口径：跟着 Redis 内存一起调大。
     detector_raw_queue_max: int = 30000
+    # 推送摘要的“老化时间”（秒）：智能体这么久没接收成功，摘要就从 Redis 队列挪到磁盘缓存，
+    # 不再占内存；等智能体能正常响应了再按序补推，推成功即删缓存（2026-10 用户口径：5 分钟）。
+    detector_push_age_seconds: int = 300
+    detector_push_spool_dir: str = "/var/lib/shentong/push-spool"
+    detector_push_spool_max_mb: int = 2048
     # 最近命中（摘要）在 Redis 里保留多少条：界面「最近命中」卡片吃它。
     # 为什么要它（2026-10 调研）：摘要把唯一出口是「推给智能体」，现场没配推送地址时
     # 界面完全看不到检测器报了什么（只有 undelivered 在涨）。有了它，规则覆盖调优与
