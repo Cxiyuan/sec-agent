@@ -99,3 +99,17 @@ def test_config_audit_lists_source_and_masks_secrets() -> None:
     assert "/api/config/audit" in page and "来源" in page
     nav = (ROOT / "ndr" / "frontend" / "components" / "nav.tsx").read_text(encoding="utf-8")
     assert "/admin/config" in nav
+
+
+def test_deploy_script_supports_local_and_check_mode() -> None:
+    """部署脚本要能**在部署机上直接跑**（本地模式）与**只体检**（check 模式）。
+
+    为什么：现场用"口令前缀"走 SSH 一直被认证拦（实测多次 Permission denied），
+    而在部署机上直接跑最稳（不需要 SSH/口令）；上线前也该能"先只看不动"。
+    """
+    src = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert "DEPLOY_HOST=local" in src or "local|local:*" in src, "要支持本地模式"
+    assert 'MODE="${MODE:-deploy}"' in src and "MODE=check" in src, "要支持只体检模式"
+    assert "跳过备份（本模式不写任何文件）" in src, "check 模式不能写任何文件"
+    # 本地模式下编排按部署目录解析（不是仓库相对路径）——踩过：check 一直在找 ndr/docker-compose…
+    assert 'COMPOSE_FILE="$DEPLOY_DIR/docker-compose.deploy.yml"' in src

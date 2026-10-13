@@ -7,13 +7,14 @@
 # 所以本脚本把「同步编排文件」作为部署的第一步，并且**每一步都要校验结果**（拉取失败不再被吞、部署后核对落地）。
 #
 # 为什么脚本里没有任何主机/目录/地址：这些是环境相关的。全部由环境变量传进来：
-#   DEPLOY_HOST   必填。目标主机（IP 或域名），例如 10.1.2.250
+#   DEPLOY_HOST   必填。目标主机（IP 或域名，例如 10.1.2.250）；**在部署机本机执行时写 local**
 #   DEPLOY_DIR    目标上的部署目录，默认 /opt/shentong-ndr
 #   DEPLOY_SSH    可选。用于连接的 ssh 命令前缀，默认 ssh
 #                 （需要密码认证时传 "sshpass -p <口令> ssh" —— 口令不进仓库、也不进命令行历史以外的任何地方）
 #   COMPOSE_FILE  可选。要同步的编排文件，默认 ndr/docker-compose.deploy.yml
 #   SERVICES      可选。只重建这些服务（空格分隔），默认全部
 #   PULL_RETRIES  可选。拉取重试次数，默认 5（现场 DNS 到镜像仓库不稳定，实测约一半概率超时）
+#   MODE          可选。deploy（默认，真部署）| check（**只做部署前体检**，不动任何东西）
 #
 # 用法（在仓库根执行）：
 #   DEPLOY_HOST=<主机> [DEPLOY_SSH="sshpass -p <口令> ssh"] sh deploy.sh
@@ -25,16 +26,34 @@ set -eu
 DEPLOY_HOST="${DEPLOY_HOST:-}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/shentong-ndr}"
 DEPLOY_SSH="${DEPLOY_SSH:-ssh}"
-COMPOSE_FILE="${COMPOSE_FILE:-ndr/docker-compose.deploy.yml}"
+# 编排文件：默认值按模式区分 —— 远端模式从仓库取（ndr/…），本地模式下编排已在部署目录里。
+COMPOSE_FILE="${COMPOSE_FILE:-}"
 SERVICES="${SERVICES:-}"
 PULL_RETRIES="${PULL_RETRIES:-5}"
 STRICT="${STRICT:-0}"
+MODE="${MODE:-deploy}"
+# 本地模式：DEPLOY_HOST=local 时直接在部署机上执行（不需要 ssh，脚本自己就是运维入口）
+LOCAL=0
+case "${DEPLOY_HOST:-}" in local|local:*) LOCAL=1 ;; esac
+[ -n "${DEPLOY_LOCAL:-}" ] && LOCAL=1
+[ -n "$COMPOSE_FILE" ] || {
+  if [ "$LOCAL" = "1" ]; then
+    COMPOSE_FILE="$DEPLOY_DIR/docker-compose.deploy.yml"
+  else
+    COMPOSE_FILE="ndr/docker-compose.deploy.yml"
+  fi
+}
 
 [ -n "$DEPLOY_HOST" ] || { echo "缺少 DEPLOY_HOST（目标主机）" >&2; exit 2; }
 [ -f "$COMPOSE_FILE" ] || { echo "找不到编排文件：$COMPOSE_FILE" >&2; exit 2; }
 
 # deploy <远程命令>：统一走 DEPLOY_SSH（前缀里可能带认证工具）
 deploy() {
+  if [ "$LOCAL" = "1" ]; then
+    # 本地模式：命令就在部署机上跑（参数是一个命令字符串，交给 sh 执行）
+    sh -c "$1"
+    return $?
+  fi
   # shellcheck disable=SC2086  # DEPLOY_SSH 需要按空格拆成命令 + 参数
   $DEPLOY_SSH -o StrictHostKeyChecking=no "$DEPLOY_HOST" "$@"
 }
@@ -47,9 +66,18 @@ echo "== 0) 目标检查 =="
 deploy "test -d '$DEPLOY_DIR' || { echo '部署目录不存在: $DEPLOY_DIR' >&2; exit 2; }"
 echo "  主机=$DEPLOY_HOST 目录=$DEPLOY_DIR 编排=$COMPOSE_FILE"
 
+if [ "$MODE" = "check" ]; then
+  echo "== 1) check 模式：跳过备份（本模式不写任何文件）=="
+else
 echo "== 1) 备份目标上的旧编排（回滚用）=="
 deploy "cd '$DEPLOY_DIR' && cp -f '$BASE' '$BASE.bak.$STAMP' && ls -l '$BASE.bak.$STAMP' | awk '{print \$NF}'"
+fi
 
+if [ "$LOCAL" = "1" ]; then
+  # 本地模式：编排就在部署目录里（本脚本不覆盖它，避免把现场配置改掉）
+  deploy "test -f '$DEPLOY_DIR/$BASE' || { echo '编排文件不在部署目录：$DEPLOY_DIR/$BASE' >&2; exit 2; }"
+  echo "== 2) 本地模式：使用部署目录里已有的编排（不同步、不覆盖）=="
+else
 echo "== 2) 同步编排文件（本地 → 目标）=="
 # 文件内容经标准输入送到目标（不要用 `ssh "cat > 文件"` 而不给 stdin：那会写成空文件）
 # shellcheck disable=SC2086
@@ -62,6 +90,7 @@ if [ "$REMOTE_SUM" != "$LOCAL_SUM" ]; then
   exit 1
 fi
 echo "  校验和一致：$LOCAL_SUM"
+fi
 
 echo "== 2.5) 部署前体检（只读，不改任何配置）=="
 HOST_IP=$(deploy "ip route get 1.1.1.1 2>/dev/null | awk '{print \$7; exit}'" || true)
@@ -76,12 +105,18 @@ print('  ⚠ 登录密钥仍是默认占位值，必须更换' if jwt_bad else '
 print('  ⚠ 允许来源仍带 http/3000 写法：' + cors if ':3000' in cors or cors.startswith('http://') else '  允许来源 ✓ ' + (cors or '（空 = 只允许同源）'))
 \"" || true
 deploy "docker exec shentong-ndr-backend-1 python -c \"
-from app.detector.push import _load_config
-cfg = _load_config() or {}
+from app.detector import push
+cfg = push.load_config() or {}
 url = str(cfg.get('url') or '')
 print('  摘要推送已配置 ✓' if url else '  ⚠ 摘要推送未配置 → 摘要会一直未投递（智能体地址常量 10.44.77.249）')
 \"" || true
 echo "  （体检只读；有 ⚠ 不阻塞部署，可用 STRICT=1 让脚本遇到 ⚠ 直接失败）"
+
+if [ "$MODE" = "check" ]; then
+  echo
+  echo "MODE=check：只做体检，未拉取、未重建、未改任何配置。"
+  exit 0
+fi
 
 echo "== 3) 拉取镜像（失败可见、可重试）=="
 i=1
