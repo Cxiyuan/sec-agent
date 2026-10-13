@@ -66,7 +66,11 @@ LOCAL_SUM=$(sha256sum "$COMPOSE_FILE" | awk '{print $1}')
 
 echo "== 0) 目标检查 =="
 deploy "test -d '$DEPLOY_DIR' || { echo '部署目录不存在: $DEPLOY_DIR' >&2; exit 2; }"
-echo "  主机=$DEPLOY_HOST 目录=$DEPLOY_DIR 编排=$COMPOSE_FILE"
+if [ "$LOCAL" = "1" ]; then
+  echo "  主机=本机（本地模式） 目录=$DEPLOY_DIR 编排=$COMPOSE_FILE"
+else
+  echo "  主机=$DEPLOY_HOST 目录=$DEPLOY_DIR 编排=$COMPOSE_FILE"
+fi
 
 if [ "$MODE" = "check" ]; then
   echo "== 1) check 模式：跳过备份（本模式不写任何文件）=="
