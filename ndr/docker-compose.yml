@@ -135,6 +135,9 @@ services:
       # 80 只做 308 跳转；3000 只在容器内部，不再对外暴露
       - "443:443"
       - "80:80"
+    # 让容器能解析宿主地址：入口据此把宿主 IP 自动签进证书 SAN（不写死任何地址）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - frontend-certs:/certs
     depends_on:

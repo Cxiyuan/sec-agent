@@ -4,8 +4,8 @@
 # 证书 SAN 决定「浏览器会不会报不受信任」：现代浏览器忽略 CN，只认 SAN，
 # 所以必须把运维实际访问用的地址（主机 IP / 域名）逐个列进 SAN。
 # 组成：DNS:<TLS_CN> + IP:127.0.0.1 + 自动识别的宿主 IP + 部署侧 TLS_SANS 追加。
-# TLS_SANS 逗号分隔，元素形如 IP:172.16.196.77 / DNS:ndr.example.com，裸地址按 IP 处理，例如：
-#   TLS_SANS=IP:172.16.196.77,DNS:ndr.example.com
+# TLS_SANS 逗号分隔，元素形如 IP:192.0.2.10 / DNS:ndr.example.com，裸地址按 IP 处理，例如：
+#   TLS_SANS=IP:192.0.2.10,DNS:ndr.example.com
 set -eu
 
 CERT_DIR="${TLS_CERT_DIR:-/certs}"
