@@ -19,6 +19,8 @@
 # 用法（在仓库根执行）：
 #   DEPLOY_HOST=<主机> [DEPLOY_SSH="sshpass -p <口令> ssh"] sh deploy.sh
 #   DEPLOY_HOST=<主机> SERVICES="frontend" sh deploy.sh          # 只更前端
+#   DEPLOY_HOST=local MODE=check sh deploy.sh                    # 在部署机上：只体检，不动任何东西
+#   DEPLOY_HOST=local sh deploy.sh                               # 在部署机上：直接部署（不需要 SSH/口令）
 #
 # 回滚：脚本每次都会把目标上的旧文件备份成 <文件名>.bak.<时间戳>；出错时按提示恢复即可。
 set -eu
@@ -77,6 +79,10 @@ if [ "$LOCAL" = "1" ]; then
   # 本地模式：编排就在部署目录里（本脚本不覆盖它，避免把现场配置改掉）
   deploy "test -f '$DEPLOY_DIR/$BASE' || { echo '编排文件不在部署目录：$DEPLOY_DIR/$BASE' >&2; exit 2; }"
   echo "== 2) 本地模式：使用部署目录里已有的编排（不同步、不覆盖）=="
+elif [ "$MODE" = "check" ]; then
+  # check 模式对**任何**路径都必须只读（远端同步也会改目标文件，所以这里一并跳过）
+  deploy "test -f '$DEPLOY_DIR/$BASE' || { echo '编排文件不在部署目录：$DEPLOY_DIR/$BASE' >&2; exit 2; }"
+  echo "== 2) check 模式：使用目标上已有的编排（不同步、不覆盖）=="
 else
 echo "== 2) 同步编排文件（本地 → 目标）=="
 # 文件内容经标准输入送到目标（不要用 `ssh "cat > 文件"` 而不给 stdin：那会写成空文件）
