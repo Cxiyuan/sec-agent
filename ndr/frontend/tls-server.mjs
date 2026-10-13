@@ -19,6 +19,14 @@ const APP_PORT = Number(process.env.APP_PORT || 3000);
 
 /** 把请求原样转给应用，并补上 X-Forwarded-*（应用侧看协议/来源用） */
 function proxy(req, res) {
+  // 请求日志：用于回答「浏览器打不开，是请求没到、还是到了卡住」
+  // （2026-10 实机排查：用户报"响应时间过长"，服务器侧看不到任何连接，无从判断请求有没有到）
+  const started = Date.now();
+  res.on("finish", () => {
+    console.log(
+      `[tls] ${req.method} ${req.url} ← ${req.socket.remoteAddress} ${res.statusCode} ${Date.now() - started}ms`,
+    );
+  });
   const prior = req.headers["x-forwarded-for"];
   const headers = {
     ...req.headers,
