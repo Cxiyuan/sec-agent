@@ -113,3 +113,16 @@ def test_deploy_script_supports_local_and_check_mode() -> None:
     assert "跳过备份（本模式不写任何文件）" in src, "check 模式不能写任何文件"
     # 本地模式下编排按部署目录解析（不是仓库相对路径）——踩过：check 一直在找 ndr/docker-compose…
     assert 'COMPOSE_FILE="$DEPLOY_DIR/docker-compose.deploy.yml"' in src
+
+
+def test_deploy_script_probe_waits_for_app() -> None:
+    """部署后的前端探活必须**带重试**：容器刚 Started 时应用还没起来（实测 Up<1 秒就探会误判失败）。
+
+    失败时还要自动打印前端日志尾部，并把排查方向写出来（证书/入口/端口），
+    不能只丢一句"探活失败"。
+    """
+    src = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert "PROBE_RETRIES" in src, "探活要能重试"
+    assert 'while [ "$i" -lt' in src and "sleep 5" in src
+    assert "docker logs --tail 25 shentong-ndr-frontend-1" in src, "失败要打印前端日志"
+    assert "证书是否在" in src, "失败要给出排查方向"

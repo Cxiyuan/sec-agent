@@ -15,6 +15,7 @@
 #   SERVICES      可选。只重建这些服务（空格分隔），默认全部
 #   PULL_RETRIES  可选。拉取重试次数，默认 5（现场 DNS 到镜像仓库不稳定，实测约一半概率超时）
 #   MODE          可选。deploy（默认，真部署）| check（**只做部署前体检**，不动任何东西）
+#   PROBE_RETRIES 可选。部署后前端探活重试次数，默认 18（× 5 秒 = 90 秒，等应用起来）
 #
 # 用法（在仓库根执行）：
 #   DEPLOY_HOST=<主机> [DEPLOY_SSH="sshpass -p <口令> ssh"] sh deploy.sh
@@ -32,6 +33,7 @@ DEPLOY_SSH="${DEPLOY_SSH:-ssh}"
 COMPOSE_FILE="${COMPOSE_FILE:-}"
 SERVICES="${SERVICES:-}"
 PULL_RETRIES="${PULL_RETRIES:-5}"
+PROBE_RETRIES="${PROBE_RETRIES:-18}"   # 前端探活重试次数（每次间隔 5 秒）
 STRICT="${STRICT:-0}"
 MODE="${MODE:-deploy}"
 # 本地模式：DEPLOY_HOST=local 时直接在部署机上执行（不需要 ssh，脚本自己就是运维入口）
@@ -151,10 +153,27 @@ deploy "cd '$DEPLOY_DIR' && docker compose -f '$BASE' up -d --remove-orphans $SE
 echo "== 5) 落地核对（不只看命令返回码）=="
 deploy "docker ps --format 'table {{.Names}}\t{{.Status}}' | head -20"
 # 前端是唯一对外入口：本机 HTTPS 必须能通（自签名证书 → 用 -k 跳过校验）
-if deploy "curl -sk -o /dev/null -w '%{http_code}' --max-time 10 https://127.0.0.1/ | grep -q 200"; then
-  echo "  前端本机 HTTPS 探活：200 ✓"
+# 注意：容器刚 Started 时应用还在启动（实测 Up < 1 秒就探会误判失败）→ 必须带重试地等
+FRONT_OK=0
+i=0
+while [ "$i" -lt "${PROBE_RETRIES:-18}" ]; do
+  i=$((i + 1))
+  if deploy "curl -sk -o /dev/null -w '%{http_code}' --max-time 8 https://127.0.0.1/ | grep -q 200"; then
+    FRONT_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ "$FRONT_OK" = "1" ]; then
+  echo "  前端本机 HTTPS 探活：200 ✓（第 $i 次尝试）"
 else
-  echo "  前端本机 HTTPS 探活失败：请查 docker logs 前端容器（证书/端口/入口脚本）" >&2
+  echo "  前端本机 HTTPS 探活失败（已重试 $i 次 ≈ $((i * 5)) 秒）：下面是前端日志尾部——" >&2
+  deploy "docker logs --tail 25 shentong-ndr-frontend-1 2>&1" >&2 || true
+  echo "  排查方向：证书是否在（/certs）、入口是否起了 tls-server、端口 443/80 是否发布" >&2
+  if [ "$STRICT" = "1" ]; then
+    echo "STRICT=1：探活失败视为部署失败" >&2
+    exit 1
+  fi
 fi
 echo
 if [ "$STRICT" = "1" ]; then
