@@ -63,6 +63,10 @@ JWT_SECRET=<随机 64 位>
 CORS_ORIGINS=http://<NDR服务器IP>:3000
 ZEEK_IFACE=ens224          # 镜像/SPAN 抓包口
 EOF
+# 推荐：用仓库自带的部署脚本（**编排文件随代码一起部署**，并在部署后核对落地）
+DEPLOY_HOST=<目标主机> sh deploy.sh
+
+# 手动等价步骤（脚本内部就是这些，但脚本多了备份 / 校验和比对 / 拉取重试 / 部署后探活）
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```

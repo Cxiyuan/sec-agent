@@ -51,3 +51,21 @@ def test_healthcheck_or_docs_mention_https() -> None:
     """README 的访问地址要写 https（否则运维还在试 http://host:3000）。"""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "https://" in readme, "README 应给出 https 访问方式"
+
+
+def test_deploy_script_syncs_compose_and_verifies() -> None:
+    """部署脚本必须把「编排文件同步」纳入流程，并且每步都校验结果。
+
+    事故背景：改了仓库里的编排（端口 3000→443），服务器上那份没跟着变 → 443 从未对外，
+    局域网打开控制台一直「响应时间过长」。所以脚本必须：备份旧文件 → 同步 → **比对校验和** →
+    拉取（失败可见、可重试）→ 重建 → **部署后探活**，并给出回滚命令。
+    """
+    src = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert "COMPOSE_FILE" in src and "DEPLOY_HOST" in src
+    assert "sha256sum" in src and "校验和" in src, "同步后要比对校验和，证明文件真的落地"
+    assert ".bak." in src and "回滚" in src, "要备份并给出回滚办法"
+    assert "PULL_RETRIES" in src and "pull" in src, "拉取要能重试（现场 DNS 不稳）"
+    assert "up -d --remove-orphans" in src
+    assert "curl -sk" in src and "200" in src, "部署后要探活，不只看返回码"
+    # 脚本里不许写死任何主机/地址（由环境变量传）
+    assert "DEPLOY_HOST:-}" in src, "目标主机必须来自环境变量"
