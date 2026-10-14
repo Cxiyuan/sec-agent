@@ -60,7 +60,6 @@ import {
   ringOption,
   ruleTopOption,
   severityOption,
-  formatMbps,
   minuteTrafficOption,
 } from "@/components/status-charts";
 
@@ -274,20 +273,6 @@ function Section({
       </h2>
       {children}
     </section>
-  );
-}
-
-/** 近期流量右上角的「实时发送 / 实时接收」读数（参考图：发送值蓝、接收值红）。 */
-function TrafficReadout({ data }: { data: TrafficMinutes | null }): React.ReactElement | null {
-  const last = data?.points?.[data.points.length - 1];
-  if (!last) return null;
-  return (
-    <span className="text-xs text-slate-600">
-      实时发送: <span className="font-medium text-blue-600">{formatMbps(last.bytes_out ?? 0)}</span>
-      <span className="mx-2" />
-      实时接收: <span className="font-medium text-red-600">{formatMbps(last.bytes_in ?? last.bytes_total)}</span>
-      {last.partial ? <span className="ml-1 text-slate-400">（进行中）</span> : null}
-    </span>
   );
 }
 
@@ -875,15 +860,12 @@ export function StatusPanel() {
               <ChartCard
                 title="近期流量"
                 extra={
-                  <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-muted-foreground">
-                    <TrafficReadout data={traffic} />
-                    {overview ? (
-                      <span>
-                        合计 {formatBytes(overview.traffic.total_bytes)} · 均值{" "}
-                        {formatBytes(overview.traffic.avg_bytes_per_sec)}/s
-                      </span>
-                    ) : null}
-                  </span>
+                  overview ? (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      合计 {formatBytes(overview.traffic.total_bytes)} · 均值{" "}
+                      {formatBytes(overview.traffic.avg_bytes_per_sec)}/s
+                    </span>
+                  ) : null
                 }
                 option={charts.traffic}
                 merge

@@ -88,9 +88,9 @@ def test_traffic_is_per_second_with_minute_marks() -> None:
     assert "smooth: true" in frontend, "要平滑攀升/下降（不是心电图、也不是硬折线）"
     assert "movingAverage" in frontend, "必须做滑动平均：秒级尖峰直接画就是心电图"
     assert "TRAFFIC_SMOOTH_SECONDS" in frontend, "平滑窗口要显式可调"
-    assert 'name: "Mbps"' in frontend, "Y 轴左上角要有单位 Mbps（参考图）"
-    assert "TRAFFIC_SERIES_NAME" in frontend, "提示框第一行是曲线名"
-    assert "#5f9e52" in frontend, "线条是绿色（参考图）"
-    assert "formatMbps" in frontend, "悬停要按参考图显示该秒的 Mbps 值"
+    assert 'name: "字节/秒"' in frontend, "Y 轴沿用原有单位口径（字节/秒）"
+    assert "areaStyle" in frontend, "沿用原有仪表样式：面积折线"
+    assert "#0ea5e9" in frontend, "线条沿用本页原有配色"
+    assert "formatBytes(rate)" in frontend, "悬停按原有口径显示速率（字节/秒）"
     panel = (root / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(encoding="utf-8")
     assert 'title="近期流量"' in panel, "卡片名应为「近期流量」"

@@ -668,19 +668,22 @@ const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
  *   悬停处显示一个蓝点（参考图里那个小蓝点）；
  * - 滚动更新：只换数据不整份重画（Chart 传 merge）+ 线性更新动画。
  */
+/**
+ * 近期流量图 —— **沿用本页原有仪表样式**（跟 24h 那张同一套配色/单位/提示框）：
+ * 蓝色面积折线（`#0ea5e9`，不透明度 0.18）、Y 轴「字节/秒」用 formatBytes 标签、
+ * 提示框多行（时间 / 速率 / 合计 / 连接条数）、打点关闭。
+ *
+ * 两处是这张图特有、不改的口径（都在上一轮需求里定过）：
+ * - X 轴只显示**整分钟**的刻度文字（15 分钟 = 15 个刻度）；
+ * - 值做 **20 秒滑动平均**（`TRAFFIC_SMOOTH_SECONDS`）：秒级原始值中位数 1.7Mbps、尖峰 2564Mbps，
+ *   直接画会变成"平段贴轴 + 一根根尖刺"；原来的 24h 图看着顺，是因为小时桶本身就是平均值。
+ */
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  // 竖线只画在整分钟上（后端给的 minute_marks），且必须落在窗口内的刻度位置
-  const marks = (data?.minute_marks || []).filter((ts) => labels.includes(clockOf(Date.parse(ts))));
-  // 画的是**合计流量（发送+接收）**：秒级的"接收"在这张网上中位数不到 1Mbps（大多是下行回包），
-  // 画出来会贴平 x 轴；合计更能反映"这条线在传多少"。
-  // 再做 **20 秒滑动平均**：实测每秒原始值中位数 1.7Mbps、尖峰 2564Mbps，直接用原始值画就是
-  // 心电图（平段贴轴 + 一根根尖刺），坐标轴也会被尖峰撑大而把平段压没。
-  const win = TRAFFIC_SMOOTH_SECONDS;
   const series = movingAverage(
-    points.map((p) => mbpsOf((p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total))),
-    win,
+    points.map((p) => (p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total)),
+    TRAFFIC_SMOOTH_SECONDS,
   );
   return {
     animation: true,
@@ -689,69 +692,42 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
     animationEasingUpdate: "linear",
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: "line", lineStyle: { color: TRAFFIC_HOVER, width: 1 } },
-      backgroundColor: "#ffffff",
-      borderColor: TRAFFIC_HOVER,
-      borderWidth: 2,
-      borderRadius: 6,
-      padding: [8, 12],
-      textStyle: { color: "#1f2937", fontSize: 12 },
       formatter: (params: unknown) => {
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
-        const moved = series[idx] ?? 0;
-        // 参考图格式：第一行是曲线名，第二行是「时间,值」
-        return `<b>${TRAFFIC_SERIES_NAME}</b><br/>${clockOf(Date.parse(p.ts))},${moved.toFixed(2)}Mbps`;
+        const rate = Math.round(series[idx] ?? 0);
+        return `${clockOf(Date.parse(p.ts))}<br/>${formatBytes(rate)}/秒<br/>合计 ${formatBytes(
+          p.bytes_total,
+        )}<br/>连接 ${p.docs} 条`;
       },
     },
-    grid: { left: 8, right: 14, top: 26, bottom: 4, containLabel: true },
+    grid: { left: 52, right: 12, top: 16, bottom: 22 },
     xAxis: {
       ...AXIS,
       boundaryGap: false,
       data: labels,
-      axisTick: { show: true, length: 5, lineStyle: { color: "#94a3b8" } },
       axisLabel: {
         fontSize: 10,
         interval: 0,
-        // 只在整分钟显示刻度文字（HH:MM）
         formatter: (value: string) => (value.endsWith(":00") ? value.slice(0, 5) : ""),
       },
     },
     yAxis: {
-      ...AXIS,
-      type: "value",
-      min: 0,
-      // 左上角那个单位（参考图是 Mbps）
-      name: "Mbps",
-      nameLocation: "end",
-      nameGap: 12,
-      nameTextStyle: { fontSize: 10, color: "#475569" },
-      splitLine: { show: true, lineStyle: { color: TRAFFIC_GRID } },
-      axisLabel: { fontSize: 10, formatter: (v: number) => `${Math.round(v)}` },
+      ...VAL,
+      name: "字节/秒",
+      nameTextStyle: { fontSize: 10 },
+      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
     },
     series: [
       {
-        name: TRAFFIC_SERIES_NAME,
         type: "line",
-        smooth: true, // 平滑攀升/下降（参考图观感）
-        smoothMonotone: "x", // 单调平滑：不越过数据点、不会掉到 0 以下
-        symbol: "circle",
-        symbolSize: 6,
-        showSymbol: false, // 平时不打点，悬停时才出现（蓝色小点）
-        itemStyle: { color: TRAFFIC_HOVER },
-        lineStyle: { width: 1.6, color: TRAFFIC_LINE },
-        areaStyle: undefined,
-        data: series.map((v) => Number(v.toFixed(2))),
-        markLine: {
-          silent: true,
-          symbol: "none",
-          animation: false,
-          label: { show: false },
-          // 每分钟一条竖线（跟横线同款浅灰实线）
-          lineStyle: { color: TRAFFIC_GRID, type: "solid", width: 1 },
-          data: marks.map((ts) => ({ xAxis: clockOf(Date.parse(ts)) })),
-        },
+        smooth: true,
+        showSymbol: false,
+        areaStyle: { opacity: 0.18 },
+        lineStyle: { width: 1.8, color: "#0ea5e9" },
+        itemStyle: { color: "#0ea5e9" },
+        data: series.map((v) => Math.round(v)),
       },
     ],
   };
