@@ -255,10 +255,20 @@ def stats_overview(
             _cache[key] = (now, payload)
         return payload
 
-#: 近 N 分钟流量（心电图式按分钟打点）——为什么不用 24h/1h：1 小时的桶看不出"现在在不在传"，
-#: 而且**未过完的那个小时**会让图上右端假性塌陷（实测被用户当成"流量掉了"）。
-TRAFFIC_MINUTES_DEFAULT = 10
-TRAFFIC_MINUTES_MAX = 120
+#: 「近期流量」窗口：默认近 30 分钟（用户口径「近期 = 近半小时」）。
+#: 为什么不用 24h/1h：1 小时的桶看不出"现在在不在传"，而且**未过完的那个小时**会让图上右端
+#: 假性塌陷（实测被用户当成"流量掉了"）。
+TRAFFIC_MINUTES_DEFAULT = 30
+TRAFFIC_MINUTES_MAX = 60
+#: 打点粒度：每 20 秒一个点（30 分钟 = 90 点）。用户 2026-10 口径。
+TRAFFIC_INTERVAL_SECONDS = 20
+#: 分段：每 5 分钟一个"段"（仪表盘按 5 分钟分区，X 轴不画刻度线）。
+TRAFFIC_SEGMENT_MINUTES = 5
+#: 结果缓存（秒）：仪表盘 5 秒轮询一次，不缓存就会每 5 秒穿透一次 ES。
+TRAFFIC_CACHE_SECONDS = 30
+
+#: 进程内缓存：{窗口分钟数: (写入时刻, 结果)}
+_traffic_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def clamp_minutes(value: Any) -> int:
@@ -270,11 +280,10 @@ def clamp_minutes(value: Any) -> int:
 
 
 def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
-    """按 **1 秒** 出流量桶（只统计 conn —— HTTP 的 bytes 会重复计入）。
+    """按 **20 秒** 出流量桶（只统计 conn —— HTTP 的 bytes 会重复计入）。
 
-    为什么是每秒而不是每分钟（2026-10 用户口径）：曲线要**按每秒打点**画成心电图式，
-    10 分钟 = 600 个点；仪表盘上只显示 **10 个时间段刻度**（整分钟），刻度由
-    `shape_minute_traffic` 额外给出的 `minute_marks` 决定。
+    为什么是 20 秒（2026-10 用户口径）：仪表盘每条曲线 20 秒打一个点，近半小时 = 90 个点；
+    点太密（1 秒）既看不清趋势、也让每次轮询都拖大响应；太疏（1 分钟）又看不出"现在在不在传"。
     """
     return {
         "size": 0,
@@ -283,10 +292,10 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
-                    "per_second": {
+                    "per_interval": {
                         "date_histogram": {
                             "field": "@timestamp",
-                            "fixed_interval": "1s",
+                            "fixed_interval": f"{TRAFFIC_INTERVAL_SECONDS}s",
                             "min_doc_count": 0,
                             "extended_bounds": {"min": start, "max": end},
                         },
@@ -302,12 +311,22 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
 
 
 def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str, Any]:
-    """分钟桶 → 点（含"进行中的这一分钟"按时长折算，避免右端假性塌陷）。"""
-    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_second") or {}).get(
+    """ES 响应 → 曲线点 + 5 分钟分段 + 当前/峰值。
+
+    三个要点（对齐仪表盘观感，参考主机资源占用那种 Sparkline）：
+
+    - **每 20 秒一个点**，最右那格是"进行中的 20 秒"→ 标 `partial`，速率按时长折算
+      （不折算的话右端看着像流量骤降；但对不足 1 秒的窗口不放大，免得零流被放大成尖刺）；
+    - **不给 X 轴刻度**：服务端只给 `segment_marks`（每 5 分钟的整点）让前端画清淡的分段，
+      曲线本身连续滚动 —— 最老一格从左出、新一格从右进；
+    - **`current` / `peak`** 服务端算好，前端直接显示成大数字（Sparkline 的常见排布）。
+    """
+    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_interval") or {}).get(
         "buckets"
     ) or []
     points: list[dict[str, Any]] = []
-    minute_marks: list[str] = []
+    segment_marks: list[str] = []
+    interval = float(TRAFFIC_INTERVAL_SECONDS)
     for bucket in buckets:
         if not isinstance(bucket, dict):
             continue
@@ -315,42 +334,47 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         bytes_in = _int_of(bucket.get("bytes_in", {}).get("value"))
         total = bytes_out + bytes_in
         start_at = str(bucket.get("key_as_string") or "")
-        # 进行中的那一分钟：只过了 x 秒 → 用 x 秒折算速率（否则看上去像流量骤降）
-        # 每秒一桶：已经过完的秒就是 1 秒；**当前这一秒**是不完整的 → 标 partial 且不做放大折算
-        # （对"1 秒"做按比例放大只会制造尖刺，反而更容易被误读成流量突增）
         partial = False
-        elapsed = 1.0
+        elapsed = interval
         try:
             began = datetime.fromisoformat(start_at)  # py3.11+ 认 Z
-            partial = (now - began).total_seconds() < 0.95
+            age = (now - began).total_seconds()
+            if age < interval - 0.5:
+                partial = True
+                elapsed = max(1.0, age)  # 不足 1 秒按 1 秒算，避免把零星流量放大成尖刺
         except (TypeError, ValueError):
-            partial = False  # 时间不合法就按"已过完"处理（只影响最后一点的高亮）
-        # ISO 形如 2026-10-13T14:30:00.000Z：[17:19] 是**秒**位，整分钟才记一个刻度
-        if start_at[17:19] == "00":
-            minute_marks.append(start_at)
+            partial = False
+        # 5 分钟分段：整分钟且分钟数是 5 的倍数。ISO 形如 2026-10-13T14:30:00.000Z
+        if len(start_at) >= 19 and start_at[17:19] == "00":
+            minute_number = int(start_at[14:16]) if start_at[14:16].isdigit() else -1
+            if minute_number >= 0 and minute_number % TRAFFIC_SEGMENT_MINUTES == 0:
+                segment_marks.append(start_at)
         points.append(
             {
                 "ts": start_at,
                 "docs": _int_of(bucket.get("doc_count")),
                 "bytes_total": total,
-                # 发送/接收分开给：仪表盘右上角要「实时发送 / 实时接收」分别显示（参考图口径）
                 "bytes_out": bytes_out,
                 "bytes_in": bytes_in,
                 "bytes_per_sec": round(total / elapsed, 1),
                 "partial": partial,
             }
         )
-    # 仪表盘要求「X 轴正好 N 个刻度、每分钟一个」：窗口两端会各多出一个，只留最后 N 个
-    minute_marks = minute_marks[-minutes:]
-    total_bytes = sum(int(p["bytes_total"]) for p in points)
+    total_bytes = sum(int(point["bytes_total"]) for point in points)
+    rates = [float(point["bytes_per_sec"]) for point in points]
     return {
         "points": points,
-        # 仪表盘上的 10 个时间段刻度（整分钟）；曲线本身是每秒一个点
-        "minute_marks": minute_marks,
-        "per_second": True,
+        # 每 5 分钟一个分段标记（前端画清淡分隔；X 轴不显示刻度文字）
+        "segment_marks": segment_marks[-24:],
+        "interval_seconds": TRAFFIC_INTERVAL_SECONDS,
+        "segment_minutes": TRAFFIC_SEGMENT_MINUTES,
         "minutes": minutes,
         "total_bytes": total_bytes,
         "avg_bytes_per_sec": round(total_bytes / max(1, minutes * 60), 1),
+        # 仪表盘右上角的两个大数字：当前（最近一格）与峰值
+        "current_bytes_per_sec": rates[-1] if rates else 0.0,
+        "peak_bytes_per_sec": max(rates) if rates else 0.0,
+        "avg_recent_bytes_per_sec": round(sum(rates) / len(rates), 1) if rates else 0.0,
     }
 
 
@@ -359,15 +383,26 @@ def stats_traffic(
     _: Annotated[User, Depends(get_current_user)],
     minutes: int = TRAFFIC_MINUTES_DEFAULT,
 ):
-    """**近 N 分钟流量**（默认 10 分钟、**每秒一个点**）—— 给总览页的"心电图"用。
+    """**近 N 分钟流量**（默认 30 分钟、**每 20 秒一个点**）——给总览页「近期流量」仪表盘用。
 
-    曲线按秒打点（10 分钟 = 600 点）；仪表盘只显示 `minute_marks`（每整分钟一个）作为时间段刻度。
-    当前这一秒不完整 → 标 `partial`（不做放大折算，避免制造尖刺）。
-    口径仍是 **Zeek conn 的应用层字节**（不含链路层开销/重传/未跟踪流），不是网卡收包量。
+    曲线 20 秒打点（30 分钟 = 90 点）、每 5 分钟一个分段、**不给 X 轴刻度**（Sparkline 观感）。
+    当前这一格不完整 → 标 `partial`（按时长折算速率，不做放大）。
+    结果进程内缓存 `TRAFFIC_CACHE_SECONDS`（默认 30 秒）：仪表盘 5 秒轮询，不缓存会穿透 ES。
+    口径：**Zeek conn 的应用层字节**（orig+resp），不是网卡收包量。
     """
-    from datetime import UTC, datetime as _dt, timedelta as _td
+    import time as _time
 
     want = clamp_minutes(minutes)
+    key = str(want)
+    now_ts = _time.monotonic()
+    hit = _traffic_cache.get(key)
+    if hit is not None and now_ts - hit[0] < TRAFFIC_CACHE_SECONDS:
+        payload = dict(hit[1])
+        payload["cached"] = True
+        return payload
+
+    from datetime import UTC, datetime as _dt, timedelta as _td
+
     end_dt = _dt.now(UTC)
     start_dt = end_dt - _td(minutes=want)
     start_iso = start_dt.isoformat().replace("+00:00", "Z")
@@ -377,10 +412,15 @@ def stats_traffic(
         "since": start_iso,
         "until": end_iso,
         "points": [],
-        "minute_marks": [],
-        "per_second": True,
+        "segment_marks": [],
+        "interval_seconds": TRAFFIC_INTERVAL_SECONDS,
+        "segment_minutes": TRAFFIC_SEGMENT_MINUTES,
         "total_bytes": 0,
         "avg_bytes_per_sec": 0.0,
+        "current_bytes_per_sec": 0.0,
+        "peak_bytes_per_sec": 0.0,
+        "avg_recent_bytes_per_sec": 0.0,
+        "cached": False,
         "computed_at": end_dt.isoformat(),
         "note": "口径：Zeek conn 的应用层字节（orig+resp），不是网卡收包量",
     }
@@ -397,4 +437,6 @@ def stats_traffic(
     except Exception as exc:  # noqa: BLE001
         log.warning("近 %s 分钟流量聚合失败: %s", want, exc)
         out["error"] = str(exc)[:200]
+    out["cached"] = False
+    _traffic_cache[key] = (now_ts, dict(out))
     return out

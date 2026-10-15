@@ -1160,12 +1160,21 @@ export interface TrafficMinutes {
   minutes: number;
   since: string;
   until: string;
+  /** 曲线点：**每 20 秒一个**（近 30 分钟 = 90 个点） */
   points: TrafficMinutePoint[];
-  /** 仪表盘上显示的 10 个时间段刻度（整分钟；曲线本身是每秒一个点） */
-  minute_marks?: string[];
-  per_second?: boolean;
+  /** 每 5 分钟一个分区标记（前端据此画分区线；**X 轴不显示刻度文字**） */
+  segment_marks?: string[];
+  /** 打点粒度（秒），前端据此算"多少点 = 一个分区" */
+  interval_seconds?: number;
+  /** 分区长度（分钟） */
+  segment_minutes?: number;
   total_bytes: number;
   avg_bytes_per_sec: number;
+  /** 右上角大字：当前（最近一格）/ 峰值 / 近端均值 */
+  current_bytes_per_sec?: number;
+  peak_bytes_per_sec?: number;
+  avg_recent_bytes_per_sec?: number;
+  cached?: boolean;
   computed_at: string;
   note?: string;
   error?: string;

@@ -681,53 +681,74 @@ const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  const series = movingAverage(
-    points.map((p) => (p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total)),
-    TRAFFIC_SMOOTH_SECONDS,
-  );
+  // 曲线值 = 发送 + 接收（字节/秒）
+  const values = points.map((p) => (p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
+  // 每 5 分钟一条分区线：20 秒一个点 → 15 个点 = 5 分钟（用后端给的粒度算，别写死）
+  const interval = Math.max(1, Number(data?.interval_seconds ?? 20));
+  const segment = Math.max(1, Number(data?.segment_minutes ?? 5));
+  const everyPoints = Math.max(1, Math.round((segment * 60) / interval));
   return {
     animation: true,
     animationDuration: 0,
-    animationDurationUpdate: 400,
+    // 只换数据、线性推进：新点从右进、老点从左出，看起来是连续滚动而不是到点重画
+    animationDurationUpdate: 350,
     animationEasingUpdate: "linear",
     tooltip: {
       trigger: "axis",
+      backgroundColor: "#ffffff",
+      borderColor: "#3b82f6",
+      borderWidth: 1,
+      padding: [6, 10],
+      textStyle: { color: "#111827", fontSize: 12 },
+      extraCssText: "border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.15)",
       formatter: (params: unknown) => {
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
-        const rate = Math.round(series[idx] ?? 0);
-        return `${clockOf(Date.parse(p.ts))}<br/>${formatBytes(rate)}/秒<br/>合计 ${formatBytes(
-          p.bytes_total,
-        )}<br/>连接 ${p.docs} 条`;
+        const rate = Math.round((p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
+        return [
+          '<b>合计流量</b>',
+          `${clockOf(Date.parse(p.ts))}，${formatBytes(rate)}/秒`,
+          `发送 ${formatBytes(p.bytes_out ?? 0)} · 接收 ${formatBytes(p.bytes_in ?? 0)}`,
+          `连接 ${p.docs} 条`,
+        ].join("<br/>");
       },
     },
-    grid: { left: 52, right: 12, top: 16, bottom: 22 },
+    // 参考图没有 X 轴刻度文字 → 底部几乎不留白
+    grid: { left: 56, right: 14, top: 16, bottom: 4 },
     xAxis: {
-      ...AXIS,
-      boundaryGap: false,
+      type: "category",
       data: labels,
-      axisLabel: {
-        fontSize: 10,
-        interval: 0,
-        formatter: (value: string) => (value.endsWith(":00") ? value.slice(0, 5) : ""),
+      boundaryGap: false,
+      axisLine: { show: true, lineStyle: { color: "#d1d5db" } },
+      axisTick: { show: false },
+      // 用户口径：**X 轴不显示刻度**（时间靠分区线感知，且随时间滚动）
+      axisLabel: { show: false },
+      // 每 5 分钟一条浅灰分区线（interval = 跳过的点数，所以是 everyPoints - 1）
+      splitLine: {
+        show: true,
+        interval: everyPoints - 1,
+        lineStyle: { color: "#e5e7eb", width: 1 },
       },
     },
     yAxis: {
-      ...VAL,
-      name: "字节/秒",
-      nameTextStyle: { fontSize: 10 },
-      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { fontSize: 10, color: "#6b7280", formatter: (v: number) => formatBytes(v) },
+      splitLine: { lineStyle: { color: "#e5e7eb" } },
     },
     series: [
       {
         type: "line",
-        smooth: true,
+        // 参考图是**锯齿折线**：不平滑、不填充、平时不打点（悬停才出蓝点）
+        smooth: false,
         showSymbol: false,
-        areaStyle: { opacity: 0.18 },
-        lineStyle: { width: 1.8, color: "#0ea5e9" },
-        itemStyle: { color: "#0ea5e9" },
-        data: series.map((v) => Math.round(v)),
+        symbolSize: 7,
+        lineStyle: { width: 1.6, color: "#5f9e52" },
+        itemStyle: { color: "#3b82f6", borderColor: "#ffffff", borderWidth: 2 },
+        emphasis: { scale: 1.4 },
+        data: values.map((v) => Math.round(v)),
       },
     ],
   };

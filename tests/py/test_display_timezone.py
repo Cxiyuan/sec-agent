@@ -63,34 +63,41 @@ def test_no_browser_local_time_patterns(pattern: str) -> None:
     )
 
 
-def test_traffic_is_per_second_with_minute_marks() -> None:
-    """流量曲线按**每秒**打点，仪表盘只显示**整分钟**刻度（用户 2026-10 口径）。
+def test_recent_traffic_dashboard_contract() -> None:
+    """「近期流量」仪表盘的口径（2026-10 用户要求，参考 ESXi 主机资源占用那种画法）。
 
-    - 后端：桶用 `fixed_interval: "1s"`（10 分钟 = 600 点），并返回 `minute_marks`（整分钟）；
-    - 前端：x 轴只在 `:00` 处显示刻度，且不打点（600 个点打点会糊成一片）。
+    - 后端：**每 20 秒一个点**、窗口默认**近 30 分钟**、**每 5 分钟一个分区**、结果缓存 30 秒；
+    - 前端：**X 轴不显示刻度**（时间靠 5 分钟分区线感知，曲线随时间滚动）、
+      绿色**锯齿**折线（不平滑、不填充）、右上角「实时发送 / 实时接收 / 峰值」大字。
     """
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    backend = (root / "ndr" / "backend" / "app" / "api" / "routes" / "stats_overview.py").read_text(
+    backend = (
+        root / "ndr" / "backend" / "app" / "api" / "routes" / "stats_overview.py"
+    ).read_text(encoding="utf-8")
+    assert "TRAFFIC_INTERVAL_SECONDS = 20" in backend, "打点粒度必须是 20 秒"
+    assert "TRAFFIC_MINUTES_DEFAULT = 30" in backend, "窗口默认近半小时"
+    assert "TRAFFIC_SEGMENT_MINUTES = 5" in backend, "每 5 分钟一个分区"
+    assert "TRAFFIC_CACHE_SECONDS = 30" in backend, "要缓存，别让 5 秒轮询穿透 ES"
+    assert "segment_marks" in backend and "per_interval" in backend
+    assert "current_bytes_per_sec" in backend and "peak_bytes_per_sec" in backend
+
+    charts = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
         encoding="utf-8"
     )
-    assert '"fixed_interval": "1s"' in backend, "流量桶必须是每秒"
-    assert "minute_marks" in backend, "要给出整分钟刻度"
-    # 刻度必须判"秒位"而不是"分钟位"（曾经写错成 [14:16]，结果只出 1 个刻度）
-    assert 'start_at[17:19] == "00"' in backend, "整分钟刻度要按秒位判定"
-    assert "minute_marks[-minutes:]" in backend, "刻度要正好 N 个（每整分钟一个）"
-    frontend = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
-        encoding="utf-8"
-    )
-    assert 'value.endsWith(":00")' in frontend, "刻度只在整分钟显示"
-    assert "showSymbol: false" in frontend, "900 个点平时不打点（悬停才出蓝点）"
-    assert "smooth: true" in frontend, "要平滑攀升/下降（不是心电图、也不是硬折线）"
-    assert "movingAverage" in frontend, "必须做滑动平均：秒级尖峰直接画就是心电图"
-    assert "TRAFFIC_SMOOTH_SECONDS" in frontend, "平滑窗口要显式可调"
-    assert 'name: "字节/秒"' in frontend, "Y 轴沿用原有单位口径（字节/秒）"
-    assert "areaStyle" in frontend, "沿用原有仪表样式：面积折线"
-    assert "#0ea5e9" in frontend, "线条沿用本页原有配色"
-    assert "formatBytes(rate)" in frontend, "悬停按原有口径显示速率（字节/秒）"
-    panel = (root / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(encoding="utf-8")
-    assert 'title="近期流量"' in panel, "卡片名应为「近期流量」"
+    assert "axisLabel: { show: false }" in charts, "X 轴不显示刻度（用户口径）"
+    assert "splitLine" in charts and "everyPoints" in charts, "每 5 分钟一条分区线"
+    assert "smooth: false" in charts, "参考图是锯齿折线，不做平滑"
+    start = charts.index("export function minuteTrafficOption(")
+    _nxt = charts.find("\nexport function", start + 10)
+    end = len(charts) if _nxt < 0 else _nxt
+    body = charts[start:end]
+    assert "areaStyle" not in body, "参考图不填充"
+    assert "#5f9e52" in body, "线条绿色（对齐参考图）"
+
+    panel = (
+        root / "ndr" / "frontend" / "components" / "status-panel.tsx"
+    ).read_text(encoding="utf-8")
+    assert '"/api/stats/traffic?minutes=30"' in panel, "取数窗口近半小时"
+    assert "实时发送" in panel and "实时接收" in panel and "峰值" in panel

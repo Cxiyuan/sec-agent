@@ -421,7 +421,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
       loadInto(errs, SRC.hits, "/api/detector/hits?limit=50", setHits),
-      loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=15", setTraffic),
+      loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
       loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
@@ -443,7 +443,7 @@ export function StatusPanel() {
     // 近期流量：5 秒滚一次（比整页 15 秒快）。配合图表「合并更新 + 线性动画」，
     // 新的一秒从右边进来、最老的一秒从左边出去 —— 看起来是连续滚动，不是到点重画。
     const timer = setInterval(() => {
-      void loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=15", setTraffic);
+      void loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic);
     }, 5000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -504,6 +504,17 @@ export function StatusPanel() {
 
   const noHistory = "暂无采样（检测器每 5 分钟写一条，部署后约 5 分钟内出现）";
   const trafficPoints = overview?.traffic?.points ?? [];
+  // 仪表盘右上角的大数字：最近一格（跳过不完整的那格）+ 峰值
+  const { trafficSendRate, trafficRecvRate, trafficPeak } = React.useMemo(() => {
+    const pts = traffic?.points ?? [];
+    const last = [...pts].reverse().find((p) => !p.partial) ?? pts[pts.length - 1];
+    return {
+      trafficSendRate: last?.bytes_out ?? 0,
+      trafficRecvRate: last?.bytes_in ?? 0,
+      trafficPeak: traffic?.peak_bytes_per_sec ?? 0,
+    };
+  }, [traffic]);
+
   const noTraffic = emptyOrFailed(errs, SRC.overview, "暂无数据（ES 读取失败，或该窗口内没有 conn 日志）");
 
   return (
@@ -861,9 +872,25 @@ export function StatusPanel() {
                 title="近期流量"
                 extra={
                   overview ? (
-                    <span className="text-xs font-normal text-muted-foreground">
-                      合计 {formatBytes(overview.traffic.total_bytes)} · 均值{" "}
-                      {formatBytes(overview.traffic.avg_bytes_per_sec)}/s
+                    /* 参考图（主机资源占用那种）右上角就是「实时发送 / 实时接收」大字 */
+                    <span className="flex flex-wrap items-center gap-x-3 text-xs font-normal text-muted-foreground">
+                      <span>
+                        实时发送{" "}
+                        <b className="font-mono text-foreground">{formatBytes(trafficSendRate)}/s</b>
+                      </span>
+                      <span>
+                        实时接收{" "}
+                        <b className="font-mono text-foreground">{formatBytes(trafficRecvRate)}/s</b>
+                      </span>
+                      <span>
+                        峰值 <b className="font-mono text-foreground">{formatBytes(trafficPeak)}/s</b>
+                      </span>
+                      <span>
+                        近半小时均值{" "}
+                        <b className="font-mono text-foreground">
+                          {formatBytes(traffic?.avg_recent_bytes_per_sec ?? 0)}/s
+                        </b>
+                      </span>
                     </span>
                   ) : null
                 }
