@@ -681,73 +681,62 @@ const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  // 曲线值 = 发送 + 接收（字节/秒）
   const values = points.map((p) => (p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
-  // 每 5 分钟一条分区线：20 秒一个点 → 15 个点 = 5 分钟（用后端给的粒度算，别写死）
+  // 每 5 分钟一个「分区」：20 秒一个点 → 15 个点（用后端给的粒度算，不写死）
   const interval = Math.max(1, Number(data?.interval_seconds ?? 20));
   const segment = Math.max(1, Number(data?.segment_minutes ?? 5));
   const everyPoints = Math.max(1, Math.round((segment * 60) / interval));
   return {
     animation: true,
     animationDuration: 0,
-    // 只换数据、线性推进：新点从右进、老点从左出，看起来是连续滚动而不是到点重画
+    // 只换数据、线性推进：新点从右进、老点从左出 —— 看起来是连续滚动，不是到点重画
     animationDurationUpdate: 350,
     animationEasingUpdate: "linear",
+    // 提示框走本页深色主题（上一版自定义成白底蓝框，在深色页面上像 Excel）
     tooltip: {
       trigger: "axis",
-      backgroundColor: "#ffffff",
-      borderColor: "#3b82f6",
-      borderWidth: 1,
-      padding: [6, 10],
-      textStyle: { color: "#111827", fontSize: 12 },
-      extraCssText: "border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.15)",
       formatter: (params: unknown) => {
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
         const rate = Math.round((p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
         return [
-          '<b>合计流量</b>',
-          `${clockOf(Date.parse(p.ts))}，${formatBytes(rate)}/秒`,
+          `<b>${clockOf(Date.parse(p.ts))}</b>`,
+          `合计 ${formatBytes(rate)}/秒`,
           `发送 ${formatBytes(p.bytes_out ?? 0)} · 接收 ${formatBytes(p.bytes_in ?? 0)}`,
           `连接 ${p.docs} 条`,
         ].join("<br/>");
       },
     },
-    // 参考图没有 X 轴刻度文字 → 底部几乎不留白
-    grid: { left: 56, right: 14, top: 16, bottom: 4 },
+    grid: { left: 58, right: 14, top: 14, bottom: 20 },
     xAxis: {
-      type: "category",
-      data: labels,
+      ...AXIS,
       boundaryGap: false,
-      axisLine: { show: true, lineStyle: { color: "#d1d5db" } },
+      data: labels,
       axisTick: { show: false },
-      // 用户口径：**X 轴不显示刻度**（时间靠分区线感知，且随时间滚动）
-      axisLabel: { show: false },
-      // 每 5 分钟一条浅灰分区线（interval = 跳过的点数，所以是 everyPoints - 1）
-      splitLine: {
-        show: true,
+      // 时间要看得见：**每 5 分钟一个标签**（interval 是"跳过的点数"，所以是 everyPoints-1），
+      // 中间的 20 秒点不标 —— 既不密集，也不会像上一版那样把时间整个藏掉。
+      axisLabel: {
+        fontSize: 10,
         interval: everyPoints - 1,
-        lineStyle: { color: "#e5e7eb", width: 1 },
+        color: "#94a3b8",
+        formatter: (value: string) => value.slice(0, 5),
       },
     },
     yAxis: {
-      type: "value",
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { fontSize: 10, color: "#6b7280", formatter: (v: number) => formatBytes(v) },
-      splitLine: { lineStyle: { color: "#e5e7eb" } },
+      ...VAL,
+      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
     },
     series: [
       {
         type: "line",
-        // 参考图是**锯齿折线**：不平滑、不填充、平时不打点（悬停才出蓝点）
-        smooth: false,
+        // 现代观感：平滑曲线 + 渐变面积（本页其它图表同一路数）
+        smooth: true,
         showSymbol: false,
-        symbolSize: 7,
-        lineStyle: { width: 1.6, color: "#5f9e52" },
-        itemStyle: { color: "#3b82f6", borderColor: "#ffffff", borderWidth: 2 },
-        emphasis: { scale: 1.4 },
+        lineStyle: { width: 2, color: "#0ea5e9" },
+        itemStyle: { color: "#0ea5e9" },
+        // 面积用本页同款的低透明度纯色（渐变对象在 ECharts 类型里坐标只接受数字）
+        areaStyle: { opacity: 0.22 },
         data: values.map((v) => Math.round(v)),
       },
     ],

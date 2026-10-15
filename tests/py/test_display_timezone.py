@@ -86,15 +86,18 @@ def test_recent_traffic_dashboard_contract() -> None:
     charts = (root / "ndr" / "frontend" / "components" / "status-charts.ts").read_text(
         encoding="utf-8"
     )
-    assert "axisLabel: { show: false }" in charts, "X 轴不显示刻度（用户口径）"
-    assert "splitLine" in charts and "everyPoints" in charts, "每 5 分钟一条分区线"
-    assert "smooth: false" in charts, "参考图是锯齿折线，不做平滑"
     start = charts.index("export function minuteTrafficOption(")
     _nxt = charts.find("\nexport function", start + 10)
-    end = len(charts) if _nxt < 0 else _nxt
-    body = charts[start:end]
-    assert "areaStyle" not in body, "参考图不填充"
-    assert "#5f9e52" in body, "线条绿色（对齐参考图）"
+    body = charts[start : len(charts) if _nxt < 0 else _nxt]
+    assert "interval: everyPoints - 1" in body, "X 轴要**每 5 分钟一个时间标签**（不能藏起来）"
+    assert "axisTick: { show: false }" in body, "不画密集刻度线"
+    assert "smooth: true" in body, "现代观感：平滑曲线"
+    assert "areaStyle: { opacity: 0.22 }" in body, "面积用本页同款低透明度纯色"
+    assert "#0ea5e9" in body, "线条沿用本页主色"
+    assert "backgroundColor: \"#ffffff\"" not in body, "提示框不要白色（那是 Excel 观感）"
+    assert "splitLine: { lineStyle: { color: \"#e5e7eb\" } }" not in body, "不要整片浅灰网格"
+    # 每 5 分钟一个分区，粒度从后端字段算，不写死
+    assert "everyPoints" in body and "segment_minutes" in body
 
     panel = (
         root / "ndr" / "frontend" / "components" / "status-panel.tsx"
