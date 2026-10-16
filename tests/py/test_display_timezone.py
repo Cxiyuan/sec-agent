@@ -92,17 +92,22 @@ def test_recent_traffic_dashboard_contract() -> None:
     # X 轴：时间要看得见，但每 5 分钟才一个标签、不画密集刻度
     assert "interval: everyPoints - 1" in body, "X 轴要每 5 分钟一个时间标签"
     assert "axisTick: { show: false }" in body, "不画密集刻度线"
-    # 用户口径：折叠线（Step），不是平滑曲线
-    assert 'step: "end"' in body, "折叠线"
-    assert "smooth: true" not in body, "不要平滑曲线"
-    # 用户口径：流量绿、掉包黄，掉包走右 Y 轴
+    # 用户口径：**波浪线**（平滑），**不填充区域**
+    assert "smooth: true" in body, "波浪线（平滑曲线）"
+    assert "areaStyle" not in body, "不要填充区域"
+    assert 'step: "end"' not in body, "不要折叠线"
+    # 用户口径：流量绿、掉包黄；掉包走右 Y 轴
     assert '"#22c55e"' in body, "流量绿色"
     assert '"#eab308"' in body, "掉包黄色"
-    assert "yAxisIndex: 1" in body, "掉包在右 Y 轴（否则被流量压成平线）"
-    # Y 轴 8 档固定阶梯：200KB / 1M / 5M / 50M / 100M / 200M / 500M / 1G
+    assert "yAxisIndex: 1" in body, "掉包在右 Y 轴"
+    # 容量尺（字节）在**左**轴、用**对数**刻度（线性时低位数据贴 X 轴像没数据）
+    assert 'type: "log"' in body, "左轴要用对数刻度"
+    assert "markLine" in body and 'position: "start"' in body, "容量尺标注要画在左边"
+    # 8 档固定阶梯一个不少
     for tick in ("200KB", "1M", "5M", "50M", "100M", "200M", "500M", "1G"):
-        assert f'"{tick}"' in charts, f"Y 轴阶梯缺 {tick}"
-    assert "markLine" in body, "阶梯要画在真实位置上（不等距，不能用轴的 interval）"
+        assert f'"{tick}"' in charts, f"容量尺缺 {tick}"
+    # 掉包要能算掉包率（同区间处理包数）
+    assert "pkts_proc" in body, "提示框要能算掉包率"
     # 画的是**每秒**口径，不是 20 秒桶内总量（否则虚高 20 倍）
     assert "p.bytes_per_sec" in body, "曲线必须画每秒速率"
     assert "p.bytes_total" not in body, "不能把桶内总量当每秒"

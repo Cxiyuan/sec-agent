@@ -73,7 +73,11 @@ def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
                             "min_doc_count": 0,
                             "extended_bounds": {"min": start, "max": end},
                         },
-                        "aggs": {"pkts_dropped": {"sum": {"field": "pkts_dropped"}}},
+                        "aggs": {
+                            "pkts_dropped": {"sum": {"field": "pkts_dropped"}},
+                            # 同区间处理包数：用来算掉包率（dropped / (proc + dropped)）
+                            "pkts_proc": {"sum": {"field": "pkts_proc"}},
+                        },
                     }
                 },
             },
@@ -350,6 +354,10 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
     interval = float(TRAFFIC_INTERVAL_SECONDS)
     # Zeek 最近一次上报的丢包值（stats.log 每 5 分钟一条）
     last_report: int | None = None
+    # 窗口累计（`pkts_dropped` 是每 5 分钟的**增量**，所以可以直接求和；
+    # 实测一次爆 48,123 包后下一个区间回 0，确证不是累计计数器）
+    total_dropped = 0
+    total_proc = 0
     for idx, bucket in enumerate(buckets):
         if not isinstance(bucket, dict):
             continue
@@ -375,8 +383,11 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         # 掉包：取同下标的桶（两串 histogram 同粒度同边界 → 下标一一对应）
         drop_bucket = drop_buckets[idx] if idx < len(drop_buckets) else {}
         pkts_dropped = _int_of((drop_bucket.get("pkts_dropped") or {}).get("value"))
+        pkts_proc = _int_of((drop_bucket.get("pkts_proc") or {}).get("value"))
         if drop_bucket.get("doc_count"):
             last_report = pkts_dropped
+        total_dropped += pkts_dropped
+        total_proc += pkts_proc
         points.append(
             {
                 "ts": start_at,
@@ -390,6 +401,7 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
                 "bytes_out_per_sec": round(bytes_out / elapsed, 1),
                 "bytes_in_per_sec": round(bytes_in / elapsed, 1),
                 "pkts_dropped": pkts_dropped,
+                "pkts_proc": pkts_proc,
                 "partial": partial,
             }
         )
@@ -410,6 +422,12 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         "avg_recent_bytes_per_sec": round(sum(rates) / len(rates), 1) if rates else 0.0,
         # Zeek **最近一次上报**的丢包值（stats.log 每 5 分钟一条；不是窗口累加，避免把累积型计数器加成假总数）
         "pkts_dropped_latest": last_report or 0,
+        # 窗口丢包总数与掉包率（分母 = 丢包 + 处理，都是同区间上报的增量）
+        "pkts_dropped_total": total_dropped,
+        "pkts_proc_total": total_proc,
+        "drop_rate": round(total_dropped / (total_dropped + total_proc) * 100, 4)
+        if (total_dropped + total_proc)
+        else 0.0,
     }
 
 

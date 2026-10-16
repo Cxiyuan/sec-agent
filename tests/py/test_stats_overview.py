@@ -120,8 +120,18 @@ def test_shape_minute_traffic_carries_rate_and_drops(stats: ModuleType) -> None:
             "drops": {
                 "per_interval": {
                     "buckets": [
-                        {"key": 1, "doc_count": 0, "pkts_dropped": {"value": 0.0}},
-                        {"key": 2, "doc_count": 1, "pkts_dropped": {"value": 7.0}},
+                        {
+                            "key": 1,
+                            "doc_count": 0,
+                            "pkts_dropped": {"value": 0.0},
+                            "pkts_proc": {"value": 0.0},
+                        },
+                        {
+                            "key": 2,
+                            "doc_count": 1,
+                            "pkts_dropped": {"value": 7.0},
+                            "pkts_proc": {"value": 9993.0},
+                        },
                     ]
                 }
             },
@@ -135,6 +145,10 @@ def test_shape_minute_traffic_carries_rate_and_drops(stats: ModuleType) -> None:
     assert first["bytes_in_per_sec"] == 150.0
     assert out["points"][1]["pkts_dropped"] == 7.0
     assert out["pkts_dropped_latest"] == 7.0
+    # 窗口求和（pkts_dropped 是增量，可累加）+ 掉包率
+    assert out["pkts_dropped_total"] == 7.0
+    assert out["pkts_proc_total"] == 9993.0
+    assert out["drop_rate"] == 0.07  # 7 / (7+9993) * 100
 
 
 def test_shape_traffic_computes_bytes_per_sec(stats: ModuleType) -> None:

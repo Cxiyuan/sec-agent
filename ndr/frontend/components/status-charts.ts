@@ -37,16 +37,18 @@ const SEVERITY_COLORS: Record<string, string> = {
   info: "#64748b",
 };
 
-// 数据大小阶梯（仪表盘 Y 轴专用，用户口径）：200KB → 1M → 5M → 50M → 100M → 200M → 500M → 1G
-// 1K = 1024，逐档换算成字节；档位不等距，所以不用轴的 interval，而是用 markLine 画在**真实位置**上
+// 容量尺（仪表盘左边 Y 轴）：用户口径 200KB → 1M → 5M → 50M → 100M → 200M → 500M → 1G
+// 左边只放字节刻度；右边那根轴只放掉包。
+// 轴用**对数刻度**（1KB ~ 1G）：线性刻度时几百 KB/s 会贴着 X 轴，看着像没数据。
+const FLOW_AXIS_MIN = 1024; // 1KB（对数轴下限必须 > 0；更低的值贴底显示，不画断线）
 const RATE_TICKS_BYTES: number[] = [200, 1024, 5120, 25600, 51200, 102400, 256000, 1048576].map(
   (k) => k * 1024,
 );
 const RATE_TICK_LABELS: string[] = ["200KB", "1M", "5M", "50M", "100M", "200M", "500M", "1G"];
-// 曲线峰值可能超过 1G（真超过就按真实比例撑开轴，不裁数据）
+// 峰值超过 1G 时按真实值撑开轴（不裁数据）
 function flowAxisMax(maxValue: number): number {
   const top = RATE_TICKS_BYTES[RATE_TICKS_BYTES.length - 1];
-  return Math.max(top, Math.ceil(maxValue * 1.05));
+  return Math.max(top, Math.ceil(maxValue * 1.2));
 }
 
 const PALETTE = [
@@ -693,9 +695,8 @@ const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  // 两条线都是**每秒**口径：流量 = bytes_per_sec（桶内总量 ÷ 桶秒数，不是桶内总量！），
-  // 掉包 = Zeek 上报的原值（stats.log 每 5 分钟一条,没上报的格子是 0）
-  const flow = points.map((p) => Math.round(p.bytes_per_sec ?? 0));
+  // 两条线都是"每秒/每次上报"的真实口径（不是桶内总量）
+  const flow = points.map((p) => Math.max(FLOW_AXIS_MIN, Math.round(p.bytes_per_sec ?? 0)));
   const drops = points.map((p) => Math.round(p.pkts_dropped ?? 0));
   const interval = Math.max(1, Number(data?.interval_seconds ?? 20));
   const segment = Math.max(1, Number(data?.segment_minutes ?? 5));
@@ -720,22 +721,24 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
+        const per = (p.pkts_dropped ?? 0) + (p.pkts_proc ?? 0);
+        const rate = per ? (((p.pkts_dropped ?? 0) / per) * 100).toFixed(3) : "0.000";
         return [
           `<b>${clockOf(Date.parse(p.ts))}</b>`,
           `合计 ${formatBytes(p.bytes_per_sec ?? 0)}/秒`,
           `发送 ${formatBytes(p.bytes_out_per_sec ?? 0)}/秒 · 接收 ${formatBytes(p.bytes_in_per_sec ?? 0)}/秒`,
           `连接 ${p.docs} 条`,
-          `丢包 ${p.pkts_dropped ?? 0} 包（Zeek 每 5 分钟上报）`,
+          `丢包 ${p.pkts_dropped ?? 0} 包（Zeek 每 5 分钟上报，掉包率 ${rate}%）`,
         ].join("<br/>");
       },
     },
-    grid: { left: 62, right: 58, top: 22, bottom: 20 },
+    // 右边留出空间放掉包刻度，左边放容量尺
+    grid: { left: 64, right: 62, top: 22, bottom: 20 },
     xAxis: {
       ...AXIS,
       boundaryGap: false,
       data: labels,
       axisTick: { show: false },
-      // 时间要看得见：**每 5 分钟一个标签**（interval 是"跳过的点数"，所以是 everyPoints-1）
       axisLabel: {
         fontSize: 10,
         interval: everyPoints - 1,
@@ -744,17 +747,19 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       },
     },
     yAxis: [
-      // 左：流量（每秒）。刻度不交给 ECharts 自动分，改成固定 8 档阶梯线（画在真实位置上）
+      // 左：容量尺（字节/秒）。对数刻度 + 自定义阶梯标注（阶梯不等距，不能用轴的 interval）
       {
-        type: "value",
-        min: 0,
+        type: "log",
+        logBase: 10,
+        min: FLOW_AXIS_MIN,
         max: flowMax,
+        // 刻度文字由 markLine 画（位置是真实字节位置），轴自身不出刻度
         axisLabel: { show: false },
         splitLine: { show: false },
         axisLine: { show: false },
         axisTick: { show: false },
       },
-      // 右：丢包（包数）——单独一轴，不然掉包曲线会被流量压成一条平线
+      // 右：只放掉包（包数）
       {
         type: "value",
         position: "right",
@@ -769,18 +774,18 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       {
         name: "流量",
         type: "line",
-        // 用户口径：**折叠线**（相邻两点之间用水平+垂直线段，不做平滑）
-        step: "end",
+        // 用户口径：**波浪线**（平滑曲线），**不填充区域**
+        smooth: true,
         showSymbol: false,
-        lineStyle: { width: 1.6, color: "#22c55e" },
+        lineStyle: { width: 1.8, color: "#22c55e" },
         itemStyle: { color: "#22c55e" },
         data: flow,
-        // Y 轴 8 档阶梯：200KB / 1M / 5M / 50M / 100M / 200M / 500M / 1G（真实字节位置）
+        // 容量尺：画在**左侧**（label position: "start"），位置是真实字节位置
         markLine: {
           silent: true,
           symbol: "none",
           lineStyle: { color: "#334155", type: "dashed", width: 1 },
-          label: { position: "end", fontSize: 9, color: "#64748b" },
+          label: { position: "start", fontSize: 9, color: "#64748b" },
           data: RATE_TICKS_BYTES.map((value, i) => ({
             yAxis: value,
             label: { formatter: RATE_TICK_LABELS[i] },
@@ -790,9 +795,9 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       {
         name: "丢包",
         type: "line",
-        step: "end",
+        smooth: true,
         showSymbol: false,
-        lineStyle: { width: 1.6, color: "#eab308" },
+        lineStyle: { width: 1.8, color: "#eab308" },
         itemStyle: { color: "#eab308" },
         data: drops,
         yAxisIndex: 1,
