@@ -505,13 +505,15 @@ export function StatusPanel() {
   const noHistory = "暂无采样（检测器每 5 分钟写一条，部署后约 5 分钟内出现）";
   const trafficPoints = overview?.traffic?.points ?? [];
   // 仪表盘右上角的大数字：最近一格（跳过不完整的那格）+ 峰值
-  const { trafficSendRate, trafficRecvRate, trafficPeak } = React.useMemo(() => {
+  const { trafficSendRate, trafficRecvRate, trafficPeak, trafficDropsLatest } = React.useMemo(() => {
     const pts = traffic?.points ?? [];
     const last = [...pts].reverse().find((p) => !p.partial) ?? pts[pts.length - 1];
     return {
-      trafficSendRate: last?.bytes_out ?? 0,
-      trafficRecvRate: last?.bytes_in ?? 0,
+      // 每秒口径：桶内总量 ÷ 桶秒数（原来直接用桶内总量，虚高 20 倍）
+      trafficSendRate: last?.bytes_out_per_sec ?? Math.round((last?.bytes_out ?? 0) / (traffic?.interval_seconds || 20)),
+      trafficRecvRate: last?.bytes_in_per_sec ?? Math.round((last?.bytes_in ?? 0) / (traffic?.interval_seconds || 20)),
       trafficPeak: traffic?.peak_bytes_per_sec ?? 0,
+      trafficDropsLatest: traffic?.pkts_dropped_latest ?? 0,
     };
   }, [traffic]);
 
@@ -884,6 +886,10 @@ export function StatusPanel() {
                       </span>
                       <span>
                         峰值 <b className="font-mono text-foreground">{formatBytes(trafficPeak)}/s</b>
+                      </span>
+                      <span>
+                        丢包（Zeek 上报）{" "}
+                        <b className="font-mono text-foreground">{trafficDropsLatest}</b> 包
                       </span>
                       <span>
                         近半小时均值{" "}

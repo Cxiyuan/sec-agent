@@ -291,6 +291,13 @@ FIELDS: dict[str, dict[str, Any]] = {
         "desc": "上行字节（外泄看这个；Zeek orig_bytes）",
     },
     "bytes_in": {"path": "bytes_in", "kind": "num", "desc": "下行字节（Zeek resp_bytes）"},
+    # Zeek stats.log（每 5 分钟上报一条）的抓包丢包/收包计数：仪表盘掉包折线的数据源
+    "pkts_dropped": {
+        "path": "pkts_dropped",
+        "kind": "num",
+        "desc": "Zeek 上报的丢包数（stats.log，每 5 分钟一条；原值，非累加）",
+    },
+    "pkts_proc": {"path": "pkts_proc", "kind": "num", "desc": "Zeek 已处理包数（stats.log）"},
 }
 
 # "摘要观察"里默认带回来的字段（控体积）。原本按来源分两列，字段统一后只有一份。

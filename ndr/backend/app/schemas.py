@@ -87,6 +87,11 @@ class UnifiedLog(BaseModel):
     resp_mime: str = ""
     bytes_out: int | None = None  # 源→目的字节数（数据外传）
     bytes_in: int | None = None  # 目的→源字节数（数据窃取）
+
+    # stats.log（Zeek 每 5 分钟上报一次）：套接字/内核丢包计数
+    # → 「近期流量」图的掉包折线（值是**上报那一刻的原值**，本系统不做累积换算）
+    pkts_dropped: int | None = None
+    pkts_proc: int | None = None
     # TLS 指纹与证书（工具识别 / 弱 TLS）
     ja3: str = ""
     ja3s: str = ""

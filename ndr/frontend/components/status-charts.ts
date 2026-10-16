@@ -37,6 +37,18 @@ const SEVERITY_COLORS: Record<string, string> = {
   info: "#64748b",
 };
 
+// 数据大小阶梯（仪表盘 Y 轴专用，用户口径）：200KB → 1M → 5M → 50M → 100M → 200M → 500M → 1G
+// 1K = 1024，逐档换算成字节；档位不等距，所以不用轴的 interval，而是用 markLine 画在**真实位置**上
+const RATE_TICKS_BYTES: number[] = [200, 1024, 5120, 25600, 51200, 102400, 256000, 1048576].map(
+  (k) => k * 1024,
+);
+const RATE_TICK_LABELS: string[] = ["200KB", "1M", "5M", "50M", "100M", "200M", "500M", "1G"];
+// 曲线峰值可能超过 1G（真超过就按真实比例撑开轴，不裁数据）
+function flowAxisMax(maxValue: number): number {
+  const top = RATE_TICKS_BYTES[RATE_TICKS_BYTES.length - 1];
+  return Math.max(top, Math.ceil(maxValue * 1.05));
+}
+
 const PALETTE = [
   "#0ea5e9",
   "#22c55e",
@@ -681,41 +693,49 @@ const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
   const points = data?.points || [];
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
-  const values = points.map((p) => (p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
-  // 每 5 分钟一个「分区」：20 秒一个点 → 15 个点（用后端给的粒度算，不写死）
+  // 两条线都是**每秒**口径：流量 = bytes_per_sec（桶内总量 ÷ 桶秒数，不是桶内总量！），
+  // 掉包 = Zeek 上报的原值（stats.log 每 5 分钟一条,没上报的格子是 0）
+  const flow = points.map((p) => Math.round(p.bytes_per_sec ?? 0));
+  const drops = points.map((p) => Math.round(p.pkts_dropped ?? 0));
   const interval = Math.max(1, Number(data?.interval_seconds ?? 20));
   const segment = Math.max(1, Number(data?.segment_minutes ?? 5));
   const everyPoints = Math.max(1, Math.round((segment * 60) / interval));
+  const flowMax = flowAxisMax(Math.max(0, ...flow));
   return {
     animation: true,
     animationDuration: 0,
-    // 只换数据、线性推进：新点从右进、老点从左出 —— 看起来是连续滚动，不是到点重画
     animationDurationUpdate: 350,
     animationEasingUpdate: "linear",
-    // 提示框走本页深色主题（上一版自定义成白底蓝框，在深色页面上像 Excel）
+    legend: {
+      top: 0,
+      right: 0,
+      itemWidth: 12,
+      itemHeight: 8,
+      textStyle: { fontSize: 10, color: "#94a3b8" },
+      data: ["流量", "丢包"],
+    },
     tooltip: {
       trigger: "axis",
       formatter: (params: unknown) => {
         const idx = (params as Array<{ dataIndex: number }>)?.[0]?.dataIndex ?? 0;
         const p = points[idx];
         if (!p) return "";
-        const rate = Math.round((p.bytes_out ?? 0) + (p.bytes_in ?? p.bytes_total));
         return [
           `<b>${clockOf(Date.parse(p.ts))}</b>`,
-          `合计 ${formatBytes(rate)}/秒`,
-          `发送 ${formatBytes(p.bytes_out ?? 0)} · 接收 ${formatBytes(p.bytes_in ?? 0)}`,
+          `合计 ${formatBytes(p.bytes_per_sec ?? 0)}/秒`,
+          `发送 ${formatBytes(p.bytes_out_per_sec ?? 0)}/秒 · 接收 ${formatBytes(p.bytes_in_per_sec ?? 0)}/秒`,
           `连接 ${p.docs} 条`,
+          `丢包 ${p.pkts_dropped ?? 0} 包（Zeek 每 5 分钟上报）`,
         ].join("<br/>");
       },
     },
-    grid: { left: 58, right: 14, top: 14, bottom: 20 },
+    grid: { left: 62, right: 58, top: 22, bottom: 20 },
     xAxis: {
       ...AXIS,
       boundaryGap: false,
       data: labels,
       axisTick: { show: false },
-      // 时间要看得见：**每 5 分钟一个标签**（interval 是"跳过的点数"，所以是 everyPoints-1），
-      // 中间的 20 秒点不标 —— 既不密集，也不会像上一版那样把时间整个藏掉。
+      // 时间要看得见：**每 5 分钟一个标签**（interval 是"跳过的点数"，所以是 everyPoints-1）
       axisLabel: {
         fontSize: 10,
         interval: everyPoints - 1,
@@ -723,21 +743,59 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         formatter: (value: string) => value.slice(0, 5),
       },
     },
-    yAxis: {
-      ...VAL,
-      axisLabel: { fontSize: 10, formatter: (v: number) => formatBytes(v) },
-    },
+    yAxis: [
+      // 左：流量（每秒）。刻度不交给 ECharts 自动分，改成固定 8 档阶梯线（画在真实位置上）
+      {
+        type: "value",
+        min: 0,
+        max: flowMax,
+        axisLabel: { show: false },
+        splitLine: { show: false },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+      // 右：丢包（包数）——单独一轴，不然掉包曲线会被流量压成一条平线
+      {
+        type: "value",
+        position: "right",
+        min: 0,
+        axisLabel: { fontSize: 10, color: "#eab308", formatter: (v: number) => `${v}` },
+        splitLine: { show: false },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+    ],
     series: [
       {
+        name: "流量",
         type: "line",
-        // 现代观感：平滑曲线 + 渐变面积（本页其它图表同一路数）
-        smooth: true,
+        // 用户口径：**折叠线**（相邻两点之间用水平+垂直线段，不做平滑）
+        step: "end",
         showSymbol: false,
-        lineStyle: { width: 2, color: "#0ea5e9" },
-        itemStyle: { color: "#0ea5e9" },
-        // 面积用本页同款的低透明度纯色（渐变对象在 ECharts 类型里坐标只接受数字）
-        areaStyle: { opacity: 0.22 },
-        data: values.map((v) => Math.round(v)),
+        lineStyle: { width: 1.6, color: "#22c55e" },
+        itemStyle: { color: "#22c55e" },
+        data: flow,
+        // Y 轴 8 档阶梯：200KB / 1M / 5M / 50M / 100M / 200M / 500M / 1G（真实字节位置）
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { color: "#334155", type: "dashed", width: 1 },
+          label: { position: "end", fontSize: 9, color: "#64748b" },
+          data: RATE_TICKS_BYTES.map((value, i) => ({
+            yAxis: value,
+            label: { formatter: RATE_TICK_LABELS[i] },
+          })),
+        },
+      },
+      {
+        name: "丢包",
+        type: "line",
+        step: "end",
+        showSymbol: false,
+        lineStyle: { width: 1.6, color: "#eab308" },
+        itemStyle: { color: "#eab308" },
+        data: drops,
+        yAxisIndex: 1,
       },
     ],
   };

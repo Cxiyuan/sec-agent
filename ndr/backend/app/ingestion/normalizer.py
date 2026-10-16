@@ -700,6 +700,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
         conn_state=str(conn_state or ""),  # 留给策略层判“是否真建立会话”（归一化时已读取）
+        # stats.log 的丢包计数（只在这种日志上有）→ 近期流量图的掉包折线
+        pkts_dropped=_to_int(doc.get("pkts_dropped")) if log_type == "stats" else None,
+        pkts_proc=_to_int(doc.get("pkts_proc")) if log_type == "stats" else None,
         # Zeek weird.log 的异常名（其它日志恒空）：「协议异常」与「采集类异常」靠它区分
         weird_name=weird_name,
         # Zeek 连接 UID（同一跳内 http/ssl/dns/files ↔ conn 关联；中继前后跳是两条连接）

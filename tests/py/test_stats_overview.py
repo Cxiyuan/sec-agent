@@ -91,6 +91,52 @@ def _resp_with(
     }
 
 
+def test_shape_minute_traffic_carries_rate_and_drops(stats: ModuleType) -> None:
+    """近期流量：每点必须是**每秒**口径 + 带 Zeek 上报的掉包值（不是桶内总量）。"""
+    import datetime as _dt
+
+    start = _dt.datetime(2026, 10, 16, 10, 0, tzinfo=_dt.UTC)
+    end = start + _dt.timedelta(seconds=40)
+    resp = {
+        "aggregations": {
+            "traffic": {
+                "per_interval": {
+                    "buckets": [
+                        {
+                            "key": 1,
+                            "doc_count": 2,
+                            "bytes_out": {"value": 1000.0},
+                            "bytes_in": {"value": 3000.0},
+                        },
+                        {
+                            "key": 2,
+                            "doc_count": 1,
+                            "bytes_out": {"value": 500.0},
+                            "bytes_in": {"value": 500.0},
+                        },
+                    ]
+                }
+            },
+            "drops": {
+                "per_interval": {
+                    "buckets": [
+                        {"key": 1, "doc_count": 0, "pkts_dropped": {"value": 0.0}},
+                        {"key": 2, "doc_count": 1, "pkts_dropped": {"value": 7.0}},
+                    ]
+                }
+            },
+        }
+    }
+    out = stats.shape_minute_traffic(resp, minutes=30, now=end)
+    first = out["points"][0]
+    # 4000 字节落在 20 秒的桶里 → 每秒 200，而不是 4000
+    assert first["bytes_per_sec"] == 200.0
+    assert first["bytes_out_per_sec"] == 50.0
+    assert first["bytes_in_per_sec"] == 150.0
+    assert out["points"][1]["pkts_dropped"] == 7.0
+    assert out["pkts_dropped_latest"] == 7.0
+
+
 def test_shape_traffic_computes_bytes_per_sec(stats: ModuleType) -> None:
     resp = _resp_with(
         [

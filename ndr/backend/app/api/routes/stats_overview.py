@@ -61,6 +61,22 @@ def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
         "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
         "aggs": {
             # 流量只在 conn 上统计（见模块注释：不过滤会把 HTTP 的 bytes_in 重复计入）
+            # 掉包（Zeek stats.log，每 5 分钟上报一条）：与流量桶用**同一套时间桶参数**，
+            # 所以两串 buckets 的下标一一对应，shape 里按同一下标取值（不做 key 对齐，省一次换算）
+            "drops": {
+                "filter": {"term": {"log_type.keyword": "stats"}},
+                "aggs": {
+                    "per_interval": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": f"{TRAFFIC_INTERVAL_SECONDS}s",
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start, "max": end},
+                        },
+                        "aggs": {"pkts_dropped": {"sum": {"field": "pkts_dropped"}}},
+                    }
+                },
+            },
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
@@ -324,10 +340,17 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
     buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_interval") or {}).get(
         "buckets"
     ) or []
+
+    # 掉包桶：与流量桶同粒度同边界 → 下标一一对应
+    drop_buckets = (((resp.get("aggregations") or {}).get("drops") or {}).get("per_interval") or {}).get(
+        "buckets"
+    ) or []
     points: list[dict[str, Any]] = []
     segment_marks: list[str] = []
     interval = float(TRAFFIC_INTERVAL_SECONDS)
-    for bucket in buckets:
+    # Zeek 最近一次上报的丢包值（stats.log 每 5 分钟一条）
+    last_report: int | None = None
+    for idx, bucket in enumerate(buckets):
         if not isinstance(bucket, dict):
             continue
         bytes_out = _int_of(bucket.get("bytes_out", {}).get("value"))
@@ -349,6 +372,11 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
             minute_number = int(start_at[14:16]) if start_at[14:16].isdigit() else -1
             if minute_number >= 0 and minute_number % TRAFFIC_SEGMENT_MINUTES == 0:
                 segment_marks.append(start_at)
+        # 掉包：取同下标的桶（两串 histogram 同粒度同边界 → 下标一一对应）
+        drop_bucket = drop_buckets[idx] if idx < len(drop_buckets) else {}
+        pkts_dropped = _int_of((drop_bucket.get("pkts_dropped") or {}).get("value"))
+        if drop_bucket.get("doc_count"):
+            last_report = pkts_dropped
         points.append(
             {
                 "ts": start_at,
@@ -356,7 +384,12 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
                 "bytes_total": total,
                 "bytes_out": bytes_out,
                 "bytes_in": bytes_in,
+                # **每秒**口径（桶内总量 ÷ 桶实际秒数）：图上画的是这个。
+                # 曾经直接画桶内总量、却按"/秒"标注 —— 20 秒的量被读成 1 秒，虚高 20 倍。
                 "bytes_per_sec": round(total / elapsed, 1),
+                "bytes_out_per_sec": round(bytes_out / elapsed, 1),
+                "bytes_in_per_sec": round(bytes_in / elapsed, 1),
+                "pkts_dropped": pkts_dropped,
                 "partial": partial,
             }
         )
@@ -375,6 +408,8 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
         "current_bytes_per_sec": rates[-1] if rates else 0.0,
         "peak_bytes_per_sec": max(rates) if rates else 0.0,
         "avg_recent_bytes_per_sec": round(sum(rates) / len(rates), 1) if rates else 0.0,
+        # Zeek **最近一次上报**的丢包值（stats.log 每 5 分钟一条；不是窗口累加，避免把累积型计数器加成假总数）
+        "pkts_dropped_latest": last_report or 0,
     }
 
 

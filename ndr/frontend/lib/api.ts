@@ -1152,6 +1152,11 @@ export interface TrafficMinutePoint {
   bytes_out: number;
   bytes_in: number;
   bytes_per_sec: number;
+  /** 发送/接收各自的每秒速率（桶内总量 ÷ 桶秒数，与 bytes_per_sec 同口径） */
+  bytes_out_per_sec?: number;
+  bytes_in_per_sec?: number;
+  /** Zeek 上报的丢包数（stats.log 每 5 分钟一条；没有上报的格子是 0） */
+  pkts_dropped?: number;
   /** true = 这一分钟还没过完（速率已按实际经过秒数折算） */
   partial: boolean;
 }
@@ -1174,6 +1179,8 @@ export interface TrafficMinutes {
   current_bytes_per_sec?: number;
   peak_bytes_per_sec?: number;
   avg_recent_bytes_per_sec?: number;
+  /** Zeek 最近一次上报的丢包值（原值，不做窗口累加） */
+  pkts_dropped_latest?: number;
   cached?: boolean;
   computed_at: string;
   note?: string;
