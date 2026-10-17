@@ -379,7 +379,7 @@ export function LogsPanel() {
             </label>
             {result ? (
               <span className="ml-auto text-xs text-muted-foreground">
-                命中 <b className="text-foreground">{total.toLocaleString()}</b> 条 · 耗时{" "}
+                命中 <b className="text-foreground">{total}</b> 条 · 耗时{" "}
                 {result.took_ms} ms
               </span>
             ) : null}

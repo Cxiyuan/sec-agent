@@ -97,8 +97,12 @@ def test_config_audit_lists_source_and_masks_secrets() -> None:
         encoding="utf-8"
     )
     assert "/api/config/audit" in page and "来源" in page
-    nav = (ROOT / "ndr" / "frontend" / "components" / "nav.tsx").read_text(encoding="utf-8")
-    assert "/admin/config" in nav
+    # 2026-10 改版：一级菜单搬到页头，导航结构集中在 lib/nav-config.ts（侧边栏按页面挂）
+    nav = (ROOT / "ndr" / "frontend" / "lib" / "nav-config.ts").read_text(encoding="utf-8")
+    assert "/config/health" in nav, "「配置管理」分区要能进到配置体检页"
+    assert (ROOT / "ndr" / "frontend" / "app" / "config" / "health" / "page.tsx").exists(), (
+        "新路由 /config/health 必须存在（复用 /admin/config 的实现）"
+    )
 
 
 def test_deploy_script_supports_local_and_check_mode() -> None:
