@@ -45,6 +45,84 @@ TEXT_FIELDS: dict[str, str] = {
     "query": "查询 / URI",
 }
 
+#: 事件类型的**中文名**（界面只给中文，值仍是英文标识）。
+#: 覆盖归一化器实际产出的全部类型；以后新增类型忘了加映射时，界面回落显示原值（不至于空白）。
+EVENT_TYPE_LABELS: dict[str, str] = {
+    "conn_established": "连接建立",
+    "connection_shutdown": "连接关闭",
+    "generic": "普通连接",
+    "rejected_connection": "连接被拒绝",
+    "scan_attempt": "扫描尝试",
+    "port_scan": "端口扫描",
+    "http_request": "HTTP 请求",
+    "http_login": "HTTP 登录",
+    "http_error": "HTTP 错误响应",
+    "http_upload": "文件上传",
+    "dns_query": "DNS 查询",
+    "dns_anomaly": "DNS 异常",
+    "tls_anomaly": "TLS 异常",
+    "protocol_anomaly": "协议异常",
+    "capture_anomaly": "采集异常",
+    "file_transfer": "文件传输",
+    "smtp_activity": "邮件活动",
+    "smtp_abuse": "邮件滥用",
+    "ssh_activity": "SSH 活动",
+    "dhcp_activity": "DHCP 活动",
+    "auth_success": "认证成功",
+    "signature_hit": "签名命中",
+    "zeek_notice": "Zeek 告警",
+    "brute_force": "暴力破解",
+    "credential_abuse": "凭据滥用",
+    "lateral_movement": "横向移动",
+    "data_exfil": "数据外传",
+    "c2_beacon": "C2 心跳",
+    "webshell": "WebShell 访问",
+}
+
+#: 日志类型的中文名（界面下拉里「中文（英文标识）」并列显示；值仍是英文）
+LOG_TYPE_LABELS: dict[str, str] = {
+    "conn": "连接",
+    "http": "HTTP",
+    "dns": "DNS",
+    "ssl": "TLS",
+    "files": "文件",
+    "smtp": "邮件",
+    "ssh": "SSH",
+    "dhcp": "DHCP",
+    "notice": "告警",
+    "weird": "协议异常",
+    "x509": "证书",
+    "radius": "RADIUS",
+    "mysql": "MySQL",
+    "ntp": "NTP",
+    "snmp": "SNMP",
+    "analyzer": "分析器",
+    "stats": "统计",
+    "packet_filter": "抓包过滤",
+    "reporter": "采集报告",
+    "suricata": "签名引擎",
+    "dce_rpc": "DCE/RPC",
+    "rfb": "远程桌面",
+    "quic": "QUIC",
+    "ftp": "FTP",
+    "ldap": "LDAP",
+    "pe": "可执行文件",
+    "ocsp": "OCSP",
+    "websocket": "WebSocket",
+    "tunnel": "隧道",
+}
+
+
+def event_label(value: str) -> str:
+    """事件类型 → 中文（未收录的回落原值）。"""
+    return EVENT_TYPE_LABELS.get(str(value or "").strip(), str(value or ""))
+
+
+def log_type_label(value: str) -> str:
+    """日志类型 → 中文（未收录的回落原值）。"""
+    return LOG_TYPE_LABELS.get(str(value or "").strip(), str(value or ""))
+
+
 #: 数值字段（term 精确匹配）
 NUM_FIELDS: dict[str, str] = {
     "dst_port": "目的端口",
@@ -159,6 +237,53 @@ def _build_query(
             }
         )
     return body
+
+
+@router.get("/facets")
+def log_facets(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = Query(default=60, ge=1, le=60 * 24 * 30),
+) -> dict[str, Any]:
+    """下拉选项：ES 里**实际出现过**的日志类型与事件类型（带中文名）。
+
+    为什么不做成写死的清单：写死的清单会和真实数据脱节（新日志类型上线后下拉里没有）。
+    这里按时间窗取 terms 聚合，出现的才给；中文名走映射表，未收录的回落原值。
+    """
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}},
+        "aggs": {
+            "log_types": {"terms": {"field": _keyword("log_type"), "size": 60}},
+            "event_types": {"terms": {"field": _keyword("event_type"), "size": 120}},
+        },
+    }
+    try:
+        resp = _es().search(index=_index(), body=body)
+    except Exception as exc:
+        log.warning("取检索下拉项失败: %s", exc)
+        raise HTTPException(status_code=503, detail=f"ES 查询失败：{exc}") from exc
+    aggs = resp.get("aggregations") or {}
+    return {
+        "log_types": [
+            {
+                "value": b.get("key"),
+                "label": f"{log_type_label(b.get('key'))}（{b.get('key')}）",
+                "count": b.get("doc_count"),
+            }
+            for b in (((aggs.get("log_types") or {}).get("buckets")) or [])
+            if b.get("key")
+        ],
+        "event_types": [
+            {
+                "value": b.get("key"),
+                "label": event_label(b.get("key")),
+                "count": b.get("doc_count"),
+            }
+            for b in (((aggs.get("event_types") or {}).get("buckets")) or [])
+            if b.get("key")
+        ],
+        "minutes": minutes,
+    }
 
 
 @router.get("/search")

@@ -40,6 +40,17 @@ interface LogField {
   label: string;
 }
 
+interface OptionItem {
+  value: string;
+  label: string;
+  count: number;
+}
+
+interface Facets {
+  log_types: OptionItem[];
+  event_types: OptionItem[];
+}
+
 interface LogFields {
   text: LogField[];
   num: LogField[];
@@ -123,6 +134,7 @@ export function LogsPanel() {
   const errs = usePanelErrors();
   useAliases();
   const [fields, setFields] = React.useState<LogFields | null>(null);
+  const [facets, setFacets] = React.useState<Facets | null>(null);
   const [form, setForm] = React.useState({ ...EMPTY_FORM });
   const [minutes, setMinutes] = React.useState(60);
   const [size, setSize] = React.useState(50);
@@ -138,6 +150,13 @@ export function LogsPanel() {
       .then(setFields)
       .catch(() => setFields(null));
   }, []);
+
+  // 下拉选项：取 ES 里**实际出现过**的类型（带中文名），随时间窗刷新
+  React.useEffect(() => {
+    void apiFetch<Facets>(`/api/logs/facets?minutes=${minutes}`)
+      .then(setFacets)
+      .catch(() => setFacets(null));
+  }, [minutes]);
 
   const buildQuery = React.useCallback(
     (nextOffset: number) => {
@@ -250,21 +269,34 @@ export function LogsPanel() {
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <label className="text-xs text-muted-foreground">
               日志类型
-              <Input
+              <select
                 value={form.logType}
                 onChange={(e) => setForm({ ...form, logType: e.target.value })}
-                placeholder="http / dns / conn…"
-                className="mt-1"
-              />
+                className="mt-1 block h-9 w-full rounded-md border bg-card px-2 text-sm text-foreground"
+              >
+                <option value="">全部类型</option>
+                {(facets?.log_types ?? []).map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label} · {item.count}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="text-xs text-muted-foreground">
               事件类型
-              <Input
+              <select
                 value={form.eventType}
                 onChange={(e) => setForm({ ...form, eventType: e.target.value })}
-                placeholder="http_login / port_scan…"
-                className="mt-1"
-              />
+                className="mt-1 block h-9 w-full rounded-md border bg-card px-2 text-sm text-foreground"
+              >
+                <option value="">全部事件</option>
+                {/* 界面只显示中文名；值仍是英文标识（查询用） */}
+                {(facets?.event_types ?? []).map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label} · {item.count}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="text-xs text-muted-foreground">
               源 IP
