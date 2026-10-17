@@ -2,8 +2,7 @@
 
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
-import { Nav } from "@/components/nav";
-import { TopBar } from "@/components/topbar";
+import { PageShell } from "@/components/page-shell";
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, apiFetch, ApiError, errorText, formatDateTime } from "@shentong/ui";
 import type { ChainItem, ChainListPayload } from "@/lib/api";
@@ -126,158 +125,148 @@ function ChainInner() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopBar />
-      <Nav />
-      <main className="px-6 pb-6 pt-20">
-        <h1 className="mb-2 text-2xl font-bold">攻击链还原</h1>
-        <p className="mb-4 text-xs text-muted-foreground">
-          还原「真实请求IP →（中继…）→ 源站」的完整数据链路与攻击动作事实。只展示**真正进了检测**的事件；
-          中继路径由上下级拓扑推导，每段都标注证据来源（直连观测 / 代理头证据 / 拓扑推导）。
-        </p>
-
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <select
-            className="h-9 rounded-md border bg-transparent px-2 text-sm"
-            value={minutes}
-            onChange={(e) => setMinutes(Number(e.target.value))}
-          >
-            {WINDOWS.map((w) => (
-              <option key={w.minutes} value={w.minutes}>
-                {w.label}
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              className="h-4 w-4"
-              checked={suspiciousOnly}
-              onChange={(e) => setSuspiciousOnly(e.target.checked)}
-            />
-            只看可疑（签名命中 / 可疑事件类型 / 4xx-5xx / 带上传）
-          </label>
-          <Input
-            className="h-9 w-44"
-            placeholder="真实请求IP / 中继 / 源站"
-            value={ip}
-            onChange={(e) => setIp(e.target.value)}
+    <PageShell title="攻击链还原" fluid>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          className="h-9 rounded-md border bg-transparent px-2 text-sm"
+          value={minutes}
+          onChange={(e) => setMinutes(Number(e.target.value))}
+        >
+          {WINDOWS.map((w) => (
+            <option key={w.minutes} value={w.minutes}>
+              {w.label}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            className="h-4 w-4"
+            checked={suspiciousOnly}
+            onChange={(e) => setSuspiciousOnly(e.target.checked)}
           />
-          <Input
-            className="h-9 w-44"
-            placeholder="源站域名（可选）"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <Button size="sm" onClick={() => void load()}>
-            查询
-          </Button>
-          {data ? (
-            <span className="text-xs text-muted-foreground">
-              扫描 {data.scanned} 条事件 · 归并出 {data.chains.length} 条链路
-              {data.truncated ? "（已截断，缩小时间窗更准）" : ""}
-            </span>
-          ) : null}
-        </div>
+          只看可疑（签名命中 / 可疑事件类型 / 4xx-5xx / 带上传）
+        </label>
+        <Input
+          className="h-9 w-44"
+          placeholder="真实请求IP / 中继 / 源站"
+          value={ip}
+          onChange={(e) => setIp(e.target.value)}
+        />
+        <Input
+          className="h-9 w-44"
+          placeholder="源站域名（可选）"
+          value={host}
+          onChange={(e) => setHost(e.target.value)}
+        />
+        <Button size="sm" onClick={() => void load()}>
+          查询
+        </Button>
+        {data ? (
+          <span className="text-xs text-muted-foreground">
+            扫描 {data.scanned} 条事件 · 归并出 {data.chains.length} 条链路
+            {data.truncated ? "（已截断，缩小时间窗更准）" : ""}
+          </span>
+        ) : null}
+      </div>
 
-        <div className="mb-3">
-          <PanelError errors={errs} />
-        </div>
-        {msg ? <p className="mb-3 text-sm">{msg}</p> : null}
+      <div className="mb-3">
+        <PanelError errors={errs} />
+      </div>
+      {msg ? <p className="mb-3 text-sm">{msg}</p> : null}
 
-        <div className="space-y-3">
-          {(data?.chains || []).map((chain) => {
-            const key = `${chain.client}|${chain.origin}|${chain.relay_path.join(">")}`;
-            const expanded = !!open[key];
-            const facts = chain.facts || {};
-            return (
-              <Card key={key}>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-                    <Badge variant={chain.suspicious ? "critical" : "outline"}>
-                      {chain.suspicious ? "可疑" : "常规"}
-                    </Badge>
-                    <span className="font-mono">
-                      {displayName(chain.client) || "客户端未记录"}
-                      {chain.relay_path.length
-                        ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${originLabel(chain, displayName)}`
-                        : ` → ${originLabel(chain, displayName)}`}
-                    </span>
-                    <span className="text-xs font-normal text-muted-foreground">
-                      {facts.events ?? 0} 条事件
-                      {facts.first_seen ? ` · 起 ${formatDateTime(facts.first_seen)}` : ""}
-                      {facts.last_seen ? ` · 止 ${formatDateTime(facts.last_seen)}` : ""}
-                      {chain.client_state === "not_recorded" && chain.client_reason
-                        ? ` · ${chain.client_reason}`
-                        : ""}
-                    </span>
-                    <div className="ml-auto flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setOpen((prev) => ({ ...prev, [key]: !prev[key] }))
-                        }
-                      >
-                        {expanded ? "收起明细" : "展开明细"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={busy !== ""}
-                        onClick={() => void dispatch(chain)}
-                      >
-                        {busy === `${chain.client}|${chain.origin}` ? "提交中…" : "交给智能体"}
-                      </Button>
+      <div className="space-y-3">
+        {(data?.chains || []).map((chain) => {
+          const key = `${chain.client}|${chain.origin}|${chain.relay_path.join(">")}`;
+          const expanded = !!open[key];
+          const facts = chain.facts || {};
+          return (
+            <Card key={key}>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                  <Badge variant={chain.suspicious ? "critical" : "outline"}>
+                    {chain.suspicious ? "可疑" : "常规"}
+                  </Badge>
+                  <span className="font-mono">
+                    {displayName(chain.client) || "客户端未记录"}
+                    {chain.relay_path.length
+                      ? ` → ${chain.relay_path.map(displayName).join(" → ")} → ${originLabel(chain, displayName)}`
+                      : ` → ${originLabel(chain, displayName)}`}
+                  </span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {facts.events ?? 0} 条事件
+                    {facts.first_seen ? ` · 起 ${formatDateTime(facts.first_seen)}` : ""}
+                    {facts.last_seen ? ` · 止 ${formatDateTime(facts.last_seen)}` : ""}
+                    {chain.client_state === "not_recorded" && chain.client_reason
+                      ? ` · ${chain.client_reason}`
+                      : ""}
+                  </span>
+                  <div className="ml-auto flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setOpen((prev) => ({ ...prev, [key]: !prev[key] }))
+                      }
+                    >
+                      {expanded ? "收起明细" : "展开明细"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() => void dispatch(chain)}
+                    >
+                      {busy === `${chain.client}|${chain.origin}` ? "提交中…" : "交给智能体"}
+                    </Button>
+                  </div>
+                </CardTitle>
+              </CardHeader>
+              {expanded ? (
+                <CardContent className="space-y-3 text-xs">
+                  <div>
+                    <div className="mb-1 text-muted-foreground">链路逐段（证据来源）</div>
+                    <ul className="space-y-1">
+                      {chain.segments.map((seg, idx) => (
+                        <li key={`${seg.from}-${seg.to}-${idx}`} className="font-mono">
+                          {seg.from} → {seg.to}
+                          <span className="ml-2 text-muted-foreground">{segText(seg)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-muted-foreground">攻击动作事实（全部来自 ES 事实）</div>
+                    <div className="leading-6">
+                      {factLine("事件类型", facts.event_types)}
+                      {factLine("状态码", facts.status_codes)}
+                      {factLine("请求方法", facts.methods)}
+                      {factLine("日志类型", facts.log_types)}
                     </div>
-                  </CardTitle>
-                </CardHeader>
-                {expanded ? (
-                  <CardContent className="space-y-3 text-xs">
-                    <div>
-                      <div className="mb-1 text-muted-foreground">链路逐段（证据来源）</div>
-                      <ul className="space-y-1">
-                        {chain.segments.map((seg, idx) => (
-                          <li key={`${seg.from}-${seg.to}-${idx}`} className="font-mono">
-                            {seg.from} → {seg.to}
-                            <span className="ml-2 text-muted-foreground">{segText(seg)}</span>
-                          </li>
-                        ))}
-                      </ul>
+                    <div className="leading-6">
+                      {factLine("命中签名", facts.signatures)}
+                      {factLine("上传文件", facts.filenames)}
+                      {factLine("DNS 查询", facts.dns_queries)}
+                      {factLine("请求路径", facts.top_paths)}
                     </div>
-                    <div>
-                      <div className="mb-1 text-muted-foreground">攻击动作事实（全部来自 ES 事实）</div>
-                      <div className="leading-6">
-                        {factLine("事件类型", facts.event_types)}
-                        {factLine("状态码", facts.status_codes)}
-                        {factLine("请求方法", facts.methods)}
-                        {factLine("日志类型", facts.log_types)}
+                    {facts.clients?.length ? (
+                      <div className="mt-1 text-muted-foreground">
+                        归并到的请求 IP：{facts.clients.slice(0, 10).join("、")}
+                        {facts.clients.length > 10 ? ` …共 ${facts.clients.length} 个` : ""}
                       </div>
-                      <div className="leading-6">
-                        {factLine("命中签名", facts.signatures)}
-                        {factLine("上传文件", facts.filenames)}
-                        {factLine("DNS 查询", facts.dns_queries)}
-                        {factLine("请求路径", facts.top_paths)}
-                      </div>
-                      {facts.clients?.length ? (
-                        <div className="mt-1 text-muted-foreground">
-                          归并到的请求 IP：{facts.clients.slice(0, 10).join("、")}
-                          {facts.clients.length > 10 ? ` …共 ${facts.clients.length} 个` : ""}
-                        </div>
-                      ) : null}
-                    </div>
-                  </CardContent>
-                ) : null}
-              </Card>
-            );
-          })}
-          {data && !data.chains.length ? (
-            <p className="text-sm text-muted-foreground">
-              该时间窗内没有符合条件的链路。若「只看可疑」开着，可以关掉看全部链路。
-            </p>
-          ) : null}
-        </div>
-      </main>
-    </div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              ) : null}
+            </Card>
+          );
+        })}
+        {data && !data.chains.length ? (
+          <p className="text-sm text-muted-foreground">
+            该时间窗内没有符合条件的链路。若「只看可疑」开着，可以关掉看全部链路。
+          </p>
+        ) : null}
+      </div>
+    </PageShell>
   );
 }
 

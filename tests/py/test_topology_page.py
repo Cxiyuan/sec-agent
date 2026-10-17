@@ -359,7 +359,9 @@ def test_page_fills_area_and_drops_node_list() -> None:
     assert "节点（点一行即可改名）" not in src, "节点列表卡应已删除"
     assert 'height="100%"' in src, "图要跟着容器高度走（占满）"
     assert "min-h-0 flex-1 flex-col" in src, "图卡片要 flex-1 撑满剩余高度"
-    assert "h-screen" in src, "整屏排布局（不整页滚动）"
+    # 2026-10 改版：整屏排布局改由 PageShell 的 `fill` 负责（页头 + 侧边栏的偏移在外壳里算），
+    # 页面自己不再写 h-screen（那样会和固定页头打架）。
+    assert " fluid fill" in src or "fill fluid" in src, "整屏排布局（不整页滚动）"
     # 时效与入口证据仍要能看到
     assert "最近活跃：" in src, "时效要挪到悬停提示里，不能随列表一起消失"
     assert "上游未观测" in src, "入口证据要挪到悬停提示里"

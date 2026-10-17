@@ -195,6 +195,64 @@ export function resourceGaugesOption(
   };
 }
 
+/**
+ * 资源状态：**温度计式横条**（2026-10 用户口径）。
+ *
+ * 一行一个指标：左边是类型（CPU/内存/磁盘），中间是仪表条，右边是百分比。
+ * 用横向 bar + `showBackground`（底槽）实现，圆环不用 —— 一行行读起来比三个圆环快，
+ * 而且纵向排列正好塞进 1/3 宽的卡片里。
+ */
+export function resourceBarsOption(
+  cpu: number | null | undefined,
+  mem: number | null | undefined,
+  disk: number | null | undefined,
+): EChartsOption {
+  const rows: Array<[string, number | null | undefined]> = [
+    ["磁盘", disk],
+    ["内存", mem],
+    ["CPU", cpu],
+  ];
+  // yAxis 的类目顺序是自下而上，所以上面用倒序（磁盘在下、CPU 在上）
+  return {
+    grid: { left: 46, right: 46, top: 8, bottom: 8 },
+    xAxis: { type: "value", max: 100, show: false },
+    yAxis: {
+      type: "category",
+      data: rows.map(([name]) => name),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: "#334155", fontSize: 12 },
+    },
+    series: [
+      {
+        type: "bar",
+        barWidth: 14,
+        showBackground: true,
+        backgroundStyle: { color: "rgba(148,163,184,0.18)", borderRadius: 7 },
+        itemStyle: { borderRadius: 7 },
+        label: {
+          show: true,
+          position: "right",
+          fontSize: 12,
+          fontWeight: "bold",
+          formatter: (item: unknown) => {
+            const value = Number((item as { value?: number })?.value ?? 0);
+            return `${value}%`;
+          },
+          color: "#0f172a",
+        },
+        data: rows.map(([, raw]) => {
+          const value = raw === null || raw === undefined ? 0 : Math.max(0, Math.min(100, raw));
+          const color = value >= 85 ? "#ef4444" : value >= 70 ? "#f59e0b" : "#1d4ed8";
+          return raw === null || raw === undefined
+            ? { value: 0, itemStyle: { color: "#cbd5e1" }, label: { formatter: "—" } }
+            : { value, itemStyle: { color } };
+        }),
+      },
+    ],
+  };
+}
+
 // ---------- 威胁事件 ----------
 
 /** 命中 / 摘要的 24h 趋势（多条折线，单位统一为条/分钟）。 */

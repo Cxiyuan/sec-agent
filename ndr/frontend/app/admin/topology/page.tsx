@@ -2,8 +2,7 @@
 
 import * as React from "react";
 import type { EChartsOption } from "echarts";
-import { Nav } from "@/components/nav";
-import { TopBar } from "@/components/topbar";
+import { PageShell } from "@/components/page-shell";
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
   Badge,
@@ -259,18 +258,9 @@ export default function TopologyPage() {
   }, [nodes, edges, query, data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="h-screen overflow-hidden">
-      <TopBar />
-      <Nav />
-      {/* 图占满右侧内容区：整页不滚动，尾部那张图用 flex-1 撑满剩余高度 */}
-      <main className="ml-60 flex h-screen flex-col overflow-hidden px-6 pb-4 pt-20">
-        <h1 className="mb-2 text-2xl font-bold">拓扑发现</h1>
-        <p className="mb-4 text-xs text-muted-foreground">
-          自动发现网络拓扑：<b>转发链路</b>视图以流量转发的逻辑为准（客户端 →（中继…）→ 源站，多级串联都体现）；
-          <b>全量通信</b>视图按流量把整张网画出来。节点默认显示 IP，点节点可起自定义名（全局生效，真实 IP 始终可查）。
-        </p>
-
-        <div className="mb-4 flex flex-wrap items-center gap-2">
+    // 图占满右侧内容区：整页不滚动，尾部那张图用 flex-1 撑满剩余高度
+    <PageShell title="拓扑发现" fluid fill>
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex gap-1">
             <Button
               size="sm"
@@ -423,7 +413,6 @@ export default function TopologyPage() {
             </p>
           </div>
         </Dialog>
-      </main>
-    </div>
+    </PageShell>
   );
 }

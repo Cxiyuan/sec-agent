@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Nav } from "@/components/nav";
-import { TopBar } from "@/components/topbar";
+import { PageShell } from "@/components/page-shell";
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
   Badge,
@@ -46,97 +45,87 @@ export default function ConfigAuditPage() {
   }, []);
 
   return (
-    <div className="min-h-screen">
-      <TopBar />
-      <Nav />
-      <main className="ml-60 px-6 pb-10 pt-20">
-        <h1 className="mb-2 text-2xl font-bold">配置体检</h1>
-        <p className="mb-4 text-xs text-muted-foreground">
-          逐项列出**当前生效值**与**来源**：环境变量 / 数据库（界面可改）/ 编排部署侧 / 代码默认值。
-          口令、令牌、密钥一律脱敏，本页只读、不改任何配置。
-        </p>
+    <PageShell title="配置体检">
+      <div className="mb-3">
+        <PanelError errors={errs} />
+      </div>
 
-        <div className="mb-3">
-          <PanelError errors={errs} />
-        </div>
-
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => void load()}>
-            刷新
-          </Button>
-          {data?.checked_at ? (
-            <span className="text-xs text-muted-foreground">
-              检查于 {formatDateTime(data.checked_at)}
-            </span>
-          ) : null}
-          {data?.default_agent_host ? (
-            <Badge variant="outline">智能体地址常量：{data.default_agent_host}</Badge>
-          ) : null}
-        </div>
-
-        {data?.warnings?.length ? (
-          <Card className="mb-4 border-amber-900 bg-amber-950/20">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-amber-200">需要处理（{data.warnings.length}）</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="list-disc space-y-1 pl-5 text-xs">
-                {data.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => void load()}>
+          刷新
+        </Button>
+        {data?.checked_at ? (
+          <span className="text-xs text-muted-foreground">
+            检查于 {formatDateTime(data.checked_at)}
+          </span>
         ) : null}
+        {data?.default_agent_host ? (
+          <Badge variant="outline">智能体地址常量：{data.default_agent_host}</Badge>
+        ) : null}
+      </div>
 
-        <Card>
+      {data?.warnings?.length ? (
+        <Card className="mb-4 border-amber-900 bg-amber-950/20">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">配置项（{data?.items?.length ?? 0}）</CardTitle>
+            <CardTitle className="text-sm text-amber-200">需要处理（{data.warnings.length}）</CardTitle>
           </CardHeader>
           <CardContent>
-            {data?.items?.length ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>项</TableHead>
-                    <TableHead>来源</TableHead>
-                    <TableHead>当前生效值</TableHead>
-                    <TableHead>说明 / 提示</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.items.map((it) => (
-                    <TableRow key={it.key}>
-                      <TableCell className="text-xs font-medium">{it.name}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{it.source}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {it.value}
-                        {it.secret ? (
-                          <Badge variant="outline" className="ml-1">
-                            已脱敏
-                          </Badge>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {it.warn ? <span className="text-amber-300">{it.warn}</span> : null}
-                        {it.warn && it.note ? "；" : ""}
-                        <span className="text-muted-foreground">{it.note || ""}</span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {data?.error ? `读取失败：${data.error}` : "正在读取…"}
-              </p>
-            )}
-            {data?.note ? (
-              <p className="mt-3 text-xs text-muted-foreground">{data.note}</p>
-            ) : null}
+            <ul className="list-disc space-y-1 pl-5 text-xs">
+              {data.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
           </CardContent>
         </Card>
-      </main>
-    </div>
+      ) : null}
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">配置项（{data?.items?.length ?? 0}）</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {data?.items?.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>项</TableHead>
+                  <TableHead>来源</TableHead>
+                  <TableHead>当前生效值</TableHead>
+                  <TableHead>说明 / 提示</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.items.map((it) => (
+                  <TableRow key={it.key}>
+                    <TableCell className="text-xs font-medium">{it.name}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{it.source}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {it.value}
+                      {it.secret ? (
+                        <Badge variant="outline" className="ml-1">
+                          已脱敏
+                        </Badge>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {it.warn ? <span className="text-amber-300">{it.warn}</span> : null}
+                      {it.warn && it.note ? "；" : ""}
+                      <span className="text-muted-foreground">{it.note || ""}</span>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {data?.error ? `读取失败：${data.error}` : "正在读取…"}
+            </p>
+          )}
+          {data?.note ? (
+            <p className="mt-3 text-xs text-muted-foreground">{data.note}</p>
+          ) : null}
+        </CardContent>
+      </Card>
+    </PageShell>
   );
 }

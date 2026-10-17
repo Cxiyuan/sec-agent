@@ -56,7 +56,7 @@ import {
   queueTrendOption,
   rateFunnelOption,
   rateTrendOption,
-  resourceGaugesOption,
+  resourceBarsOption,
   ruleTopOption,
   severityOption,
   minuteTrafficOption,
@@ -251,14 +251,16 @@ function Section({
   title,
   extra,
   children,
+  className,
 }: {
   id: string;
   title: string;
   extra?: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <section id={id} className="scroll-mt-20 space-y-3">
+    <section id={id} className={`scroll-mt-20 space-y-3 ${className ?? ""}`}>
       <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium text-muted-foreground">
         {title}
         {extra}
@@ -452,8 +454,8 @@ export function StatusPanel() {
   // 数据没变时 option 引用不变 → 不会触发任何重绘。
   const charts = React.useMemo(
     () => ({
-      // 三个指标画在同一张仪表盘里（用户要求：别用三张卡片）
-      resource: resourceGaugesOption(
+      // 温度计式横条：左边类型、中间条、右边百分比，CPU/内存/磁盘自上而下
+      resource: resourceBarsOption(
         metrics?.cpu_percent ?? null,
         metrics?.mem_percent ?? null,
         metrics?.disk_percent ?? null,
@@ -507,26 +509,28 @@ export function StatusPanel() {
       <CardContent className="space-y-5 pt-4">
         <PanelError errors={errs} />
 
-        {/* ---------- A. 服务器状态 ---------- */}
+        {/* ---------- A + B：资源状态（1/3）与 服务与组件状态（2/3）并排 ---------- */}
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         <Section
           id="server"
-          title="服务器状态"
+          title="资源状态"
+          className="xl:col-span-1"
           extra={
             metrics?.notes?.length ? <Badge variant="medium">{metrics.notes.join("；")}</Badge> : null
           }
         >
           <Card>
             <CardContent className="pt-3">
-              <Chart option={charts.resource} height={210} />
+              <Chart option={charts.resource} height={180} />
             </CardContent>
           </Card>
           <p className="text-xs text-muted-foreground">{bytesLine(metrics) || "指标未读到"}</p>
         </Section>
 
-        {/* ---------- B. 服务与组件状态 ---------- */}
         <Section
           id="components"
           title="服务与组件状态"
+          className="xl:col-span-2"
           extra={
             errs.isFailed(SRC.health) ? <Badge variant="high">读取失败</Badge> : null
           }
@@ -542,6 +546,8 @@ export function StatusPanel() {
             )}
           </div>
         </Section>
+
+        </div>
 
         {/* ---------- C. 威胁事件 ---------- */}
         <Section id="threats" title="威胁事件">

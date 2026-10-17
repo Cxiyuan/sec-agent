@@ -23,11 +23,14 @@ export function PageShell({
   children,
   /** 铺满整块区域（大表格 / 拓扑图用）：去掉最大宽度与额外留白 */
   fluid = false,
+  /** 撑满一屏且不滚动（拓扑图这类要吃掉剩余高度的页面）：正文列变成 flex 列，子元素用 flex-1 */
+  fill = false,
 }: {
   title: string;
   desc?: React.ReactNode;
   children: React.ReactNode;
   fluid?: boolean;
+  fill?: boolean;
 }) {
   const pathname = usePathname();
   const hasSidebar = sidebarOf(pathname).length > 0;
@@ -41,11 +44,19 @@ export function PageShell({
           "pb-4 pt-[4.25rem] transition-[margin] duration-150",
           hasSidebar ? "ml-60" : "ml-0",
           fluid ? "px-3" : "px-6",
+          fill && "flex h-screen flex-col overflow-hidden",
         )}
       >
         {/* 2026-10 用户要求：页面不再显示 h1 标题与说明段落（信息都在页头菜单与卡片标题里），
             正文直接铺满；`title/desc` 仅保留为可访问性/调试用途，不渲染。 */}
-        <div className={cn("space-y-4", !fluid && "mx-auto max-w-[1500px]")}>{children}</div>
+        <div
+          className={cn(
+            fill ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-4",
+            !fluid && "mx-auto w-full max-w-[1500px]",
+          )}
+        >
+          {children}
+        </div>
       </main>
     </div>
   );

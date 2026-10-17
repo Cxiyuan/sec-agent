@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Nav } from "@/components/nav";
-import { TopBar } from "@/components/topbar";
+import { PageShell } from "@/components/page-shell";
 import {
   Badge,
   Button,
@@ -440,160 +439,157 @@ export default function RulesPage() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopBar />
-      <Nav />
-      <main className="ml-60 px-6 pb-6 pt-20">
-        <h1 className="mb-4 text-2xl font-bold">检测规则</h1>
+    <PageShell title="检测规则" fluid>
+      <div>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
-        <div className="mb-3">
-          <PanelError errors={errs} />
-        </div>
+      <div className="mb-3">
+        <PanelError errors={errs} />
+      </div>
 
-        {/* 树型结构：顶层按 网络/主机 分类，子节点是规则来源。
-            签名规则（Suricata）归网络类 —— 它只看网络流量，与内置/自定义规则并列。 */}
+      {/* 树型结构：顶层按 网络/主机 分类，子节点是规则来源。
+          签名规则（Suricata）归网络类 —— 它只看网络流量，与内置/自定义规则并列。 */}
+      <TreeNode
+        id="network"
+        title="网络（网络采集器）"
+        hint="规则条件引用网络侧字段（http/ssl/dns/conn…）—— 检测器只在网络事件上求值"
+        count={netBuiltin.length + netCustom.length}
+        expanded={!!expanded.network}
+        onToggle={() => toggleNode("network")}
+      >
         <TreeNode
-          id="network"
-          title="网络（网络采集器）"
-          hint="规则条件引用网络侧字段（http/ssl/dns/conn…）—— 检测器只在网络事件上求值"
-          count={netBuiltin.length + netCustom.length}
-          expanded={!!expanded.network}
-          onToggle={() => toggleNode("network")}
+          id="network:builtin"
+          title="内置规则"
+          hint="版本内置定义；只有启用状态会保留（描述/条件/级别/优先级每次启动被内置定义覆盖）"
+          count={netBuiltin.length}
+          expanded={!!expanded["network:builtin"]}
+          onToggle={() => toggleNode("network:builtin")}
         >
-          <TreeNode
-            id="network:builtin"
-            title="内置规则"
-            hint="版本内置定义；只有启用状态会保留（描述/条件/级别/优先级每次启动被内置定义覆盖）"
-            count={netBuiltin.length}
-            expanded={!!expanded["network:builtin"]}
-            onToggle={() => toggleNode("network:builtin")}
-          >
-            {builtinTable(netBuiltin)}
-          </TreeNode>
-
-          <TreeNode
-            id="network:custom"
-            title="自定义规则"
-            hint="自己添加/修改的规则；ID 自动生成、不可编辑"
-            count={netCustom.length}
-            expanded={!!expanded["network:custom"]}
-            onToggle={() => toggleNode("network:custom")}
-            action={
-              <Button size="sm" className="ml-auto" onClick={openCreate}>
-                添加规则
-              </Button>
-            }
-          >
-            {customTable(netCustom)}
-          </TreeNode>
-
-          <TreeNode
-            id="network:signature"
-            title="签名规则（Suricata）"
-            hint="规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，校验通过后人工确认才生效"
-            expanded={!!expanded["network:signature"]}
-            onToggle={() => toggleNode("network:signature")}
-          >
-            <SuricataRulesPanel />
-          </TreeNode>
+          {builtinTable(netBuiltin)}
         </TreeNode>
 
-        <Drawer
-          open={drawer}
-          title={editId ? "编辑自定义规则" : "添加自定义规则"}
-          onClose={() => setDrawer(false)}
-          footer={
-            <div className="flex items-center gap-3">
-              <Button onClick={() => void save()}>{editId ? "保存修改" : "添加"}</Button>
-              <Button variant="outline" onClick={() => setDrawer(false)}>
-                取消
-              </Button>
-            </div>
+        <TreeNode
+          id="network:custom"
+          title="自定义规则"
+          hint="自己添加/修改的规则；ID 自动生成、不可编辑"
+          count={netCustom.length}
+          expanded={!!expanded["network:custom"]}
+          onToggle={() => toggleNode("network:custom")}
+          action={
+            <Button size="sm" className="ml-auto" onClick={openCreate}>
+              添加规则
+            </Button>
           }
         >
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">
-                规则 ID（自动生成，不可编辑）
-              </label>
-              <Input value={editId || "（保存后自动生成）"} readOnly disabled className="font-mono text-xs" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">规则名称</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：内网可疑账号登录" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
-              <Input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="这条规则是干什么的" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">级别</label>
-                <select className={SELECT_CLS} value={sev} onChange={(e) => setSev(e.target.value)}>
-                  <option value="critical">紧急</option>
-                  <option value="high">高危</option>
-                  <option value="medium">中危</option>
-                  <option value="low">低危</option>
-                  <option value="info">提示</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">优先级（越小越先）</label>
-                <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">状态</label>
-                <label className="flex h-9 items-center gap-2 text-sm">
-                  <input type="checkbox" className="h-4 w-4" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-                  启用
-                </label>
-              </div>
-            </div>
+          {customTable(netCustom)}
+        </TreeNode>
 
-            <ConditionEditor
-              fields={RULE_FIELDS}
-              conds={conds}
-              logic={logic}
-              onLogic={setLogic}
-              onChange={setCond}
-              onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-              onAdd={() => setConds((cs) => [...cs, { field: "dst_port", op: "in", value: "" }])}
-            />
+        <TreeNode
+          id="network:signature"
+          title="签名规则（Suricata）"
+          hint="规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，校验通过后人工确认才生效"
+          expanded={!!expanded["network:signature"]}
+          onToggle={() => toggleNode("network:signature")}
+        >
+          <SuricataRulesPanel />
+        </TreeNode>
+      </TreeNode>
 
-            <div className="flex flex-wrap items-end gap-3 rounded-md border p-3">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={mode === "count"}
-                  onChange={(e) => setMode(e.target.checked ? "count" : "single")}
-                />
-                频率规则（同源在窗口内达到次数才告警）
+      <Drawer
+        open={drawer}
+        title={editId ? "编辑自定义规则" : "添加自定义规则"}
+        onClose={() => setDrawer(false)}
+        footer={
+          <div className="flex items-center gap-3">
+            <Button onClick={() => void save()}>{editId ? "保存修改" : "添加"}</Button>
+            <Button variant="outline" onClick={() => setDrawer(false)}>
+              取消
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              规则 ID（自动生成，不可编辑）
+            </label>
+            <Input value={editId || "（保存后自动生成）"} readOnly disabled className="font-mono text-xs" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">规则名称</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：内网可疑账号登录" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
+            <Input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="这条规则是干什么的" />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">级别</label>
+              <select className={SELECT_CLS} value={sev} onChange={(e) => setSev(e.target.value)}>
+                <option value="critical">紧急</option>
+                <option value="high">高危</option>
+                <option value="medium">中危</option>
+                <option value="low">低危</option>
+                <option value="info">提示</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">优先级（越小越先）</label>
+              <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">状态</label>
+              <label className="flex h-9 items-center gap-2 text-sm">
+                <input type="checkbox" className="h-4 w-4" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+                启用
               </label>
-              {mode === "count" && (
-                <>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">分组键（逗号分隔）</label>
-                    <Input className="w-40" value={keys} onChange={(e) => setKeys(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">最少次数</label>
-                    <Input className="w-24" value={minCount} onChange={(e) => setMinCount(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">去重字段（可选）</label>
-                    <Input className="w-32" value={distinct} onChange={(e) => setDistinct(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">最少去重数</label>
-                    <Input className="w-24" value={minDistinct} onChange={(e) => setMinDistinct(e.target.value)} />
-                  </div>
-                </>
-              )}
             </div>
           </div>
-        </Drawer>
-      </main>
-    </div>
+
+          <ConditionEditor
+            fields={RULE_FIELDS}
+            conds={conds}
+            logic={logic}
+            onLogic={setLogic}
+            onChange={setCond}
+            onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+            onAdd={() => setConds((cs) => [...cs, { field: "dst_port", op: "in", value: "" }])}
+          />
+
+          <div className="flex flex-wrap items-end gap-3 rounded-md border p-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={mode === "count"}
+                onChange={(e) => setMode(e.target.checked ? "count" : "single")}
+              />
+              频率规则（同源在窗口内达到次数才告警）
+            </label>
+            {mode === "count" && (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">分组键（逗号分隔）</label>
+                  <Input className="w-40" value={keys} onChange={(e) => setKeys(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">最少次数</label>
+                  <Input className="w-24" value={minCount} onChange={(e) => setMinCount(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">去重字段（可选）</label>
+                  <Input className="w-32" value={distinct} onChange={(e) => setDistinct(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">最少去重数</label>
+                  <Input className="w-24" value={minDistinct} onChange={(e) => setMinDistinct(e.target.value)} />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </Drawer>
+      </div>
+    </PageShell>
   );
 }
