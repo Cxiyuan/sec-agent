@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     agent_push,
+    assets_center,
     auth,
     baseline,
     detector,
@@ -15,6 +16,7 @@ from app.api.routes import (
     logstash,
     mcp,
     rules,
+    traffic_views,
     zeek,
 )
 
@@ -49,3 +51,5 @@ api_router.include_router(chain_router)
 api_router.include_router(topology_router)
 api_router.include_router(config_audit_router)
 api_router.include_router(logs.router)
+api_router.include_router(traffic_views.router)
+api_router.include_router(assets_center.router)

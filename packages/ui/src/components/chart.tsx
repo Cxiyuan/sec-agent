@@ -3,6 +3,68 @@
 import * as React from "react";
 import * as echarts from "echarts";
 
+/**
+ * ECharts 主题：**企业亮**（2026-10 用户改版：不要暗黑）。
+ *
+ * 为什么不用内置的 "dark"：它是黑底浅字，套在白色卡片上就是"仪表盘还是黑的"。
+ * 这里显式注册一套白底主题：透明背景（跟随卡片）、深色文字、浅灰网格线、
+ * 白底浅边框提示框 —— 图表放哪个卡片上都协调。
+ */
+const LIGHT_THEME = "shentong-light";
+
+function ensureLightTheme(): string {
+  if ((ensureLightTheme as unknown as { done?: boolean }).done) return LIGHT_THEME;
+  echarts.registerTheme(LIGHT_THEME, {
+    // 企业色板：主蓝 → 青 → 绿 → 琥珀 → 红 → 紫 → 青绿 → 品红
+    color: [
+      "#1d4ed8",
+      "#0ea5e9",
+      "#10b981",
+      "#f59e0b",
+      "#ef4444",
+      "#8b5cf6",
+      "#14b8a6",
+      "#ec4899",
+    ],
+    backgroundColor: "transparent",
+    textStyle: { color: "#334155" },
+    title: { textStyle: { color: "#0f172a" }, subtextStyle: { color: "#64748b" } },
+    legend: { textStyle: { color: "#475569" } },
+    tooltip: {
+      backgroundColor: "#ffffff",
+      borderColor: "#e2e8f0",
+      borderWidth: 1,
+      textStyle: { color: "#0f172a", fontSize: 12 },
+      extraCssText: "box-shadow:0 6px 16px rgba(15,23,42,.10);border-radius:8px;",
+    },
+    categoryAxis: {
+      axisLine: { lineStyle: { color: "#e2e8f0" } },
+      axisTick: { lineStyle: { color: "#e2e8f0" } },
+      axisLabel: { color: "#475569" },
+      splitLine: { show: false, lineStyle: { color: "#eef2f7" } },
+    },
+    valueAxis: {
+      axisLine: { show: false, lineStyle: { color: "#e2e8f0" } },
+      axisTick: { show: false },
+      axisLabel: { color: "#475569" },
+      splitLine: { lineStyle: { color: "#eef2f7" } },
+    },
+    logAxis: {
+      axisLine: { show: false, lineStyle: { color: "#e2e8f0" } },
+      axisTick: { show: false },
+      axisLabel: { color: "#475569" },
+      splitLine: { lineStyle: { color: "#eef2f7" } },
+    },
+    graph: {
+      itemStyle: { borderColor: "#ffffff" },
+      lineStyle: { color: "#cbd5e1" },
+      label: { color: "#0f172a" },
+    },
+  });
+  (ensureLightTheme as unknown as { done?: boolean }).done = true;
+  return LIGHT_THEME;
+}
+
 export interface ChartProps {
   option: echarts.EChartsOption;
   className?: string;
@@ -26,7 +88,7 @@ export function Chart({ option, className, height = 300, onEvents, merge = false
   // 整页图表会跟着闪一下（且白付重建成本）。
   React.useEffect(() => {
     if (!ref.current) return;
-    const chart = echarts.init(ref.current, "dark");
+    const chart = echarts.init(ref.current, ensureLightTheme());
     chartRef.current = chart;
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);

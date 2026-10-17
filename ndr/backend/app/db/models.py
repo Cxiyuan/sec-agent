@@ -317,3 +317,43 @@ class HitEvent(Base):
     ignored_reason: Mapped[str] = mapped_column(Text, default="")
     #: 由本条事件生成的白名单（排除过滤器）ID：留痕，便于「这条为什么不再报」
     whitelist_id: Mapped[str] = mapped_column(String(64), default="")
+
+
+class AssetGroup(Base):
+    """资产分组（资产中心 → 资产分组）：按业务/责任人给资产归类。
+
+    为什么单独一张表（而不是写进 `asset_stats`）：后者是**统计基线**（Welford 均值/方差，
+    每窗口滚动更新），台账是**人工维护的事实**（谁负责、重要级别、备注），两者生命周期不同。
+    """
+
+    __tablename__ = "asset_groups"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    color: Mapped[str] = mapped_column(String(16), default="")  # 界面上的色标（#1d4ed8 之类）
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AssetRecord(Base):
+    """资产台账（资产中心 → 资产管理）：一台被纳管的主机。
+
+    IP 是唯一键（监控网段内的资产以 IP 为准）；主机名/归属/责任人/重要级别/备注由人填，
+    发现页看到"未纳管"的主机可以一键入库。**不存流量统计**（那是 asset_stats 的事）。
+    """
+
+    __tablename__ = "asset_records"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    ip: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    hostname: Mapped[str] = mapped_column(String(255), default="")
+    group_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    owner: Mapped[str] = mapped_column(String(128), default="")
+    #: 重要级别：core 核心 / high 重要 / normal 一般 / test 测试
+    criticality: Mapped[str] = mapped_column(String(16), default="normal")
+    tags: Mapped[str] = mapped_column(String(255), default="")  # 逗号分隔
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

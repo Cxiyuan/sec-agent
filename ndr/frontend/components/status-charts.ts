@@ -135,7 +135,7 @@ export function ringOption(value: number | null, name: string): EChartsOption {
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: { show: false },
-        title: { show: true, offsetCenter: [0, "34%"], fontSize: 12, color: "#94a3b8" },
+        title: { show: true, offsetCenter: [0, "34%"], fontSize: 12, color: "#475569" },
         detail: {
           offsetCenter: [0, 0],
           fontSize: 22,
@@ -613,7 +613,7 @@ export function coverageOption(coverage: DetectorCoverage | null): EChartsOption
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: { show: false },
-        title: { show: true, offsetCenter: [0, "36%"], fontSize: 12, color: "#94a3b8" },
+        title: { show: true, offsetCenter: [0, "36%"], fontSize: 12, color: "#475569" },
         detail: {
           offsetCenter: [0, 0],
           fontSize: 20,
@@ -701,7 +701,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       right: 0,
       itemWidth: 12,
       itemHeight: 8,
-      textStyle: { fontSize: 10, color: "#94a3b8" },
+      textStyle: { fontSize: 10, color: "#475569" },
       data: ["流量", "丢包"],
     },
     tooltip: {
@@ -731,7 +731,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       axisLabel: {
         fontSize: 10,
         interval: everyPoints - 1,
-        color: "#94a3b8",
+        color: "#475569",
         formatter: (value: string) => value.slice(0, 5),
       },
     },
@@ -773,7 +773,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         markLine: {
           silent: true,
           symbol: "none",
-          lineStyle: { color: "#334155", type: "dashed", width: 1 },
+          lineStyle: { color: "#e2e8f0", type: "dashed", width: 1 },
           label: { position: "start", fontSize: 9, color: "#64748b" },
           data: RATE_TICKS_BYTES.map((value, i) => ({
             yAxis: value,

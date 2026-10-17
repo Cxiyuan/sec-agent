@@ -205,7 +205,7 @@ export default function TopologyPage() {
             { name: "中继", itemStyle: { color: "#f59e0b" } },
             { name: "源站", itemStyle: { color: "#0ea5e9" } },
             { name: "入口（客户端侧）", itemStyle: { color: "#22c55e" } },
-            { name: "普通端点", itemStyle: { color: "#94a3b8" } },
+            { name: "普通端点", itemStyle: { color: "#475569" } },
           ],
           data: nodes.map((n: TopologyNode) => {
             const hit = hitQuery(n.id);

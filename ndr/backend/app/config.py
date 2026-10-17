@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     # Elasticsearch
     es_events_index: str = "shentong-events-*"
+
+    #: 离线地理库（MaxMind .mmdb）路径；空 = 不启用。「可视化流量」的「地域 TOP5」用它。
+    #: 产品不随包带库（体积 + 许可），部署时把库挂进容器并用本变量指向它。绝不联网查询。
+    geoip_db: str = ""
     es_url: str = "http://localhost:9200"
     es_user: str = ""
     es_password: str = ""
