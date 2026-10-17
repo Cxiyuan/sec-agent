@@ -298,6 +298,12 @@ FIELDS: dict[str, dict[str, Any]] = {
         "desc": "Zeek 上报的丢包数（stats.log，每 5 分钟一条；原值，非累加）",
     },
     "pkts_proc": {"path": "pkts_proc", "kind": "num", "desc": "Zeek 已处理包数（stats.log）"},
+    # 账号来源：代理认证的用户名（如 t14919610950627 这类终端 ID）不是业务账号，要标出来
+    "account_source": {
+        "path": "account_source",
+        "kind": "str",
+        "desc": "账号来源：proxy_auth（代理认证用户名）/ http_form（登录表单）/ log_field（日志字段）",
+    },
 }
 
 # "摘要观察"里默认带回来的字段（控体积）。原本按来源分两列，字段统一后只有一份。

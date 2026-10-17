@@ -126,10 +126,17 @@ def test_resp_body_truncated() -> None:
 
 
 def test_http_headers_captured() -> None:
-    """批 3：请求/响应头全量文本逐字搬运（Zeek 侧已截断，后端再按 8192 字符兜底）。"""
+    """批 3：请求/响应头全量文本搬运（Zeek 侧已截断，后端再按 8192 字符兜底）。
+
+    2026-10 起多一条硬约束：**头里的凭证要打码**。实机踩到校园出口代理每个请求都带
+    `PROXY-AUTHORIZATION: Basic <base64(用户名:密码)>`，原样落库 = 明文密码进 ES 和界面。
+    头名保留、值置 `***`，其余头逐字保留。
+    """
     entry = normalize_zeek(samples.DOCS["http"])
     assert entry is not None
-    assert "AUTHORIZATION: Basic cHJvYmU6WnE3UHJvYmVQd2Q5" in entry.req_headers
+    assert "AUTHORIZATION: ***" in entry.req_headers, "凭证值必须打码"
+    assert "cHJvYmU6WnE3UHJvYmVQd2Q5" not in entry.req_headers, "base64 凭证不能落库"
+    assert entry.auth_scheme == "basic", "认证方式仍要判出来（读的是未打码原文）"
     assert entry.req_headers.endswith("X-LONG: " + "A" * 256 + "\n")
     assert entry.resp_headers.startswith("CONTENT-TYPE: application/json\n")
     # 非 HTTP 流不串味
@@ -277,3 +284,59 @@ def test_session_id_extracted_before_cookie_truncation() -> None:
     assert entry is not None
     assert len(entry.cookie) <= settings.http_cookie_max_chars  # 字段本身照旧截断
     assert entry.session_id == "sess123"  # 但会话 id 从原始头里取到了
+
+
+# ---------- 凭证打码 + 账号可信度（2026-10 实机：代理认证头把明文密码写进了 ES） ----------
+
+
+def test_proxy_authorization_is_redacted() -> None:
+    """`Proxy-Authorization: Basic <base64(用户名:密码)>` 落库前必须打码。
+
+    实机证据：校园出口代理在**每个**请求都带这个头，原来 `req_headers` 与 `raw` 里
+    都是 `Basic dDE0OTE5NjEwOTUwNjI3OjZtcWg5Zzl2OjE2MA==`（= t14919610950627:6mqh9g9v:160）。
+    """
+    raw = (
+        "HOST: www.example.edu.cn\n"
+        "PROXY-AUTHORIZATION: Basic dDE0OTE5NjEwOTUwNjI3OjZtcWg5Zzl2OjE2MA==\n"
+        "COOKIE: SESSION=abc123\n"
+        "USER-AGENT: curl/8\n"
+    )
+    from app.ingestion.normalizer import _redact_headers
+
+    out = _redact_headers(raw)
+    assert "dDE0OTE5NjEwOTUwNjI3" not in out, "Basic 凭证必须打码"
+    assert "abc123" not in out, "Cookie 值也必须打码"
+    assert "PROXY-AUTHORIZATION: ***" in out, "头名保留，值打码"
+    assert "USER-AGENT: curl/8" in out, "非敏感头原样保留"
+
+
+def test_raw_snapshot_redacts_secret_headers() -> None:
+    from app.ingestion.normalizer import _raw_with_type
+
+    merged = _raw_with_type(
+        {"req_headers": "PROXY-AUTHORIZATION: Basic xxxx\nHOST: a", "authorization": "Bearer t"},
+        "http",
+        "http.log",
+    )
+    assert "Basic xxxx" not in str(merged), "raw 里的凭证也要打码"
+    assert merged["authorization"] == "***"
+    assert "HOST: a" in str(merged)
+
+
+def test_account_rejects_garbage_values() -> None:
+    """URL 编码中文、长哈希、超长串都不算账号；真实账号（含纯数字学号）要保留。"""
+    from app.ingestion.normalizer import _plausible_account
+
+    assert _plausible_account("2606105421") is True, "纯数字学号是合法账号"
+    from app.ingestion.normalizer import _plausible_account
+
+    assert _plausible_account("lysk") is True
+    from app.ingestion.normalizer import _plausible_account
+
+    assert _plausible_account("2601126116-%E5%90%84%E4%BD%8D") is False
+    from app.ingestion.normalizer import _plausible_account
+
+    assert _plausible_account("a5df6a72" * 8) is False
+    from app.ingestion.normalizer import _plausible_account
+
+    assert _plausible_account("x" * 70) is False

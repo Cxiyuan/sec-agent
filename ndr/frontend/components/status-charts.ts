@@ -40,7 +40,11 @@ const SEVERITY_COLORS: Record<string, string> = {
 // 容量尺（仪表盘左边 Y 轴）：用户口径 200KB → 1M → 5M → 50M → 100M → 200M → 500M → 1G
 // 左边只放字节刻度；右边那根轴只放掉包。
 // 轴用**对数刻度**（1KB ~ 1G）：线性刻度时几百 KB/s 会贴着 X 轴，看着像没数据。
-const FLOW_AXIS_MIN = 1024; // 1KB（对数轴下限必须 > 0；更低的值贴底显示，不画断线）
+// 容量尺最下面那一档（200KB）放在轴高多少比例处：
+// 用户口径「200KB 刻度太高了，减少一半的高度」→ 原来（下限固定 1KB 时）在 38.5%，砍一半 = 19% 左右。
+// 所以下限**不是常数**，而是由「200KB 落在轴高 19%」反推（对数轴上解一元一次）。
+// 好处：峰值撑开轴时，200KB 仍稳定停在低位，不再往上跑。
+const LADDER_BOTTOM_FRACTION = 0.19;
 const RATE_TICKS_BYTES: number[] = [200, 1024, 5120, 25600, 51200, 102400, 256000, 1048576].map(
   (k) => k * 1024,
 );
@@ -49,6 +53,15 @@ const RATE_TICK_LABELS: string[] = ["200KB", "1M", "5M", "50M", "100M", "200M", 
 function flowAxisMax(maxValue: number): number {
   const top = RATE_TICKS_BYTES[RATE_TICKS_BYTES.length - 1];
   return Math.max(top, Math.ceil(maxValue * 1.2));
+}
+
+// 对数轴下限：让最低那档（200KB）刚好落在 LADDER_BOTTOM_FRACTION 处
+//   (log10(200KB) - a) / (log10(max) - a) = f   →   a = (log10(200KB) - f*log10(max)) / (1 - f)
+function flowAxisMin(axisMax: number): number {
+  const lowest = RATE_TICKS_BYTES[0];
+  const f = LADDER_BOTTOM_FRACTION;
+  const a = (Math.log10(lowest) - f * Math.log10(axisMax)) / (1 - f);
+  return Math.pow(10, a);
 }
 
 const PALETTE = [
@@ -633,25 +646,6 @@ export function bytesLine(metrics: SystemMetrics | null): string {
   return parts.join(" · ");
 }
 
-/**
- * 近 N 分钟流量（**心电图式折线**）：每分钟一个点、不平滑、不填充。
- *
- * 为什么这么画（2026-10 用户要求）：原来的 24h 波浪/面积图看不出"现在在不在传"，而且
- * 未过完的那个小时会让右端假性塌陷；换成按分钟打点，进行中的那一分钟用虚线点单独标出来。
- */
-/** 滑动平均（trailing window）：把秒级尖刺抹平，曲线才像参考图那样平滑攀升/下降。 */
-function movingAverage(values: number[], window: number): number[] {
-  const w = Math.max(1, Math.floor(window));
-  const out: number[] = [];
-  let sum = 0;
-  for (let i = 0; i < values.length; i += 1) {
-    sum += values[i];
-    if (i >= w) sum -= values[i - w];
-    out.push(sum / Math.min(i + 1, w));
-  }
-  return out;
-}
-
 /** 每秒字节数 → Mbps（网络口径用 bit） */
 export function mbpsOf(bytes: number): number {
   return (Number(bytes) * 8) / 1e6;
@@ -667,41 +661,36 @@ export function formatMbps(bytes: number): string {
   return `${(bps / 1e9).toFixed(2)}Gbps`;
 }
 
-const TRAFFIC_GRID = "#e5e7eb"; // 网格线（横竖同一色，参考图就是浅灰）
-const TRAFFIC_LINE = "#5f9e52"; // 线条：绿色
-// 滑动平均窗口（秒）：窗口越长越平滑；20 秒能把尖刺抹平又留得住趋势
-const TRAFFIC_SMOOTH_SECONDS = 20;
-const TRAFFIC_SERIES_NAME = "合计流量（20 秒均）";
-const TRAFFIC_HOVER = "#3b82f6"; // 悬停点/指示线/提示框边框：蓝色
 
 /**
- * 近期流量图 —— **完全按 2026-10 用户给的参考图实现**：
- * - 左上角单位 `Mbps`，横线每档一条（0/100/200…），竖线每分钟一条（正好 N 条 = 刻度）；
- * - 线条：绿色**折线**（直连各点、不平滑、不填充、平时不打点）；
- * - 悬停：白底 + 蓝框圆角提示框，内容两行 —— 第一行粗体「接收」，第二行「时间,值Mbps」；
- *   悬停处显示一个蓝点（参考图里那个小蓝点）；
- * - 滚动更新：只换数据不整份重画（Chart 传 merge）+ 线性更新动画。
- */
-/**
- * 近期流量图 —— **沿用本页原有仪表样式**（跟 24h 那张同一套配色/单位/提示框）：
- * 蓝色面积折线（`#0ea5e9`，不透明度 0.18）、Y 轴「字节/秒」用 formatBytes 标签、
- * 提示框多行（时间 / 速率 / 合计 / 连接条数）、打点关闭。
- *
- * 两处是这张图特有、不改的口径（都在上一轮需求里定过）：
- * - X 轴只显示**整分钟**的刻度文字（15 分钟 = 15 个刻度）；
- * - 值做 **20 秒滑动平均**（`TRAFFIC_SMOOTH_SECONDS`）：秒级原始值中位数 1.7Mbps、尖峰 2564Mbps，
- *   直接画会变成"平段贴轴 + 一根根尖刺"；原来的 24h 图看着顺，是因为小时桶本身就是平均值。
+ * 近期流量图（口径与观感都是 2026-10 用户逐条定过的，别再凭印象改回去）：
+ * - 数据：**每秒**口径（`bytes_per_sec` = 20 秒桶内总量 ÷ 桶秒数）。曾经直接画桶内总量、
+ *   却按"/秒"标注 → 虚高 20 倍（用户看到的"瞬间几个 G"就是这个）；
+ * - 掉包：Zeek `stats.log` 每 5 分钟上报一条的**增量**（偶发爆量），走**右轴**（黄色），
+ *   否则会被流量压成一条平线；
+ * - 线条：**波浪线**（`smooth: true`），**不填充区域**；流量绿、掉包黄；
+ * - 左轴：容量尺 = **对数刻度**（下限由「200KB 落在轴高 19%」反推，见
+ *   `LADDER_BOTTOM_FRACTION`），8 档阶梯用 markLine 画在**左侧**真实字节位置
+ *   （档位不等距，不能用轴的 interval）；
+ * - X 轴：**每 5 分钟一个时间标签**，不画刻度线（`axisTick.show = false`）。
  */
 export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption {
-  const points = data?.points || [];
+  // 末尾那个"进行中的 20 秒"桶**不画**：它刚出现时，这个窗口里已落库的会话只有零星几条
+  // （Zeek 的 conn 记录是连接**关闭**后才写的），速率必然偏低 —— 视觉上就是
+  // 「新点一冒出来先掉到 0、过一会儿再涨回去」。丢掉它，曲线永远只画已过完的完整桶。
+  const raw = data?.points || [];
+  const points = raw.length && raw[raw.length - 1].partial ? raw.slice(0, -1) : raw;
   const labels = points.map((p) => clockOf(Date.parse(p.ts)));
   // 两条线都是"每秒/每次上报"的真实口径（不是桶内总量）
-  const flow = points.map((p) => Math.max(FLOW_AXIS_MIN, Math.round(p.bytes_per_sec ?? 0)));
+  const flow = points.map((p) => Math.round(p.bytes_per_sec ?? 0));
   const drops = points.map((p) => Math.round(p.pkts_dropped ?? 0));
   const interval = Math.max(1, Number(data?.interval_seconds ?? 20));
   const segment = Math.max(1, Number(data?.segment_minutes ?? 5));
   const everyPoints = Math.max(1, Math.round((segment * 60) / interval));
   const flowMax = flowAxisMax(Math.max(0, ...flow));
+  const flowMin = flowAxisMin(flowMax);
+  // 低于下限的值贴底（对数轴不能画 0；贴底就不会把线打断）
+  const flowData = flow.map((v) => Math.max(flowMin, v));
   return {
     animation: true,
     animationDuration: 0,
@@ -751,7 +740,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
       {
         type: "log",
         logBase: 10,
-        min: FLOW_AXIS_MIN,
+        min: flowMin,
         max: flowMax,
         // 刻度文字由 markLine 画（位置是真实字节位置），轴自身不出刻度
         axisLabel: { show: false },
@@ -779,7 +768,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
         showSymbol: false,
         lineStyle: { width: 1.8, color: "#22c55e" },
         itemStyle: { color: "#22c55e" },
-        data: flow,
+        data: flowData,
         // 容量尺：画在**左侧**（label position: "start"），位置是真实字节位置
         markLine: {
           silent: true,

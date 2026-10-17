@@ -108,6 +108,14 @@ def test_recent_traffic_dashboard_contract() -> None:
         assert f'"{tick}"' in charts, f"容量尺缺 {tick}"
     # 掉包要能算掉包率（同区间处理包数）
     assert "pkts_proc" in body, "提示框要能算掉包率"
+
+    # 末尾"进行中的桶"必须丢掉：它刚出现时速率必然偏低 → 曲线会"一冒出来先掉到 0 再涨上去"
+    assert "raw[raw.length - 1].partial ? raw.slice(0, -1) : raw" in body, "要丢掉末尾进行中的桶"
+    # 容量尺最低那档（200KB）压在轴高约 1/5：用户口径「200KB 刻度太高了，减少一半的高度」
+    # （原来下限固定 1KB → 200KB 在 38.5%，砍一半 ≈ 19%）
+    assert "LADDER_BOTTOM_FRACTION = 0.19" in charts, "200KB 阶梯高度要压到轴高 ~19%"
+    assert "flowAxisMin(flowMax)" in body, "轴下限要由「200KB 落 19%」反推，不能固定"
+    assert "Math.max(flowMin, v)" in body, "低于下限的值贴底（对数轴不能画 0）"
     # 画的是**每秒**口径，不是 20 秒桶内总量（否则虚高 20 倍）
     assert "p.bytes_per_sec" in body, "曲线必须画每秒速率"
     assert "p.bytes_total" not in body, "不能把桶内总量当每秒"

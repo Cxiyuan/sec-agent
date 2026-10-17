@@ -160,7 +160,8 @@ def _raw_with_type(doc: dict[str, Any], log_type: str, source_file: str) -> dict
     哪个文件来的），ES 侧也能按 raw.log_type 统计每条流实际进来多少。
     """
     raw = _sanitize_raw(doc)
-    merged = dict(raw) if isinstance(raw, dict) else {"value": raw}
+    # raw 快照里也有原始头文本（含 Basic 凭证）→ 同样打码，别在这里漏掉
+    merged = _redact_raw(dict(raw)) if isinstance(raw, dict) else {"value": raw}
     merged["log_type"] = log_type
     if source_file:
         merged["source_file"] = source_file
@@ -333,10 +334,78 @@ def _auth_scheme(doc: dict[str, Any]) -> str:
     return ""
 
 
+#: 落库前必须打码的头（保留头名、值换成 ***）。
+#: 为什么：实机踩到校园出口代理在每个请求都带
+#: `PROXY-AUTHORIZATION: Basic <base64(用户名:密码)>`，原样落库 = **明文密码进 ES 和界面**。
+#: 注意：只对"要存进 ES 的头文本"打码；归一化**解析**（cookie / content-type / 认证方式）
+#: 一律用未打码的原始文本，否则会话类判据会被打码打断。
+_SECRET_HEADER_RE = re.compile(
+    r"(?im)^("
+    r"[ \t]*(?:(?:proxy-)?authorization|x-auth-token|x-api-key|token|password"
+    r"|set-cookie|cookie)[ \t]*:[ \t]*"
+    r").*$"
+)
+
+#: raw 里这些键的值同样要处理（raw 是原文快照，不处理等于绕过了上面的打码）
+_RAW_SECRET_KEYS = frozenset(
+    {
+        "req_headers",
+        "resp_headers",
+        "authorization",
+        "proxy-authorization",
+        "x-auth-token",
+        "x-api-key",
+        "password",
+    }
+)
+
+
+def _redact_headers(text: str) -> str:
+    """头文本里的凭证值打码（`Name: value` → `Name: ***`）。"""
+    if not text:
+        return ""
+    return _SECRET_HEADER_RE.sub(r"\1***", text)
+
+
+def _redact_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    """raw 快照里的凭证同样打码（头文本走 _redact_headers，其余敏感键整值置 ***）。"""
+    if not isinstance(raw, dict):
+        return raw
+    out = dict(raw)
+    for key, value in list(out.items()):
+        lowered = str(key).strip().lower()
+        if lowered not in _RAW_SECRET_KEYS:
+            continue
+        if not isinstance(value, str):
+            continue
+        out[key] = _redact_headers(value) if "header" in lowered else "***"
+    return out
+
+
+#: 明显不是"人用的账号"的值（实机踩到的两类垃圾，见 _plausible_account）
+_ACCOUNT_URL_ENCODED_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_ACCOUNT_HASH_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
+
+
+def _plausible_account(value: str) -> bool:
+    """账号值像不像真的账号（挡掉把 URL 编码中文、哈希、超长串当账号的情况）。
+
+    实机见到的反例：`2601126116-%E5%90%84%E4%BD%8D%E5%90%8C%E5%AD%A6…`（把编码后的中文当账号）、
+    `a5df6a72…`（64 位哈希被 128 截断）。这类值进画像只会污染列表。
+    """
+    text = value.strip()
+    if not text or len(text) > 64:
+        return False
+    if _ACCOUNT_URL_ENCODED_RE.search(text):
+        return False
+    return not _ACCOUNT_HASH_RE.match(text)
+
+
 def _extract_account(path: str, body: str, query_string: str, user_field: Any) -> str:
     """账号提取：user 字段优先；否则仅在登录路径下从参数中提取。"""
     if user_field and str(user_field).strip():
-        return str(user_field).strip()[:128]
+        value = str(user_field).strip()[:128]
+        return value if _plausible_account(value) else ""
     if not path or not _login_re().search(path):
         return ""
     haystack = f"{query_string}&{body}"
@@ -344,7 +413,8 @@ def _extract_account(path: str, body: str, query_string: str, user_field: Any) -
         pattern = rf"(?:^|[&;,\s]){re.escape(name)}\s*[=:]\s*([^&;,\s\"']+)"
         match = re.search(pattern, haystack, re.IGNORECASE)
         if match:
-            return match.group(1)[:128]
+            value = match.group(1)[:128]
+            return value if _plausible_account(value) else ""
     return ""
 
 
@@ -532,19 +602,21 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
     body_value = _first(doc, _csv(settings.http_body_fields))
     uri = str(doc.get("uri") or "")
     path, qs = _split_uri(uri) if log_type == "http" else ("", "")
-    req_headers = str(doc.get("req_headers") or "")[:8192]
+    req_headers_raw = str(doc.get("req_headers") or "")[:8192]
+    # 解析用未打码原文（cookie/content-type/认证方式都要真值），落库用打码版本
+    req_headers = _redact_headers(req_headers_raw)
     content_type = str(
         doc.get("content_type")
         or doc.get("request_content_type")
-        or _header_value(req_headers, "content-type")
+        or _header_value(req_headers_raw, "content-type")
     )
     cookie = _clip(
-        doc.get("cookie") or _header_value(req_headers, "cookie"),
+        doc.get("cookie") or _header_value(req_headers_raw, "cookie"),
         settings.http_cookie_max_chars,
     )
     # 会话 id 从**未截断**的 Cookie 头里取：长 Cookie 头会把会话 cookie 截掉 ⇒ 会话判据漏报。
     # 只认名单内的名字（精确匹配）且值非空 —— 见 ingestion/session_cookie.py 的说明。
-    raw_cookie = str(doc.get("cookie") or _header_value(req_headers, "cookie"))
+    raw_cookie = str(doc.get("cookie") or _header_value(req_headers_raw, "cookie"))
     session_id = session_id_from_cookie(raw_cookie, settings.session_cookie_names)
     cert_issuer, cert_self_signed = _cert_info(doc)
     resp_mime = _to_str_list(doc.get("resp_mime_types") or doc.get("response_content_type"))
@@ -558,7 +630,7 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
         ),
         "resp_body_len": _to_int(doc.get("response_body_len")),
         "req_headers": req_headers,
-        "resp_headers": str(doc.get("resp_headers") or "")[:8192],
+        "resp_headers": _redact_headers(str(doc.get("resp_headers") or "")[:8192]),
         "real_client_ip": _real_client_ip(doc, peer_ip),
         "referer": str(doc.get("referrer") or doc.get("referer") or "")[:512],
         "cookie": cookie,
@@ -687,6 +759,23 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         else _zeek_event_type(log_type, note, conn_state, weird_name)
     )
 
+    # 账号 + **来源**：代理认证的用户名（校园出口代理的终端 ID）与登录表单里的账号
+    # 在界面上会长得一样（如 t14919610950627），标出来运维才知道那是什么。
+    account = _extract_account(
+        str(extra["uri_path"]),
+        str(extra["body"]),
+        str(extra["query_string"]),
+        doc.get("user") or doc.get("username"),
+    )
+    account_source = ""
+    if account:
+        if re.search(r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(extra.get("req_headers") or "")):
+            account_source = "proxy_auth"
+        elif doc.get("user") or doc.get("username"):
+            account_source = "log_field"
+        else:
+            account_source = "http_form"
+
     return UnifiedLog(
         source_system="zeek",
         ts=ts,
@@ -718,13 +807,11 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         user_agent=str(doc.get("user_agent") or ""),
         status_code=status_code,
         bytes_out=_to_int(doc.get("orig_bytes")),
-        auth_scheme=_auth_scheme({**doc, "req_headers": extra.get("req_headers")}),
-        account=_extract_account(
-            str(extra["uri_path"]),
-            str(extra["body"]),
-            str(extra["query_string"]),
-            doc.get("user") or doc.get("username"),
-        ),
+        # 认证方式要读**原始**头文本：extra 里的 req_headers 已打码（`AUTHORIZATION: ***`），
+        # 拿打码文本来判会得到 `***` 这种假值（见 tests/py/test_rules_routing.py）
+        auth_scheme=_auth_scheme(doc),
+        account=account,
+        account_source=account_source,
         severity="info",
         summary=str(note or doc.get("msg") or f"zeek {log_type} {conn_state or ''}").strip(),
         raw=_raw_with_type(doc, log_type, source_file),

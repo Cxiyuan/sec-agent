@@ -213,6 +213,17 @@ def account_entity(entry: UnifiedLog) -> str:
     return (entry.account or entry.user or "").strip()[:128]
 
 
+def account_display(entry: UnifiedLog) -> str:
+    """账号展示名：代理认证的"终端 ID"要标来源，否则运维只会看到一串像乱码的数字。
+
+    （实机例子：`t14919610950627` 是校园出口代理 `Proxy-Authorization: Basic` 里的用户名。）
+    """
+    name = account_entity(entry)
+    if name and str(getattr(entry, "account_source", "") or "") == "proxy_auth":
+        return f"{name}（代理认证）"
+    return name
+
+
 # ---------- 窗口观测聚合 ----------
 
 
@@ -277,7 +288,7 @@ def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
         bucket_key = f"{ACCOUNT}|{account}"
         bucket = buckets.get(bucket_key)
         if bucket is None:
-            bucket = buckets[bucket_key] = _new_bucket(ACCOUNT, account, account)
+            bucket = buckets[bucket_key] = _new_bucket(ACCOUNT, account, account_display(entry) or account)
         _accumulate(bucket, entry)
         _trim(bucket)
         added += 1

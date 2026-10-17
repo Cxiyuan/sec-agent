@@ -88,6 +88,11 @@ class UnifiedLog(BaseModel):
     bytes_out: int | None = None  # 源→目的字节数（数据外传）
     bytes_in: int | None = None  # 目的→源字节数（数据窃取）
 
+    # 账号来源（provenance）：proxy_auth=代理认证用户名（如 t14919610950627 这类终端 ID）
+    # / http_form=登录表单或查询参数 / log_field=日志自带的 user 字段。
+    # 界面据此标注，避免把代理认证的终端 ID 当成业务账号。
+    account_source: str = ""
+
     # stats.log（Zeek 每 5 分钟上报一次）：套接字/内核丢包计数
     # → 「近期流量」图的掉包折线（值是**上报那一刻的原值**，本系统不做累积换算）
     pkts_dropped: int | None = None
