@@ -75,6 +75,8 @@ def test_shape_pairs_classifies_each_view(
     import ipaddress
 
     monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")])
+    # 测试用的是文档保留段（is_global=False），用桩把"非 10/8 即公网"表达出来
+    monkeypatch.setattr(traffic, "is_public_ip", lambda ip: not str(ip).startswith("10."))
     resp = {
         "aggregations": {
             # 主机名单独按主语给（字节在 conn、域名在 http，按"对"取会全空）
@@ -111,6 +113,7 @@ def test_shape_pairs_port_apps_and_peers(
     import ipaddress
 
     monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")])
+    monkeypatch.setattr(traffic, "is_public_ip", lambda ip: not str(ip).startswith("10."))
     resp = {
         "aggregations": {
             "pairs": {
@@ -235,3 +238,30 @@ def test_shard_problem_is_reported(traffic: ModuleType) -> None:
     msg = traffic.shard_problem(bad)
     assert "分片" in msg and "script_exception" in msg
     assert traffic.shard_problem({"aggregations": {"subject": {"buckets": []}}}) == ""
+
+
+def test_unmonitored_private_src_is_not_outbound(
+    traffic: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """未监控的内网段（如 10.1.90.x）→ 监控网段资产，**不算对外业务**。
+
+    2026-10 QA 实测：只用"不在监控网段"判公网，会把 10.90.x 当成公网客户端，
+    对外业务视角里全是内网地址、地域一栏清一色「内网」。
+    """
+    import ipaddress
+
+    monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.1.2.0/24")])
+    monkeypatch.setattr(traffic, "is_public_ip", lambda ip: not str(ip).startswith("10."))
+    resp = {
+        "aggregations": {
+            "pairs": {
+                "buckets": [
+                    _pair("10.1.90.5", "10.1.2.20"),  # 未监控内网 → 资产：不属于任何视角
+                    _pair("198.51.100.9", "10.1.2.20"),  # 真公网 → 资产：属于对外业务
+                ]
+            }
+        }
+    }
+    rows = traffic.shape_pairs(resp, view="outbound", limit=50)["items"]
+    assert [r["ip"] for r in rows] == ["10.1.2.20"]
+    assert rows[0]["peers"] == 1, "只有那个真公网客户端"

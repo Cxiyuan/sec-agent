@@ -30,6 +30,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
 from app.ingestion import scope as scope_mod
+from app.iputil import is_public_ip
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -275,14 +276,24 @@ def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
 
 
 def _classify(view: str, src: str, dst: str, nets: list[ipaddress._BaseNetwork]) -> bool:
-    """这一对是否属于该视角（视角 = 主语内外 × 对端内外 的组合）。"""
-    s_in = _in(src, nets) if nets else True
-    d_in = _in(dst, nets) if nets else True
+    """这一对是否属于该视角。
+
+    口径（2026-10 用户定义 + QA 修正）：
+    - 对外业务 = **公网** → 监控网段资产（"公网"用 `is_public_ip` 判，不能只判"不在监控网段"——
+      否则 `10.1.90.x` 这类**未监控的内网段**会被当成公网客户端，地域里就冒出一堆「内网」）；
+    - 横向 = 监控网段 ↔ 监控网段（两端都在监控网段内）；
+    - 外连 = 监控网段 → **公网**。
+
+    未监控网段 → 监控网段（例如 10.1.90.x → 10.1.2.x）不属于这三个视角：
+    它是"另一片内网访问我们的资产"，要看就把那片网段加进监控网段。
+    """
+    s_in = _in(src, nets)
+    d_in = _in(dst, nets)
     if view == "outbound":
-        return d_in and not s_in  # 公网 → 内网资产
+        return d_in and is_public_ip(src)
     if view == "lateral":
-        return s_in and d_in  # 内网 ↔ 内网
-    return s_in and not d_in  # 内网 → 公网
+        return s_in and d_in
+    return s_in and is_public_ip(dst)
 
 
 def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
