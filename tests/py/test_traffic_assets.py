@@ -44,83 +44,89 @@ def test_app_of_maps_ports(traffic: ModuleType) -> None:
     assert traffic.app_of(None) == "其它"
 
 
-def _bucket(ip: str, *, out: int = 100, inb: int = 50, peers: list[str] | None = None) -> dict:
+def _pair(src: str, dst: str, *, bo: int = 100, bi: int = 50, ports: list[int] | None = None) -> dict:
+    """一条 (源,目的) 对聚结果（`shape_pairs` 的输入形态）。"""
     return {
-        "key": ip,
-        "doc_count": 10,
-        "bytes_out": {"value": out},
-        "bytes_in": {"value": inb},
-        "peers": {"value": len(peers or [])},
+        "key": {"s": src, "d": dst},
+        "doc_count": 1,
+        "bo": {"value": bo},
+        "bi": {"value": bi},
+        "docs": {"value": 10},
         "last_seen": {"value_as_string": "2026-10-17T12:00:00.000Z"},
         "hostname": {"buckets": [{"key": "srv.example"}]},
-        "log_types": {"buckets": [{"key": "http", "doc_count": 5}]},
         "ports": {
             "buckets": [
-                {"key": 443, "bo": {"value": 120}, "bi": {"value": 10}, "doc_count": 5},
-                {"key": 22, "bo": {"value": 30}, "bi": {"value": 0}, "doc_count": 2},
-            ]
-        },
-        "top_peers": {
-            "buckets": [
-                {
-                    "key": p,
-                    "bytes_out": {"value": 10},
-                    "bytes_in": {"value": 5},
-                    "hostname": {"buckets": []},
-                }
-                for p in (peers or [])
+                {"key": port, "bo": {"value": 30}, "bi": {"value": 10}}
+                for port in (ports or [443])
             ]
         },
     }
 
 
-def test_shape_rows_filters_non_monitored_subjects(
+def test_shape_pairs_classifies_each_view(
     traffic: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """主语不在监控网段的桶要被丢掉（否则"公网→公网"的噪声会混进资产列表）。"""
-    import ipaddress
+    """三视角的分母必须按「方向」切：同一批数据在三个视角下数字不能一样。
 
-    monkeypatch.setattr(
-        traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")]
-    )
-    resp = {
-        "aggregations": {
-            "subject": {
-                "buckets": [
-                    _bucket("10.1.2.3", peers=["198.51.100.9"]),  # 内网资产：保留
-                    _bucket("198.51.100.77", peers=["203.0.113.5"]),  # 公网：丢掉
-                ]
-            }
-        }
-    }
-    out = traffic.shape_rows(resp, view="outbound", limit=50)
-    ips = [row["ip"] for row in out["items"]]
-    assert ips == ["10.1.2.3"]
-    assert out["filtered_out"] == 1
-    row = out["items"][0]
-    assert row["bytes_total"] == 150
-    assert [p["app"] for p in row["ports"]] == ["HTTPS/TLS", "SSH"]
-    # 端口流量 = 上行 + 下行（两个 sum 在 Python 里加，不用 Painless）
-    assert row["ports"][0]["bytes"] == 130
-    assert row["peers_top"][0]["bytes"] == 15
-
-
-def test_shape_rows_lateral_keeps_only_internal_peers(
-    traffic: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """横向视角的对端只保留网段内地址；外连视角反过来只保留网段外地址。"""
+    （2026-10 QA 实测到的错：只在 Python 里过滤"显示出来的对端"、总量仍算全方向，
+    结果横向与外连返回一模一样的行。）
+    """
     import ipaddress
 
     monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")])
     resp = {
         "aggregations": {
-            "subject": {"buckets": [_bucket("10.1.2.3", peers=["10.9.9.9", "198.51.100.9"])]}
+            "pairs": {
+                "buckets": [
+                    _pair("198.51.100.9", "10.1.2.3", bo=1000, bi=9000),  # 公网 → 内网资产
+                    _pair("10.1.2.3", "10.9.9.9", bo=200, bi=100),  # 内网 → 内网
+                    _pair("10.1.2.3", "203.0.113.5", bo=300, bi=50),  # 内网 → 公网
+                ]
+            }
         }
     }
-    lateral = traffic.shape_rows(resp, view="lateral", limit=50)["items"][0]
-    assert [p["ip"] for p in lateral["peers_top"]] == ["10.9.9.9"]
-    egress = traffic.shape_rows(resp, view="egress", limit=50)["items"][0]
-    assert [p["ip"] for p in egress["peers_top"]] == ["198.51.100.9"]
+    outbound = traffic.shape_pairs(resp, view="outbound", limit=50)["items"]
+    assert [r["ip"] for r in outbound] == ["10.1.2.3"]
+    assert outbound[0]["bytes_total"] == 10000  # 只算公网→资产那一对
+    assert outbound[0]["hostname"] == "srv.example"  # 对外业务才有资产域名
+
+    lateral = traffic.shape_pairs(resp, view="lateral", limit=50)["items"]
+    assert [r["ip"] for r in lateral] == ["10.1.2.3"]
+    assert lateral[0]["bytes_total"] == 300  # 只算内网↔内网那一对
+    assert lateral[0]["hostname"] == ""  # 横向视角的 hostname 不是它自己的名字
+
+    egress = traffic.shape_pairs(resp, view="egress", limit=50)["items"]
+    assert [r["ip"] for r in egress] == ["10.1.2.3"]
+    assert egress[0]["bytes_total"] == 350  # 只算内网→公网那一对
+
+
+def test_shape_pairs_port_apps_and_peers(
+    traffic: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ipaddress
+
+    monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")])
+    resp = {
+        "aggregations": {
+            "pairs": {
+                "buckets": [
+                    _pair("198.51.100.9", "10.1.2.3", ports=[443, 22]),
+                    _pair("203.0.113.5", "10.1.2.3", ports=[443]),
+                ]
+            }
+        }
+    }
+    row = traffic.shape_pairs(resp, view="outbound", limit=50)["items"][0]
+    apps = {p["app"] for p in row["ports"]}
+    assert {"HTTPS/TLS", "SSH"} <= apps
+    assert row["peers"] == 2, "两个不同公网客户端"
+    assert len(row["peers_top"]) == 2
+
+
+def test_clean_hostname_drops_ip_port(traffic: ModuleType) -> None:
+    """Zeek 有时把 `IP:端口` 写进 host 字段，那不是主机名。"""
+    assert traffic._clean_hostname("10.1.2.3:8080", "10.1.2.3") == ""
+    assert traffic._clean_hostname("srv.example", "10.1.2.3") == "srv.example"
 
 
 def test_regions_are_unknown_without_geoip(traffic: ModuleType) -> None:
@@ -195,9 +201,10 @@ def test_agg_queries_avoid_painless_sum(traffic: ModuleType, assets: ModuleType)
     """
     import json
 
-    for view in traffic.VIEWS:
-        body = traffic._build_body(view, minutes=60, size=50)
-        assert "script" not in json.dumps(body).lower()
+    # 现在三视角共用一个「按 (源,目的) 对聚合」的查询体
+    body = traffic._pair_body(minutes=60, size=50)
+    assert "script" not in json.dumps(body).lower()
+    assert "composite" in json.dumps(body).lower(), "必须按对聚合，否则三视角口径分不开"
     assert "script" not in json.dumps(assets._discovery_body(minutes=60, size=50)).lower()
 
 

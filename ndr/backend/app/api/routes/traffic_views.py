@@ -71,13 +71,30 @@ PORT_APP: dict[int, str] = {
     5672: "AMQP",
     5900: "VNC",
     6379: "Redis",
+    3000: "HTTP-Dev",
+    4500: "IPsec-NAT-T",
+    5000: "HTTP-Alt",
+    5601: "Kibana",
+    6443: "K8s-API",
+    7001: "WebLogic",
+    7002: "WebLogic-SSL",
     8000: "HTTP-Alt",
+    8001: "HTTP-Alt",
+    8008: "HTTP-Alt",
+    8009: "AJP",
     8080: "HTTP-Proxy",
+    8081: "HTTP-Alt",
+    8088: "HTTP-Alt",
+    8090: "HTTP-Alt",
     8443: "HTTPS-Alt",
     8888: "HTTP-Alt",
+    9000: "HTTP-Alt",
+    9090: "HTTP-Alt",
     9092: "Kafka",
     9200: "Elasticsearch",
+    9443: "HTTPS-Alt",
     11211: "Memcached",
+    12321: "P2P/下载",
     27017: "MongoDB",
 }
 
@@ -111,6 +128,17 @@ def _in(ip: str, nets: Iterable[ipaddress._BaseNetwork]) -> bool:
     except ValueError:
         return False
     return any(addr in net for net in nets if net.version == addr.version)
+
+
+def _clean_hostname(hostname: str, ip: str) -> str:
+    """主机名清洗：Zeek 有时把 `IP:端口` 写进 host 字段（没有域名的连接），那不是主机名。"""
+    text = str(hostname or "").strip()
+    if not text:
+        return ""
+    bare = text.rsplit(":", 1)[0] if text.count(":") == 1 else text
+    if bare == ip or text.startswith(ip):
+        return ""
+    return text[:255]
 
 
 def _geo_available() -> bool:
@@ -167,56 +195,6 @@ def _port_field(view: str) -> str:
     return "dst_port"
 
 
-def _build_body(view: str, *, minutes: int, size: int) -> dict[str, Any]:
-    subject = _subject_field(view)
-    peer = _peer_field(view)
-    port = _port_field(view)
-    return {
-        "size": 0,
-        "query": {
-            "bool": {
-                "filter": [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}],
-                # 只看网络类事实（主机日志没有流量语义）
-                "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
-            }
-        },
-        "aggs": {
-            "subject": {
-                # 先按下行字节排序拿候选（总量在 Python 里算，排序只是选桶手段）
-                "terms": {"field": f"{subject}.keyword", "size": size, "order": {"bytes_in": "desc"}},
-                "aggs": {
-                    "bytes_out": {"sum": {"field": "bytes_out"}},
-                    "bytes_in": {"sum": {"field": "bytes_in"}},
-                    # 不用 Painless 把两个字段加起来：缺字段的文档会让**整个分片**报
-                    # "A document doesn't have a value for a field"，返回 0 桶还看不出来
-                    # （2026-10 实机踩过：dns/weird 等日志没有 bytes_* → 三个视角全空）。
-                    # 改成各求和、在 Python 里加总，口径一样且更快。
-                    # 不同对端数（横向/外连的"访问了多少个不同 IP"）
-                    "peers": {"cardinality": {"field": f"{peer}.keyword", "precision_threshold": 40000}},
-                    "last_seen": {"max": {"field": "@timestamp"}},
-                    "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
-                    "log_types": {"terms": {"field": "log_type.keyword", "size": 8}},
-                    "ports": {
-                        "terms": {"field": port, "size": 12, "order": {"bo": "desc"}},
-                        "aggs": {
-                            "bo": {"sum": {"field": "bytes_out"}},
-                            "bi": {"sum": {"field": "bytes_in"}},
-                        },
-                    },
-                    "top_peers": {
-                        "terms": {"field": f"{peer}.keyword", "size": 30, "order": {"bytes_in": "desc"}},
-                        "aggs": {
-                            "bytes_out": {"sum": {"field": "bytes_out"}},
-                            "bytes_in": {"sum": {"field": "bytes_in"}},
-                            "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
-                        },
-                    },
-                },
-            }
-        },
-    }
-
-
 def _regions_from_peers(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """对端 IP 列表 → 地域 TOP5（次数 = 该地域出现的不同 IP 数）。
 
@@ -236,94 +214,142 @@ def _regions_from_peers(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
 
 
-def shape_rows(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
-    """ES 聚合 → 界面行（并按内外网口径过滤主语/对端）。"""
+def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
+    """按 **(源 IP, 目的 IP) 对** 聚合。
+
+    为什么必须按对聚合：三个视角的分母不同 ——
+    对外业务看"公网→资产"，横向看"内网→内网"，外连看"内网→公网"。
+    如果只在 Python 里过滤"显示出来的对端"，主语的**总流量仍是全方向合计**，
+    横向与外连就会长得一模一样（2026-10 QA 实测到的错）。
+    按对聚出来后，每一对都能判方向，再按视角归类，数字才对。
+    """
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}],
+                "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
+            }
+        },
+        "aggs": {
+            "pairs": {
+                "composite": {
+                    "size": size,
+                    "sources": [
+                        {"s": {"terms": {"field": "src_ip.keyword"}}},
+                        {"d": {"terms": {"field": "dst_ip.keyword"}}},
+                    ],
+                },
+                "aggs": {
+                    "bo": {"sum": {"field": "bytes_out"}},
+                    "bi": {"sum": {"field": "bytes_in"}},
+                    "docs": {"value_count": {"field": "@timestamp"}},
+                    "last_seen": {"max": {"field": "@timestamp"}},
+                    "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
+                    "ports": {
+                        "terms": {"field": "dst_port", "size": 10, "order": {"bo": "desc"}},
+                        "aggs": {"bo": {"sum": {"field": "bytes_out"}}, "bi": {"sum": {"field": "bytes_in"}}},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _classify(view: str, src: str, dst: str, nets: list[ipaddress._BaseNetwork]) -> bool:
+    """这一对是否属于该视角（视角 = 主语内外 × 对端内外 的组合）。"""
+    s_in = _in(src, nets) if nets else True
+    d_in = _in(dst, nets) if nets else True
+    if view == "outbound":
+        return d_in and not s_in  # 公网 → 内网资产
+    if view == "lateral":
+        return s_in and d_in  # 内网 ↔ 内网
+    return s_in and not d_in  # 内网 → 公网
+
+
+def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
+    """(源,目的) 对 → 每台主机的行（按视角选主语）。"""
     nets = _nets()
-    buckets = (((resp.get("aggregations") or {}).get("subject") or {}).get("buckets")) or []
-    rows: list[dict[str, Any]] = []
-    filtered_out = 0
+    buckets = (((resp.get("aggregations") or {}).get("pairs") or {}).get("buckets")) or []
+    agg: dict[str, dict[str, Any]] = {}
+    kept_pairs = 0
     for bucket in buckets:
-        ip = str(bucket.get("key") or "")
-        if not ip:
+        key = bucket.get("key") or {}
+        src = str(key.get("s") or "")
+        dst = str(key.get("d") or "")
+        if not src or not dst or not _classify(view, src, dst, nets):
             continue
-        if view == "outbound":
-            # 主语必须是被监控的资产；否则是"公网→公网"的噪声
-            if nets and not _in(ip, nets):
-                filtered_out += 1
-                continue
-        else:
-            # 主语必须是内网主机
-            if nets and not _in(ip, nets):
-                filtered_out += 1
-                continue
-
-        ports = []
-        for pb in ((bucket.get("ports") or {}).get("buckets")) or []:
-            ports.append(
-                {
-                    "port": pb.get("key"),
-                    "app": app_of(pb.get("key")),
-                    "bytes": int((pb.get("bo") or {}).get("value") or 0)
-                    + int((pb.get("bi") or {}).get("value") or 0),
-                }
-            )
-
-        peers = []
-        for pb in ((bucket.get("top_peers") or {}).get("buckets")) or []:
-            peer_ip = str(pb.get("key") or "")
-            if view == "lateral":
-                if nets and not _in(peer_ip, nets):
-                    continue  # 横向视角只算网段内的对端
-            elif view == "egress":
-                if nets and _in(peer_ip, nets):
-                    continue  # 外连视角只算网段外的对端
-            else:  # outbound：对端应是公网客户端
-                if nets and _in(peer_ip, nets):
-                    continue
-            host_buckets = ((pb.get("hostname") or {}).get("buckets")) or []
-            peers.append(
-                {
-                    "ip": peer_ip,
-                    "hostname": str(host_buckets[0].get("key") or "") if host_buckets else "",
-                    "bytes": int((pb.get("bytes_out") or {}).get("value") or 0)
-                    + int((pb.get("bytes_in") or {}).get("value") or 0),
-                }
-            )
-
-        ports.sort(key=lambda p: -int(p["bytes"]))
-        peers.sort(key=lambda p: -int(p["bytes"]))
-        bytes_out = int((bucket.get("bytes_out") or {}).get("value") or 0)
-        bytes_in = int((bucket.get("bytes_in") or {}).get("value") or 0)
+        kept_pairs += 1
+        subject = dst if view == "outbound" else src
+        peer = src if view == "outbound" else dst
+        row = agg.get(subject)
+        if row is None:
+            row = agg[subject] = {
+                "ip": subject,
+                "hostname": "",
+                "bytes_out": 0,
+                "bytes_in": 0,
+                "conns": 0,
+                "peers": 0,
+                "peer_set": set(),
+                "ports": {},
+                "peers_top": {},
+                "last_seen": "",
+            }
+        row["bytes_out"] += int((bucket.get("bo") or {}).get("value") or 0)
+        row["bytes_in"] += int((bucket.get("bi") or {}).get("value") or 0)
+        row["conns"] += int((bucket.get("docs") or {}).get("value") or 0)
+        last = (bucket.get("last_seen") or {}).get("value_as_string") or ""
+        row["last_seen"] = max(row["last_seen"], last)
         hosts = ((bucket.get("hostname") or {}).get("buckets")) or []
+        # 主机名只从"对外业务"视角取（那时它才是被访问资产的域名）；
+        # 横向/外连视角里 hostname 是"客户端访问过的域名"，不是这台主机自己的名字。
+        if hosts and view == "outbound" and not row["hostname"]:
+            row["hostname"] = _clean_hostname(str(hosts[0].get("key") or ""), subject)
+        row["peer_set"].add(peer)
+        for pb in (((bucket.get("ports") or {}).get("buckets")) or []):
+            port = pb.get("key")
+            slot = row["ports"].setdefault(
+                port, {"port": port, "app": app_of(port), "bytes": 0}
+            )
+            slot["bytes"] += int((pb.get("bo") or {}).get("value") or 0) + int(
+                (pb.get("bi") or {}).get("value") or 0
+            )
+        pb_slot = row["peers_top"].setdefault(peer, {"ip": peer, "hostname": "", "bytes": 0})
+        pb_slot["bytes"] += int((bucket.get("bo") or {}).get("value") or 0) + int(
+            (bucket.get("bi") or {}).get("value") or 0
+        )
+
+    rows: list[dict[str, Any]] = []
+    for row in agg.values():
+        ports = sorted(row["ports"].values(), key=lambda x: -int(x["bytes"]))[:10]
+        peers = sorted(row["peers_top"].values(), key=lambda x: -int(x["bytes"]))[:10]
         rows.append(
             {
-                "ip": ip,
-                "hostname": str(hosts[0].get("key") or "") if hosts else "",
-                "bytes_out": bytes_out,
-                "bytes_in": bytes_in,
-                "bytes_total": bytes_out + bytes_in,
-                "conns": int(bucket.get("doc_count") or 0),
-                "peers": int((bucket.get("peers") or {}).get("value") or 0),
+                "ip": row["ip"],
+                "hostname": row["hostname"],
+                "bytes_out": row["bytes_out"],
+                "bytes_in": row["bytes_in"],
+                "bytes_total": row["bytes_out"] + row["bytes_in"],
+                "conns": row["conns"],
+                "peers": len(row["peer_set"]),
                 "ports": ports,
                 "peers_top": peers,
-                "log_types": [
-                    {"value": lb.get("key"), "count": lb.get("doc_count")}
-                    for lb in (((bucket.get("log_types") or {}).get("buckets")) or [])
-                ],
-                "last_seen": (bucket.get("last_seen") or {}).get("value_as_string") or "",
+                "log_types": [],
+                "last_seen": row["last_seen"],
                 "regions": _regions_from_peers(peers),
             }
         )
     rows.sort(key=lambda r: -int(r["bytes_total"]))
-    rows = rows[:limit]
-
     return {
-        "items": rows,
-        "scanned_buckets": len(buckets),
-        "filtered_out": filtered_out,
+        "items": rows[:limit],
+        "scanned_pairs": len(buckets),
+        "kept_pairs": kept_pairs,
+        "filtered_out": len(buckets) - kept_pairs,
         "geo_available": _geo_available(),
-        "warning": shard_problem(resp),
-        "note": "" if _geo_available() else "「地区」需要离线地理库（部署时用 ST_GEOIP_DB 指向 .mmdb），当前显示「未知」",
+        "note": ""
+        if _geo_available()
+        else "「地区」需要离线地理库（部署时用 ST_GEOIP_DB 指向 .mmdb），当前显示「未知」",
         "monitored_nets": [str(n) for n in nets],
     }
 
@@ -338,13 +364,13 @@ def traffic_ips(
     """按 IP 出三个视角的流量明细（对外业务 / 横向 / 外连）。"""
     if view not in VIEWS:
         view = "outbound"
-    body = _build_body(view, minutes=minutes, size=min(300, max(limit * 2, 60)))
+    body = _pair_body(minutes=minutes, size=min(5000, max(limit * 40, 500)))
     try:
         resp = _es().search(index=settings.es_events_index, body=body)
     except Exception as exc:  # noqa: BLE001
         log.warning("流量聚合失败: %s", exc)
         return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
-    out = shape_rows(resp, view=view, limit=limit)
+    out = shape_pairs(resp, view=view, limit=limit)
     out.update({"view": view, "minutes": minutes, "warning": shard_problem(resp)})
     return out
 
