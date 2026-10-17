@@ -65,9 +65,9 @@ export default function ConfigAuditPage() {
       </div>
 
       {data?.warnings?.length ? (
-        <Card className="mb-4 border-amber-900 bg-amber-950/20">
+        <Card className="mb-4 border-sev-medium-bd bg-sev-medium-bg">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-amber-200">需要处理（{data.warnings.length}）</CardTitle>
+            <CardTitle className="text-sm text-sev-medium-fg">需要处理（{data.warnings.length}）</CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="list-disc space-y-1 pl-5 text-xs">
@@ -108,7 +108,7 @@ export default function ConfigAuditPage() {
                       ) : null}
                     </TableCell>
                     <TableCell className="text-xs">
-                      {it.warn ? <span className="text-amber-300">{it.warn}</span> : null}
+                      {it.warn ? <span className="text-sev-medium-fg">{it.warn}</span> : null}
                       {it.warn && it.note ? "；" : ""}
                       <span className="text-muted-foreground">{it.note || ""}</span>
                     </TableCell>

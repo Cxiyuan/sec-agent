@@ -2,51 +2,215 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 明亮企业主题（shadcn 风格 CSS 变量，2026-10 用户改版：不要暗黑，要企业级简约明亮） */
+/* ============================================================================
+   设计语言「钢蓝仪表台」（Steel Console）
+   ----------------------------------------------------------------------------
+   面向企业内网安全运营：长时间盯屏、密集表格与图表。原则是"克制"而不是"装
+   饰"——不用渐变、不用玻璃拟态、不用发光与彩色投影；材质只由三样东西构成：
+   表面底色差 + 1px 描边 + 极浅投影。
+
+   表面分四层（原来只差 2%，卡片边界靠边框硬撑，整页糊成一片）：
+     L0 canvas      页面底   —— 区块与卡片浮在它上面
+     L1 surface-1   内联格 / 表头 / 分组底 —— 用底色表达"成组"，不用描边
+     L2 surface-2   卡片
+     L3 surface-3   浮层（下拉 / 抽屉 / 弹窗）
+
+   语义色（严重度 / 状态）与品牌色**互相独立**：品牌蓝只表示"可操作、选中、
+   焦点"，绝不用来画数据或状态，避免"点了"和"危险"混淆。
+
+   本文件两个前端共用（NDR 与 agent 内容完全一致）：
+     :root  = 亮色（默认）      .dark = 暗色
+   NDR 的 <html> 不带 class → 走亮色；agent 的 <html class="dark"> → 走暗色。
+   ============================================================================ */
+
 :root {
   /* 原生控件（下拉弹层、滚动条、日期框）按亮色渲染 */
   color-scheme: light;
-  --background: 210 40% 98%;      /* 页面底色 #f8fafc（极浅灰蓝，衬托白卡片） */
-  --foreground: 222 47% 11%;      /* 正文 #0f172a */
-  --card: 0 0% 100%;              /* 卡片纯白 */
-  --card-foreground: 222 47% 11%;
-  --primary: 221 83% 45%;         /* 企业蓝 #1d4ed8 */
+
+  /* ---------- 表面分层 L0 → L3 ---------- */
+  --canvas: 210 24% 94%; /* #ecf0f3 */
+  --surface-1: 210 22% 97%; /* #f5f7f9 内联格 / 表头 */
+  --surface-2: 0 0% 100%; /* #ffffff 卡片 */
+  --surface-3: 0 0% 100%; /* 浮层 */
+
+  --background: var(--canvas);
+  --foreground: 214 32% 13%; /* #17202c */
+  --card: var(--surface-2);
+  --card-foreground: var(--foreground);
+  --popover: var(--surface-3);
+  --popover-foreground: var(--foreground);
+
+  /* 次要文字 #586574：白底对比 5.99:1，12px 长时间阅读不费眼 */
+  --muted: 210 22% 97%;
+  --muted-foreground: 213 14% 40%;
+  --secondary: 210 22% 97%;
+  --secondary-foreground: var(--foreground);
+  --accent: 214 90% 96%;
+  --accent-foreground: 214 76% 32%;
+
+  /* ---------- 品牌：钢青深蓝 #144990（替代 Tailwind blue-700 原值） ---------- */
+  --brand-50: 214 90% 96%;
+  --brand-500: 212 82% 52%; /* #207ee9 焦点 / 图表主系列 */
+  --brand-600: 214 74% 40%; /* #1b5cb2 hover */
+  --brand-700: 214 76% 32%; /* 主色 */
+  --primary: 214 76% 32%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 210 40% 96%;
-  --secondary-foreground: 222 47% 11%;
-  --muted: 210 40% 96%;
-  --muted-foreground: 215 16% 45%;/* 次要文字 #64748b 一档 */
-  --accent: 214 32% 94%;
-  --accent-foreground: 222 47% 11%;
-  --destructive: 0 72% 46%;
+  --ring: 212 82% 52%;
+
+  --destructive: 0 74% 45%;
   --destructive-foreground: 0 0% 100%;
-  --border: 214 32% 91%;          /* 浅灰边框 #e2e8f0 */
-  --input: 214 32% 91%;
-  --ring: 221 83% 45%;
-  --radius: 0.5rem;
+
+  /* ---------- 边框（比原来强一档，让容器边界真实存在） ---------- */
+  --border: 213 22% 84%; /* #cdd5df 容器 / 输入 */
+  --border-subtle: 213 18% 90%; /* 表格行 / 内分隔 */
+  --input: 213 22% 84%;
+
+  /* ---------- 严重度：底 / 字 / 边 三件套 ----------
+     low 由"绿"改"蓝"——低危不等于安全，绿只留给 ok。 */
+  --sev-critical-bg: 0 86% 96%;
+  --sev-critical-fg: 0 74% 38%;
+  --sev-critical-bd: 0 78% 86%;
+  --sev-high-bg: 24 92% 95%;
+  --sev-high-fg: 24 84% 34%;
+  --sev-high-bd: 24 86% 84%;
+  --sev-medium-bg: 40 94% 94%;
+  --sev-medium-fg: 40 88% 28%;
+  --sev-medium-bd: 40 88% 80%;
+  --sev-low-bg: 212 84% 95%;
+  --sev-low-fg: 212 72% 36%;
+  --sev-low-bd: 212 76% 84%;
+  --sev-info-bg: 213 20% 94%;
+  --sev-info-fg: 213 18% 36%;
+  --sev-info-bd: 213 18% 84%;
+  --sev-ok-bg: 152 52% 94%;
+  --sev-ok-fg: 152 62% 28%;
+  --sev-ok-bd: 152 52% 82%;
+
+  /* ---------- 数据可视化分类色板 ----------
+     8 色全部落在 L 34–55%，亮底/暗底都有足够对比，且避开严重度的红橙金。 */
+  --chart-1: 212 82% 52%;
+  --chart-2: 199 78% 42%;
+  --chart-3: 152 62% 36%;
+  --chart-4: 264 52% 55%;
+  --chart-5: 24 88% 46%;
+  --chart-6: 340 65% 48%;
+  --chart-7: 186 70% 34%;
+  --chart-8: 46 70% 42%;
+  --chart-grid: 213 22% 93%;
+  --chart-axis: 213 14% 42%;
+  --chart-track: 213 16% 88%;
+
+  /* ---------- 材质：显式 elevation，取代原来的属性选择器 hack ---------- */
+  --elev-1: 0 1px 2px rgb(16 24 40 / 0.05);
+  --elev-2: 0 1px 3px rgb(16 24 40 / 0.08), 0 1px 2px rgb(16 24 40 / 0.04);
+  --elev-3: 0 8px 24px -4px rgb(16 24 40 / 0.14), 0 2px 6px rgb(16 24 40 / 0.06);
+
+  --radius: 0.375rem;
+
+  /* ---------- 字体 ----------
+     纯本地栈：企业内网部署不能依赖 Google Fonts 在线拉取（构建期就会失败）。
+     优先 HarmonyOS Sans / 思源黑体，中文断字与字重比微软雅黑稳。 */
+  --font-sans: "Inter", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular",
+    "Cascadia Mono", Consolas, Menlo, monospace;
 }
 
-* {
-  border-color: hsl(var(--border));
+/* ============================================================================
+   暗色（agent 前端在用；NDR 暂不启用，但同一套变量已就位）
+   只需覆盖"表面 / 文字 / 边框 / 语义 / 图表 / 投影"，别名变量会自动重解析。
+   ============================================================================ */
+.dark {
+  color-scheme: dark;
+
+  --canvas: 222 32% 7%;
+  --surface-1: 220 26% 10%;
+  --surface-2: 220 24% 12%;
+  --surface-3: 220 24% 14%;
+
+  --foreground: 210 30% 92%;
+  --muted: 220 26% 10%;
+  --muted-foreground: 213 16% 62%;
+  --secondary: 220 26% 10%;
+  --accent: 218 22% 20%;
+  --accent-foreground: 212 82% 70%;
+
+  --brand-50: 214 60% 16%;
+  --brand-500: 212 82% 58%;
+  --brand-600: 212 80% 62%;
+  --brand-700: 212 82% 66%;
+  --primary: 212 82% 58%;
+  --primary-foreground: 222 40% 8%;
+  --ring: 212 82% 58%;
+
+  --destructive: 0 72% 58%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 218 18% 22%;
+  --border-subtle: 218 16% 18%;
+  --input: 218 18% 22%;
+
+  /* 暗色下的严重度：深底 + 亮字 + 中调描边 */
+  --sev-critical-bg: 0 52% 20%;
+  --sev-critical-fg: 0 88% 78%;
+  --sev-critical-bd: 0 50% 32%;
+  --sev-high-bg: 24 60% 18%;
+  --sev-high-fg: 24 92% 74%;
+  --sev-high-bd: 24 55% 32%;
+  --sev-medium-bg: 40 62% 16%;
+  --sev-medium-fg: 40 94% 70%;
+  --sev-medium-bd: 40 55% 30%;
+  --sev-low-bg: 212 55% 19%;
+  --sev-low-fg: 212 90% 78%;
+  --sev-low-bd: 212 50% 32%;
+  --sev-info-bg: 213 20% 17%;
+  --sev-info-fg: 213 22% 74%;
+  --sev-info-bd: 213 20% 28%;
+  --sev-ok-bg: 152 45% 15%;
+  --sev-ok-fg: 152 62% 68%;
+  --sev-ok-bd: 152 40% 28%;
+
+  /* 分类色板整体提亮，保证深底上的可辨识度 */
+  --chart-1: 212 82% 62%;
+  --chart-2: 199 78% 54%;
+  --chart-3: 152 52% 48%;
+  --chart-4: 264 60% 68%;
+  --chart-5: 24 88% 58%;
+  --chart-6: 340 70% 62%;
+  --chart-7: 186 66% 46%;
+  --chart-8: 46 76% 56%;
+  --chart-grid: 218 18% 18%;
+  --chart-axis: 213 14% 62%;
+  --chart-track: 218 16% 22%;
+
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.3);
+  --elev-2: 0 1px 3px rgb(0 0 0 / 0.4);
+  --elev-3: 0 10px 28px -4px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.35);
 }
 
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
+  font-family: var(--font-sans);
+  /* 运维平台里数字要能上下对齐：表格、KPI、图表轴一律等宽数字 */
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* 明亮主题的层次感：白卡片浮在浅灰底上，靠 1px 边框 + 极淡阴影区分（暗色不需要） */
-[class*="rounded-lg"][class*="border"][class*="bg-card"],
-[class*="rounded-xl"][class*="border"][class*="bg-card"] {
-  box-shadow: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+/* 默认细线：容器边界请显式用 border（--border），行分隔用 border-subtle */
+*,
+::before,
+::after {
+  border-color: hsl(var(--border-subtle));
 }
 
 /* 下拉菜单：原生 select 的选项弹层不受继承影响，必须显式指定配色 */
 select,
 select option {
-  background-color: hsl(var(--card));
-  color: hsl(var(--card-foreground));
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
 }
 
 select option:checked,
@@ -55,39 +219,59 @@ select option:hover {
   color: hsl(var(--accent-foreground));
 }
 
-
-/* 简单滚动条 */
+/* 滚动条：比内容更浅一档，不抢视觉重量 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted));
-  border-radius: 4px;
+  background: hsl(var(--border));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
-/* 总览页的组件「呼吸灯」：ok 低频呼吸（3s）、degraded 快闪（1s）；down/unknown 静止只靠颜色。
-   弱动效环境（prefers-reduced-motion）下全部关掉动画 —— 那时靠颜色与文字仍然分得清。 */
-@keyframes st-breathe {
+/* ============================================================================
+   状态灯：只在"需要你抬头看一眼"时动
+   ok 静止常亮（正常是默认状态，不该持续吸引注意力）；
+   degraded / down 才脉冲，单页常驻动画不超过 1 个。
+   ============================================================================ */
+@keyframes st-pulse {
   0%,
   100% {
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.4;
   }
 }
 
-.light-breathe {
-  animation: st-breathe 3s ease-in-out infinite;
-}
-
-.light-blink {
-  animation: st-breathe 1s ease-in-out infinite;
+.st-pulse {
+  animation: st-pulse 1.6s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .light-breathe,
+  .st-pulse {
+    animation: none;
+  }
+}
+
+/* 兼容：旧类名仍被部分页面引用，统一收敛为同一套动效语义 */
+.light-breathe {
+  animation: none;
+}
+.light-blink {
+  animation: st-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
   .light-blink {
     animation: none;
   }

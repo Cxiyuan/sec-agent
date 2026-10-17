@@ -4,65 +4,109 @@ import * as React from "react";
 import * as echarts from "echarts";
 
 /**
- * ECharts 主题：**企业亮**（2026-10 用户改版：不要暗黑）。
+ * ECharts 主题：**跟随 CSS 变量**，不再硬编码亮色。
  *
- * 为什么不用内置的 "dark"：它是黑底浅字，套在白色卡片上就是"仪表盘还是黑的"。
- * 这里显式注册一套白底主题：透明背景（跟随卡片）、深色文字、浅灰网格线、
- * 白底浅边框提示框 —— 图表放哪个卡片上都协调。
+ * 为什么重写：原来只 `registerTheme` 了一套白底主题（axisLabel #475569、
+ * tooltip 白底），而 agent 前端是暗色 —— 轴标签落在 #0a0f1a 的卡面上对比度
+ * 只有 2:1，等于不可读；tooltip 还是一块刺眼的白板。两个产品面共用这个组件，
+ * 主题不能只照顾其中一边。
+ *
+ * 现在的做法：每次初始化前把 --chart-* / --sev-* / --border / --font-sans
+ * 读出来，现拼一份主题注册上去。亮暗主题各自一份变量，图表自动跟着走，
+ * 图表色与 UI 语义色从此是同一套来源（之前 status-charts.ts 里散着 27 个硬编码 hex）。
  */
-const LIGHT_THEME = "shentong-light";
 
-function ensureLightTheme(): string {
-  if ((ensureLightTheme as unknown as { done?: boolean }).done) return LIGHT_THEME;
-  echarts.registerTheme(LIGHT_THEME, {
-    // 企业色板：主蓝 → 青 → 绿 → 琥珀 → 红 → 紫 → 青绿 → 品红
+const THEME_NAME = "shentong";
+
+/** 主题签名：CSS 变量没变就不重复注册（一页 18 张图只读一次） */
+let cachedSignature = "";
+let themeDone = false;
+
+function cssVar(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (!raw) return fallback;
+  // 变量存的是 HSL 三段值（如 "212 82% 52%"），拼回合法颜色
+  return raw.includes("%") || /^[\d.]+\s/.test(raw) ? `hsl(${raw})` : raw;
+}
+
+function buildTheme() {
+  const axisColor = cssVar("--chart-axis", "#5f6b7a");
+  const gridColor = cssVar("--chart-grid", "#eef2f7");
+  const trackColor = cssVar("--chart-track", "#e2e8f0");
+  const borderColor = cssVar("--border", "#cdd5df");
+  const fgColor = cssVar("--foreground", "#17202c");
+  const surfaceColor = cssVar("--surface-2", "#ffffff");
+  const fontSans = cssVar("--font-sans", "system-ui, sans-serif");
+
+  return {
     color: [
-      "#1d4ed8",
-      "#0ea5e9",
-      "#10b981",
-      "#f59e0b",
-      "#ef4444",
-      "#8b5cf6",
-      "#14b8a6",
-      "#ec4899",
+      cssVar("--chart-1", "#207ee9"),
+      cssVar("--chart-2", "#1a8fa8"),
+      cssVar("--chart-3", "#239560"),
+      cssVar("--chart-4", "#6a5fd0"),
+      cssVar("--chart-5", "#dc610d"),
+      cssVar("--chart-6", "#c93a6f"),
+      cssVar("--chart-7", "#1a8b8b"),
+      cssVar("--chart-8", "#b4851f"),
     ],
     backgroundColor: "transparent",
-    textStyle: { color: "#334155" },
-    title: { textStyle: { color: "#0f172a" }, subtextStyle: { color: "#64748b" } },
-    legend: { textStyle: { color: "#475569" } },
+    textStyle: { color: axisColor, fontFamily: fontSans },
+    title: { textStyle: { color: fgColor }, subtextStyle: { color: axisColor } },
+    legend: { textStyle: { color: axisColor } },
     tooltip: {
-      backgroundColor: "#ffffff",
-      borderColor: "#e2e8f0",
+      backgroundColor: surfaceColor,
+      borderColor,
       borderWidth: 1,
-      textStyle: { color: "#0f172a", fontSize: 12 },
-      extraCssText: "box-shadow:0 6px 16px rgba(15,23,42,.10);border-radius:8px;",
+      padding: [8, 10],
+      textStyle: { color: fgColor, fontSize: 12, fontFamily: fontSans },
+      // 与卡片同一套材质语言：1px 描边 + 柔和投影，不用重阴影
+      extraCssText: "box-shadow:0 8px 24px -4px rgba(16,24,40,.14);border-radius:6px;",
     },
     categoryAxis: {
-      axisLine: { lineStyle: { color: "#e2e8f0" } },
-      axisTick: { lineStyle: { color: "#e2e8f0" } },
-      axisLabel: { color: "#475569" },
-      splitLine: { show: false, lineStyle: { color: "#eef2f7" } },
+      axisLine: { lineStyle: { color: borderColor } },
+      axisTick: { lineStyle: { color: borderColor } },
+      axisLabel: { color: axisColor, fontSize: 12 },
+      splitLine: { show: false, lineStyle: { color: gridColor } },
     },
     valueAxis: {
-      axisLine: { show: false, lineStyle: { color: "#e2e8f0" } },
+      axisLine: { show: false, lineStyle: { color: borderColor } },
       axisTick: { show: false },
-      axisLabel: { color: "#475569" },
-      splitLine: { lineStyle: { color: "#eef2f7" } },
+      axisLabel: { color: axisColor, fontSize: 12 },
+      splitLine: { lineStyle: { color: gridColor } },
     },
     logAxis: {
-      axisLine: { show: false, lineStyle: { color: "#e2e8f0" } },
+      axisLine: { show: false, lineStyle: { color: borderColor } },
       axisTick: { show: false },
-      axisLabel: { color: "#475569" },
-      splitLine: { lineStyle: { color: "#eef2f7" } },
+      axisLabel: { color: axisColor, fontSize: 12 },
+      splitLine: { lineStyle: { color: gridColor } },
     },
     graph: {
-      itemStyle: { borderColor: "#ffffff" },
-      lineStyle: { color: "#cbd5e1" },
-      label: { color: "#0f172a" },
+      itemStyle: { borderColor: surfaceColor },
+      lineStyle: { color: trackColor },
+      label: { color: fgColor },
     },
-  });
-  (ensureLightTheme as unknown as { done?: boolean }).done = true;
-  return LIGHT_THEME;
+  };
+}
+
+function ensureTheme(): string {
+  if (typeof window === "undefined") return THEME_NAME;
+  const probe = [
+    "--chart-1",
+    "--chart-axis",
+    "--chart-grid",
+    "--border",
+    "--foreground",
+    "--surface-2",
+    "--font-sans",
+  ]
+    .map((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim())
+    .join("|");
+  if (themeDone && probe === cachedSignature) return THEME_NAME;
+  cachedSignature = probe;
+  themeDone = true;
+  echarts.registerTheme(THEME_NAME, buildTheme());
+  return THEME_NAME;
 }
 
 export interface ChartProps {
@@ -84,11 +128,11 @@ export interface ChartProps {
 export function Chart({ option, className, height = 300, onEvents, merge = false }: ChartProps) {
   const ref = React.useRef<HTMLDivElement>(null);
   const chartRef = React.useRef<echarts.ECharts | null>(null);
-  // 实例只建一次：轮询类页面每 15 秒就会给一份新 option，如果每次变化都 dispose+init，
+  // 实例只建一次：轮询类页面每 5 秒就会给一份新 option，如果每次变化都 dispose+init，
   // 整页图表会跟着闪一下（且白付重建成本）。
   React.useEffect(() => {
     if (!ref.current) return;
-    const chart = echarts.init(ref.current, ensureLightTheme());
+    const chart = echarts.init(ref.current, ensureTheme());
     chartRef.current = chart;
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);

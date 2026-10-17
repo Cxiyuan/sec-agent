@@ -325,7 +325,7 @@ export default function TopologyPage() {
           </p>
         ) : null}
         {data?.note ? (
-          <p className="mb-3 rounded-md border border-amber-900 bg-amber-950/30 px-3 py-2 text-xs">
+          <p className="mb-3 rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
             {data.note}
           </p>
         ) : null}

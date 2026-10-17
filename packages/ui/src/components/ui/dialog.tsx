@@ -44,7 +44,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass }: D
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true">
       {/* 遮罩：点击关闭 */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-black/40"
         onClick={onClose}
         aria-hidden="true"
       />

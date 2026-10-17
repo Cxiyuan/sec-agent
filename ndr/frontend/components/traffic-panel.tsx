@@ -454,7 +454,7 @@ export function TrafficPanel({ view }: { view: View }) {
           <button
             type="button"
             aria-label="关闭"
-            className="flex-1 bg-slate-900/20"
+            className="flex-1 bg-black/40"
             onClick={() => setPeers(null)}
           />
           <aside className="flex h-full w-[720px] max-w-[94vw] flex-col border-l bg-card shadow-2xl">

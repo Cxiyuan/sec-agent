@@ -512,7 +512,7 @@ export function LogsPanel() {
           <button
             type="button"
             aria-label="关闭详情"
-            className="flex-1 bg-slate-900/20"
+            className="flex-1 bg-black/40"
             onClick={() => setDetail(null)}
           />
           <aside className="flex h-full w-[560px] max-w-[92vw] flex-col border-l bg-card shadow-2xl">

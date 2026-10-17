@@ -89,12 +89,15 @@ const SRC = {
   overview: "流量与协议",
 } as const;
 
-/** 呼吸灯的配色与文案：ok 慢呼吸、degraded 快闪、down 常亮红、unknown 灰。 */
+/** 呼吸灯的配色与文案：ok 静止常亮、degraded 脉冲、down 常亮红（红本身够醒目，不必再动）、
+ *  unknown 灰。颜色取严重度语义变量（sev-*），不再是 emerald/amber/red/slate 这类 Tailwind
+ *  原色 —— 原色与主色不在同一明度层级，状态灯看起来像贴纸；语义色和徽章、图表共用一套。
+ *  单页只允许一个在动的灯：degraded 脉冲、其余静止。 */
 const LIGHT_CLS: Record<ComponentState, string> = {
-  ok: "bg-emerald-500 light-breathe",
-  degraded: "bg-amber-500 light-blink",
-  down: "bg-red-500",
-  unknown: "bg-slate-500",
+  ok: "bg-sev-ok-fg",
+  degraded: "bg-sev-medium-fg st-pulse",
+  down: "bg-sev-critical-fg",
+  unknown: "bg-muted-foreground/40",
 };
 const LIGHT_TEXT: Record<ComponentState, string> = {
   ok: "正常",
@@ -115,10 +118,12 @@ function Kpi({
   danger?: boolean;
 }) {
   return (
-    <div className="rounded-md border p-3">
+    <div className="rounded-xs bg-surface-1 px-3 py-2">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`mt-1 text-xl font-bold ${danger ? "text-destructive" : ""}`}>{value}</p>
-      {hint ? <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p> : null}
+      <p className={`mt-1 text-28 font-medium ${danger ? "text-sev-critical-fg" : "text-foreground"}`}>
+        {value}
+      </p>
+      {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }
@@ -261,7 +266,9 @@ function Section({
 }) {
   return (
     <section id={id} className={`scroll-mt-20 space-y-3 ${className ?? ""}`}>
-      <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium text-muted-foreground">
+      {/* 区块标题是这一页真正的结构锚点：原来只有 14px 灰字，比 KPI 数字（20px 粗体）
+          还弱，读者的眼睛找不到"这一屏分几块"。提到 16px 正文色 + 底线，层级才立得住。 */}
+      <h2 className="flex flex-wrap items-center gap-2 border-b border-border pb-2 text-base font-medium text-foreground">
         {title}
         {extra}
       </h2>
@@ -308,17 +315,17 @@ function ChartCard({
 
 function Light({ item }: { item: ComponentHealthItem }) {
   return (
-    <div className="flex items-start gap-2 rounded-md border p-3">
+    <div className="flex items-start gap-2 rounded-xs bg-surface-1 px-3 py-2">
       <span
         aria-hidden
-        className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${LIGHT_CLS[item.state] || LIGHT_CLS.unknown}`}
+        className={`mt-1 h-2 w-2 shrink-0 rounded-full ${LIGHT_CLS[item.state] || LIGHT_CLS.unknown}`}
       />
       <div className="min-w-0">
-        <p className="text-sm">
+        <p className="text-13 text-foreground">
           {item.name}
           <span className="ml-1 text-xs text-muted-foreground">{LIGHT_TEXT[item.state] || item.state}</span>
         </p>
-        <p className="break-words text-[11px] text-muted-foreground">{item.detail || "—"}</p>
+        <p className="break-words text-xs text-muted-foreground">{item.detail || "—"}</p>
       </div>
     </div>
   );
@@ -505,8 +512,10 @@ export function StatusPanel() {
   const noTraffic = emptyOrFailed(errs, SRC.overview, "暂无数据（ES 读取失败，或该窗口内没有 conn 日志）");
 
   return (
-    <Card>
-      <CardContent className="space-y-5 pt-4">
+    /* L0 页面容器：这里**不再包一层 Card**。原来外层 Card 只是给整页加了一圈描边，
+       结果每个区块又各自是 Card —— 三层描边叠在一起，桌面像被切成一块块贴纸。
+       页面本身就是容器，区块直接落在 canvas 上；留白给 24px（区间距）。 */
+    <div className="space-y-6">
         <PanelError errors={errs} />
 
         {/* ---------- A + B：资源状态（1/3）与 服务与组件状态（2/3）并排 ---------- */}
@@ -995,7 +1004,6 @@ export function StatusPanel() {
             {coverage?.warn_reason ? <span>· {coverage.warn_reason}</span> : null}
           </div>
         </Section>
-      </CardContent>
-    </Card>
+    </div>
   );
 }

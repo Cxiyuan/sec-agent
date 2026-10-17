@@ -187,7 +187,7 @@ export function RelayNodesPanel() {
         <PanelError errors={errs} />
 
         {data && !data.configured ? (
-          <p className="rounded-md border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
+          <p className="rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
             未配置中继清单：当前**不信任任何代理头**（`real_client_ip` 恒为空），
             也**不做中继去重** —— 经过代理/DNS 转发的同一次访问会在检测与计数里出现两次，
             且告警会归因到代理/DNS 服务器上。填入地址后立即生效。
