@@ -692,22 +692,22 @@ def test_refresh_scopes_heals_old_rows(
     """口径 C 之前落库的资产行 scope 是空串，清理任务要按当前网段口径补上。"""
     asset_mod = asset
 
-    class _Row:
+    class _ScopeRow:
         def __init__(self, key: str, scope: str) -> None:
             self.key = key
             self.scope = scope
 
     class _DB:
-        def __init__(self, rows: list[_Row]) -> None:
+        def __init__(self, rows: list[_ScopeRow]) -> None:
             self._rows = rows
             self.committed = False
 
         def scalars(self, _stmt: object) -> object:
             class _Result:
-                def __init__(self, rows: list[_Row]) -> None:
+                def __init__(self, rows: list[_ScopeRow]) -> None:
                     self._rows = rows
 
-                def all(self) -> list[_Row]:
+                def all(self) -> list[_ScopeRow]:
                     return self._rows
 
             return _Result(self._rows)
@@ -721,7 +721,7 @@ def test_refresh_scopes_heals_old_rows(
         def __exit__(self, *exc: object) -> None:
             return None
 
-    rows = [_Row("10.1.2.3:80:visits", ""), _Row("8.8.8.8:53:visits", ""), _Row("www.example.com:80:visits", "")]
+    rows = [_ScopeRow("10.1.2.3:80:visits", ""), _ScopeRow("8.8.8.8:53:visits", ""), _ScopeRow("www.example.com:80:visits", "")]
     db = _DB(rows)
     monkeypatch.setattr(asset_mod, "SessionLocal", lambda: db)
     monkeypatch.setattr(asset_mod, "scope_of_ip", lambda ip: "internal" if str(ip).startswith("10.") else "external")

@@ -532,5 +532,7 @@ def test_hour_baseline_uses_beijing_time(profiles: ModuleType) -> None:
     # UTC 21:00 = 北京 05:00
     assert beijing_hour(datetime(2026, 10, 17, 21, 0, tzinfo=UTC)) == 5
     # naive 时间按 UTC 处理（不能按本地时区，否则机器时区一变口径就变）
-    # 故意传 naive 时间（不能用 tzinfo）：验证「naive 按 UTC 处理」这条口径
-    assert beijing_hour(datetime(2026, 10, 17, 16, 0)) == 0
+    # 故意给 naive 时间（不带时区）：验证「naive 按 UTC 处理」这条口径。
+    # 用 fromisoformat 而不是 datetime(...)：后者会触发 DTZ001，而 CI 侧那条规则又没启用，
+    # 写 noqa 反而会被判成多余（RUF100）—— 两边的 lint 口径不一致，绕开最省事。
+    assert beijing_hour(datetime.fromisoformat("2026-10-17T16:00:00")) == 0
