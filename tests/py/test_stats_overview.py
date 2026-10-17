@@ -91,6 +91,27 @@ def _resp_with(
     }
 
 
+def test_minute_query_really_contains_drops_aggs(stats: ModuleType) -> None:
+    """守一个真实踩过的坑：drops 聚合被插进了**另一个**查询函数（24 小时那份），
+    结果曲线上的掉包永远是 0（shape 读不到 aggregations.drops）。
+
+    所以这里不看源码文本，直接断言 `build_minute_query` 的**返回结构**里有 drops。
+    """
+    q = stats.build_minute_query(30, start="2026-10-16T10:00:00.000Z", end="2026-10-16T10:30:00.000Z")
+    aggs = q["aggs"]
+    assert "drops" in aggs, "分钟查询必须带 drops 聚合（否则仪表盘掉包恒为 0）"
+    assert "traffic" in aggs
+    drops_inner = aggs["drops"]["aggs"]["per_interval"]["aggs"]
+    assert "pkts_dropped" in drops_inner, "掉包求和"
+    assert "pkts_proc" in drops_inner, "处理包数（算掉包率）"
+    assert aggs["drops"]["filter"] == {"term": {"log_type.keyword": "stats"}}
+    # 两边桶参数必须一致（shape 按下标对齐取值）
+    mins = aggs["traffic"]["aggs"]["per_interval"]["date_histogram"]
+    drps = aggs["drops"]["aggs"]["per_interval"]["date_histogram"]
+    assert mins["fixed_interval"] == drps["fixed_interval"]
+    assert mins["extended_bounds"] == drps["extended_bounds"]
+
+
 def test_shape_minute_traffic_carries_rate_and_drops(stats: ModuleType) -> None:
     """近期流量：每点必须是**每秒**口径 + 带 Zeek 上报的掉包值（不是桶内总量）。"""
     import datetime as _dt

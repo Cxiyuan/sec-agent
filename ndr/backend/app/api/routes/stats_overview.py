@@ -61,26 +61,6 @@ def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
         "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
         "aggs": {
             # 流量只在 conn 上统计（见模块注释：不过滤会把 HTTP 的 bytes_in 重复计入）
-            # 掉包（Zeek stats.log，每 5 分钟上报一条）：与流量桶用**同一套时间桶参数**，
-            # 所以两串 buckets 的下标一一对应，shape 里按同一下标取值（不做 key 对齐，省一次换算）
-            "drops": {
-                "filter": {"term": {"log_type.keyword": "stats"}},
-                "aggs": {
-                    "per_interval": {
-                        "date_histogram": {
-                            "field": "@timestamp",
-                            "fixed_interval": f"{TRAFFIC_INTERVAL_SECONDS}s",
-                            "min_doc_count": 0,
-                            "extended_bounds": {"min": start, "max": end},
-                        },
-                        "aggs": {
-                            "pkts_dropped": {"sum": {"field": "pkts_dropped"}},
-                            # 同区间处理包数：用来算掉包率（dropped / (proc + dropped)）
-                            "pkts_proc": {"sum": {"field": "pkts_proc"}},
-                        },
-                    }
-                },
-            },
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
@@ -309,6 +289,27 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
         "size": 0,
         "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
         "aggs": {
+            # 掉包（Zeek stats.log，每 5 分钟上报一条）：与流量桶用**同一套时间桶参数**，
+            # 所以两串 buckets 的下标一一对应，shape 里按同一下标取值。
+            # 注意：必须放在**分钟查询**里（曾经锚点先命中上面的 24 小时查询，加错了函数 → 全 0）。
+            "drops": {
+                "filter": {"term": {"log_type.keyword": "stats"}},
+                "aggs": {
+                    "per_interval": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": f"{TRAFFIC_INTERVAL_SECONDS}s",
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start, "max": end},
+                        },
+                        "aggs": {
+                            "pkts_dropped": {"sum": {"field": "pkts_dropped"}},
+                            # 同区间处理包数：用来算掉包率（dropped / (proc + dropped)）
+                            "pkts_proc": {"sum": {"field": "pkts_proc"}},
+                        },
+                    }
+                },
+            },
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
