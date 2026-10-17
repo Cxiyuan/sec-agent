@@ -533,4 +533,4 @@ def test_hour_baseline_uses_beijing_time(profiles: ModuleType) -> None:
     assert beijing_hour(datetime(2026, 10, 17, 21, 0, tzinfo=UTC)) == 5
     # naive 时间按 UTC 处理（不能按本地时区，否则机器时区一变口径就变）
     # 故意传 naive 时间（不能用 tzinfo）：验证「naive 按 UTC 处理」这条口径
-    assert beijing_hour(datetime(2026, 10, 17, 16, 0)) == 0  # noqa: DTZ001
+    assert beijing_hour(datetime(2026, 10, 17, 16, 0)) == 0
