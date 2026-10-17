@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os as _os
 import re
 import shutil
 import subprocess
@@ -225,8 +226,15 @@ def _make_logs(tmp_path: Path) -> Path:
     old = ["old.2026-09-20.log", "oldts.2026-09-20-10-00-00.log"]
     for name in (*old, "new.2026-10-01.log", "conn.log"):
         (logs / name).write_text("x", encoding="utf-8")
-    subprocess.run(["touch", "-d", "5 days ago", *[str(logs / n) for n in old]], check=True)
-    subprocess.run(["touch", "-d", "1 day ago", str(logs / "new.2026-10-01.log")], check=True)
+    # 用 os.utime 改 mtime，别 shell 出去调 `touch -d`：那是 GNU 语法，
+    # 在 macOS（BSD touch）上直接报错 —— 2026-10 换开发机（macOS）时踩到。
+    import time as _time
+
+    five_days_ago = _time.time() - 5 * 86400
+    one_day_ago = _time.time() - 86400
+    for name in old:
+        _os.utime(logs / name, (five_days_ago, five_days_ago))
+    _os.utime(logs / "new.2026-10-01.log", (one_day_ago, one_day_ago))
     return logs
 
 

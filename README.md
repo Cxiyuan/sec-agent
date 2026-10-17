@@ -434,6 +434,16 @@ NDR 线路（采集与检测）：
 ## 六、开发约定
 
 - **只用 GitHub Actions 构建镜像**，禁止本地构建（`docker build` / `npm run build`）
+- **本地 venv 一键准备**（换开发机/换系统后先跑这个）：
+  ```bash
+  bash scripts/dev-venv.sh          # 建或修 .venv，并按下述门禁装全依赖
+  bash scripts/dev-venv.sh --check  # 只检查 .venv 还能不能用，不动它
+  ```
+  为什么需要：`.venv` 不能跨平台搬（Linux 上建的 `pyvenv.cfg` 指向的 home 在 macOS 不存在，
+  整份 venv 直接作废）；项目要求 Python `>=3.11,<3.13`，而 macOS 自带是 3.9。
+  脚本会优先用 `uv` 拉一个独立 CPython 3.11（没有 uv 就用 `python3.11/3.12`），
+  依赖清单**直接从两个 `pyproject.toml` 读**（与 CI 同一口径，不手工维护第二份）。
+  Intel Mac 上 `cryptography` 新版没有预编译包（要 Rust），脚本会自动钉一个带 wheel 的版本。
 - 本地质量门（仓库根执行；**都不需要 Docker、也不产生构建产物**）：
   - `.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`
   - `.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`
