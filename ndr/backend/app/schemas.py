@@ -93,6 +93,10 @@ class UnifiedLog(BaseModel):
     # 界面据此标注，避免把代理认证的终端 ID 当成业务账号。
     account_source: str = ""
 
+    #: 代理认证的用户名（HTTP `Proxy-Authorization: Basic` 里的用户名）。
+    #: **不是业务账号**（那是终端/计费 ID），所以不进 `account`；保留在这里当证据。
+    proxy_user: str = ""
+
     # stats.log（Zeek 每 5 分钟上报一次）：套接字/内核丢包计数
     # → 「近期流量」图的掉包折线（值是**上报那一刻的原值**，本系统不做累积换算）
     pkts_dropped: int | None = None

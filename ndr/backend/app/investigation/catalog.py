@@ -304,6 +304,12 @@ FIELDS: dict[str, dict[str, Any]] = {
         "kind": "str",
         "desc": "账号来源：proxy_auth（代理认证用户名）/ http_form（登录表单）/ log_field（日志字段）",
     },
+    # 代理认证的用户名：不是业务账号（终端/计费 ID），只做证据保留
+    "proxy_user": {
+        "path": "proxy_user",
+        "kind": "str",
+        "desc": "HTTP 代理认证的用户名（Proxy-Authorization Basic 里的用户名），不是业务账号",
+    },
 }
 
 # "摘要观察"里默认带回来的字段（控体积）。原本按来源分两列，字段统一后只有一份。

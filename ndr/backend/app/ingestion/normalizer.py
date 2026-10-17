@@ -761,11 +761,26 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
 
     # 账号 + **来源**：代理认证的用户名（校园出口代理的终端 ID）与登录表单里的账号
     # 在界面上会长得一样（如 t14919610950627），标出来运维才知道那是什么。
+    # 代理认证的用户名（`Proxy-Authorization: Basic` 里的用户名）**不是业务账号**：
+    # 它是校园/企业出口代理的终端/计费 ID（如 t14919610950627），当成账号只会污染画像。
+    # 仍记在 proxy_user 里当证据；确实想看它当账号，把 settings.drop_proxy_auth_accounts 关掉。
+    proxy_user = ""
+    if re.search(
+        r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(doc.get("req_headers") or "")
+    ):
+        proxy_user = str(doc.get("username") or "").strip()[:128]
+    user_field = doc.get("user") or doc.get("username")
+    if (
+        proxy_user
+        and settings.drop_proxy_auth_accounts
+        and str(user_field or "").strip() == proxy_user
+    ):
+        user_field = ""  # 这一个"用户"只是代理认证，不当账号用
     account = _extract_account(
         str(extra["uri_path"]),
         str(extra["body"]),
         str(extra["query_string"]),
-        doc.get("user") or doc.get("username"),
+        user_field,
     )
     account_source = ""
     if account:
@@ -814,6 +829,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         auth_scheme=_auth_scheme(doc),
         account=account,
         account_source=account_source,
+        proxy_user=proxy_user,
         severity="info",
         summary=str(note or doc.get("msg") or f"zeek {log_type} {conn_state or ''}").strip(),
         raw=_raw_with_type(doc, log_type, source_file),

@@ -135,6 +135,7 @@ function Kpi({
 /** 「事件内容」里字段名的中文名（用户要求：显示出来的字段一律中文）。
  *  覆盖实测出现过的全部字段（Zeek 与 Suricata EVE 两套命名），未收录的按原名显示。 */
 const FIELD_LABELS: Record<string, string> = {
+  proxy_user: "代理认证账号",
   ts: "事件时间",
   timestamp: "事件时间",
   uid: "连接标识（Zeek uid）",

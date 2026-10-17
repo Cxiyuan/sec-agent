@@ -758,6 +758,22 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         else _zeek_event_type(log_type, note, conn_state, weird_name)
     )
 
+    # 代理认证的用户名（`Proxy-Authorization: Basic` 里的用户名）**不是业务账号**：
+    # 它是出口代理的终端/计费 ID（如 t14919610950627），当成账号只会污染画像。
+    # 仍记在 proxy_user 里当证据；想看它当账号就把 settings.drop_proxy_auth_accounts 关掉。
+    proxy_user = ""
+    if re.search(
+        r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(doc.get("req_headers") or "")
+    ):
+        proxy_user = str(doc.get("username") or "").strip()[:128]
+    account_user_field = doc.get("user") or doc.get("username")
+    if (
+        proxy_user
+        and settings.drop_proxy_auth_accounts
+        and str(account_user_field or "").strip() == proxy_user
+    ):
+        account_user_field = ""
+
     return UnifiedLog(
         source_system="zeek",
         ts=ts,
@@ -771,12 +787,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         dst_port=_to_int(_get(doc, "id.resp_p")),
         protocol=doc.get("proto") or doc.get("service"),
         conn_state=str(conn_state or ""),  # 留给策略层判“是否真建立会话”（归一化时已读取）
-        # 账号来源（与 ndr 栈同口径）：代理认证 / 登录表单 / 日志字段
-        account_source=(
-            "proxy_auth"
-            if re.search(r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(doc.get("req_headers") or ""))
-            else ("log_field" if (doc.get("user") or doc.get("username")) else "")
-        ),
+        # 账号来源（与 ndr 栈同口径）：登录表单 / 日志字段（代理认证用户名已不算账号）
+        account_source="log_field" if account_user_field else "",
+        proxy_user=proxy_user,
         pkts_dropped=_to_int(doc.get("pkts_dropped")) if log_type == "stats" else None,
         pkts_proc=_to_int(doc.get("pkts_proc")) if log_type == "stats" else None,
         # Zeek weird.log 的异常名（其它日志恒空）：「协议异常」与「采集类异常」靠它区分
@@ -801,7 +814,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
             str(extra["uri_path"]),
             str(extra["body"]),
             str(extra["query_string"]),
-            doc.get("user") or doc.get("username"),
+            account_user_field,
         ),
         severity="info",
         summary=str(note or doc.get("msg") or f"zeek {log_type} {conn_state or ''}").strip(),

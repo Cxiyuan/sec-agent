@@ -74,6 +74,10 @@ class Settings(BaseSettings):
 
     # ingestion 解析共享（两侧各持一份解析代码，字段名/截断必须一致）
     account_form_fields: str = "username,user,email,login,account,uname,userid"
+
+    #: 代理认证的用户名不算账号（与 ndr 栈同口径）：出口代理的
+    #: `Proxy-Authorization: Basic …` 用户名是终端/计费 ID，不是业务账号。
+    drop_proxy_auth_accounts: bool = True
     http_body_fields: str = (
         "request_body,body,post_body,payload,http.request.body,http.request_body"
     )

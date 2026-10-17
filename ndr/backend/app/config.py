@@ -93,6 +93,13 @@ class Settings(BaseSettings):
 
     # ingestion 解析共享（两侧各持一份解析代码，字段名/截断必须一致）
     account_form_fields: str = "username,user,email,login,account,uname,userid"
+
+    #: 代理认证的用户名**不算账号**（默认开）。
+    #: 为什么：校园/企业出口代理会在每个请求带 `Proxy-Authorization: Basic …`，Zeek 会把里面的
+    #: 用户名写进 http.log 的 `username`，而这个值是**终端/计费 ID**（如 `t14919610950627`），
+    #: 不是任何业务系统的登录账号 —— 当成账号进画像，只会让「账号」列表混进一堆看不懂的串。
+    #: 关掉的话保持老行为（把代理用户名也当账号）。值本身仍记录在 `proxy_user` 字段里，证据不丢。
+    drop_proxy_auth_accounts: bool = True
     http_body_fields: str = (
         "request_body,body,post_body,payload,http.request.body,http.request_body"
     )
