@@ -102,11 +102,27 @@ def test_hourly_query_and_shape_carry_drop_rate(stats: ModuleType) -> None:
 
     resp = {
         "aggregations": {
-            "traffic": {"per_hour": {"buckets": [{"key": 1, "doc_count": 3, "bytes_out": {"value": 0.0}, "bytes_in": {"value": 0.0}}]}},
+            "traffic": {
+                "per_hour": {
+                    "buckets": [
+                        {
+                            "key": 1,
+                            "doc_count": 3,
+                            "bytes_out": {"value": 0.0},
+                            "bytes_in": {"value": 0.0},
+                        }
+                    ]
+                }
+            },
             "drops": {
                 "per_hour": {
                     "buckets": [
-                        {"key": 1, "doc_count": 12, "pkts_dropped": {"value": 929750.0}, "pkts_proc": {"value": 2092700789.0}},
+                        {
+                            "key": 1,
+                            "doc_count": 12,
+                            "pkts_dropped": {"value": 929750.0},
+                            "pkts_proc": {"value": 2092700789.0},
+                        },
                     ]
                 }
             },
@@ -124,7 +140,9 @@ def test_minute_query_really_contains_drops_aggs(stats: ModuleType) -> None:
 
     所以这里不看源码文本，直接断言 `build_minute_query` 的**返回结构**里有 drops。
     """
-    q = stats.build_minute_query(30, start="2026-10-16T10:00:00.000Z", end="2026-10-16T10:30:00.000Z")
+    q = stats.build_minute_query(
+        30, start="2026-10-16T10:00:00.000Z", end="2026-10-16T10:30:00.000Z"
+    )
     aggs = q["aggs"]
     assert "drops" in aggs, "分钟查询必须带 drops 聚合（否则仪表盘掉包恒为 0）"
     assert "traffic" in aggs

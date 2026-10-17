@@ -73,9 +73,9 @@ def test_recent_traffic_dashboard_contract() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    backend = (
-        root / "ndr" / "backend" / "app" / "api" / "routes" / "stats_overview.py"
-    ).read_text(encoding="utf-8")
+    backend = (root / "ndr" / "backend" / "app" / "api" / "routes" / "stats_overview.py").read_text(
+        encoding="utf-8"
+    )
     assert "TRAFFIC_INTERVAL_SECONDS = 20" in backend, "打点粒度必须是 20 秒"
     assert "TRAFFIC_MINUTES_DEFAULT = 30" in backend, "窗口默认近半小时"
     assert "TRAFFIC_SEGMENT_MINUTES = 5" in backend, "每 5 分钟一个分区"
@@ -123,9 +123,9 @@ def test_recent_traffic_dashboard_contract() -> None:
     assert "pkts_dropped" in body, "掉包折线取 Zeek 上报值"
     assert "everyPoints" in body and "segment_minutes" in body, "分区粒度从后端字段算"
 
-    panel = (
-        root / "ndr" / "frontend" / "components" / "status-panel.tsx"
-    ).read_text(encoding="utf-8")
+    panel = (root / "ndr" / "frontend" / "components" / "status-panel.tsx").read_text(
+        encoding="utf-8"
+    )
     assert '"/api/stats/traffic?minutes=30"' in panel, "取数窗口近半小时"
     assert "实时发送" in panel and "实时接收" in panel and "峰值" in panel
     assert "trafficPeak: traffic?.peak_bytes_per_sec" in panel, "峰值用服务端算好的每秒口径"

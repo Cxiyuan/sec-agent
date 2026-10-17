@@ -762,9 +762,7 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
     # 它是出口代理的终端/计费 ID（如 t14919610950627），当成账号只会污染画像。
     # 仍记在 proxy_user 里当证据；想看它当账号就把 settings.drop_proxy_auth_accounts 关掉。
     proxy_user = ""
-    if re.search(
-        r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(doc.get("req_headers") or "")
-    ):
+    if re.search(r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(doc.get("req_headers") or "")):
         proxy_user = str(doc.get("username") or "").strip()[:128]
     account_user_field = doc.get("user") or doc.get("username")
     if (

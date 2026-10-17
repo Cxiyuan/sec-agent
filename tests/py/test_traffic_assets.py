@@ -44,7 +44,9 @@ def test_app_of_maps_ports(traffic: ModuleType) -> None:
     assert traffic.app_of(None) == "其它"
 
 
-def _pair(src: str, dst: str, *, bo: int = 100, bi: int = 50, ports: list[int] | None = None) -> dict:
+def _pair(
+    src: str, dst: str, *, bo: int = 100, bi: int = 50, ports: list[int] | None = None
+) -> dict:
     """一条 (源,目的) 对聚结果（`shape_pairs` 的输入形态）。"""
     return {
         "key": {"s": src, "d": dst},
@@ -56,8 +58,7 @@ def _pair(src: str, dst: str, *, bo: int = 100, bi: int = 50, ports: list[int] |
         "hostname": {"buckets": [{"key": "srv.example"}]},
         "ports": {
             "buckets": [
-                {"key": port, "bo": {"value": 30}, "bi": {"value": 10}}
-                for port in (ports or [443])
+                {"key": port, "bo": {"value": 30}, "bi": {"value": 10}} for port in (ports or [443])
             ]
         },
     }
@@ -86,7 +87,7 @@ def test_shape_pairs_classifies_each_view(
                     _pair("10.1.2.3", "10.9.9.9", bo=200, bi=100),  # 内网 → 内网
                     _pair("10.1.2.3", "203.0.113.5", bo=300, bi=50),  # 内网 → 公网
                 ]
-            }
+            },
         }
     }
     outbound = traffic.shape_pairs(resp, view="outbound", limit=50)["items"]
@@ -149,9 +150,7 @@ def test_asset_internal_check(assets: ModuleType, monkeypatch: pytest.MonkeyPatc
     assert assets._in("not-an-ip", nets) is False
 
 
-def test_shape_hosts_marks_managed(
-    assets: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_shape_hosts_marks_managed(assets: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """发现结果要标出「已在台账」的主机，并且只保留网段内的。"""
     import ipaddress
 
@@ -168,7 +167,9 @@ def test_shape_hosts_marks_managed(
                         "first_seen": {"value_as_string": "2026-10-17T00:00:00.000Z"},
                         "last_seen": {"value_as_string": "2026-10-17T12:00:00.000Z"},
                         "hostname": {"buckets": [{"key": "srv.example"}]},
-                        "ports": {"buckets": [{"key": 443, "bo": {"value": 5}, "bi": {"value": 1}}]},
+                        "ports": {
+                            "buckets": [{"key": 443, "bo": {"value": 5}, "bi": {"value": 1}}]
+                        },
                     },
                     {
                         "key": "8.8.8.8",
@@ -222,7 +223,12 @@ def test_shard_problem_is_reported(traffic: ModuleType) -> None:
             "successful": 1,
             "failed": 1,
             "failures": [
-                {"reason": {"type": "script_exception", "reason": "A document doesn't have a value"}}
+                {
+                    "reason": {
+                        "type": "script_exception",
+                        "reason": "A document doesn't have a value",
+                    }
+                }
             ],
         }
     }

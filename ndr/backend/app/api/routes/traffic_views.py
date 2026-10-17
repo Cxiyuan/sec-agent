@@ -263,10 +263,13 @@ def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
                     "hostname": {"terms": {"field": "hostname.keyword", "size": 3}},
                     "ports": {
                         "terms": {"field": "dst_port", "size": 10, "order": {"bo": "desc"}},
-                        "aggs": {"bo": {"sum": {"field": "bytes_out"}}, "bi": {"sum": {"field": "bytes_in"}}},
+                        "aggs": {
+                            "bo": {"sum": {"field": "bytes_out"}},
+                            "bi": {"sum": {"field": "bytes_in"}},
+                        },
                     },
                 },
-            }
+            },
         },
     }
 
@@ -290,8 +293,7 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
     for hb in (((resp.get("aggregations") or {}).get("subject_hosts") or {}).get("buckets")) or []:
         key = str(hb.get("key") or "")
         names = [
-            str(nb.get("key") or "")
-            for nb in (((hb.get("names") or {}).get("buckets")) or [])
+            str(nb.get("key") or "") for nb in (((hb.get("names") or {}).get("buckets")) or [])
         ]
         if key and names:
             host_by_subject[key] = names
@@ -335,11 +337,9 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
                     row["hostname"] = cleaned
                     break
         row["peer_set"].add(peer)
-        for pb in (((bucket.get("ports") or {}).get("buckets")) or []):
+        for pb in ((bucket.get("ports") or {}).get("buckets")) or []:
             port = pb.get("key")
-            slot = row["ports"].setdefault(
-                port, {"port": port, "app": app_of(port), "bytes": 0}
-            )
+            slot = row["ports"].setdefault(port, {"port": port, "app": app_of(port), "bytes": 0})
             slot["bytes"] += int((pb.get("bo") or {}).get("value") or 0) + int(
                 (pb.get("bi") or {}).get("value") or 0
             )

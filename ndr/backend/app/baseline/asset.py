@@ -306,9 +306,7 @@ def refresh_scopes() -> int:
     try:
         with SessionLocal() as db:
             rows = db.scalars(
-                select(AssetStat).where(
-                    or_(AssetStat.scope == "", AssetStat.scope.is_(None))
-                )
+                select(AssetStat).where(or_(AssetStat.scope == "", AssetStat.scope.is_(None)))
             ).all()
             for row in rows:
                 asset, feature = _split(row.key)

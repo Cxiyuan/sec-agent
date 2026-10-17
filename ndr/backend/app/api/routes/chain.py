@@ -446,7 +446,9 @@ def _build(
         # 展示用源站：IP 优先（域名/Host 只作补充）
         origin_label = str(chain.get("origin_ip") or chain["origin"] or "")
         if not path:
-            segs.append({"from": client or UNKNOWN_CLIENT, "to": origin_label or "?", "kind": "direct"})
+            segs.append(
+                {"from": client or UNKNOWN_CLIENT, "to": origin_label or "?", "kind": "direct"}
+            )
         else:
             prev = client or UNKNOWN_CLIENT
             for idx, node in enumerate(path):
@@ -464,7 +466,9 @@ def _build(
                     }
                 )
                 prev = node
-            segs.append({"from": prev, "to": origin_label or "（源站，本跳不可见）", "kind": "origin"})
+            segs.append(
+                {"from": prev, "to": origin_label or "（源站，本跳不可见）", "kind": "origin"}
+            )
         chains.append(
             {
                 "client": client,

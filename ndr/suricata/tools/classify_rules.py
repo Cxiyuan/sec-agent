@@ -205,7 +205,11 @@ def _fix_flow_direction(tokens: list[str], applied: list[str]) -> list[str]:
             return tokens
         kept = [p for p in parts if p not in dirs]
         kept.insert(0, want)
-        tokens[i] = " flow:" + ",".join(["established", *kept]) if "established" not in kept else " flow:" + ",".join(kept)
+        tokens[i] = (
+            " flow:" + ",".join(["established", *kept])
+            if "established" not in kept
+            else " flow:" + ",".join(kept)
+        )
         applied.append(f"flow_direction:{want}")
         return tokens
     return tokens
@@ -392,6 +396,7 @@ QUARANTINED: dict[str, str] = {
     "1000855": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离",
 }
 
+
 #: pcre 体里的常见坏写法（都按「等价、可编译」处理，判据不变）：
 #: ① 转义双引号 → 十六进制（引擎切选项时会被引号截断）；② `\u0061` → `\x{0061}`
 #: （PCRE 不认 \u）；③ 字符类里 `\w-_` / `\d-_` 是非法区间（pcre2 编译直接失败）→ 挪到末尾。
@@ -456,11 +461,7 @@ def fix_rule(row: str) -> tuple[str, list[str]]:
                 if not (i < first_content and tok.strip().lower() in CONTENT_MODIFIERS)
             ]
             at = (
-                next(
-                    i
-                    for i, tok in enumerate(tokens)
-                    if tok.strip().lower().startswith("content")
-                )
+                next(i for i, tok in enumerate(tokens) if tok.strip().lower().startswith("content"))
                 + 1
             )
             tokens[at:at] = moved
@@ -534,12 +535,15 @@ def render(buckets: dict[str, list[str]], types: Counter[str]) -> dict[str, str]
         by_type = _classtype_counts(rows)
         label = CATEGORY_LABELS.get(category, category)
         body = "".join(f"{row}\n" for row in sorted(rows, key=_sid_key))
-        out[f"{category}.rules"] = HEADER.format(
-            label=label,
-            category=category,
-            count=len(rows),
-            types=", ".join(f"{k}×{v}" for k, v in by_type.most_common()),
-        ) + body
+        out[f"{category}.rules"] = (
+            HEADER.format(
+                label=label,
+                category=category,
+                count=len(rows),
+                types=", ".join(f"{k}×{v}" for k, v in by_type.most_common()),
+            )
+            + body
+        )
     return out
 
 
@@ -576,9 +580,7 @@ def main(argv: list[str]) -> int:
         # 语法修复记录（只改写法、不改判据）：口径与数量都留痕，便于审计
         "fixes": dict(fixed),
         # 隔离的规则（sid → 原因）：留痕，人工修好后从 QUARANTINED 里去掉、重新生成即可
-        "quarantined": {
-            sid: {"reason": QUARANTINED[sid], "rule": row} for sid, row in quarantined
-        },
+        "quarantined": {sid: {"reason": QUARANTINED[sid], "rule": row} for sid, row in quarantined},
     }
 
     problems: list[str] = []
@@ -599,14 +601,18 @@ def main(argv: list[str]) -> int:
         print("语法修复（不改判据）: " + ", ".join(f"{k}×{v}" for k, v in fixed.items()))
     print(f"源规则 {total} 条 → {len(rendered)} 类：")
     for category in sorted(buckets):
-        print(f"  {category:20s} {CATEGORY_LABELS.get(category, ''):22s} {len(buckets[category]):6d} 条")
+        print(
+            f"  {category:20s} {CATEGORY_LABELS.get(category, ''):22s} {len(buckets[category]):6d} 条"
+        )
 
     if args.check:
         bad = 0
         for name, text in rendered.items():
             path = BUILTIN_DIR / name
             if not path.exists() or path.read_text(encoding="utf-8") != text:
-                print(f"未同步: {path.relative_to(BUILTIN_DIR.parent.parent.parent)}", file=sys.stderr)
+                print(
+                    f"未同步: {path.relative_to(BUILTIN_DIR.parent.parent.parent)}", file=sys.stderr
+                )
                 bad += 1
         qpath = BUILTIN_DIR / "quarantine.rules.txt"
         want_q = QUARANTINE_HEADER + "".join(f"{row}\n" for _sid, row in quarantined)

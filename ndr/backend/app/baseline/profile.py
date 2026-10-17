@@ -353,7 +353,9 @@ def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
         bucket_key = f"{ACCOUNT}|{account}"
         bucket = buckets.get(bucket_key)
         if bucket is None:
-            bucket = buckets[bucket_key] = _new_bucket(ACCOUNT, account, account_display(entry) or account)
+            bucket = buckets[bucket_key] = _new_bucket(
+                ACCOUNT, account, account_display(entry) or account
+            )
         _accumulate(bucket, entry)
         _trim(bucket)
         added += 1

@@ -102,9 +102,7 @@ def list_groups(_: Annotated[User, Depends(get_current_user)]) -> dict[str, Any]
 
 
 @router.post("/groups")
-def create_group(
-    payload: GroupIn, _: Annotated[User, Depends(get_current_user)]
-) -> dict[str, Any]:
+def create_group(payload: GroupIn, _: Annotated[User, Depends(get_current_user)]) -> dict[str, Any]:
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="分组名不能为空")
@@ -139,7 +137,9 @@ def update_group(
         db.commit()
         db.refresh(row)
         count = (
-            db.scalar(select(func.count()).select_from(AssetRecord).where(AssetRecord.group_id == row.id))
+            db.scalar(
+                select(func.count()).select_from(AssetRecord).where(AssetRecord.group_id == row.id)
+            )
             or 0
         )
         return _group_dict(row, int(count))
@@ -219,15 +219,9 @@ def list_records(
             conds.append(AssetRecord.group_id == group_id.strip())
         if (criticality or "").strip():
             conds.append(AssetRecord.criticality == criticality.strip())
-        total = int(
-            db.scalar(select(func.count()).select_from(AssetRecord).where(*conds)) or 0
-        )
+        total = int(db.scalar(select(func.count()).select_from(AssetRecord).where(*conds)) or 0)
         rows = db.scalars(
-            select(AssetRecord)
-            .where(*conds)
-            .order_by(AssetRecord.ip)
-            .limit(limit)
-            .offset(offset)
+            select(AssetRecord).where(*conds).order_by(AssetRecord.ip).limit(limit).offset(offset)
         ).all()
         groups = _groups_map(db)
     return {"total": total, "items": [_asset_dict(r, groups) for r in rows]}
@@ -322,10 +316,15 @@ def _discovery_body(*, minutes: int, size: int) -> dict[str, Any]:
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "first_seen": {"min": {"field": "@timestamp"}},
                     "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
-                    "clients": {"cardinality": {"field": "src_ip.keyword", "precision_threshold": 40000}},
+                    "clients": {
+                        "cardinality": {"field": "src_ip.keyword", "precision_threshold": 40000}
+                    },
                     "ports": {
                         "terms": {"field": "dst_port", "size": 20, "order": {"bo": "desc"}},
-                        "aggs": {"bo": {"sum": {"field": "bytes_out"}}, "bi": {"sum": {"field": "bytes_in"}}},
+                        "aggs": {
+                            "bo": {"sum": {"field": "bytes_out"}},
+                            "bi": {"sum": {"field": "bytes_in"}},
+                        },
                     },
                 },
             }
@@ -333,7 +332,9 @@ def _discovery_body(*, minutes: int, size: int) -> dict[str, Any]:
     }
 
 
-def _shape_hosts(resp: Any, *, nets: list[ipaddress._BaseNetwork], managed: set[str]) -> list[dict[str, Any]]:
+def _shape_hosts(
+    resp: Any, *, nets: list[ipaddress._BaseNetwork], managed: set[str]
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for bucket in (((resp.get("aggregations") or {}).get("hosts") or {}).get("buckets")) or []:
         ip = str(bucket.get("key") or "")
@@ -428,7 +429,7 @@ def scan_view(
     port_hits: dict[str, int] = {}
     for row in rows:
         for port in row["ports"]:
-            key = f'{port["app"]}（{port["port"]}）'
+            key = f"{port['app']}（{port['port']}）"
             port_hits[key] = port_hits.get(key, 0) + 1
     top_ports = sorted(port_hits.items(), key=lambda kv: -kv[1])[:15]
     return {

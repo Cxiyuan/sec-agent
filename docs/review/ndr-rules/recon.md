@@ -116,10 +116,28 @@
 - 漏报：除 ThinkPHP 分支死掉外，`jndi:` 只查 `body`（不查 `req_headers`，Log4Shell 打 `X-Api-Version: ${jndi:ldap://…}` 的头部注入不在本规则内——不过 builtin.py:259 有 user_agent 版，属于分组边界问题）；缺 Spring4Shell `class\.module\.classLoader`、缺 WebLogic `/wls-wsat|/_async/`、缺泛微 `/weaver/weaver.file.FileDownload` 之外的 `/services/` 路径。
 - 修复建议：
   ```python
-  {"field": "uri_path",     "op": "regex", "value": r"(?i)(/struts/|/wls-wsat/|/_async/|/(seeyon|weaver|e-mobile)/)"},
-  {"field": "query_string", "op": "regex", "value": r"(?i)(^|&)s=/index/|/index/\\think|invokefunction"},
-  {"field": "body",         "op": "regex", "value": r"(?i)(@type\s*[:=]\s*\"?com\.sun|fastjson|jndi:|class\.module\.classLoader)"},
-  {"field": "req_headers",  "op": "regex", "value": r"(?i)\$\{jndi:"},
+  (
+      {
+          "field": "uri_path",
+          "op": "regex",
+          "value": r"(?i)(/struts/|/wls-wsat/|/_async/|/(seeyon|weaver|e-mobile)/)",
+      },
+  )
+  (
+      {
+          "field": "query_string",
+          "op": "regex",
+          "value": r"(?i)(^|&)s=/index/|/index/\\think|invokefunction",
+      },
+  )
+  (
+      {
+          "field": "body",
+          "op": "regex",
+          "value": r"(?i)(@type\s*[:=]\s*\"?com\.sun|fastjson|jndi:|class\.module\.classLoader)",
+      },
+  )
+  ({"field": "req_headers", "op": "regex", "value": r"(?i)\$\{jndi:"},)
   ```
   并且 **删掉 `.do$|.action$`**，或把它单列成 medium 的「遗留 Java 框架指纹」规则（明确 FP 预期）。`rememberMe=` 条件应删除（由 298 条反序列化规则负责），本规则只保留 `shiro`（`(?i)shiro`）。
 - 置信度：高（死分支由 `_split_uri` 直接证明；遮蔽由 priority 8 < 10 + `hit = next(...)` 直接证明）。
@@ -132,13 +150,24 @@
 - 漏报：只看 query_string/uri_path，不看 `body`（fuzzing 常常是超长 POST body）与 `referer`；`^` 锚定要求整串超长，若上限被降到 1024 之前就截断（`query_string[:1024]`，`normalizer.py:526`）会稳定命中，但**长度阈值没有随截断上限校验**——`>1024` 的载荷与恰好 1024 的载荷不可区分。
 - 修复建议：改成频率规则并放宽字母表判据，例如
   ```python
-  {"mode": "count", "key": ["src_ip"], "min_count": 10, "window": 300,
-   "logic": "and",
-   "rules": [{"field": "log_type", "op": "eq", "value": "http"},
-             {"logic": "or", "rules": [
-                {"field": "query_string", "op": "regex", "value": r"^[A-Za-z0-9%&=_\-+./:]{500,}$"},
-                {"field": "body", "op": "regex", "value": r"^[A-Za-z0-9%&=_\-+./:{}<>\"]{2000,}$"}]}],
-   "whitelist": _WHITELIST_HEALTH}
+  {
+      "mode": "count",
+      "key": ["src_ip"],
+      "min_count": 10,
+      "window": 300,
+      "logic": "and",
+      "rules": [
+          {"field": "log_type", "op": "eq", "value": "http"},
+          {
+              "logic": "or",
+              "rules": [
+                  {"field": "query_string", "op": "regex", "value": r"^[A-Za-z0-9%&=_\-+./:]{500,}$"},
+                  {"field": "body", "op": "regex", "value": r"^[A-Za-z0-9%&=_\-+./:{}<>\"]{2000,}$"},
+              ],
+          },
+      ],
+      "whitelist": _WHITELIST_HEALTH,
+  }
   ```
   至少要把 `min_count`/窗口补上，并把 severity 降到 `low`（超长参数本身危害低）。
 - 置信度：中—高（截断/字段事实为高置信；`httpx`/SAML 场景为通用事实，实机比例未取到）。
@@ -241,11 +270,18 @@
 - 漏报：①REJ 型扫描（上）；②慢速扫描（`nmap -T1`、每 10s 一发 → 30 次/5min 压线，`masscan --rate 1` 完全不报）；③分布式扫描（每个 IP 只扫几个端口）——需要长窗口 + `distinct="src_ip"` 的补充规则；④扫描器先扫一遍开放端口再打，S0 更少。
 - 修复建议：
   ```python
-  {"mode": "count", "key": ["src_ip"], "min_count": 30, "window": 300,
-   "distinct": "dst_port", "min_distinct": 8,        # 近似「多端口」= 扫描，而不是「连不上」
-   "rules": [{"field": "event_type", "op": "in",
-              "value": ["scan_attempt", "rejected_connection"]}],
-   "whitelist": [{"not": {"field": "dst_internal", "op": "eq", "value": true}}]}   # 或反白名单：登记扫描平台
+  {
+      "mode": "count",
+      "key": ["src_ip"],
+      "min_count": 30,
+      "window": 300,
+      "distinct": "dst_port",
+      "min_distinct": 8,  # 近似「多端口」= 扫描，而不是「连不上」
+      "rules": [
+          {"field": "event_type", "op": "in", "value": ["scan_attempt", "rejected_connection"]}
+      ],
+      "whitelist": [{"not": {"field": "dst_internal", "op": "eq", "value": true}}],
+  }  # 或反白名单：登记扫描平台
   ```
   另外把「同源 5 分钟 ≥30 个未建立连接且涉及 ≥8 个不同端口」作为唯一判据后，可以**合并 822 条**（见下）。
 - 置信度：高（`conn_states.py:41-55` 与 builtin.py:816 的取值可直接对照；重试/丢包产生 S0 是 TCP 语义事实）。

@@ -165,16 +165,18 @@ def shape_traffic(resp: Any, *, hours: int) -> dict[str, Any]:
         )
     # 掉包（Zeek stats.log 的每 5 分钟增量 → 可以求和）：
     # 丢包偶发，30 分钟窗口经常是 0，所以这里一并给「近 N 小时」的长期掉包率
-    drop_buckets = (((resp.get("aggregations") or {}).get("drops") or {}).get("per_hour") or {}).get(
-        "buckets"
-    ) or []
+    drop_buckets = (
+        ((resp.get("aggregations") or {}).get("drops") or {}).get("per_hour") or {}
+    ).get("buckets") or []
     dropped = sum(
         _int_of((b.get("pkts_dropped") or {}).get("value"))
         for b in drop_buckets
         if isinstance(b, dict)
     )
     proc = sum(
-        _int_of((b.get("pkts_proc") or {}).get("value")) for b in drop_buckets if isinstance(b, dict)
+        _int_of((b.get("pkts_proc") or {}).get("value"))
+        for b in drop_buckets
+        if isinstance(b, dict)
     )
     return {
         "points": points,
@@ -291,6 +293,7 @@ def stats_overview(
             _cache[key] = (now, payload)
         return payload
 
+
 #: 「近期流量」窗口：默认近 30 分钟（用户口径「近期 = 近半小时」）。
 #: 为什么不用 24h/1h：1 小时的桶看不出"现在在不在传"，而且**未过完的那个小时**会让图上右端
 #: 假性塌陷（实测被用户当成"流量掉了"）。
@@ -362,7 +365,7 @@ def build_minute_query(minutes: int, *, start: str, end: str) -> dict[str, Any]:
                         },
                     }
                 },
-            }
+            },
         },
     }
 
@@ -378,14 +381,14 @@ def shape_minute_traffic(resp: Any, *, minutes: int, now: datetime) -> dict[str,
       曲线本身连续滚动 —— 最老一格从左出、新一格从右进；
     - **`current` / `peak`** 服务端算好，前端直接显示成大数字（Sparkline 的常见排布）。
     """
-    buckets = (((resp.get("aggregations") or {}).get("traffic") or {}).get("per_interval") or {}).get(
-        "buckets"
-    ) or []
+    buckets = (
+        ((resp.get("aggregations") or {}).get("traffic") or {}).get("per_interval") or {}
+    ).get("buckets") or []
 
     # 掉包桶：与流量桶同粒度同边界 → 下标一一对应
-    drop_buckets = (((resp.get("aggregations") or {}).get("drops") or {}).get("per_interval") or {}).get(
-        "buckets"
-    ) or []
+    drop_buckets = (
+        ((resp.get("aggregations") or {}).get("drops") or {}).get("per_interval") or {}
+    ).get("buckets") or []
     points: list[dict[str, Any]] = []
     segment_marks: list[str] = []
     interval = float(TRAFFIC_INTERVAL_SECONDS)

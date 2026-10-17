@@ -177,7 +177,6 @@ def _matched_content(doc: dict[str, Any], item: dict[str, Any]) -> None:
             item[key] = _truncate(item[key])
 
 
-
 def _evidence_key(ev: dict[str, Any]) -> str:
     """证据条目的去重键（同一次事件的两份文档 @timestamp 不同，但身份字段一致）。"""
     key = "|".join(str(ev.get(k) or "") for k in _EVIDENCE_ID_FIELDS)
@@ -210,7 +209,7 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for sample in (digest.get("samples") or [])[:_MAX_EVIDENCE * 2]:
+    for sample in (digest.get("samples") or [])[: _MAX_EVIDENCE * 2]:
         doc = (sample or {}).get("doc") if isinstance(sample, dict) else None
         if not isinstance(doc, dict):
             continue
@@ -225,10 +224,7 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
         # severity/metadata.threat_type）——不提上来，详情里就看不出「命中了哪条签名」
         # （实测：只显示"内置-签名命中(高危)"，看不出是 Cobalt Strike JA3S 还是别的）。
         # 去重键：优先用能唯一标识「一次事件」的字段；都没有就退回内容本身
-        key = "|".join(
-            str(doc.get(k) or "")
-            for k in _EVIDENCE_ID_FIELDS
-        )
+        key = "|".join(str(doc.get(k) or "") for k in _EVIDENCE_ID_FIELDS)
         if not key.strip("|"):
             key = repr(sorted((k, str(v)) for k, v in item.items() if k != "other_fields"))
         if key in seen:
@@ -310,7 +306,9 @@ def save_from_digest(digest: dict[str, Any]) -> str:
                 first_seen=_iso(digest.get("first_seen")),
                 last_seen=_iso(digest.get("last_seen")),
                 rule=str(digest.get("rule") or ""),
-                rule_severity=str(digest.get("rule_severity") or digest.get("severity") or "medium"),
+                rule_severity=str(
+                    digest.get("rule_severity") or digest.get("severity") or "medium"
+                ),
                 rule_source=str(digest.get("rule_source") or digest.get("source") or "builtin"),
                 src_ip=src,
                 client=reals[0] if reals else src,
@@ -323,7 +321,14 @@ def save_from_digest(digest: dict[str, Any]) -> str:
                 dst_ports=[str(x) for x in (digest.get("dst_ports") or [])],
                 event_types=[str(x) for x in (digest.get("event_types") or [])],
                 conn_states=[str(x) for x in (digest.get("conn_states") or [])],
-                log_types=sorted({str(s.get("source") or "") for s in (digest.get("samples") or []) if isinstance(s, dict)} - {""}),
+                log_types=sorted(
+                    {
+                        str(s.get("source") or "")
+                        for s in (digest.get("samples") or [])
+                        if isinstance(s, dict)
+                    }
+                    - {""}
+                ),
                 real_client_ips=reals,
                 evidence=_evidence(digest),
             )
@@ -335,18 +340,14 @@ def save_from_digest(digest: dict[str, Any]) -> str:
         return ""
 
 
-def list_hits(
-    *, limit: int = 50, offset: int = 0, include_ignored: bool = False
-) -> dict[str, Any]:
+def list_hits(*, limit: int = 50, offset: int = 0, include_ignored: bool = False) -> dict[str, Any]:
     """命中事件列表（最新在前）。默认不含已忽略的。"""
     cap = max(1, min(int(limit or 50), 200))
     start = max(0, int(offset or 0))
     try:
         with SessionLocal() as db:
             conds = [] if include_ignored else [HitEvent.ignored.is_(False)]
-            total = int(
-                db.scalar(select(func.count()).select_from(HitEvent).where(*conds)) or 0
-            )
+            total = int(db.scalar(select(func.count()).select_from(HitEvent).where(*conds)) or 0)
             rows = list(
                 db.scalars(
                     select(HitEvent)
