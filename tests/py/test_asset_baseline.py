@@ -16,7 +16,7 @@ import importlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -684,3 +684,50 @@ def test_panel_groups_assets_by_scope() -> None:
     assert "内网被访问方" in src and "外部目标" in src
     assert "by_scope" in src
     assert "异常判定只看这一块" in src or "只展示" in src
+
+
+def test_refresh_scopes_heals_old_rows(
+    asset: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """口径 C 之前落库的资产行 scope 是空串，清理任务要按当前网段口径补上。"""
+    asset_mod = asset
+
+    class _Row:
+        def __init__(self, key: str, scope: str) -> None:
+            self.key = key
+            self.scope = scope
+
+    class _DB:
+        def __init__(self, rows: list[_Row]) -> None:
+            self._rows = rows
+            self.committed = False
+
+        def scalars(self, _stmt: object) -> object:
+            class _Result:
+                def __init__(self, rows: list[_Row]) -> None:
+                    self._rows = rows
+
+                def all(self) -> list[_Row]:
+                    return self._rows
+
+            return _Result(self._rows)
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    rows = [_Row("10.1.2.3:80:visits", ""), _Row("8.8.8.8:53:visits", ""), _Row("www.example.com:80:visits", "")]
+    db = _DB(rows)
+    monkeypatch.setattr(asset_mod, "SessionLocal", lambda: db)
+    monkeypatch.setattr(asset_mod, "scope_of_ip", lambda ip: "internal" if str(ip).startswith("10.") else "external")
+    fixed = asset_mod.refresh_scopes()
+    assert fixed == 2, "内网/公网两行要修，hostname 行跳过"
+    assert rows[0].scope == "internal"
+    assert rows[1].scope == "external"
+    assert rows[2].scope == "", "hostname 资产无从判定，保持原样"
+    assert db.committed is True

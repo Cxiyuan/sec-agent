@@ -254,10 +254,23 @@ def test_observe_records_only_api_paths(profiles: ModuleType) -> None:
 
 
 def test_new_api_path_reason(profiles: ModuleType) -> None:
-    prof = _profile(profiles, paths={"/api/a": 10, "/api/b": 10, "/api/c": 10})
-    out = profiles.detect("account", _obs(kind="account", paths=["/api/a", "/api/new"]), prof)
+    """已知路径够多（≥ profile_path_min_known，默认 10）时，新路径才判。
+
+    门槛从 3 提到 10 的原因（2026-10 QA）：门户类站点路径成百上千，3 条已知等于
+    「几乎每条都是新的」—— 实测 200 条高风险会话里 182 条因这一条被报，纯噪声。
+    """
+    known = {f"/api/p{i}": 10 for i in range(10)}
+    prof = _profile(profiles, paths=known)
+    out = profiles.detect("account", _obs(kind="account", paths=["/api/p0", "/api/new"]), prof)
     assert "新接口路径" in _reasons(out)
     assert out["risk"] == pytest.approx(0.25)
+
+
+def test_new_api_path_needs_enough_known_paths(profiles: ModuleType) -> None:
+    """只认识 3 条路径时**不判**新路径（默认门槛 10）。"""
+    prof = _profile(profiles, paths={"/api/a": 10, "/api/b": 10, "/api/c": 10})
+    out = profiles.detect("account", _obs(kind="account", paths=["/api/a", "/api/new"]), prof)
+    assert "新接口路径" not in _reasons(out)
 
 
 def test_new_api_path_needs_known_baseline(profiles: ModuleType) -> None:
@@ -502,3 +515,22 @@ def test_cleanup_prunes_old_static_paths(
     assert row.paths == {"/seeyon/rest/keep": 1}
     assert untouched.paths == {"/seeyon/rest/other": 5}  # 合口径的不动
     assert statements and "DELETE FROM entity_profiles" in statements[0]
+
+
+def test_hour_baseline_uses_beijing_time(profiles: ModuleType) -> None:
+    """时段基线必须按**北京时间**：事件 ts 是 UTC，直接取 .hour 会差 8 小时。
+
+    实机踩到：账号 2601125122 报「非常用时段：5 时」，它北京时间根本没有 5 时活动
+    （那是 UTC 5 时 = 北京 13 时）。
+    """
+    from datetime import UTC, datetime
+
+    beijing_hour = profiles.beijing_hour
+
+    # UTC 17:30 = 北京次日 01:30
+    assert beijing_hour(datetime(2026, 10, 17, 17, 30, tzinfo=UTC)) == 1
+    # UTC 21:00 = 北京 05:00
+    assert beijing_hour(datetime(2026, 10, 17, 21, 0, tzinfo=UTC)) == 5
+    # naive 时间按 UTC 处理（不能按本地时区，否则机器时区一变口径就变）
+    # 故意传 naive 时间（不能用 tzinfo）：验证「naive 按 UTC 处理」这条口径
+    assert beijing_hour(datetime(2026, 10, 17, 16, 0)) == 0  # noqa: DTZ001

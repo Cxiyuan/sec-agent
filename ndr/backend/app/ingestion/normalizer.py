@@ -769,7 +769,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
     )
     account_source = ""
     if account:
-        if re.search(r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(extra.get("req_headers") or "")):
+        if re.search(
+            r"(?im)^[ \t]*proxy-authorization[ \t]*:", str(extra.get("req_headers") or "")
+        ):
             account_source = "proxy_auth"
         elif doc.get("user") or doc.get("username"):
             account_source = "log_field"

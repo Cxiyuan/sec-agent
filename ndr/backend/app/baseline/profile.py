@@ -17,7 +17,7 @@ import ipaddress
 import re
 from collections import Counter
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, delete, func, or_, select
@@ -53,6 +53,21 @@ _BUCKET_FIELDS: dict[str, str] = {
     "paths": "paths",
     "hour_hist": "hours",
 }
+#: 时段基线**一律按北京时间**统计。
+#: 为什么不直接用 `entry.ts.hour`：事件时间戳是 UTC（归一化产物），直接取 .hour 得到的是
+#: UTC 小时，而界面（时间线、日志时间、分区线）全部按北京时间展示 —— 差 8 小时的
+#: 「非常用时段」等于胡说。实机证据：账号 2601125122 报「非常用时段：5 时」，
+#: 它北京时间根本没有 5 时活动（那是 UTC 5 时 = 北京 13 时）。
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def beijing_hour(ts: datetime) -> int:
+    """把事件时间转成北京时间的小时（0-23）。naive 时间按 UTC 处理。"""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(BEIJING_TZ).hour
+
+
 # 窗口内的 Counter 也设个上限：一个窗口里同一实体可能撞出成千上万个路径，
 # 落库时才裁剪就晚了（内存先炸）。超出这个倍数就先裁一次，保留 top N。
 _TRIM_FACTOR = 4
@@ -259,7 +274,7 @@ def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
     # 路径只收接口形态（静态资源会让 30 条上限满掉，见 api_path 的说明）
     if entry.uri_path and api_path(entry.uri_path):
         bucket["paths"][entry.uri_path[:128]] += 1
-    bucket["hours"][str(entry.ts.hour)] += 1
+    bucket["hours"][str(beijing_hour(entry.ts))] += 1
     if entry.status_code:
         if entry.status_code in (401, 403):
             bucket["fail"] += 1
@@ -378,7 +393,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     ):
         rare = [h for h in obs["hours"] if _safe_int(hist.get(h, 0)) / total_hours < 0.01]
         if len(rare) == len(obs["hours"]):
-            reasons.append(f"非常用时段：{','.join(sorted(rare))} 时")
+            reasons.append(f"非常用时段（北京时间）：{','.join(sorted(rare))} 时")
             risk += 0.15
 
     if kind == SESSION:
@@ -390,7 +405,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
 
     score, suffix = fail_burst_score(obs["fail"], obs["success"])
     if score > 0:
-        reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次{suffix}）")
+        reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次）{suffix}")
         risk += score
 
     return {"reasons": reasons, "risk": min(risk, 1.0), "cold_start": False}

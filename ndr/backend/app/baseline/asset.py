@@ -35,10 +35,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.baseline import stats as stats_mod
 from app.config import settings
@@ -291,9 +292,52 @@ def _scope_attrs(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]
     }
 
 
+def refresh_scopes() -> int:
+    """把 `scope` 为空/非法的资产行按**当前网段口径**重算（自愈），返回修正行数。
+
+    为什么需要：`scope` 列是口径 C 后加的 —— 加列那一刻起，**只有再次被观测到的资产**
+    才会写入 scope。实测某环境 6,480 行里 5,184 行（80%）还是空串，界面「共 N 个资产
+    （内网 X / 外部 Y）」对不上 N，按归属筛也筛不到这些老资产。
+    清理任务每小时调一次，一小时内全库对齐（不活跃的旧资产也能修好）。
+
+    只处理能从资产标识里解析出 IP 的行（`IP:端口`）；hostname 类资产无从判定归属，跳过。
+    """
+    fixed = 0
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(AssetStat).where(
+                    or_(AssetStat.scope == "", AssetStat.scope.is_(None))
+                )
+            ).all()
+            for row in rows:
+                asset, feature = _split(row.key)
+                if not feature:
+                    continue
+                candidate = asset.rpartition(":")[0] or asset
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue  # hostname 资产：判不了归属，保持原样
+                scope = scope_of_ip(candidate)
+                if row.scope != scope:
+                    row.scope = scope
+                    fixed += 1
+            if fixed:
+                db.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("重算资产归属失败: %s", exc)
+    return fixed
+
+
 def cleanup(retention_days: int | None = None) -> dict[str, int]:
-    """按 `updated_at` 清理长期没更新的资产基线（与数值基线同一节奏与默认值）。"""
-    return stats_mod.cleanup(retention_days, model=AssetStat)
+    """按 `updated_at` 清理长期没更新的资产基线；顺手把归属为空的老行按当前口径重算。"""
+    # 自愈放在清理里：每小时一次，全库一小时内对齐（口径改了之后老数据不会永久错着）
+    fixed = refresh_scopes()
+    result = stats_mod.cleanup(retention_days, model=AssetStat)
+    if fixed:
+        result = {**result, "scope_fixed": fixed}
+    return result
 
 
 # ---------- 读：给界面用 ----------

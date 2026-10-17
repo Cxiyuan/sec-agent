@@ -809,7 +809,11 @@ export function BehaviorPanel() {
             />
             <span className="text-xs text-muted-foreground">
               共 {assets?.total ?? 0} 个资产（内网 {assets?.by_scope?.internal ?? 0} / 外部{" "}
-              {assets?.by_scope?.external ?? 0}）· 每个观测区间 {assets?.window_seconds ?? "-"} 秒
+              {assets?.by_scope?.external ?? 0}
+              {(assets?.by_scope?.unknown ?? 0) > 0
+                ? ` / 归属未定 ${assets?.by_scope?.unknown ?? 0}（早期数据，后台每小时自愈）`
+                : ""}
+              ）· 每个观测区间 {assets?.window_seconds ?? "-"} 秒
             </span>
             <div className="flex gap-1">
               {(

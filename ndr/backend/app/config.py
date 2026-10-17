@@ -335,7 +335,10 @@ class Settings(BaseSettings):
         r"mp[34]|avi|mov|zip|gz|tgz|tar|rar|7z|pdf|docx?|xlsx?|pptx?|"
         r"html?|jsp|asp|aspx|php|do|action|cgi)(\?|$|#)"
     )
-    profile_path_min_known: int = 3  # 至少已知这么多条接口路径才判「新路径」
+    # 至少已知这么多条接口路径，才判「新接口路径」。实测（2026-10 QA）设 3 时，
+    # 200 条高风险会话里 182 条都因为「新接口路径」被报 —— 门户类站点路径成百上千，
+    # 3 条已知等于「几乎每条路径都是新的」，纯噪声。取 10 起步，仍可在后台调。
+    profile_path_min_known: int = 10
     # 会话 cookie 名（逗号分隔，**精确**匹配）：会话实体与「会话跨IP复用」都按它识别会话 id
     # （见 ingestion/session_cookie.py）。默认是各 Web 框架/常见产品的会话 cookie 名；
     # 自家业务 App 的会话 cookie 名用环境变量补（加进来就会参与 critical 级判据）。
