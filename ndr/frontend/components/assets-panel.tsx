@@ -61,6 +61,7 @@ interface DiscoverResult {
   managed?: number;
   unmanaged?: number;
   error?: string;
+  warning?: string;
   note?: string;
 }
 
@@ -370,6 +371,16 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
             </div>
           </CardHeader>
           <CardContent className="p-0">
+            {hosts?.error ? (
+              <p className="mx-4 mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {hosts.error}
+              </p>
+            ) : null}
+            {hosts?.warning ? (
+              <p className="mx-4 mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {hosts.warning}
+              </p>
+            ) : null}
             {hosts?.note ? (
               <p className="mx-4 mb-2 mt-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
                 {hosts.note}
@@ -400,6 +411,16 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
             </div>
           </CardHeader>
           <CardContent className="space-y-3 p-0">
+            {scan?.error ? (
+              <p className="mx-4 mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {scan.error}
+              </p>
+            ) : null}
+            {scan?.warning ? (
+              <p className="mx-4 mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {scan.warning}
+              </p>
+            ) : null}
             {scan?.note ? (
               <p className="mx-4 mt-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 {scan.note}

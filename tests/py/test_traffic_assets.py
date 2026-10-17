@@ -56,15 +56,16 @@ def _bucket(ip: str, *, out: int = 100, inb: int = 50, peers: list[str] | None =
         "log_types": {"buckets": [{"key": "http", "doc_count": 5}]},
         "ports": {
             "buckets": [
-                {"key": 443, "bytes": {"value": 120}, "doc_count": 5},
-                {"key": 22, "bytes": {"value": 30}, "doc_count": 2},
+                {"key": 443, "bo": {"value": 120}, "bi": {"value": 10}, "doc_count": 5},
+                {"key": 22, "bo": {"value": 30}, "bi": {"value": 0}, "doc_count": 2},
             ]
         },
         "top_peers": {
             "buckets": [
                 {
                     "key": p,
-                    "bytes": {"value": 10},
+                    "bytes_out": {"value": 10},
+                    "bytes_in": {"value": 5},
                     "hostname": {"buckets": []},
                 }
                 for p in (peers or [])
@@ -99,6 +100,9 @@ def test_shape_rows_filters_non_monitored_subjects(
     row = out["items"][0]
     assert row["bytes_total"] == 150
     assert [p["app"] for p in row["ports"]] == ["HTTPS/TLS", "SSH"]
+    # 端口流量 = 上行 + 下行（两个 sum 在 Python 里加，不用 Painless）
+    assert row["ports"][0]["bytes"] == 130
+    assert row["peers_top"][0]["bytes"] == 15
 
 
 def test_shape_rows_lateral_keeps_only_internal_peers(
@@ -154,7 +158,7 @@ def test_shape_hosts_marks_managed(
                         "first_seen": {"value_as_string": "2026-10-17T00:00:00.000Z"},
                         "last_seen": {"value_as_string": "2026-10-17T12:00:00.000Z"},
                         "hostname": {"buckets": [{"key": "srv.example"}]},
-                        "ports": {"buckets": [{"key": 443, "bytes": {"value": 5}}]},
+                        "ports": {"buckets": [{"key": 443, "bo": {"value": 5}, "bi": {"value": 1}}]},
                     },
                     {
                         "key": "8.8.8.8",
@@ -179,3 +183,38 @@ def test_shape_hosts_marks_managed(
     assert row["ip"] == "10.1.2.3" and row["managed"] is True
     assert row["exposure"] == 1 and row["clients"] == 7
     assert row["ports"][0]["app"] == "HTTPS/TLS"
+
+
+def test_agg_queries_avoid_painless_sum(traffic: ModuleType, assets: ModuleType) -> None:
+    """聚合里不许用 Painless 把 bytes_out+bytes_in 加起来（2026-10 实机踩过的坑）。
+
+    `doc['bytes_out'].value` 在缺该字段的文档（dns/weird 等没有字节量）上会抛
+    "A document doesn't have a value for a field"，一抛就整个分片失败；ES 照样返回 200，
+    buckets 却是空的 —— 界面上显示成「近期没有流量」，根因完全看不见。
+    所以这里钉住：查询体里不许出现 script / painless。
+    """
+    import json
+
+    for view in traffic.VIEWS:
+        body = traffic._build_body(view, minutes=60, size=50)
+        assert "script" not in json.dumps(body).lower()
+    assert "script" not in json.dumps(assets._discovery_body(minutes=60, size=50)).lower()
+
+
+def test_shard_problem_is_reported(traffic: ModuleType) -> None:
+    """分片失败要能说出来（否则 0 桶永远查不出原因）。"""
+    ok = {"_shards": {"total": 1, "successful": 1, "failed": 0}}
+    assert traffic.shard_problem(ok) == ""
+    bad = {
+        "_shards": {
+            "total": 2,
+            "successful": 1,
+            "failed": 1,
+            "failures": [
+                {"reason": {"type": "script_exception", "reason": "A document doesn't have a value"}}
+            ],
+        }
+    }
+    msg = traffic.shard_problem(bad)
+    assert "分片" in msg and "script_exception" in msg
+    assert traffic.shard_problem({"aggregations": {"subject": {"buckets": []}}}) == ""

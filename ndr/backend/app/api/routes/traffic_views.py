@@ -129,6 +129,26 @@ def _es() -> Any:
     return get_es()
 
 
+def shard_problem(resp: Any) -> str:
+    """分片失败的可见化：ES 有分片报错时仍可能返回 200 与空结果。
+
+    2026-10 实机踩过：聚合脚本在"缺字段"的文档上抛错 → 1 个分片失败 → `hits.total=0`、
+    buckets 为空，界面上就变成"没有流量"，根因完全看不见。这里把失败原因提出来。
+    """
+    shards = (resp or {}).get("_shards") or {}
+    failed = int(shards.get("failed") or 0)
+    if not failed:
+        return ""
+    reason = ""
+    failures = shards.get("failures") or []
+    if failures:
+        first = failures[0].get("reason") or {}
+        kind = str(first.get("type") or "").strip()
+        detail = str(first.get("reason") or "").strip()
+        reason = f"{kind}: {detail}" if kind and detail else (kind or detail)[:160]
+    return f"{failed} 个分片查询失败（{reason or '原因未知'}），结果可能不完整"
+
+
 def _terms(key: str, size: int) -> dict[str, Any]:
     return {"terms": {"field": f"{key}.keyword", "size": size}}
 
@@ -162,26 +182,32 @@ def _build_body(view: str, *, minutes: int, size: int) -> dict[str, Any]:
         },
         "aggs": {
             "subject": {
-                "terms": {"field": f"{subject}.keyword", "size": size, "order": {"bytes": "desc"}},
+                # 先按下行字节排序拿候选（总量在 Python 里算，排序只是选桶手段）
+                "terms": {"field": f"{subject}.keyword", "size": size, "order": {"bytes_in": "desc"}},
                 "aggs": {
                     "bytes_out": {"sum": {"field": "bytes_out"}},
                     "bytes_in": {"sum": {"field": "bytes_in"}},
-                    "bytes": {
-                        "sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}
-                    },
+                    # 不用 Painless 把两个字段加起来：缺字段的文档会让**整个分片**报
+                    # "A document doesn't have a value for a field"，返回 0 桶还看不出来
+                    # （2026-10 实机踩过：dns/weird 等日志没有 bytes_* → 三个视角全空）。
+                    # 改成各求和、在 Python 里加总，口径一样且更快。
                     # 不同对端数（横向/外连的"访问了多少个不同 IP"）
                     "peers": {"cardinality": {"field": f"{peer}.keyword", "precision_threshold": 40000}},
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
                     "log_types": {"terms": {"field": "log_type.keyword", "size": 8}},
                     "ports": {
-                        "terms": {"field": port, "size": 10, "order": {"bytes": "desc"}},
-                        "aggs": {"bytes": {"sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}}},
+                        "terms": {"field": port, "size": 12, "order": {"bo": "desc"}},
+                        "aggs": {
+                            "bo": {"sum": {"field": "bytes_out"}},
+                            "bi": {"sum": {"field": "bytes_in"}},
+                        },
                     },
                     "top_peers": {
-                        "terms": {"field": f"{peer}.keyword", "size": 30, "order": {"bytes": "desc"}},
+                        "terms": {"field": f"{peer}.keyword", "size": 30, "order": {"bytes_in": "desc"}},
                         "aggs": {
-                            "bytes": {"sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}},
+                            "bytes_out": {"sum": {"field": "bytes_out"}},
+                            "bytes_in": {"sum": {"field": "bytes_in"}},
                             "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
                         },
                     },
@@ -237,7 +263,8 @@ def shape_rows(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
                 {
                     "port": pb.get("key"),
                     "app": app_of(pb.get("key")),
-                    "bytes": int((pb.get("bytes") or {}).get("value") or 0),
+                    "bytes": int((pb.get("bo") or {}).get("value") or 0)
+                    + int((pb.get("bi") or {}).get("value") or 0),
                 }
             )
 
@@ -258,10 +285,13 @@ def shape_rows(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
                 {
                     "ip": peer_ip,
                     "hostname": str(host_buckets[0].get("key") or "") if host_buckets else "",
-                    "bytes": int((pb.get("bytes") or {}).get("value") or 0),
+                    "bytes": int((pb.get("bytes_out") or {}).get("value") or 0)
+                    + int((pb.get("bytes_in") or {}).get("value") or 0),
                 }
             )
 
+        ports.sort(key=lambda p: -int(p["bytes"]))
+        peers.sort(key=lambda p: -int(p["bytes"]))
         bytes_out = int((bucket.get("bytes_out") or {}).get("value") or 0)
         bytes_in = int((bucket.get("bytes_in") or {}).get("value") or 0)
         hosts = ((bucket.get("hostname") or {}).get("buckets")) or []
@@ -284,14 +314,15 @@ def shape_rows(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
                 "regions": _regions_from_peers(peers),
             }
         )
-        if len(rows) >= limit:
-            break
+    rows.sort(key=lambda r: -int(r["bytes_total"]))
+    rows = rows[:limit]
 
     return {
         "items": rows,
         "scanned_buckets": len(buckets),
         "filtered_out": filtered_out,
         "geo_available": _geo_available(),
+        "warning": shard_problem(resp),
         "note": "" if _geo_available() else "「地区」需要离线地理库（部署时用 ST_GEOIP_DB 指向 .mmdb），当前显示「未知」",
         "monitored_nets": [str(n) for n in nets],
     }
@@ -314,7 +345,7 @@ def traffic_ips(
         log.warning("流量聚合失败: %s", exc)
         return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
     out = shape_rows(resp, view=view, limit=limit)
-    out.update({"view": view, "minutes": minutes})
+    out.update({"view": view, "minutes": minutes, "warning": shard_problem(resp)})
     return out
 
 
@@ -344,11 +375,10 @@ def traffic_peers(
         },
         "aggs": {
             "peers": {
-                "terms": {"field": f"{peer}.keyword", "size": limit, "order": {"bytes": "desc"}},
+                "terms": {"field": f"{peer}.keyword", "size": limit, "order": {"bytes_in": "desc"}},
                 "aggs": {
                     "bytes_out": {"sum": {"field": "bytes_out"}},
                     "bytes_in": {"sum": {"field": "bytes_in"}},
-                    "bytes": {"sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}},
                     "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
                     "last_seen": {"max": {"field": "@timestamp"}},
                 },
@@ -370,7 +400,9 @@ def traffic_peers(
         peer_ip = str(bucket.get("key") or "")
         if not peer_ip:
             continue
-        value = int((bucket.get("bytes") or {}).get("value") or 0)
+        value = int((bucket.get("bytes_out") or {}).get("value") or 0) + int(
+            (bucket.get("bytes_in") or {}).get("value") or 0
+        )
         hosts = ((bucket.get("hostname") or {}).get("buckets")) or []
         nodes.append(
             {
@@ -390,4 +422,5 @@ def traffic_peers(
         "nodes": nodes,
         "edges": edges,
         "geo_available": False,
+        "warning": shard_problem(resp),
     }

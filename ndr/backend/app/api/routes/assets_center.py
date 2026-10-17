@@ -35,7 +35,8 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 CRITICALITY = ("core", "high", "normal", "test")
 
 #: 端口 → 应用名（与可视化流量同一份口径，避免两处各写一套）
-from app.api.routes.traffic_views import app_of
+#: `shard_problem` 同样复用：ES 分片报错时会安静地返回 0 桶，必须显式说出来
+from app.api.routes.traffic_views import app_of, shard_problem
 
 
 def _es() -> Any:
@@ -313,18 +314,18 @@ def _discovery_body(*, minutes: int, size: int) -> dict[str, Any]:
         "aggs": {
             # 以"被访问的资产"为主语（dst）：这是界面上看到的"网段内主机"
             "hosts": {
-                "terms": {"field": "dst_ip.keyword", "size": size, "order": {"bytes": "desc"}},
+                "terms": {"field": "dst_ip.keyword", "size": size, "order": {"bytes_in": "desc"}},
                 "aggs": {
                     "bytes_out": {"sum": {"field": "bytes_out"}},
                     "bytes_in": {"sum": {"field": "bytes_in"}},
-                    "bytes": {"sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}},
+                    # 不用脚本求和（缺 bytes_* 的文档会让整个分片报错、结果静默变 0）
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "first_seen": {"min": {"field": "@timestamp"}},
                     "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
                     "clients": {"cardinality": {"field": "src_ip.keyword", "precision_threshold": 40000}},
                     "ports": {
-                        "terms": {"field": "dst_port", "size": 20, "order": {"bytes": "desc"}},
-                        "aggs": {"bytes": {"sum": {"script": {"source": "(doc['bytes_out'].value + doc['bytes_in'].value)"}}}},
+                        "terms": {"field": "dst_port", "size": 20, "order": {"bo": "desc"}},
+                        "aggs": {"bo": {"sum": {"field": "bytes_out"}}, "bi": {"sum": {"field": "bytes_in"}}},
                     },
                 },
             }
@@ -343,7 +344,8 @@ def _shape_hosts(resp: Any, *, nets: list[ipaddress._BaseNetwork], managed: set[
             {
                 "port": pb.get("key"),
                 "app": app_of(pb.get("key")),
-                "bytes": int((pb.get("bytes") or {}).get("value") or 0),
+                "bytes": int((pb.get("bo") or {}).get("value") or 0)
+                + int((pb.get("bi") or {}).get("value") or 0),
             }
             for pb in (((bucket.get("ports") or {}).get("buckets")) or [])
         ]
@@ -389,6 +391,7 @@ def discover(
     rows = _shape_hosts(resp, nets=nets, managed=managed)[:limit]
     return {
         "items": rows,
+        "warning": shard_problem(resp),
         "managed": sum(1 for r in rows if r["managed"]),
         "unmanaged": sum(1 for r in rows if not r["managed"]),
         "minutes": minutes,
@@ -430,6 +433,7 @@ def scan_view(
     top_ports = sorted(port_hits.items(), key=lambda kv: -kv[1])[:15]
     return {
         "items": rows[:limit],
+        "warning": shard_problem(resp),
         "top_ports": [{"label": k, "hosts": v} for k, v in top_ports],
         "unmanaged": [r["ip"] for r in rows if not r["managed"]][:limit],
         "minutes": minutes,

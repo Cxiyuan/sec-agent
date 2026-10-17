@@ -73,6 +73,7 @@ interface IpRow {
 interface IpResult {
   items: IpRow[];
   error?: string;
+  warning?: string;
   geo_available?: boolean;
   note?: string;
   minutes?: number;
@@ -92,6 +93,7 @@ interface PeersResult {
   nodes: PeerNode[];
   edges: Array<{ source: string; target: string; bytes: number }>;
   error?: string;
+  warning?: string;
 }
 
 const VIEW_META: Record<View, { title: string; subject: string; peer: string }> = {
@@ -273,6 +275,16 @@ export function TrafficPanel({ view }: { view: View }) {
           </div>
         </CardHeader>
         <CardContent className="space-y-2 p-0">
+          {data?.error ? (
+            <p className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {data.error}
+            </p>
+          ) : null}
+          {data?.warning ? (
+            <p className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {data.warning}
+            </p>
+          ) : null}
           {data?.note ? (
             <p className="mx-4 mt-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700">
               {data.note}
