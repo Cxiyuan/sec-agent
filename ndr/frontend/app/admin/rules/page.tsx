@@ -443,7 +443,7 @@ export default function RulesPage() {
     <div className="min-h-screen">
       <TopBar />
       <Nav />
-      <main className="ml-56 px-6 pb-6 pt-20">
+      <main className="ml-60 px-6 pb-6 pt-20">
         <h1 className="mb-4 text-2xl font-bold">检测规则</h1>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
         <div className="mb-3">

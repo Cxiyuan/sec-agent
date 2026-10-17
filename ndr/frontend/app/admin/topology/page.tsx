@@ -263,7 +263,7 @@ export default function TopologyPage() {
       <TopBar />
       <Nav />
       {/* 图占满右侧内容区：整页不滚动，尾部那张图用 flex-1 撑满剩余高度 */}
-      <main className="ml-56 flex h-screen flex-col overflow-hidden px-6 pb-4 pt-20">
+      <main className="ml-60 flex h-screen flex-col overflow-hidden px-6 pb-4 pt-20">
         <h1 className="mb-2 text-2xl font-bold">拓扑发现</h1>
         <p className="mb-4 text-xs text-muted-foreground">
           自动发现网络拓扑：<b>转发链路</b>视图以流量转发的逻辑为准（客户端 →（中继…）→ 源站，多级串联都体现）；

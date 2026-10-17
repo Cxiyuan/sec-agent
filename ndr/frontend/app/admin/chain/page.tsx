@@ -129,7 +129,7 @@ function ChainInner() {
     <div className="min-h-screen">
       <TopBar />
       <Nav />
-      <main className="ml-56 px-6 pb-6 pt-20">
+      <main className="px-6 pb-6 pt-20">
         <h1 className="mb-2 text-2xl font-bold">攻击链还原</h1>
         <p className="mb-4 text-xs text-muted-foreground">
           还原「真实请求IP →（中继…）→ 源站」的完整数据链路与攻击动作事实。只展示**真正进了检测**的事件；

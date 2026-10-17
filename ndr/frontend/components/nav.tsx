@@ -2,71 +2,31 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import {
-  Activity,
-  Bot,
-  Database,
-  Settings,
-  Filter,
-  GitBranch,
-  Share2,
-  LayoutDashboard,
-  Network,
-  Radio,
-  SlidersHorizontal,
-  UserRound,
-} from "lucide-react";
+import { usePathname } from "next/navigation";
+import { ShieldAlert } from "lucide-react";
 import { cn } from "@shentong/ui";
-import { apiFetch, type AuthMe, type NetworksStatus } from "@/lib/api";
+import { apiFetch, type AuthMe } from "@/lib/api";
 import { loadAliases } from "@/lib/aliases";
+import { sidebarOf } from "@/lib/nav-config";
 
-// 第 7 期拆页：左侧导航按链路分段。
-// 第一项「总览」（运行状态页，路由仍是 /admin/status）同时是默认落地页（`/` 重定向到这里）；
-// logo、当前用户、退出登录、告警铃铛都在全局页头（components/topbar.tsx）。
-const items = [
-  { href: "/admin/status", label: "总览", icon: LayoutDashboard },
-  // 行为分析：基线与画像的「看得见的明细 + 可调参数」（与总览的概览图互补）
-  { href: "/admin/behavior", label: "行为分析", icon: Activity },
-  // 攻击链还原：真实请求IP →（中继…）→ 源站的链路与动作事实
-  { href: "/admin/chain", label: "攻击链还原", icon: GitBranch },
-  { href: "/admin/rules", label: "检测规则", icon: SlidersHorizontal },
-  { href: "/admin/collect", label: "采集接入", icon: Radio },
-  { href: "/admin/networks", label: "监控网段", icon: Network },
-  // 拓扑发现：自动发现网络拓扑（转发链路 / 全量通信两视图）
-  { href: "/admin/topology", label: "拓扑发现", icon: Share2 },
-  { href: "/admin/storage", label: "数据存储", icon: Database },
-  { href: "/admin/config", label: "配置体检", icon: Settings },
-  { href: "/admin/filters", label: "过滤规则", icon: Filter },
-  { href: "/admin/agent", label: "智能体对接", icon: Bot },
-  { href: "/admin/account", label: "账户", icon: UserRound },
-];
-
-export function Nav() {
+/**
+ * 分区侧边栏：只显示**当前页面所属分区**的子页。
+ *
+ * 2026-10 改版：一级菜单搬到页头（components/topbar.tsx），这里不再是全局导航 ——
+ * 运营中心 / 日志检索 / 行为画像 都没有侧边栏（`sidebarOf()` 返回空数组时本组件直接不渲染），
+ * 页面正文因此能占满宽度（大表格、拓扑图都需要）。
+ */
+export function SideNav() {
   const pathname = usePathname();
-  const router = useRouter();
+  const items = sidebarOf(pathname);
   const [me, setMe] = React.useState<AuthMe | null>(null);
 
-  // 节点别名是全局展示层数据：导航在每个页面都挂载，顺手在全局拉一次（已拉过就不再请求）
+  // 节点别名是全局展示层数据：侧边栏在每个页面都挂载，顺手拉一次（已拉过就不再请求）
   React.useEffect(() => {
     void loadAliases();
   }, []);
 
-  // 首次使用强制向导：未配置监控网段 -> 跳 /setup（网段同时也是 Zeek 的抓包范围）
-  React.useEffect(() => {
-    if (pathname.startsWith("/setup")) return;
-    let alive = true;
-    apiFetch<NetworksStatus>("/api/zeek/networks/status")
-      .then((s) => {
-        if (alive && !s.configured) router.replace("/setup");
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [pathname, router]);
-
-  // 还在用出厂口令的话，导航栏一直挂一条红字提醒（点进「账户」改）
+  // 还在用出厂口令的话，一直挂一条提醒（点进「配置管理 → 账户」改）
   React.useEffect(() => {
     let alive = true;
     apiFetch<AuthMe>("/api/auth/me")
@@ -79,25 +39,38 @@ export function Nav() {
     };
   }, [pathname]);
 
+  if (items.length === 0) return null;
+
   return (
-    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-56 flex-col border-r bg-card">
-      <nav className="flex-1 space-y-1 overflow-auto p-3">
+    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-60 flex-col border-r bg-card">
+      <nav className="flex-1 space-y-0.5 overflow-auto p-3">
         {items.map((it) => {
-          const active =
-            pathname === it.href || pathname.startsWith(it.href + "/");
+          const active = pathname === it.href || pathname.startsWith(it.href + "/");
           return (
             <Link
               key={it.href}
               href={it.href}
+              title={it.desc}
               className={cn(
-                "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                "group flex items-start gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
                 active
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "bg-primary/10 font-medium text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               )}
             >
-              <it.icon className="h-4 w-4" />
-              {it.label}
+              {it.icon ? (
+                <it.icon
+                  className={cn("mt-0.5 h-4 w-4 shrink-0", active ? "text-primary" : "text-muted-foreground/70")}
+                />
+              ) : null}
+              <span className="min-w-0">
+                <span className="block truncate">{it.label}</span>
+                {it.desc ? (
+                  <span className="mt-0.5 block truncate text-[11px] font-normal text-muted-foreground/80">
+                    {it.desc}
+                  </span>
+                ) : null}
+              </span>
             </Link>
           );
         })}
@@ -105,13 +78,18 @@ export function Nav() {
       {me?.default_password_in_use && (
         <div className="border-t p-3">
           <Link
-            href="/admin/account"
-            className="block rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
+            href="/config/account"
+            className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
           >
-            仍在使用出厂口令 admin123 —— 点这里去改
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>仍在使用出厂口令 —— 点这里去改</span>
           </Link>
         </div>
       )}
     </aside>
   );
 }
+
+
+/** 兼容旧引用（`app/admin/*` 里有页面直接渲染 `<Nav />`）：语义与 `SideNav` 相同。 */
+export const Nav = SideNav;

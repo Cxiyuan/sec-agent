@@ -16,7 +16,7 @@ import { getToken } from "@shentong/ui";
 export default function RootGate() {
   const router = useRouter();
   React.useEffect(() => {
-    router.replace(getToken() ? "/admin/status" : "/login");
+    router.replace(getToken() ? "/console" : "/login");
   }, [router]);
   return (
     <div className="flex h-screen items-center justify-center">

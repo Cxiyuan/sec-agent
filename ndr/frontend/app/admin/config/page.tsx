@@ -49,7 +49,7 @@ export default function ConfigAuditPage() {
     <div className="min-h-screen">
       <TopBar />
       <Nav />
-      <main className="ml-56 px-6 pb-10 pt-20">
+      <main className="ml-60 px-6 pb-10 pt-20">
         <h1 className="mb-2 text-2xl font-bold">配置体检</h1>
         <p className="mb-4 text-xs text-muted-foreground">
           逐项列出**当前生效值**与**来源**：环境变量 / 数据库（界面可改）/ 编排部署侧 / 代码默认值。

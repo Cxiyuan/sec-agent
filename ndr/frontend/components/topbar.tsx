@@ -3,12 +3,18 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, LogOut, Shield } from "lucide-react";
+import { Bell, ChevronDown, LogOut, Shield } from "lucide-react";
 import { formatDateTime } from "@shentong/ui";
 import { apiFetch, clearToken, type AgentPushPayload, type AuthMe, type DetectorStats } from "@/lib/api";
+import { NAV_SECTIONS, sectionActive } from "@/lib/nav-config";
+import { cn } from "@shentong/ui";
 
 /**
- * 全局页头：左侧 logo（**纯展示，不可点**），右侧依次是告警铃铛 / 当前用户 / 退出登录。
+ * 全局页头：左侧 logo（**纯展示**）+ **一级菜单**（运营中心 / 分析中心 / 资产中心 / 行为画像 / 配置管理），
+ * 右侧依次是告警铃铛 / 当前用户 / 退出登录。
+ *
+ * 2026-10 改版：一级菜单从侧边栏搬到页头；「分析中心」鼠标停留即展开二级菜单
+ * （日志检索 / 可视化流量），其余分区点一下进默认子页，由侧边栏切换子页。
  *
  * 为什么把 logo 从侧边栏搬到页头：侧边栏只管「去哪个页面」，页头承担「我是谁、现在有没有事」
  * —— 告警与账号是一眼要看到的东西，固定在最上方、宽度铺满，滚动时不跟着走。
@@ -32,13 +38,13 @@ function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): 
   const out: Notice[] = [];
   if (stats?.paused) {
     const since = stats.paused_since ? `（自 ${formatDateTime(stats.paused_since)}）` : "";
-    out.push({ key: "paused", text: `检测器已暂停消费${since}`, href: "/admin/status", danger: true });
+    out.push({ key: "paused", text: `检测器已暂停消费${since}`, href: "/console", danger: true });
   }
   if (stats?.queue_failed) {
     out.push({
       key: "failed",
       text: `隔离队列 ${stats.queue_failed} 条待人工处理`,
-      href: "/admin/status",
+      href: "/console",
       danger: true,
     });
   }
@@ -46,7 +52,7 @@ function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): 
     out.push({
       key: "redis",
       text: `Redis 内存接近上限（${stats.redis?.perc ?? "—"}%），整链路可能卡死`,
-      href: "/admin/status",
+      href: "/console",
       danger: true,
     });
   }
@@ -56,7 +62,7 @@ function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): 
     out.push({
       key: "backlog",
       text: `归一化队列积压 ${queueRaw}（接近上限 ${queueMax}）`,
-      href: "/admin/status",
+      href: "/console",
       danger: true,
     });
   }
@@ -64,7 +70,7 @@ function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): 
     out.push({
       key: "push-off",
       text: "摘要推送未启用：命中的摘要不会进入分析",
-      href: "/admin/agent",
+      href: "/config/agent",
       danger: true,
     });
   }
@@ -72,7 +78,7 @@ function noticesOf(stats: DetectorStats | null, push: AgentPushPayload | null): 
     push?.status.retry_backlog_batches ??
     (push?.status.queue_depth ?? 0) + (push?.status.processing_depth ?? 0);
   if (pending > 0) {
-    out.push({ key: "pending", text: `摘要推送待重发 ${pending} 批`, href: "/admin/status" });
+    out.push({ key: "pending", text: `摘要推送待重发 ${pending} 批`, href: "/console" });
   }
   return out;
 }
@@ -127,11 +133,58 @@ export function TopBar() {
   const notices = noticesOf(stats, push);
 
   return (
-    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b bg-card px-4">
-      <div className="flex items-center gap-2 px-2 py-1">
+    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b bg-card px-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <div className="flex items-center gap-2 px-1">
         <Shield className="h-6 w-6 text-primary" />
-        <span className="text-lg font-bold">深瞳 · NDR</span>
+        <span className="whitespace-nowrap text-base font-bold tracking-tight">深瞳 · NDR</span>
       </div>
+
+      {/* 一级菜单：分析中心鼠标停留展开二级菜单，其余直接进默认子页 */}
+      <nav className="ml-4 flex items-center gap-0.5">
+        {NAV_SECTIONS.map((section) => {
+          const active = sectionActive(pathname, section);
+          return (
+            <div key={section.key} className="group relative">
+              <Link
+                href={section.href}
+                title={section.desc}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                  active
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                {section.label}
+                {section.dropdown ? (
+                  <ChevronDown className="h-3.5 w-3.5 opacity-60 transition group-hover:rotate-180" />
+                ) : null}
+              </Link>
+              {section.dropdown ? (
+                <div className="invisible absolute left-0 top-full z-50 w-72 pt-1 opacity-0 transition-opacity duration-100 group-hover:visible group-hover:opacity-100">
+                  <div className="rounded-lg border bg-card p-1.5 shadow-lg">
+                    {section.dropdown.map((item) => (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className="flex items-start gap-2 rounded-md px-3 py-2 hover:bg-accent"
+                      >
+                        {item.icon ? <item.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" /> : null}
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium text-foreground">{item.label}</span>
+                          {item.desc ? (
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground">{item.desc}</span>
+                          ) : null}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </nav>
 
       <div className="ml-auto flex items-center gap-2">
         <div className="relative" ref={boxRef}>

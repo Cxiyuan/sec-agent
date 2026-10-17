@@ -2,28 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 暗黑主题（shadcn 风格 CSS 变量） */
+/* 明亮企业主题（shadcn 风格 CSS 变量，2026-10 用户改版：不要暗黑，要企业级简约明亮） */
 :root {
-  /* 让原生控件（下拉弹层、滚动条、日期框）按暗色渲染——
-     否则原生 <select> 弹层是白底浅字，暗色主题下几乎看不见 */
-  color-scheme: dark;
-  --background: 222 47% 5%;
-  --foreground: 210 40% 98%;
-  --card: 222 47% 7%;
-  --card-foreground: 210 40% 98%;
-  --primary: 199 89% 48%;
-  --primary-foreground: 222 47% 5%;
-  --secondary: 217 33% 14%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217 33% 14%;
-  --muted-foreground: 215 20% 65%;
-  --accent: 217 33% 16%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 72% 51%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217 33% 17%;
-  --input: 217 33% 17%;
-  --ring: 199 89% 48%;
+  /* 原生控件（下拉弹层、滚动条、日期框）按亮色渲染 */
+  color-scheme: light;
+  --background: 210 40% 98%;      /* 页面底色 #f8fafc（极浅灰蓝，衬托白卡片） */
+  --foreground: 222 47% 11%;      /* 正文 #0f172a */
+  --card: 0 0% 100%;              /* 卡片纯白 */
+  --card-foreground: 222 47% 11%;
+  --primary: 221 83% 45%;         /* 企业蓝 #1d4ed8 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 45%;/* 次要文字 #64748b 一档 */
+  --accent: 214 32% 94%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 32% 91%;          /* 浅灰边框 #e2e8f0 */
+  --input: 214 32% 91%;
+  --ring: 221 83% 45%;
   --radius: 0.5rem;
 }
 
@@ -34,6 +33,13 @@
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 明亮主题的层次感：白卡片浮在浅灰底上，靠 1px 边框 + 极淡阴影区分（暗色不需要） */
+[class*="rounded-lg"][class*="border"][class*="bg-card"],
+[class*="rounded-xl"][class*="border"][class*="bg-card"] {
+  box-shadow: 0 1px 2px 0 rgb(15 23 42 / 0.04);
 }
 
 /* 下拉菜单：原生 select 的选项弹层不受继承影响，必须显式指定配色 */

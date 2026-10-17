@@ -11,6 +11,7 @@ from app.api.routes import (
     exclusions,
     files,
     ingest_filters,
+    logs,
     logstash,
     mcp,
     rules,
@@ -47,3 +48,4 @@ api_router.include_router(suricata_router)
 api_router.include_router(chain_router)
 api_router.include_router(topology_router)
 api_router.include_router(config_audit_router)
+api_router.include_router(logs.router)
