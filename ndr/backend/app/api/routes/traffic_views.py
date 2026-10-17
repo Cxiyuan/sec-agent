@@ -222,7 +222,35 @@ def _regions_from_peers(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
 
 
-def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
+def _top_subjects_body(*, minutes: int, view: str, size: int) -> dict[str, Any]:
+    """第一段查询：按**流量**取 top 主语 IP。
+
+    为什么要有这一段：`composite` 聚合（按 IP 对）**只能按字典序返回**，
+    直接取前 N 条拿到的是"字母序靠前的 IP 对"，不是流量最大的那些 ——
+    这就是 2026-10 QA 里"最近 1 小时数据怎么这么少"的根因。
+    先按流量选出候选主语，再把查询限定在这些主语上跑对聚合，数据才完整。
+    """
+    subject = _subject_field(view)
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}],
+                "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
+            }
+        },
+        "aggs": {
+            "subjects": {
+                "terms": {"field": f"{subject}.keyword", "size": size, "order": {"bytes_in": "desc"}},
+                "aggs": {"bytes_in": {"sum": {"field": "bytes_in"}}},
+            }
+        },
+    }
+
+
+def _pair_body(
+    *, minutes: int, size: int, subject_field: str = "", subjects: list[str] | None = None
+) -> dict[str, Any]:
     """按 **(源 IP, 目的 IP) 对** 聚合。
 
     为什么必须按对聚合：三个视角的分母不同 ——
@@ -231,11 +259,17 @@ def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
     横向与外连就会长得一模一样（2026-10 QA 实测到的错）。
     按对聚出来后，每一对都能判方向，再按视角归类，数字才对。
     """
+    filters: list[dict[str, Any]] = [
+        {"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}
+    ]
+    if subject_field and subjects:
+        # 只在这些候选主语上做对聚合（候选是"流量最大的那批"，见 _top_subjects_body）
+        filters.append({"terms": {f"{subject_field}.keyword": subjects[:500]}})
     return {
         "size": 0,
         "query": {
             "bool": {
-                "filter": [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}],
+                "filter": filters,
                 "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
             }
         },
@@ -397,14 +431,31 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
 def traffic_ips(
     _: Annotated[User, Depends(get_current_user)],
     view: str = Query(default="outbound"),
-    minutes: int = Query(default=60, ge=1, le=60 * 24 * 7),
+    minutes: int = Query(default=60, ge=1, le=60 * 24 * 30),
     limit: int = Query(default=100, ge=1, le=300),
 ) -> dict[str, Any]:
-    """按 IP 出三个视角的流量明细（对外业务 / 横向 / 外连）。"""
+    """按 IP 出三个视角的流量明细（对外业务 / 横向 / 外连）。
+
+    两段式查询：① 按流量取 top 主语 → ② 只在这些主语上做 (源,目的) 对聚合。
+    （`composite` 只能按字典序，单段拿不到"流量最大的那批"，数据会残缺。）
+    """
     if view not in VIEWS:
         view = "outbound"
-    body = _pair_body(minutes=minutes, size=min(5000, max(limit * 40, 500)))
+    candidate_size = min(2000, max(limit * 3, 300))
+    subject_field = _subject_field(view)
     try:
+        top = _es().search(
+            index=settings.es_events_index,
+            body=_top_subjects_body(minutes=minutes, view=view, size=candidate_size),
+        )
+        candidates = [
+            str(b.get("key"))
+            for b in ((((top.get("aggregations") or {}).get("subjects") or {}).get("buckets")) or [])
+            if b.get("key")
+        ]
+        body = _pair_body(
+            minutes=minutes, size=20000, subject_field=subject_field, subjects=candidates
+        )
         resp = _es().search(index=settings.es_events_index, body=body)
     except Exception as exc:  # noqa: BLE001
         log.warning("流量聚合失败: %s", exc)

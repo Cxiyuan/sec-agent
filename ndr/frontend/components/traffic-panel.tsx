@@ -20,7 +20,7 @@ import {
 } from "@shentong/ui";
 import type { EChartsOption } from "echarts";
 import { formatBytes } from "@/components/status-charts";
-import { ArrowLeftRight, Network, X } from "lucide-react";
+import { ArrowLeftRight, X } from "lucide-react";
 
 import { PanelError, usePanelErrors } from "@/components/panel-error";
 import { useAliases } from "@/lib/aliases";
@@ -309,6 +309,9 @@ export function TrafficPanel({ view }: { view: View }) {
                 <option value={60}>1 小时</option>
                 <option value={360}>6 小时</option>
                 <option value={1440}>24 小时</option>
+                <option value={10080}>最近 7 天</option>
+                <option value={21600}>最近 15 天</option>
+                <option value={43200}>最近 30 天</option>
               </select>
             </label>
             <label>
@@ -363,15 +366,25 @@ export function TrafficPanel({ view }: { view: View }) {
                     {view === "outbound" ? "被访问端口 TOP10" : "对端端口 TOP10"}
                   </TableHead>
                   <TableHead className="whitespace-nowrap">最新活跃</TableHead>
-                  <TableHead className="whitespace-nowrap">拓扑</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map((row) => (
                   <TableRow key={row.ip}>
                     <TableCell className="whitespace-nowrap">
-                      <span className="font-medium">{row.hostname || "-"}</span>
-                      <span className="ml-1 font-mono text-xs text-muted-foreground">({row.ip})</span>
+                      {/* 主机名(IP) 整块可点：点开右侧抽屉看连接拓扑（2026-10 用户要求，
+                          不再单独给一列「拓扑」按钮） */}
+                      <button
+                        type="button"
+                        title="点击查看该 IP 的连接拓扑"
+                        onClick={() => void openPeers(row.ip)}
+                        className="cursor-pointer text-left text-primary underline-offset-2 hover:underline"
+                      >
+                        <span className="font-medium">{row.hostname || row.ip}</span>
+                        {row.hostname ? (
+                          <span className="ml-1 font-mono text-xs text-primary/80">({row.ip})</span>
+                        ) : null}
+                      </button>
                     </TableCell>
                     <TableCell className="whitespace-nowrap font-mono text-xs">
                       {formatBytes(row.bytes_total)}
@@ -411,12 +424,6 @@ export function TrafficPanel({ view }: { view: View }) {
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                       {formatDateTime(row.last_seen)}
-                    </TableCell>
-                    <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => void openPeers(row.ip)}>
-                        <Network className="mr-1 h-3.5 w-3.5" />
-                        查看
-                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}

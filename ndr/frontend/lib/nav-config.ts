@@ -42,6 +42,9 @@ export interface NavItem {
   icon?: LucideIcon;
   /** 进入这个页面后，左侧显示的子导航（不填 = 该页面没有侧边栏） */
   sidebar?: NavItem[];
+  /** 侧边栏的匹配前缀（不填就用 href）：同一组子页共用一个侧边栏时用它，
+   *  例如可视化流量的三个视角 `/traffic/outbound|lateral|egress` 共用一份侧边栏。 */
+  sidebarMatch?: string;
 }
 
 export interface NavSection extends NavItem {
@@ -117,6 +120,8 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "可视化流量",
         desc: "对外业务 / 横向 / 外连三个视角",
         icon: Waypoints,
+        // 三个视角共用一份侧边栏：按 `/traffic` 前缀匹配，切到横向/外连也不会丢
+        sidebarMatch: "/traffic",
         sidebar: TRAFFIC_ITEMS,
       },
     ],
@@ -174,9 +179,10 @@ export function sectionOf(pathname: string): NavSection | null {
 /** 当前页面自己的侧边栏（没有就返回空数组 = 不显示侧边栏） */
 export function sidebarOf(pathname: string): NavItem[] {
   for (const section of NAV_SECTIONS) {
-    if (section.sidebar && inPath(pathname, section.href)) return section.sidebar;
+    if (section.sidebar && inPath(pathname, section.sidebarMatch ?? section.href))
+      return section.sidebar;
     for (const item of section.dropdown ?? []) {
-      if (item.sidebar && inPath(pathname, item.href)) return item.sidebar;
+      if (item.sidebar && inPath(pathname, item.sidebarMatch ?? item.href)) return item.sidebar;
     }
   }
   return [];
