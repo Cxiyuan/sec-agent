@@ -55,6 +55,9 @@ def _profile(
         hour_hist=hour_hist if hour_hist is not None else {str(h): 20 for h in range(12)},
         success_count=100,
         fail_count=0,
+        error_count=0,
+        # 默认当作「已过冷启动」的画像：冷启动门槛现在按窗口数（profile.min_windows）
+        window_count=99,
         first_seen=datetime.now(UTC) - timedelta(hours=age_hours),
     )
     for key, value in extra.items():
@@ -71,6 +74,8 @@ def _obs(
     hours: list[int] | None = None,
     fail: int = 0,
     success: int = 1,
+    errors: int = 0,
+    count: int | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -83,7 +88,9 @@ def _obs(
         "hours": Counter(str(h) for h in (hours if hours is not None else [3])),
         "success": success,
         "fail": fail,
-        "count": max(1, success + fail),
+        "errors": errors,
+        # 窗口内的**事件总数**（错误响应占比的分母）；调用方可显式给
+        "count": count if count is not None else max(1, success + fail + errors),
     }
 
 
@@ -139,8 +146,14 @@ def test_dual_stack_v4_v6_is_not_session_hijack(profiles: ModuleType) -> None:
 
 
 def test_two_ipv4_is_session_hijack(profiles: ModuleType) -> None:
-    prof = _profile(profiles, src_ips={"10.0.0.1": 100, "10.0.0.2": 100})
-    out = profiles.detect("session", _obs(src_ips=["10.0.0.1", "10.0.0.2"]), prof)
+    """跨**网段**的两个 IPv4 才算会话劫持。
+
+    同一 /24 内的地址切换（移动网、负载均衡）现在会被压掉（见
+    `test_session_cross_ip_ignores_same_subnet`）—— 实测 200 条高风险会话里 36 条是这种
+    同网段切换，属纯噪声。
+    """
+    prof = _profile(profiles, src_ips={"10.0.0.1": 100, "10.9.9.1": 100})
+    out = profiles.detect("session", _obs(src_ips=["10.0.0.1", "10.9.9.1"]), prof)
     assert "会话跨 2 个同族源 IP" in _reasons(out)
     assert out["risk"] >= 0.45
 
@@ -182,7 +195,8 @@ def test_new_ipv4_counts(profiles: ModuleType) -> None:
 
 
 def test_cold_start_never_reports(profiles: ModuleType) -> None:
-    prof = _profile(profiles, obs_count=2, src_ips={})
+    # 冷启动门槛按**窗口数**（profile.min_windows=5）：只观测到 1 个窗口就只学不告警
+    prof = _profile(profiles, obs_count=2, window_count=1, src_ips={})
     out = profiles.detect("session", _obs(src_ips=["10.9.9.9"], hours=[4]), prof)
     assert out["cold_start"] is True
     assert out["reasons"] == []
@@ -536,3 +550,96 @@ def test_hour_baseline_uses_beijing_time(profiles: ModuleType) -> None:
     # 用 fromisoformat 而不是 datetime(...)：后者会触发 DTZ001，而 CI 侧那条规则又没启用，
     # 写 noqa 反而会被判成多余（RUF100）—— 两边的 lint 口径不一致，绕开最省事。
     assert beijing_hour(datetime.fromisoformat("2026-10-17T16:00:00")) == 0
+
+
+def test_error_response_burst_detected(profiles: ModuleType) -> None:
+    """404 风暴要报：成功只算 <400、失败只认 401/403，所以必须单独有「错误响应」这一档。
+
+    实机证据：某账号 63,243 条 404，画像里既不算成功也不算失败 → 完全隐形。
+    """
+    prof = _profile(profiles, window_count=99)
+    out = profiles.detect(
+        "account",
+        _obs(kind="account", success=0, fail=0, errors=800, count=1000),
+        prof,
+    )
+    reasons = _reasons(out)
+    assert "错误响应突增" in reasons
+    assert out["risk"] >= 0.3
+
+
+def test_error_response_needs_ratio_and_count(profiles: ModuleType) -> None:
+    prof = _profile(profiles, window_count=99)
+    # 次数太少：不报
+    low_count = profiles.detect(
+        "account", _obs(kind="account", success=0, fail=0, errors=10, count=1000), prof
+    )
+    assert "错误响应突增" not in _reasons(low_count)
+    # 占比太低：不报
+    low_ratio = profiles.detect(
+        "account", _obs(kind="account", success=0, fail=0, errors=100, count=100000), prof
+    )
+    assert "错误响应突增" not in _reasons(low_ratio)
+
+
+def test_cold_start_is_by_window_not_event_count(profiles: ModuleType) -> None:
+    """冷启动按窗口数：事件很多但只观测到 1 个窗口，仍算冷启动（只学不告警）。"""
+    prof = _profile(profiles, window_count=1, obs_count=100000)
+    out = profiles.detect("account", _obs(kind="account", src_ips=["198.51.100.99"]), prof)
+    assert out["cold_start"] is True and out["reasons"] == []
+    ready = _profile(profiles, window_count=5, obs_count=10)
+    assert profiles.detect("account", _obs(kind="account"), ready)["cold_start"] is False
+
+
+def test_session_cross_ip_ignores_same_subnet(profiles: ModuleType) -> None:
+    """同一 /24 内换地址（移动网常态）不算会话跨 IP；跨网段才算。"""
+    prof = _profile(profiles, kind="session", window_count=99, src_ips={"10.0.0.1": 5})
+    same_subnet = profiles.detect(
+        "session",
+        _obs(kind="session", src_ips=["10.0.0.5", "10.0.0.9"]),
+        prof,
+    )
+    assert "会话跨" not in _reasons(same_subnet)
+    other_subnet = profiles.detect(
+        "session",
+        _obs(kind="session", src_ips=["10.0.0.5", "10.9.9.9"]),
+        prof,
+    )
+    assert "会话跨" in _reasons(other_subnet)
+
+
+def test_auth_success_only_counts_login_paths(profiles: ModuleType) -> None:
+    """成功/失败只统计认证请求：静态资源与接口的成功不再稀释「认证失败突增」。"""
+    from app.schemas import UnifiedLog
+
+    def entry(path: str, code: int) -> UnifiedLog:
+        return UnifiedLog(
+            source_system="zeek",
+            ts=__import__("datetime").datetime(2026, 10, 17, tzinfo=__import__("datetime").UTC),
+            event_type="http_request",
+            log_type="http",
+            src_ip="203.0.113.9",
+            dst_ip="10.0.0.80",
+            uri_path=path,
+            status_code=code,
+        )
+
+    bucket = {
+        "src_ips": __import__("collections").Counter(),
+        "dst_ips": __import__("collections").Counter(),
+        "user_agents": __import__("collections").Counter(),
+        "paths": __import__("collections").Counter(),
+        "hours": __import__("collections").Counter(),
+        "success": 0,
+        "fail": 0,
+        "errors": 0,
+        "count": 0,
+    }
+    profiles._accumulate(bucket, entry("/static/app.js", 200))  # 非认证：不计成功
+    profiles._accumulate(bucket, entry("/api/data", 200))  # 非认证：不计成功
+    profiles._accumulate(bucket, entry("/login", 200))  # 认证：计成功
+    profiles._accumulate(bucket, entry("/login", 401))  # 认证：计失败
+    profiles._accumulate(bucket, entry("/admin/x.php", 404))  # 错误响应
+    assert bucket["success"] == 1
+    assert bucket["fail"] == 1
+    assert bucket["errors"] == 1

@@ -247,6 +247,13 @@ class EntityProfile(Base):
     hour_hist: Mapped[dict] = mapped_column(JSONB, default=dict)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: 错误响应计数（status ≥ 400 且不是 401/403）。为什么要单独记：
+    #: 成功只算 <400、失败只认 401/403，于是 404 风暴这类「探测/扫描」痕迹在画像里完全隐形
+    #: （实测某账号 63,243 条 404，画像既不算成功也不算失败）。
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: 该画像被观测到**多少个窗口**（不是事件条数）。冷启动门槛按窗口算：
+    #: 原来按事件条数（5 条日志）就放行，新实体刚出现就开始判异常，早期误报多。
+    window_count: Mapped[int] = mapped_column(Integer, default=0)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     #: 风险分/异常理由的**判定时间**（= 本轮落库时间）。为什么要单独一列：`updated_at`
     #: 每轮观测都会刷新，拿它当「风险时间」会让几小时前的陈旧风险看着像刚刚算出来的

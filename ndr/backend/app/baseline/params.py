@@ -199,6 +199,35 @@ KNOBS: tuple[Knob, ...] = (
         note="画像已知接口路径 ≥ 这么多条才判「新接口路径」",
     ),
     Knob(
+        "profile.min_windows",
+        "冷启动门槛（窗口数）",
+        "int",
+        settings.profile_min_windows,
+        low=1,
+        high=100,
+        unit="个窗口",
+        note="被观测到这么多个落库窗口才参与打分（按窗口、不按事件条数）",
+    ),
+    Knob(
+        "profile.error_min_count",
+        "错误响应·次数门槛",
+        "int",
+        settings.profile_error_min_count,
+        low=1,
+        high=1000000,
+        unit="次",
+        note="status ≥ 400（非 401/403）的次数达到它才判「错误响应突增」",
+    ),
+    Knob(
+        "profile.error_ratio",
+        "错误响应·占比门槛",
+        "float",
+        settings.profile_error_ratio,
+        low=0.0,
+        high=1.0,
+        note="错误响应占本窗口事件的比例达到它才算异常",
+    ),
+    Knob(
         "profile.retention_days",
         "画像保留",
         "int",
@@ -280,6 +309,18 @@ def profile_enabled() -> bool:
 
 def min_obs() -> int:
     return int(_num(_BY_KEY["profile.min_obs"]))
+
+
+def min_windows() -> int:
+    return max(1, int(_num(_BY_KEY["profile.min_windows"])))
+
+
+def error_min_count() -> int:
+    return max(1, int(_num(_BY_KEY["profile.error_min_count"])))
+
+
+def error_ratio() -> float:
+    return _num(_BY_KEY["profile.error_ratio"])
 
 
 def risk_threshold() -> float:

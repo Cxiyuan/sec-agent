@@ -686,9 +686,7 @@ def test_panel_groups_assets_by_scope() -> None:
     assert "异常判定只看这一块" in src or "只展示" in src
 
 
-def test_refresh_scopes_heals_old_rows(
-    asset: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_refresh_scopes_heals_old_rows(asset: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """口径 C 之前落库的资产行 scope 是空串，清理任务要按当前网段口径补上。"""
     asset_mod = asset
 
@@ -721,10 +719,16 @@ def test_refresh_scopes_heals_old_rows(
         def __exit__(self, *exc: object) -> None:
             return None
 
-    rows = [_ScopeRow("10.1.2.3:80:visits", ""), _ScopeRow("8.8.8.8:53:visits", ""), _ScopeRow("www.example.com:80:visits", "")]
+    rows = [
+        _ScopeRow("10.1.2.3:80:visits", ""),
+        _ScopeRow("8.8.8.8:53:visits", ""),
+        _ScopeRow("www.example.com:80:visits", ""),
+    ]
     db = _DB(rows)
     monkeypatch.setattr(asset_mod, "SessionLocal", lambda: db)
-    monkeypatch.setattr(asset_mod, "scope_of_ip", lambda ip: "internal" if str(ip).startswith("10.") else "external")
+    monkeypatch.setattr(
+        asset_mod, "scope_of_ip", lambda ip: "internal" if str(ip).startswith("10.") else "external"
+    )
     fixed = asset_mod.refresh_scopes()
     assert fixed == 3, "内网/公网/主机名三行都要修（主机名落 internal）"
     assert rows[0].scope == "internal"

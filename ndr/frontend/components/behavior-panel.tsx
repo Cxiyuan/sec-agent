@@ -228,7 +228,8 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
         <HourBars hist={row.hour_hist} />
       </div>
       <p className="text-muted-foreground">
-        失败 {row.fail_count ?? 0} / 成功 {row.success_count ?? 0} · 观测 {row.obs_count ?? 0} 次 ·
+        认证失败 {row.fail_count ?? 0} / 成功 {row.success_count ?? 0} · 错误响应{}
+        {row.error_count ?? 0} 次 · 观测 {row.obs_count ?? 0} 条事件 / {row.window_count ?? 0} 个窗口 ·
         首次 {formatDateTime(row.first_seen)} · 最近 {formatDateTime(row.last_seen)}
       </p>
     </div>
@@ -408,7 +409,8 @@ export function BehaviorPanel() {
 
   const stats = overview?.stats;
   // 画像的「生效中」口径 = 观测次数到了冷启动门槛（后端 detect() 的同一个判据）
-  const minObs = Number(config?.effective?.["profile.min_obs"] ?? 5);
+  // 冷启动按**窗口数**看（不是事件条数）：实体被观测到足够多个落库窗口才参与打分
+  const minWindows = Number(config?.effective?.["profile.min_windows"] ?? 5);
   const dirtyItems = (config?.items ?? []).filter((item) => changed(item, draft));
   const groups: { title: string; prefix: string; hint: string }[] = [
     {
@@ -651,7 +653,7 @@ export function BehaviorPanel() {
             账号 / 会话画像列表
             <span className="text-xs font-normal text-muted-foreground">
               <span className="text-emerald-500">生效中</span>=观测次数已达冷启动门槛（
-              {minObs} 次）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
+              {minWindows} 个窗口）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
               风险分按当前窗口算（本轮无理由即归零），点一行展开细节
             </span>
           </CardTitle>
@@ -706,7 +708,7 @@ export function BehaviorPanel() {
                   <TableHead>最近出现</TableHead>
                   <TableHead>观测</TableHead>
                   <TableHead>服务端 IP</TableHead>
-                  <TableHead>失败/成功</TableHead>
+                  <TableHead>认证失败/成功 · 错误</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -728,11 +730,11 @@ export function BehaviorPanel() {
                         <TableCell>{row.kind === "account" ? "账号" : "会话"}</TableCell>
                         <TableCell>
                           <StateBadge
-                            judging={obs >= minObs}
+                            judging={(row.window_count ?? 0) >= minWindows}
                             hint={
-                              obs >= minObs
+                              (row.window_count ?? 0) >= minWindows
                                 ? "已过冷启动：参与风险打分"
-                                : `观测 ${obs}/${minObs} 次，还没到冷启动门槛`
+                                : `已观测 ${row.window_count ?? 0}/${minWindows} 个窗口，还没到冷启动门槛`
                             }
                           />
                         </TableCell>
@@ -756,7 +758,15 @@ export function BehaviorPanel() {
                           {ipLabels(row.dst_ips, 2) || "-"}
                         </TableCell>
                         <TableCell className="text-xs">
-                          {row.fail_count ?? 0}/{row.success_count ?? 0}
+                          {row.fail_count ?? 0}/{row.success_count ?? 0} ·{" "}
+                          <span
+                            className={
+                              (row.error_count ?? 0) > 0 ? "text-amber-500" : "text-muted-foreground"
+                            }
+                            title="错误响应（status ≥ 400 且非 401/403）：404 风暴这类探测痕迹"
+                          >
+                            {row.error_count ?? 0}
+                          </span>
                         </TableCell>
                       </TableRow>
                       {open ? (

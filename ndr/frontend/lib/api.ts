@@ -494,7 +494,12 @@ export interface BaselineProfile {
   paths?: Record<string, number>;
   hour_hist?: Record<string, number>;
   success_count?: number;
+  /** 认证失败/成功（只统计认证请求：登录路径、ssh/mysql 这类日志） */
   fail_count?: number;
+  /** 错误响应（status ≥ 400 且非 401/403）：404 风暴这类探测痕迹 */
+  error_count?: number;
+  /** 被观测到的窗口数（冷启动门槛按它算） */
+  window_count?: number;
   first_seen?: string | null;
   last_seen?: string | null;
 }

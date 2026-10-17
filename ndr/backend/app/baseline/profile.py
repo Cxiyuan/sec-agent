@@ -89,6 +89,19 @@ def _v6_prefix(ip: str) -> str:
         return str(ip)
 
 
+def _v4_prefix(ip: str) -> str:
+    """取 IPv4 的 /24 网段。
+
+    为什么：会话跨 IP 判据原来数「同族里有几个不同地址」，而移动网/负载均衡在**同一个 /24**
+    里换地址是常态 —— 实测抽查 200 条高风险会话，36 条是「跨 2~3 个同族源 IP（疑似会话劫持）」，
+    绝大多数是这种同网段切换。压到 /24（v6 压到 /64）后，只有真正跨网段才算跨 IP。
+    """
+    try:
+        return str(ipaddress.IPv4Network(f"{ip}/24", strict=False))
+    except ValueError:
+        return str(ip)
+
+
 def _families(ips: Iterable[str]) -> tuple[set[str], set[str]]:
     """把地址按 v4 / v6 分开。
 
@@ -254,8 +267,38 @@ def _new_bucket(kind: str, key: str, display: str) -> dict[str, Any]:
         "hours": Counter(),
         "success": 0,
         "fail": 0,
+        # 4xx/5xx 里除认证失败之外的错误（404 风暴这类扫描痕迹）
+        "errors": 0,
         "count": 0,
     }
+
+
+#: 认证类日志（没有 HTTP 路径，但语义上就是"一次认证尝试"）
+_AUTH_LOG_TYPES = frozenset({"ssh", "mysql", "radius", "ftp", "smtp", "ldap", "smb_mapping"})
+
+_login_regex_cache: list[re.Pattern[str] | None] = []
+
+
+def _login_path_regex() -> re.Pattern[str] | None:
+    if not _login_regex_cache:
+        try:
+            _login_regex_cache.append(re.compile(settings.web_login_path_regex))
+        except re.error:
+            _login_regex_cache.append(re.compile(r"(?i)/(login|signin|auth)"))
+    return _login_regex_cache[0]
+
+
+def _is_auth_request(entry: UnifiedLog) -> bool:
+    """这条事件算不算「一次认证尝试」（认证失败突增只在认证请求上才有意义）。
+
+    为什么必须限定：成功原来统计**所有** <400 请求（含图片/静态/接口），一个活跃会话
+    的成功数动辄成百上千 —— 失败:成功 的比例被稀释到几乎永不触发「认证失败突增」。
+    """
+    path = str(entry.uri_path or "")
+    if path:
+        pattern = _login_path_regex()
+        return bool(pattern and pattern.search(path))
+    return str(entry.log_type or "") in _AUTH_LOG_TYPES
 
 
 def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
@@ -277,9 +320,16 @@ def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
     bucket["hours"][str(beijing_hour(entry.ts))] += 1
     if entry.status_code:
         if entry.status_code in (401, 403):
-            bucket["fail"] += 1
+            # 认证失败：只认认证请求（登录路径 / ssh·mysql 这类认证日志）
+            if _is_auth_request(entry):
+                bucket["fail"] += 1
         elif entry.status_code < 400:
-            bucket["success"] += 1
+            # 成功也只认认证请求，否则静态资源/接口的成功把失败比例稀释掉
+            if _is_auth_request(entry):
+                bucket["success"] += 1
+        else:
+            # 4xx/5xx（除认证失败）：探测/扫描/坏链接的直接痕迹，单独计数
+            bucket["errors"] += 1
 
 
 def _trim(bucket: dict[str, Any]) -> None:
@@ -345,7 +395,9 @@ def load_profiles(keys: list[tuple[str, str]]) -> dict[str, EntityProfile]:
 
 def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dict[str, Any]:
     """与长期基线比对，返回 {reasons, risk, cold_start}。冷启动只学习不告警。"""
-    if profile is None or (profile.obs_count or 0) < params.min_obs():
+    # 冷启动按**窗口数**：原来按事件条数，一个实体刚来 5 条日志就参与打分，早期误报多。
+    # 老画像（window_count 还是 0）由部署时的一次性回填处理，不会因此集体进冷启动。
+    if profile is None or _safe_int(getattr(profile, "window_count", 0)) < params.min_windows():
         return {"reasons": [], "risk": 0.0, "cold_start": True}
 
     reasons: list[str] = []
@@ -399,9 +451,20 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     if kind == SESSION:
         # 只在**同族内** ≥ 2 个才算会话跨 IP：v4+v6 是同一客户端的双栈，不是劫持
         v4, v6 = _families(obs["src_ips"])
+        # 压到网段再看：同 /24（v6 /64）内的地址切换是移动网常态，不算跨 IP
+        v4 = {_v4_prefix(ip) for ip in v4}
+        v6 = {_v6_prefix(ip) for ip in v6}
         if len(v4) >= 2 or len(v6) >= 2:
             reasons.append(f"会话跨 {len(v4) + len(v6)} 个同族源 IP（疑似会话劫持）")
             risk += 0.45
+
+    # 错误响应突增：404/5xx 风暴是探测与扫描最直接的痕迹（成功/失败都看不到它）
+    errors = _safe_int(obs.get("errors"))
+    window_events = _safe_int(obs.get("count")) or 1
+    error_ratio = errors / window_events
+    if errors >= params.error_min_count() and error_ratio >= params.error_ratio():
+        reasons.append(f"错误响应突增（{errors} 次，占本窗口事件 {error_ratio:.0%}）")
+        risk += 0.3
 
     score, suffix = fail_burst_score(obs["fail"], obs["success"])
     if score > 0:
@@ -514,6 +577,9 @@ def update_profiles(
                 row.hour_hist = _merge(row.hour_hist, obs["hours"], _LIMITS["hour_hist"])
                 row.success_count = (row.success_count or 0) + _safe_int(obs["success"])
                 row.fail_count = (row.fail_count or 0) + _safe_int(obs["fail"])
+                row.error_count = (row.error_count or 0) + _safe_int(obs.get("errors"))
+                # 每落库一次算「被观测到一个窗口」（冷启动门槛按它算）
+                row.window_count = (row.window_count or 0) + 1
 
                 # 回写本轮异常风险（供列表排序与 TOP）：**本轮没理由就归零**。
                 # 不归零的后果（2026-10 实机 QA）：实体一旦被报过就永久挂在「画像风险 TOP」，
@@ -588,6 +654,8 @@ def _profile_dict(p: EntityProfile) -> dict[str, Any]:
         "hour_hist": p.hour_hist or {},
         "success_count": p.success_count,
         "fail_count": p.fail_count,
+        "error_count": p.error_count,
+        "window_count": p.window_count,
         "anomalies": p.anomalies or [],
     }
 

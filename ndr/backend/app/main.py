@@ -35,6 +35,8 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS dst_ips JSONB NOT NULL DEFAULT '{}'::jsonb",
     # 被访问方资产的归属（口径 C，2026-10）：internal（内网，异常判定只看它）/ external（公网目标）
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS window_count INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
