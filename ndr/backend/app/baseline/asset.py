@@ -318,7 +318,15 @@ def refresh_scopes() -> int:
                 try:
                     ipaddress.ip_address(candidate)
                 except ValueError:
-                    continue  # hostname 资产：判不了归属，保持原样
+                    # hostname 类资产（有 Host/SNI 的站点）：从名字判不了归属。
+                    # 读取侧本来就把它按「内网」处理（口径 C：宁可对内判、不漏），
+                    # 但 by_scope 统计把它算成「归属未定」→ 界面「共 N（内网 X / 外部 Y）」
+                    # 仍对不上。所以这里也落 internal，让写与读同一个口径。
+                    row.scope = SCOPE_INTERNAL
+                    if not feature:
+                        continue
+                    fixed += 1
+                    continue
                 scope = scope_of_ip(candidate)
                 if row.scope != scope:
                     row.scope = scope

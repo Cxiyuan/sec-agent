@@ -726,8 +726,10 @@ def test_refresh_scopes_heals_old_rows(
     monkeypatch.setattr(asset_mod, "SessionLocal", lambda: db)
     monkeypatch.setattr(asset_mod, "scope_of_ip", lambda ip: "internal" if str(ip).startswith("10.") else "external")
     fixed = asset_mod.refresh_scopes()
-    assert fixed == 2, "内网/公网两行要修，hostname 行跳过"
+    assert fixed == 3, "内网/公网/主机名三行都要修（主机名落 internal）"
     assert rows[0].scope == "internal"
     assert rows[1].scope == "external"
-    assert rows[2].scope == "", "hostname 资产无从判定，保持原样"
+    # hostname 类资产从名字判不了归属：口径 C 是「宁可对内判」，写库时就落 internal，
+    # 免得 by_scope 把它统计成「归属未定」而界面「共 N（内网 X / 外部 Y）」又对不上。
+    assert rows[2].scope == "internal", "hostname 资产按内网处理（与读取侧同一口径）"
     assert db.committed is True
