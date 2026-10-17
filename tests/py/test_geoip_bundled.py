@@ -25,9 +25,12 @@ def test_repo_does_not_carry_the_database() -> None:
 def test_fetch_script_downloads_and_decompresses() -> None:
     src = (GEOIP_DIR / "fetch.sh").read_text(encoding="utf-8")
     assert "download.db-ip.com/free/dbip-city-lite" in src, "从 DB-IP 官方地址下载"
-    assert "gunzip" in src or "GzipFile" in src, "要解压成 .mmdb"
+    assert any(x in src for x in ("gunzip", "gzip.decompress", "GzipFile")), "要解压成 .mmdb"
     assert "CC BY 4.0" in src and "db-ip.com" in src, "许可要求保留归属"
     assert "不影响其它功能" in src, "下载失败不能阻断构建"
+    # DB-IP 会 403 掉 urllib 的默认 UA（实测），必须显式带 UA
+    assert "User-Agent" in src, "下载要带 UA（否则 DB-IP 返回 403）"
+    assert "python3" in src and "python" in src, "解释器要自动探测（镜像里可能只有 python3）"
 
 
 def test_dockerfile_fetches_at_build_time() -> None:
