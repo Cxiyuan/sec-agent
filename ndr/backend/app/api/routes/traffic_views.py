@@ -245,7 +245,9 @@ def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
                     "bi": {"sum": {"field": "bytes_in"}},
                     "docs": {"value_count": {"field": "@timestamp"}},
                     "last_seen": {"max": {"field": "@timestamp"}},
-                    "hostname": {"terms": {"field": "hostname.keyword", "size": 1}},
+                    # 取 3 个候选：每个"对"里排第一的常常是 `IP:端口`（Zeek 没域名时这么写），
+                    # 清洗后会变空 —— 多取两个才容易捞到真域名
+                    "hostname": {"terms": {"field": "hostname.keyword", "size": 3}},
                     "ports": {
                         "terms": {"field": "dst_port", "size": 10, "order": {"bo": "desc"}},
                         "aggs": {"bo": {"sum": {"field": "bytes_out"}}, "bi": {"sum": {"field": "bytes_in"}}},
@@ -305,7 +307,11 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
         # 主机名只从"对外业务"视角取（那时它才是被访问资产的域名）；
         # 横向/外连视角里 hostname 是"客户端访问过的域名"，不是这台主机自己的名字。
         if hosts and view == "outbound" and not row["hostname"]:
-            row["hostname"] = _clean_hostname(str(hosts[0].get("key") or ""), subject)
+            for host in hosts:
+                cleaned = _clean_hostname(str(host.get("key") or ""), subject)
+                if cleaned:
+                    row["hostname"] = cleaned
+                    break
         row["peer_set"].add(peer)
         for pb in (((bucket.get("ports") or {}).get("buckets")) or []):
             port = pb.get("key")
