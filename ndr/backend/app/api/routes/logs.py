@@ -71,6 +71,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "auth_success": "认证成功",
     "signature_hit": "签名命中",
     "zeek_notice": "Zeek 告警",
+    "tls_session": "TLS 会话",
     "brute_force": "暴力破解",
     "credential_abuse": "凭据滥用",
     "lateral_movement": "横向移动",
@@ -110,6 +111,12 @@ LOG_TYPE_LABELS: dict[str, str] = {
     "ocsp": "OCSP",
     "websocket": "WebSocket",
     "tunnel": "隧道",
+    "kerberos": "Kerberos",
+    "mqtt_connect": "MQTT 连接",
+    "mqtt_publish": "MQTT 发布",
+    "rdp": "远程桌面",
+    "redis": "Redis",
+    "syslog": "系统日志",
 }
 
 
