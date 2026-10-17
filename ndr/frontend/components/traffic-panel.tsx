@@ -99,7 +99,7 @@ interface PeersResult {
 const VIEW_META: Record<View, { title: string; subject: string; peer: string }> = {
   outbound: { title: "对外业务流量", subject: "被访问资产", peer: "公网客户端" },
   lateral: { title: "横向访问流量", subject: "内网发起方", peer: "内网对端" },
-  egress: { title: "外连流量", subject: "内网发起方", peer: "公网目标" },
+  egress: { title: "外连流量", subject: "内网发起方", peer: "公网目标（含外连地域 TOP5）" },
 };
 
 /** 上下行对比条：两个方向按比例画（一眼看出是"下载多"还是"上传多"） */
@@ -356,9 +356,12 @@ export function TrafficPanel({ view }: { view: View }) {
                   <TableHead className="whitespace-nowrap">主机名（IP）</TableHead>
                   <TableHead className="whitespace-nowrap">总流量</TableHead>
                   <TableHead className="whitespace-nowrap">上/下行</TableHead>
-                  {view === "outbound" ? (
-                    <TableHead className="whitespace-nowrap">访问地域 TOP5</TableHead>
-                  ) : (
+                  {view === "lateral" ? null : (
+                    <TableHead className="whitespace-nowrap">
+                      {view === "outbound" ? "访问地域 TOP5" : "外连地域 TOP5"}
+                    </TableHead>
+                  )}
+                  {view === "outbound" ? null : (
                     <TableHead className="whitespace-nowrap">不同对端 IP</TableHead>
                   )}
                   <TableHead className="whitespace-nowrap">应用 TOP10</TableHead>
@@ -395,8 +398,9 @@ export function TrafficPanel({ view }: { view: View }) {
                     <TableCell>
                       <UpDownBar out={row.bytes_out} inb={row.bytes_in} />
                     </TableCell>
-                    {view === "outbound" ? (
+                    {view === "lateral" ? null : (
                       <TableCell className="max-w-[200px]">
+                        {/* 对外业务：客户端的访问地域；外连：**目的 IP** 的地域（用户 2026-10 要求） */}
                         <div className="flex flex-wrap gap-1">
                           {(row.regions.length ? row.regions : [{ region: "未知", count: 0 }])
                             .slice(0, 5)
@@ -404,6 +408,11 @@ export function TrafficPanel({ view }: { view: View }) {
                               <span
                                 key={r.region}
                                 className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                title={
+                                  view === "egress"
+                                    ? "按对端目的 IP 统计的地域出现次数"
+                                    : "按客户端 IP 统计的地域出现次数"
+                                }
                               >
                                 {r.region}
                                 {r.count ? `（${r.count}）` : ""}
@@ -411,7 +420,8 @@ export function TrafficPanel({ view }: { view: View }) {
                             ))}
                         </div>
                       </TableCell>
-                    ) : (
+                    )}
+                    {view === "outbound" ? null : (
                       <TableCell className="whitespace-nowrap text-xs">
                         <Badge variant="secondary">{row.peers}</Badge>
                       </TableCell>
