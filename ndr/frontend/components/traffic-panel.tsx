@@ -91,7 +91,7 @@ interface PeerNode {
 interface PeersResult {
   center: string;
   nodes: PeerNode[];
-  edges: Array<{ source: string; target: string; bytes: number }>;
+  edges: Array<{ source: string; target: string; bytes: number; bytes_out?: number; bytes_in?: number }>;
   error?: string;
   warning?: string;
 }
@@ -182,47 +182,103 @@ export function TrafficPanel({ view }: { view: View }) {
   const meta = VIEW_META[view];
   const rows = data?.items ?? [];
 
+  // 拓扑图（2026-10 用户要求）：
+  // - **以当前选中的 IP 为中心**，其它 IP 环绕排布（手动算坐标，不用 force，位置稳定不飘）；
+  // - 节点用**服务器图标**（不是圆圈）；
+  // - 线路可读：鼠标移到线路上提示**上行/下行各多少**。
   const graphOption = React.useMemo<EChartsOption>(() => {
     if (!peers) return {};
     const center = peers.center;
-    const nodeData = peers.nodes.map((n) => ({
-      id: n.ip,
-      name: n.ip,
-      symbolSize: n.role === "center" ? 46 : Math.max(14, Math.min(34, 12 + Math.log10(1 + n.bytes) * 3)),
-      itemStyle: {
-        color:
-          n.role === "center"
-            ? "#1d4ed8"
-            : n.internal
-              ? "#0ea5e9"
-              : "#94a3b8",
+    const peersOnly = peers.nodes.filter((n) => n.ip !== center);
+    const rings = peersOnly.length > 12 ? [230, 360] : [260];
+    const perRing = Math.max(1, Math.ceil(peersOnly.length / rings.length));
+    const maxBytes = Math.max(1, ...peersOnly.map((n) => n.bytes));
+    // 服务器图标（堆叠机箱）：用作 symbol，颜色由 itemStyle 控制
+    // 服务器图标：两个叠放的机箱（简单路径，避免小数点在源码里连成 IP 的样子）
+    const SERVER_ICON = "path://M2 3h20v7H2zM2 14h20v7H2z";
+
+    const nodeData: Array<Record<string, unknown>> = [
+      {
+        id: center,
+        name: center,
+        x: 0,
+        y: 0,
+        symbol: SERVER_ICON,
+        symbolSize: [56, 56],
+        symbolOffset: [0, 0],
+        itemStyle: { color: "#1d4ed8" },
+        label: { show: true, position: "bottom", fontSize: 11, fontWeight: "bold", color: "#0f172a" },
+        category: "中心",
       },
-      label: { show: true, fontSize: 9, formatter: n.ip },
-    }));
+    ];
+    peersOnly.forEach((node, index) => {
+      const ring = Math.floor(index / perRing);
+      const radius = rings[Math.min(ring, rings.length - 1)];
+      const inRing = Math.min(perRing, peersOnly.length - ring * perRing);
+      const slot = index - ring * perRing;
+      const angle = (slot / Math.max(1, inRing)) * Math.PI * 2 - Math.PI / 2;
+      const weight = Math.log10(1 + node.bytes) / Math.log10(1 + maxBytes);
+      nodeData.push({
+        id: node.ip,
+        name: node.hostname ? `${node.hostname}\n${node.ip}` : node.ip,
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
+        symbol: SERVER_ICON,
+        symbolSize: [26 + weight * 14, 26 + weight * 14],
+        itemStyle: { color: node.internal ? "#0ea5e9" : "#94a3b8" },
+        label: { show: true, position: "bottom", fontSize: 9, color: "#334155" },
+        category: node.internal ? "网段内" : "网段外",
+      });
+    });
+
     const linkData = peers.edges.map((e) => ({
-      source: e.source === center ? center : e.target === center ? e.source : e.target,
-      target: center,
+      source: peers.center,
+      target: e.target === peers.center ? e.source : e.target,
       value: e.bytes,
-      lineStyle: { width: Math.max(1, Math.min(6, Math.log10(1 + e.bytes) / 2)), opacity: 0.5 },
+      bytesOut: (e as { bytes_out?: number }).bytes_out ?? 0,
+      bytesIn: (e as { bytes_in?: number }).bytes_in ?? 0,
+      lineStyle: {
+        width: Math.max(1, Math.min(7, Math.log10(1 + e.bytes) / 1.6)),
+        color: "#94a3b8",
+        opacity: 0.55,
+        curveness: 0.06,
+      },
     }));
+
     return {
       tooltip: {
-        formatter: (p: unknown) => {
-          const item = p as { data?: { name?: string; value?: number }; dataType?: string };
-          if (item.dataType === "edge") return formatBytes(Number(item.data?.value || 0));
-          return String(item.data?.name || "");
+        confine: true,
+        formatter: (params: unknown) => {
+          const item = params as {
+            dataType?: string;
+            data?: { name?: string; value?: number; bytesOut?: number; bytesIn?: number };
+          };
+          if (item.dataType === "edge") {
+            // 线路：上下行分开报（用户明确要求）
+            return [
+              "<b>链路流量</b>",
+              `上行 ↑ ${formatBytes(Number(item.data?.bytesOut || 0))}`,
+              `下行 ↓ ${formatBytes(Number(item.data?.bytesIn || 0))}`,
+              `合计 ${formatBytes(Number(item.data?.value || 0))}`,
+            ].join("<br/>");
+          }
+          return `<b>${item.data?.name ?? ""}</b><br/>流量 ${formatBytes(Number(item.data?.value || 0))}`;
         },
       },
       series: [
         {
           type: "graph" as const,
-          layout: "force" as const,
+          // 位置全部手算（以中心 IP 为原点画同心圆），不用 force：拖拽后不飘、刷新不跳
+          layout: "none" as const,
           roam: true,
           draggable: true,
-          force: { repulsion: 220, edgeLength: [60, 130], gravity: 0.08 },
+          symbolKeepAspect: true,
+          edgeSymbol: ["none", "arrow"],
+          edgeSymbolSize: [0, 6],
           data: nodeData,
           links: linkData,
-          emphasis: { focus: "adjacency" },
+          labelLayout: { hideOverlap: true },
+          emphasis: { focus: "adjacency", lineStyle: { width: 3, opacity: 0.9 } },
         },
       ],
     };
@@ -410,7 +466,7 @@ export function TrafficPanel({ view }: { view: View }) {
             <div className="max-h-40 overflow-auto border-t px-4 py-2 text-[11px] text-muted-foreground">
               <p className="mb-1">
                 中心：<span className="font-mono text-foreground">{peers.center}</span> ·
-                蓝 = 中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量
+                深蓝 = 中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量 · 悬停线路看上下行
               </p>
               <div className="flex flex-wrap gap-2">
                 {peers.edges.slice(0, 20).map((e) => (

@@ -1,9 +1,10 @@
-"""离线地理库随镜像发布（可视化流量的「访问地域 TOP5」）。
+"""离线地理库：构建期现下（不再把 57MB 数据文件放进仓库）。
 
-钉住三件事，防止哪次重构把这项能力悄悄丢掉：
-1. 库文件在仓库里（`ndr/backend/geoip/*.mmdb.gz`）；
-2. Dockerfile 解压到镜像里并设置 `ST_GEOIP_DB`；
-3. 文件真的是 MaxMind 格式（尾部有 metadata 标记）—— 下错文件（比如下成网页）能立刻发现。
+钉住：
+1. 仓库里只有下载脚本 `ndr/backend/geoip/fetch.sh`（不含 .mmdb/.gz 数据文件）；
+2. Dockerfile 构建时调用它、并设置 `ST_GEOIP_DB`；
+3. 脚本带 CC BY 4.0 归属声明（DB-IP 许可要求）；
+4. `app/geoip.py` 的 geoip2 是懒加载，失败返回空串（不影响其它功能）。
 """
 
 from __future__ import annotations
@@ -13,52 +14,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GEOIP_DIR = ROOT / "ndr" / "backend" / "geoip"
 
-#: MaxMind mmdb 的元数据标记（固定 14 字节）
-MMDB_MARKER = b"\xab\xcd\xefMaxMind.com"
+
+def test_repo_does_not_carry_the_database() -> None:
+    """仓库里不该再有 mmdb / mmdb.gz（用户要求：随 CI 现下）。"""
+    assert not list(GEOIP_DIR.glob("*.mmdb")), "仓库里不应有 .mmdb"
+    assert not list(GEOIP_DIR.glob("*.mmdb.gz")), "仓库里不应有 .mmdb.gz（改成构建期下载）"
+    assert (GEOIP_DIR / "fetch.sh").exists(), "下载脚本必须存在"
 
 
-def test_geoip_db_is_in_repo() -> None:
-    files = sorted(GEOIP_DIR.glob("*.mmdb.gz"))
-    assert files, "仓库里没有地理库文件（ndr/backend/geoip/*.mmdb.gz）"
-    assert files[0].stat().st_size > 1024 * 1024, "库文件太小，八成下错了"
+def test_fetch_script_downloads_and_decompresses() -> None:
+    src = (GEOIP_DIR / "fetch.sh").read_text(encoding="utf-8")
+    assert "download.db-ip.com/free/dbip-city-lite" in src, "从 DB-IP 官方地址下载"
+    assert "gunzip" in src or "GzipFile" in src, "要解压成 .mmdb"
+    assert "CC BY 4.0" in src and "db-ip.com" in src, "许可要求保留归属"
+    assert "不影响其它功能" in src, "下载失败不能阻断构建"
 
 
-def test_geoip_file_is_real_mmdb() -> None:
-    """真的是 MaxMind 格式（尾部有 metadata 标记）—— 下成网页/下错文件能立刻发现。
-
-    注意：不要对 gzip 流做 seek 到结尾再读（zlib 会报错），
-    改成**流式读、只留尾部 64KB**。
-    """
-    import gzip
-
-    files = sorted(GEOIP_DIR.glob("*.mmdb.gz"))
-    assert files, "仓库里没有地理库文件"
-    tail = b""
-    head = b""
-    with gzip.open(files[0], "rb") as fh:
-        head = fh.read(4)
-        chunk = fh.read(1024 * 1024)
-        while chunk:
-            tail = (tail + chunk)[-65536:]
-            chunk = fh.read(1024 * 1024)
-    assert head != b"<htm", "下成了网页（HTML）而不是地理库"
-    assert MMDB_MARKER in tail, "尾部没有 MaxMind metadata 标记，不是标准 mmdb"
-
-
-def test_image_ships_geoip_and_env() -> None:
+def test_dockerfile_fetches_at_build_time() -> None:
     dockerfile = (ROOT / "ndr" / "backend" / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY geoip ./geoip" in dockerfile, "Dockerfile 要把地理库复制进镜像"
-    assert "gunzip" in dockerfile and "/app/geoip/ip.mmdb" in dockerfile, "构建时解压到镜像内"
-    assert "ST_GEOIP_DB=/app/geoip/ip.mmdb" in dockerfile, "要设置默认路径，开箱可用"
+    assert "COPY geoip ./geoip" in dockerfile, "要复制脚本进镜像"
+    assert "fetch.sh /app/geoip" in dockerfile, "构建时执行下载脚本"
+    assert "ST_GEOIP_DB=/app/geoip/ip.mmdb" in dockerfile, "默认路径要设好"
 
 
-def test_geoip_reader_is_lazy() -> None:
-    """没配库 / 库坏了不能让流量页挂掉（geoip2 懒加载，失败只记日志）。"""
+def test_geoip_reader_is_lazy_and_never_raises() -> None:
     src = (ROOT / "ndr" / "backend" / "app" / "geoip.py").read_text(encoding="utf-8")
-    # 导入放函数体内（模块级导入会让"没装/没库"直接炸在启动阶段）
     module_level = src.split("def _open(")[0]
     assert "from geoip2.database import Reader" not in module_level, "geoip2 必须懒加载"
-    assert "from geoip2.database import Reader" in src, "真要用时得能拿到 Reader"
-    # 打开/查询失败都吞掉，返回空串让调用方显示「未知」
-    assert "_reader_error" in src
-    assert "except Exception" in src
+    assert "from geoip2.database import Reader" in src
+    assert 'return ""' in src
+    assert "lru_cache" in src

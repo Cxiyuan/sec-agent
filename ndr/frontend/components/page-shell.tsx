@@ -38,15 +38,13 @@ export function PageShell({
       <Nav />
       <main
         className={cn(
-          "pb-8 pt-[4.75rem] transition-[margin] duration-150",
+          "pb-4 pt-[4.25rem] transition-[margin] duration-150",
           hasSidebar ? "ml-60" : "ml-0",
-          fluid ? "px-4" : "px-6",
+          fluid ? "px-3" : "px-6",
         )}
       >
-        <div className={cn("mb-4", !fluid && "mx-auto max-w-[1500px]")}>
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">{title}</h1>
-          {desc ? <p className="mt-1 text-sm text-muted-foreground">{desc}</p> : null}
-        </div>
+        {/* 2026-10 用户要求：页面不再显示 h1 标题与说明段落（信息都在页头菜单与卡片标题里），
+            正文直接铺满；`title/desc` 仅保留为可访问性/调试用途，不渲染。 */}
         <div className={cn("space-y-4", !fluid && "mx-auto max-w-[1500px]")}>{children}</div>
       </main>
     </div>

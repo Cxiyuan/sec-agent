@@ -5,10 +5,10 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY app ./app
-# 离线地理库（可视化流量的「访问地域 TOP5」）：gz 随仓库发布，构建时解压进镜像。
-# 解压后删掉 .gz：运行期只需要 .mmdb，少占 60MB 镜像体积。
+# 离线地理库（可视化流量的「访问地域 TOP5」）：**构建期现下**（DB-IP City Lite，CC BY 4.0），
+# 仓库里只放脚本、不放 57MB 数据文件。下载失败不阻断构建（没库时该能力自动关闭）。
 COPY geoip ./geoip
-RUN gunzip -c ./geoip/*.mmdb.gz > /app/geoip/ip.mmdb && rm -f ./geoip/*.mmdb.gz
+RUN sh ./geoip/fetch.sh /app/geoip
 
 RUN pip install --no-cache-dir .
 

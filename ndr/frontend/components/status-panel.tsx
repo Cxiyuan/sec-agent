@@ -17,7 +17,6 @@ import {
   TableHeader,
   TableRow,
   formatDateTime,
-  formatTime,
   severityVariant,
   apiFetch,
   ApiError,
@@ -57,7 +56,7 @@ import {
   queueTrendOption,
   rateFunnelOption,
   rateTrendOption,
-  ringOption,
+  resourceGaugesOption,
   ruleTopOption,
   severityOption,
   minuteTrafficOption,
@@ -89,14 +88,6 @@ const SRC = {
   logstash: "Logstash",
   overview: "流量与协议",
 } as const;
-
-const ANCHORS = [
-  { id: "server", label: "服务器" },
-  { id: "components", label: "组件" },
-  { id: "threats", label: "威胁事件" },
-  { id: "traffic", label: "流量与协议" },
-  { id: "chain", label: "链路细节" },
-] as const;
 
 /** 呼吸灯的配色与文案：ok 慢呼吸、degraded 快闪、down 常亮红、unknown 灰。 */
 const LIGHT_CLS: Record<ComponentState, string> = {
@@ -352,8 +343,6 @@ export function StatusPanel() {
   const [esStatus, setEsStatus] = React.useState<EsStatus | null>(null);
   const [logstash, setLogstash] = React.useState<LogstashStatus | null>(null);
   const [overview, setOverview] = React.useState<StatsOverview | null>(null);
-  const [auto, setAuto] = React.useState(true);
-  const [busy, setBusy] = React.useState(false);
 
   /**
    * 打开详情：**必须再拉一次详情接口** —— 列表按设计不带证据（证据只随详情返回），
@@ -413,7 +402,6 @@ export function StatusPanel() {
   }
 
   async function load() {
-    setBusy(true);
     errs.reset();
     await Promise.all([
       loadInto(errs, SRC.metrics, "/api/system/metrics", setMetrics),
@@ -430,7 +418,6 @@ export function StatusPanel() {
       loadInto(errs, SRC.logstash, "/api/logstash", setLogstash),
       loadInto(errs, SRC.overview, "/api/stats/overview?hours=24", setOverview),
     ]);
-    setBusy(false);
   }
 
   React.useEffect(() => {
@@ -439,23 +426,13 @@ export function StatusPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 运营中心**强制 5 秒**刷新（用户口径：不给刷新/关闭按钮，避免有人关掉后看到陈旧数据）。
+  // 服务端对流量聚合有 30 秒进程内缓存，所以 5 秒轮询不会把 ES 打穿。
   React.useEffect(() => {
-    if (!auto) return;
-    // 近期流量：5 秒滚一次（比整页 15 秒快）。配合图表「合并更新 + 线性动画」，
-    // 新的一秒从右边进来、最老的一秒从左边出去 —— 看起来是连续滚动，不是到点重画。
-    const timer = setInterval(() => {
-      void loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic);
-    }, 5000);
+    const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto]);
-
-  React.useEffect(() => {
-    if (!auto) return;
-    const timer = setInterval(() => void load(), 15000);
-    return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto]);
+  }, []);
 
   // items 每次渲染都是新数组 → 单独 memo，避免下面 charts 的依赖每次都变
   const historyItems = React.useMemo(() => history?.items ?? [], [history]);
@@ -475,9 +452,12 @@ export function StatusPanel() {
   // 数据没变时 option 引用不变 → 不会触发任何重绘。
   const charts = React.useMemo(
     () => ({
-      cpu: ringOption(metrics?.cpu_percent ?? null, "CPU"),
-      mem: ringOption(metrics?.mem_percent ?? null, "内存"),
-      disk: ringOption(metrics?.disk_percent ?? null, "磁盘"),
+      // 三个指标画在同一张仪表盘里（用户要求：别用三张卡片）
+      resource: resourceGaugesOption(
+        metrics?.cpu_percent ?? null,
+        metrics?.mem_percent ?? null,
+        metrics?.disk_percent ?? null,
+      ),
       queueCap: capacityRingOption(rate?.queue_raw_pct ?? null, "队列占用"),
       deliveredCap: capacityRingOption(
         stats?.rate_limit_per_minute
@@ -525,37 +505,7 @@ export function StatusPanel() {
   return (
     <Card>
       <CardContent className="space-y-5 pt-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => void load()} disabled={busy}>
-            {busy ? "读取中…" : "刷新"}
-          </Button>
-          <Button variant="outline" onClick={() => setAuto((v) => !v)}>
-            {auto ? "关闭自动刷新" : "开启自动刷新"}
-          </Button>
-          <span className="text-xs text-muted-foreground">{auto ? "每 15 秒自刷新。" : "自动刷新已关闭。"}</span>
-          {health?.checked_at ? (
-            <span className="text-xs text-muted-foreground">
-              组件探测 {formatTime(health.checked_at)}
-              {health.cached ? "（缓存）" : ""}
-            </span>
-          ) : null}
-          {overview?.computed_at ? (
-            <span className="text-xs text-muted-foreground">
-              流量聚合 {formatTime(overview.computed_at)}
-              {overview.cached ? "（缓存 5 分钟）" : ""}
-            </span>
-          ) : null}
-        </div>
-
         <PanelError errors={errs} />
-
-        <nav className="flex flex-wrap gap-2 text-xs">
-          {ANCHORS.map((a) => (
-            <a key={a.id} href={`#${a.id}`} className="rounded-md border px-2 py-1 text-muted-foreground hover:bg-accent">
-              {a.label}
-            </a>
-          ))}
-        </nav>
 
         {/* ---------- A. 服务器状态 ---------- */}
         <Section
@@ -565,23 +515,11 @@ export function StatusPanel() {
             metrics?.notes?.length ? <Badge variant="medium">{metrics.notes.join("；")}</Badge> : null
           }
         >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Card>
-              <CardContent className="pt-4">
-                <Chart option={charts.cpu} height={190} />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <Chart option={charts.mem} height={190} />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <Chart option={charts.disk} height={190} />
-              </CardContent>
-            </Card>
-          </div>
+          <Card>
+            <CardContent className="pt-3">
+              <Chart option={charts.resource} height={210} />
+            </CardContent>
+          </Card>
           <p className="text-xs text-muted-foreground">{bytesLine(metrics) || "指标未读到"}</p>
         </Section>
 

@@ -149,6 +149,52 @@ export function ringOption(value: number | null, name: string): EChartsOption {
   };
 }
 
+/**
+ * 服务器资源：**一个仪表盘画三个指标**（CPU / 内存 / 磁盘）。
+ *
+ * 为什么合并（2026-10 用户要求）：三个独立圆环占三张卡片、留白多、小屏要滚动；
+ * 合成一张后一屏能看全，比例也更好对齐。
+ */
+export function resourceGaugesOption(
+  cpu: number | null | undefined,
+  mem: number | null | undefined,
+  disk: number | null | undefined,
+): EChartsOption {
+  const items: Array<[string, number | null | undefined, string]> = [
+    ["CPU", cpu, "22%"],
+    ["内存", mem, "50%"],
+    ["磁盘", disk, "78%"],
+  ];
+  return {
+    series: items.map(([name, raw, x]) => {
+      const value = raw === null || raw === undefined ? 0 : Math.max(0, Math.min(100, raw));
+      const color = value >= 85 ? "#ef4444" : value >= 70 ? "#f59e0b" : "#1d4ed8";
+      return {
+        type: "gauge" as const,
+        center: [x, "52%"],
+        radius: "34%",
+        startAngle: 90,
+        endAngle: -270,
+        pointer: { show: false },
+        progress: { show: true, width: 10, roundCap: true, itemStyle: { color } },
+        axisLine: { lineStyle: { width: 10, color: [[1, "rgba(148,163,184,0.18)"]] } },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        title: { show: true, offsetCenter: [0, "52%"], fontSize: 12, color: "#475569" },
+        detail: {
+          offsetCenter: [0, 0],
+          fontSize: 20,
+          fontWeight: "bold",
+          formatter: raw === null || raw === undefined ? "—" : "{value}%",
+          color,
+        },
+        data: [{ value, name }],
+      };
+    }),
+  };
+}
+
 // ---------- 威胁事件 ----------
 
 /** 命中 / 摘要的 24h 趋势（多条折线，单位统一为条/分钟）。 */

@@ -465,9 +465,9 @@ def traffic_peers(
         peer_ip = str(bucket.get("key") or "")
         if not peer_ip:
             continue
-        value = int((bucket.get("bytes_out") or {}).get("value") or 0) + int(
-            (bucket.get("bytes_in") or {}).get("value") or 0
-        )
+        up = int((bucket.get("bytes_out") or {}).get("value") or 0)
+        down = int((bucket.get("bytes_in") or {}).get("value") or 0)
+        value = up + down
         hosts = ((bucket.get("hostname") or {}).get("buckets")) or []
         nodes.append(
             {
@@ -477,7 +477,8 @@ def traffic_peers(
                 "bytes": value,
             }
         )
-        edges.append({"source": ip, "target": peer_ip, "bytes": value})
+        # 边上带上下行：鼠标移到线路上要能提示"上行多少、下行多少"
+        edges.append({"source": ip, "target": peer_ip, "bytes": value, "bytes_out": up, "bytes_in": down})
         total += value
     nodes[0]["bytes"] = total
     return {

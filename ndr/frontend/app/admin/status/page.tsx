@@ -9,10 +9,7 @@ import { StatusPanel } from "@/components/status-panel";
  */
 export default function StatusPage() {
   return (
-    <PageShell
-      title="总览"
-      desc="服务器资源、各组件连接状态、威胁事件、24 小时流量与协议占比、链路细节 —— 每 15 秒自动刷新；ES 侧的 24h 聚合与组件探测在后端各自缓存，不会每轮都打 ES。"
-    >
+    <PageShell title="总览" desc="" fluid>
       <StatusPanel />
     </PageShell>
   );

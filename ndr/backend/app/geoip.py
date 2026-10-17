@@ -73,21 +73,91 @@ def _name(names: Any) -> str:
     return ""
 
 
+#: DB-IP 的省/州名是英文 → 中文（国外只显示国家，不需要省）。
+#: 键同时接受英文名与 ISO 3166-2 后缀（`CN-SD` 里的 `SD`）。
+_CN_PROVINCE: dict[str, str] = {
+    "beijing": "北京",
+    "tianjin": "天津",
+    "hebei": "河北",
+    "shanxi": "山西",
+    "inner mongolia": "内蒙古",
+    "liaoning": "辽宁",
+    "jilin": "吉林",
+    "heilongjiang": "黑龙江",
+    "shanghai": "上海",
+    "jiangsu": "江苏",
+    "zhejiang": "浙江",
+    "anhui": "安徽",
+    "fujian": "福建",
+    "jiangxi": "江西",
+    "shandong": "山东",
+    "henan": "河南",
+    "hubei": "湖北",
+    "hunan": "湖南",
+    "guangdong": "广东",
+    "guangxi": "广西",
+    "hainan": "海南",
+    "chongqing": "重庆",
+    "sichuan": "四川",
+    "guizhou": "贵州",
+    "yunnan": "云南",
+    "tibet": "西藏",
+    "xizang": "西藏",
+    "shaanxi": "陕西",
+    "gansu": "甘肃",
+    "qinghai": "青海",
+    "ningxia": "宁夏",
+    "xinjiang": "新疆",
+    "taiwan": "台湾",
+    "hong kong": "香港",
+    "macau": "澳门",
+    "macao": "澳门",
+}
+
+
+def _province_zh(subdivision: Any) -> str:
+    """省/州 → 中文省名（认不出来就返回空串，让调用方回落）。"""
+    names = getattr(subdivision, "names", None) or {}
+    for key in ("zh-CN", "zh"):
+        value = str(names.get(key) or "").strip()
+        if value:
+            return value
+    english = str(names.get("en") or "").strip().lower()
+    if english in _CN_PROVINCE:
+        return _CN_PROVINCE[english]
+    iso = str(getattr(subdivision, "iso_code", "") or "").strip().upper()
+    if "-" in iso:
+        suffix = iso.split("-", 1)[1].lower()
+        for name, label in _CN_PROVINCE.items():
+            if name.replace(" ", "") in (suffix, english.replace(" ", "")) or name[:2] == suffix:
+                return label
+    return ""
+
+
 def _label(record: Any) -> str:
-    """geoip2 记录 → 「国家 省 市」（缺哪级就省哪级）。"""
-    parts: list[str] = []
-    country = _name(getattr(getattr(record, "country", None), "names", None))
-    if country:
-        parts.append(country)
+    """geoip2 记录 → 中文地域标签。
+
+    口径（2026-10 用户要求）：
+    - **国内**（country=CN）只显示**省份**，不再显示"中国"（例：广东、北京、香港）；
+    - **国外**只显示**国家**的中文名（例：美国、日本、新加坡）；
+    - **全部中文**：DB-IP 的省名是英文，靠 `_CN_PROVINCE` 映射；国家名取库里的 zh-CN 字段。
+    """
+    country_names = getattr(getattr(record, "country", None), "names", None) or {}
+    country_zh = str(country_names.get("zh-CN") or country_names.get("zh") or "").strip()
+    iso = str(getattr(getattr(record, "country", None), "iso_code", "") or "").strip().upper()
     subdivisions = list(getattr(record, "subdivisions", None) or [])
-    if subdivisions:
-        province = _name(getattr(subdivisions[0], "names", None))
-        if province and province not in parts:
-            parts.append(province)
-    city = _name(getattr(getattr(record, "city", None), "names", None))
-    if city and city not in parts:
-        parts.append(city)
-    return SEP.join(parts)
+
+    if iso == "CN":
+        for sub in subdivisions:
+            province = _province_zh(sub)
+            if province:
+                return province
+        return country_zh or "中国"
+
+    if country_zh:
+        return country_zh
+    # 库里没有中文国家名（少见）：用英文名兜底，总比空着强；再不行由调用方显示「未知」
+    return _name(country_names)
 
 
 @lru_cache(maxsize=16384)
