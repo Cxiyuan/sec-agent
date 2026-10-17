@@ -900,6 +900,13 @@ export function StatusPanel() {
                           {formatBytes(traffic?.avg_recent_bytes_per_sec ?? 0)}/s
                         </b>
                       </span>
+                      <span title="丢包是偶发的（实测 24 小时里只有几次爆量），近半小时经常是 0 —— 看这个长期口径">
+                        近 24h 掉包率{" "}
+                        <b className="font-mono text-foreground">
+                          {overview?.traffic?.day_drop_rate ?? 0}
+                        </b>
+                        %（丢包 {overview?.traffic?.pkts_dropped_total ?? 0} 包）
+                      </span>
                     </span>
                   ) : null
                 }

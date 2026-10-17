@@ -91,6 +91,33 @@ def _resp_with(
     }
 
 
+def test_hourly_query_and_shape_carry_drop_rate(stats: ModuleType) -> None:
+    """24 小时那份查询也要带掉包，并算出长期掉包率（丢包偶发，30 分钟窗口常是 0）。"""
+    q = stats.build_query(24, start="2026-10-16T00:00:00.000Z", end="2026-10-17T00:00:00.000Z")
+    aggs = q["aggs"]
+    assert "drops" in aggs, "24 小时查询要带 drops"
+    assert aggs["drops"]["filter"] == {"term": {"log_type.keyword": "stats"}}
+    inner = aggs["drops"]["aggs"]["per_hour"]["aggs"]
+    assert "pkts_dropped" in inner and "pkts_proc" in inner
+
+    resp = {
+        "aggregations": {
+            "traffic": {"per_hour": {"buckets": [{"key": 1, "doc_count": 3, "bytes_out": {"value": 0.0}, "bytes_in": {"value": 0.0}}]}},
+            "drops": {
+                "per_hour": {
+                    "buckets": [
+                        {"key": 1, "doc_count": 12, "pkts_dropped": {"value": 929750.0}, "pkts_proc": {"value": 2092700789.0}},
+                    ]
+                }
+            },
+        }
+    }
+    out = stats.shape_traffic(resp, hours=24)
+    assert out["pkts_dropped_total"] == 929750
+    assert out["pkts_proc_total"] == 2092700789
+    assert out["day_drop_rate"] == 0.0444  # 实测 24h 值
+
+
 def test_minute_query_really_contains_drops_aggs(stats: ModuleType) -> None:
     """守一个真实踩过的坑：drops 聚合被插进了**另一个**查询函数（24 小时那份），
     结果曲线上的掉包永远是 0（shape 读不到 aggregations.drops）。

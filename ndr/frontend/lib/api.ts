@@ -771,6 +771,12 @@ export interface TrafficSeries {
   total_docs: number;
   total_bytes: number;
   avg_bytes_per_sec: number;
+  /** 近 N 小时丢包总数（Zeek stats.log 增量求和） */
+  pkts_dropped_total?: number;
+  /** 近 N 小时处理包数 */
+  pkts_proc_total?: number;
+  /** 近 N 小时掉包率（%）——丢包偶发，30 分钟窗口常是 0，看这个长期口径 */
+  day_drop_rate?: number;
 }
 
 export interface ProtocolSlice {

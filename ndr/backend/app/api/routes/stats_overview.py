@@ -61,6 +61,25 @@ def build_query(hours: int, *, start: str, end: str) -> dict[str, Any]:
         "query": {"range": {"@timestamp": {"gte": start, "lt": end}}},
         "aggs": {
             # 流量只在 conn 上统计（见模块注释：不过滤会把 HTTP 的 bytes_in 重复计入）
+            # 掉包（Zeek stats.log）：按**小时桶**汇总，供「24 小时掉包率」用。
+            # 丢包是偶发的（实测 24h 里只有 7 次爆量），30 分钟窗口经常撞不到 0 —— 所以长期口径也要给。
+            "drops": {
+                "filter": {"term": {"log_type.keyword": "stats"}},
+                "aggs": {
+                    "per_hour": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": _INTERVAL,
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start, "max": end},
+                        },
+                        "aggs": {
+                            "pkts_dropped": {"sum": {"field": "pkts_dropped"}},
+                            "pkts_proc": {"sum": {"field": "pkts_proc"}},
+                        },
+                    }
+                },
+            },
             "traffic": {
                 "filter": {"term": {"log_type.keyword": "conn"}},
                 "aggs": {
@@ -144,11 +163,28 @@ def shape_traffic(resp: Any, *, hours: int) -> dict[str, Any]:
                 "bytes_per_sec": round(total / 3600.0, 1),
             }
         )
+    # 掉包（Zeek stats.log 的每 5 分钟增量 → 可以求和）：
+    # 丢包偶发，30 分钟窗口经常是 0，所以这里一并给「近 N 小时」的长期掉包率
+    drop_buckets = (((resp.get("aggregations") or {}).get("drops") or {}).get("per_hour") or {}).get(
+        "buckets"
+    ) or []
+    dropped = sum(
+        _int_of((b.get("pkts_dropped") or {}).get("value"))
+        for b in drop_buckets
+        if isinstance(b, dict)
+    )
+    proc = sum(
+        _int_of((b.get("pkts_proc") or {}).get("value")) for b in drop_buckets if isinstance(b, dict)
+    )
     return {
         "points": points,
         "total_docs": total_docs,
         "total_bytes": total_bytes,
         "avg_bytes_per_sec": round(total_bytes / max(1, hours * 3600), 1),
+        # 近 N 小时丢包与掉包率（分母 = 丢包 + 处理）
+        "pkts_dropped_total": dropped,
+        "pkts_proc_total": proc,
+        "day_drop_rate": round(dropped / (dropped + proc) * 100, 4) if (dropped + proc) else 0.0,
     }
 
 
