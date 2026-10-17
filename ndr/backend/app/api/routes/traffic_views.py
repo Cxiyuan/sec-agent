@@ -249,7 +249,12 @@ def _top_subjects_body(*, minutes: int, view: str, size: int) -> dict[str, Any]:
 
 
 def _pair_body(
-    *, minutes: int, size: int, subject_field: str = "", subjects: list[str] | None = None
+    *,
+    minutes: int,
+    size: int,
+    subject_field: str = "",
+    subjects: list[str] | None = None,
+    use_real_client: bool = False,
 ) -> dict[str, Any]:
     """按 **(源 IP, 目的 IP) 对** 聚合。
 
@@ -265,6 +270,9 @@ def _pair_body(
     if subject_field and subjects:
         # 只在这些候选主语上做对聚合（候选是"流量最大的那批"，见 _top_subjects_body）
         filters.append({"terms": {f"{subject_field}.keyword": subjects[:500]}})
+    if use_real_client:
+        # 只对"有真实客户端"的文档（反向代理后面的那部分）
+        filters.append({"exists": {"field": "real_client_ip"}})
     return {
         "size": 0,
         "query": {
@@ -283,10 +291,18 @@ def _pair_body(
             "pairs": {
                 "composite": {
                     "size": size,
-                    "sources": [
-                        {"s": {"terms": {"field": "src_ip.keyword"}}},
-                        {"d": {"terms": {"field": "dst_ip.keyword"}}},
-                    ],
+                    "sources": (
+                        [
+                            # 代理后的**真实公网客户端**（X-Forwarded-For 等里的最左地址）
+                            {"s": {"terms": {"field": "real_client_ip.keyword"}}},
+                            {"d": {"terms": {"field": "dst_ip.keyword"}}},
+                        ]
+                        if use_real_client
+                        else [
+                            {"s": {"terms": {"field": "src_ip.keyword"}}},
+                            {"d": {"terms": {"field": "dst_ip.keyword"}}},
+                        ]
+                    ),
                 },
                 "aggs": {
                     "bo": {"sum": {"field": "bytes_out"}},
@@ -330,7 +346,7 @@ def _classify(view: str, src: str, dst: str, nets: list[ipaddress._BaseNetwork])
     return s_in and is_public_ip(dst)
 
 
-def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
+def shape_pairs(resp: Any, *, view: str, limit: int, extra: Any = None) -> dict[str, Any]:
     """(源,目的) 对 → 每台主机的行（按视角选主语）。"""
     nets = _nets()
     # 主语 → 候选主机名（按出现次数；对外业务视角用它给资产配域名）
@@ -342,7 +358,10 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
         ]
         if key and names:
             host_by_subject[key] = names
-    buckets = (((resp.get("aggregations") or {}).get("pairs") or {}).get("buckets")) or []
+    buckets = list((((resp.get("aggregations") or {}).get("pairs") or {}).get("buckets")) or [])
+    # 反向代理场景：真实公网客户端在 real_client_ip 里，单独一份聚合合进来
+    if extra is not None:
+        buckets += (((extra.get("aggregations") or {}).get("pairs") or {}).get("buckets")) or []
     agg: dict[str, dict[str, Any]] = {}
     kept_pairs = 0
     for bucket in buckets:
@@ -441,12 +460,19 @@ def traffic_ips(
     """
     if view not in VIEWS:
         view = "outbound"
-    candidate_size = min(2000, max(limit * 3, 300))
+    # 窗口越大越要收着查（7 天/30 天把 ES 打超时过：2026-10 实测 ConnectionTimeout）
+    if minutes <= 120:
+        candidate_size, pair_size = min(1500, max(limit * 3, 300)), 8000
+    elif minutes <= 1440:
+        candidate_size, pair_size = 400, 5000
+    else:
+        candidate_size, pair_size = 200, 1500
     subject_field = _subject_field(view)
     try:
         top = _es().search(
             index=settings.es_events_index,
             body=_top_subjects_body(minutes=minutes, view=view, size=candidate_size),
+            request_timeout=120,
         )
         candidates = [
             str(b.get("key"))
@@ -454,13 +480,26 @@ def traffic_ips(
             if b.get("key")
         ]
         body = _pair_body(
-            minutes=minutes, size=20000, subject_field=subject_field, subjects=candidates
+            minutes=minutes, size=pair_size, subject_field=subject_field, subjects=candidates
         )
-        resp = _es().search(index=settings.es_events_index, body=body)
+        resp = _es().search(index=settings.es_events_index, body=body, request_timeout=120)
+        # 对外业务：再按**真实客户端**（代理后）聚合一次，合并进结果
+        extra = None
+        if view == "outbound":
+            real_body = _pair_body(
+                minutes=minutes,
+                size=min(pair_size, 3000),
+                subject_field=subject_field,
+                subjects=candidates,
+                use_real_client=True,
+            )
+            extra = _es().search(
+                index=settings.es_events_index, body=real_body, request_timeout=120
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("流量聚合失败: %s", exc)
         return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
-    out = shape_pairs(resp, view=view, limit=limit)
+    out = shape_pairs(resp, view=view, limit=limit, extra=extra)
     out.update({"view": view, "minutes": minutes, "warning": shard_problem(resp)})
     return out
 
