@@ -253,7 +253,7 @@ export function McpPanel() {
         <PanelError errors={errs} />
 
         {status && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
             <Badge variant={status.service.reachable ? "low" : "high"}>
               {status.service.reachable ? "服务在线" : "服务不可达"}
             </Badge>
@@ -328,7 +328,7 @@ export function McpPanel() {
           </div>
         )}
 
-        <div className="space-y-2 rounded-md border p-3 text-xs">
+        <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
           <p className="text-muted-foreground">
             令牌列表（只显示前缀与用量）；过期令牌的调用会被直接拒绝，请先轮换或改到期时间
           </p>
@@ -464,7 +464,7 @@ export function McpPanel() {
           </Table>
         </div>
 
-        <div className="space-y-2 rounded-md border p-3 text-xs">
+        <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
           <p className="text-muted-foreground">
             最近调用（新的在前；记录放 Redis，重启即清，只作运维可见性）
           </p>
@@ -509,7 +509,7 @@ export function McpPanel() {
           </Table>
         </div>
 
-        <div className="space-y-2 rounded-md border p-3 text-xs">
+        <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
           <p className="text-muted-foreground">
             智能体写回的结论（判重仍由智能体侧负责，这里只是镜像，过期自动清理）
           </p>
@@ -558,7 +558,7 @@ export function McpPanel() {
           </Table>
         </div>
 
-        <div className="space-y-2 rounded-md border p-3 text-xs">
+        <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">
               {errs.isFailed(SRC.tools)

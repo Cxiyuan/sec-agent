@@ -52,7 +52,7 @@ export default function MemoriesPage() {
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-medium">
             分析记忆 <span className="text-sm text-muted-foreground">（共 {total} 条）</span>
           </h1>
           <div className="flex gap-2">
@@ -156,7 +156,7 @@ export default function MemoriesPage() {
               </p>
               <p className="whitespace-pre-wrap">{detail.summary}</p>
               {detail.detail && (
-                <pre className="max-h-72 overflow-auto rounded-md border p-2 text-[11px]">
+                <pre className="max-h-72 overflow-auto rounded-md border p-2 text-xs">
                   {JSON.stringify(detail.detail, null, 2)}
                 </pre>
               )}

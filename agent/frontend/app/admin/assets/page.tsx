@@ -277,7 +277,7 @@ export default function AssetsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-2xl font-bold">资产管理</h1>
+        <h1 className="mb-4 text-xl font-medium">资产管理</h1>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
 
         {/* 新增 / 编辑 */}
@@ -286,7 +286,7 @@ export default function AssetsPage() {
             <CardTitle className="text-sm">{editingId ? "编辑资产" : "新增资产"}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">主 IP / 网段 *</label>
                 <Input

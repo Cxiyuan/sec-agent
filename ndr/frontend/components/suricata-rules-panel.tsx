@@ -157,7 +157,7 @@ export function SuricataRulesPanel() {
         <PanelError errors={errs} />
 
         {(active?.rule_count ?? 0) === 0 && (
-          <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <p className="rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
             当前**没有加载任何签名规则**：签名引擎不会产生任何告警。请在下面配置规则更新地址后点
             「立即检查更新」，或在服务器把 *.rules 放进规则卷的 active/ 目录。
           </p>

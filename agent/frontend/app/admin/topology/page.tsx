@@ -380,9 +380,9 @@ function TopologyInner() {
       <Nav />
       <main className="ml-56 p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-medium">
             网络拓扑{current ? ` · ${name}` : ""}
-            {dirty && <span className="ml-2 text-sm text-amber-400">未保存</span>}
+            {dirty && <span className="ml-2 text-sm text-sev-medium-fg">未保存</span>}
           </h1>
           <div className="flex gap-2">
             <Button onClick={saveTopology} disabled={!current}>
@@ -518,7 +518,7 @@ function TopologyInner() {
                       type="color"
                       value={newType.color}
                       onChange={(e) => setNewType({ ...newType, color: e.target.value })}
-                      className="h-8 w-10 rounded border border-input bg-transparent"
+                      className="h-8 w-10 rounded-sm border border-input bg-transparent"
                     />
                   </div>
                   <Button size="sm" variant="secondary" className="w-full" onClick={createNodeType}>
@@ -648,7 +648,7 @@ function TopologyInner() {
                     <label className="block text-muted-foreground">
                       关联资产（可多选，当前 {selNode.data.asset_ids.length} 个）
                     </label>
-                    <div className="max-h-48 space-y-0.5 overflow-auto rounded border p-1">
+                    <div className="max-h-48 space-y-0.5 overflow-auto rounded-xs bg-surface-1 p-1">
                       {filteredAssets.slice(0, 200).map((a) => (
                         <label key={a.id} className="flex items-center gap-2">
                           <input

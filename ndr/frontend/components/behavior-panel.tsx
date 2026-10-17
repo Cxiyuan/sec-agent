@@ -455,15 +455,15 @@ export function BehaviorPanel() {
           <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <div>
               <p className="text-xs text-muted-foreground">维度总数</p>
-              <p className="text-lg font-semibold">{stats?.total_keys ?? "-"}</p>
+              <p className="text-28 font-medium tabular-nums">{stats?.total_keys ?? "-"}</p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">观测中（只学习）</p>
-              <p className="text-lg font-semibold text-amber-500">{stats?.learning_keys ?? "-"}</p>
+              <p className="text-28 font-medium tabular-nums text-sev-medium-fg">{stats?.learning_keys ?? "-"}</p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">生效中（可判偏离）</p>
-              <p className="text-lg font-semibold text-emerald-500">{stats?.warmed_keys ?? "-"}</p>
+              <p className="text-28 font-medium tabular-nums text-sev-ok-fg">{stats?.warmed_keys ?? "-"}</p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground">
@@ -558,8 +558,8 @@ export function BehaviorPanel() {
             数值基线 IP 列表
             <span className="text-xs font-normal text-muted-foreground">
               一行一个 IP，维度用标签列（**悬停标签**看均值/标准差/观测次数）；
-              <span className="text-emerald-500">生效中</span>=已过观测期参与 2σ 判定，
-              <span className="text-amber-500">观测中</span>=还在学习
+              <span className="text-sev-ok-fg">生效中</span>=已过观测期参与 2σ 判定，
+              <span className="text-sev-medium-fg">观测中</span>=还在学习
             </span>
           </CardTitle>
         </CardHeader>
@@ -652,8 +652,8 @@ export function BehaviorPanel() {
           <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
             账号 / 会话画像列表
             <span className="text-xs font-normal text-muted-foreground">
-              <span className="text-emerald-500">生效中</span>=观测次数已达冷启动门槛（
-              {minWindows} 个窗口）参与打分，<span className="text-amber-500">观测中</span>=还在学习；
+              <span className="text-sev-ok-fg">生效中</span>=观测次数已达冷启动门槛（
+              {minWindows} 个窗口）参与打分，<span className="text-sev-medium-fg">观测中</span>=还在学习；
               风险分按当前窗口算（本轮无理由即归零），点一行展开细节
             </span>
           </CardTitle>
@@ -761,7 +761,7 @@ export function BehaviorPanel() {
                           {row.fail_count ?? 0}/{row.success_count ?? 0} ·{" "}
                           <span
                             className={
-                              (row.error_count ?? 0) > 0 ? "text-amber-500" : "text-muted-foreground"
+                              (row.error_count ?? 0) > 0 ? "text-sev-medium-fg" : "text-muted-foreground"
                             }
                             title="错误响应（status ≥ 400 且非 401/403）：404 风暴这类探测痕迹"
                           >
@@ -798,8 +798,8 @@ export function BehaviorPanel() {
             <span className="text-xs font-normal text-muted-foreground">
               按「**被访问方**」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动
               —— 源 IP 那份基线看不出「服务器被打」。
-              <span className="text-emerald-500">生效中</span>=已过观测期，
-              <span className="text-amber-500">观测中</span>=只学习。
+              <span className="text-sev-ok-fg">生效中</span>=已过观测期，
+              <span className="text-sev-medium-fg">观测中</span>=只学习。
               口径：被访问次数 = **连接数**（同一连接只算一次），
               请求数 = 应用层请求（http/dns）；身份优先站点域名（Host/SNI），否则{" "}
               <span className="font-mono">IP:端口</span>；中继自身不计入（内网 DNS 的 53 端口除外）
@@ -955,7 +955,7 @@ export function BehaviorPanel() {
                     const value = raw !== undefined ? raw : item.value;
                     const isDirty = changed(item, draft);
                     return (
-                      <div key={item.key} className="rounded-md border p-3">
+                      <div key={item.key} className="rounded-xs bg-surface-1 px-3 py-2">
                         <div className="mb-1 flex flex-wrap items-center gap-2">
                           <span className="text-sm font-medium">{item.label}</span>
                           {item.overridden ? (
@@ -964,7 +964,7 @@ export function BehaviorPanel() {
                             <Badge variant="outline">默认</Badge>
                           )}
                           {isDirty ? <Badge variant="high">未保存</Badge> : null}
-                          <span className="font-mono text-[10px] text-muted-foreground">
+                          <span className="font-mono text-xs text-muted-foreground">
                             {item.key}
                           </span>
                         </div>
@@ -1011,7 +1011,7 @@ export function BehaviorPanel() {
                           {`　默认 ${String(item.default) || "（空）"}`}
                         </p>
                         {fieldErrs[item.key] ? (
-                          <p className="mt-1 text-xs text-red-500">{fieldErrs[item.key]}</p>
+                          <p className="mt-1 text-xs text-sev-critical-fg">{fieldErrs[item.key]}</p>
                         ) : null}
                       </div>
                     );

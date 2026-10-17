@@ -341,7 +341,7 @@ export function RelayNodesPanel() {
               </span>
             ) : null}
             {(topo.cycle_broken || []).length ? (
-              <span className="text-xs text-amber-600">
+              <span className="text-xs text-sev-medium-fg">
                 链路关系检出环路，已打断最弱边：
                 {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}
               </span>

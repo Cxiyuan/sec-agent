@@ -281,7 +281,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
         </div>
 
         {status && (
-          <div className="rounded-md border p-3 text-xs">
+          <div className="rounded-xs bg-surface-1 px-3 py-2 text-xs">
             <p className="mb-1 text-muted-foreground">当前生效</p>
             <p>
               网卡 <span className="font-mono">{status.interface}</span>

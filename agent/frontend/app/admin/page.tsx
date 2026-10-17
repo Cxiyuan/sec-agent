@@ -126,7 +126,7 @@ export default function AdminEventsPage() {
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">事件列表</h1>
+          <h1 className="text-xl font-medium">事件列表</h1>
           <div className="flex items-center gap-4">
             <Button
               variant="destructive"
@@ -343,10 +343,10 @@ export default function AdminEventsPage() {
                       </p>
                     )}
                     {selected.exclude_reason && (
-                      <p className="text-amber-500">跳过模型分析：{selected.exclude_reason}</p>
+                      <p className="text-sev-medium-fg">跳过模型分析：{selected.exclude_reason}</p>
                     )}
                     {selected.severity_cap_reason && (
-                      <p className="text-amber-500">定级被约束：{selected.severity_cap_reason}</p>
+                      <p className="text-sev-medium-fg">定级被约束：{selected.severity_cap_reason}</p>
                     )}
                   </div>
                 </div>
@@ -617,7 +617,7 @@ export default function AdminEventsPage() {
                   </p>
                 )}
                 {evidence && evidence.counts.events_truncated && (
-                  <p className="text-xs text-amber-500">
+                  <p className="text-xs text-sev-medium-fg">
                     该组事件较多，仅列出前 100 条证据（完整数据在 ES 索引里）
                   </p>
                 )}
@@ -625,7 +625,7 @@ export default function AdminEventsPage() {
                 {evidence && evidence.stages.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {evidence.stages.map((st, i) => (
-                      <div key={i} className="rounded border p-2 text-xs">
+                      <div key={i} className="rounded-xs bg-surface-1 p-2 text-xs">
                         <span className="font-medium">{st.stage}</span>
                         <span className="ml-2 text-muted-foreground">
                           {st.evidence_refs.length > 0
@@ -639,9 +639,9 @@ export default function AdminEventsPage() {
 
                 <div className="mt-2 space-y-1">
                   {(evidence?.items || []).map((it, i) => (
-                    <details key={`${it.ref}-${i}`} className="rounded border p-2 text-xs">
+                    <details key={`${it.ref}-${i}`} className="rounded-xs bg-surface-1 p-2 text-xs">
                       <summary className="cursor-pointer">
-                        <span className="font-mono text-[11px] text-muted-foreground">
+                        <span className="font-mono text-xs text-muted-foreground">
                           {it.ts ? formatDateTime(it.ts) : "时间未知"}
                         </span>
                         {" | "}
@@ -657,14 +657,14 @@ export default function AdminEventsPage() {
                         {it.error ? <span className="ml-1 text-destructive">（{it.error}）</span> : null}
                       </summary>
                       <div className="mt-1 space-y-1">
-                        {it.note && <p className="text-xs text-amber-500">{it.note}</p>}
+                        {it.note && <p className="text-xs text-sev-medium-fg">{it.note}</p>}
                         {it.summary && <p className="text-muted-foreground">{it.summary}</p>}
-                        <p className="font-mono text-[10px] text-muted-foreground">
+                        <p className="font-mono text-xs text-muted-foreground">
                           证据引用 {it.ref || "-"}
                           {it.source_system ? ` · 来源 ${it.source_system}` : ""}
                           {it.protocol ? ` · ${it.protocol}` : ""}
                         </p>
-                        <pre className="max-h-56 overflow-auto rounded bg-muted p-2 text-[10px]">
+                        <pre className="max-h-56 overflow-auto rounded bg-muted p-2 text-xs">
                           {JSON.stringify(it.raw ?? {}, null, 2)}
                         </pre>
                       </div>
@@ -698,7 +698,7 @@ export default function AdminEventsPage() {
                     </p>
                   )}
                   {(detail.attack_chain.gaps || []).length > 0 && (
-                    <p className="text-xs text-amber-500">
+                    <p className="text-xs text-sev-medium-fg">
                       未解缺口 {(detail.attack_chain.gaps || []).length} 处（案件页可下追问指令）
                     </p>
                   )}

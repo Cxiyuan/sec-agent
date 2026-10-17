@@ -168,7 +168,7 @@ export function AgentPushPanel() {
         <PanelError errors={errs} />
 
         {cfg && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
             <Badge variant={cfg.active ? "low" : "medium"}>{cfg.active ? "推送已启用" : "未启用（走旧队列）"}</Badge>
             <span className="font-mono">{cfg.url || "(未填地址)"}</span>
             <span className="text-muted-foreground">
@@ -263,7 +263,7 @@ export function AgentPushPanel() {
 
         {st && (
           <div className="space-y-2">
-            <div className="flex flex-wrap gap-3 rounded-md border p-3 text-xs">
+            <div className="flex flex-wrap gap-3 rounded-xs bg-surface-1 px-3 py-2 text-xs">
               <span>已送达 {st.sent}</span>
               {/* 真积压 = 待重发批数（queue_depth + processing_depth）；st.queued 是累计入队数，只增不减 */}
               <span
@@ -304,7 +304,7 @@ export function AgentPushPanel() {
               <span>重发处理中 {st.processing_depth}</span>
               {typeof st.spool_batches === "number" && st.spool_batches > 0 && (
                 <span
-                  className="text-amber-600"
+                  className="text-sev-medium-fg"
                   title="超龄摘要已从队列挪到磁盘缓存（不再占 Redis 内存），智能体恢复后自动按序补推、推成功即删"
                 >
                   磁盘缓存 {st.spool_batches} 批（{fmtBytes(st.spool_bytes ?? 0)}）

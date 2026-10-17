@@ -6,7 +6,7 @@ import { Chart } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Badge, severityVariant } from "@shentong/ui";
 import { apiFetch, type EventGroupItem, type PersistentItem } from "@/lib/api";
-import { formatDateTime, severityText } from "@shentong/ui";
+import { chartTokens, formatDateTime, severityText } from "@shentong/ui";
 import type { EChartsOption } from "echarts";
 
 export default function DashboardPage() {
@@ -54,35 +54,59 @@ export default function DashboardPage() {
     });
   });
 
+  // 图表颜色与徽章同源（sev-* 变量）：暗色下自动变亮，不再是 ECharts 默认那套彩虹色
+  const t = chartTokens();
+
   const pieOption: EChartsOption = {
-    tooltip: { trigger: "item" },
+    tooltip: { trigger: "item", formatter: "{b}: {c} 个 ({d}%)" },
     series: [
       {
         type: "pie",
-        radius: ["40%", "70%"],
+        // 实心饼 + 指引线标签：与运营中心总览页的严重度分布保持同一种读法
+        radius: "58%",
+        avoidLabelOverlap: true,
+        label: { show: true, formatter: "{b} {c}" },
+        labelLine: { show: true, length: 8, length2: 10, smooth: true },
+        labelLayout: { hideOverlap: true },
         data: [
-          { name: "紧急", value: severityCount.critical },
-          { name: "高危", value: severityCount.high },
-          { name: "中危", value: severityCount.medium },
-          { name: "低危", value: severityCount.low },
-          { name: "提示", value: severityCount.info },
-        ],
+          { name: "严重", value: severityCount.critical, itemStyle: { color: t.sev.critical } },
+          { name: "高危", value: severityCount.high, itemStyle: { color: t.sev.high } },
+          { name: "中危", value: severityCount.medium, itemStyle: { color: t.sev.medium } },
+          { name: "低危", value: severityCount.low, itemStyle: { color: t.sev.low } },
+          { name: "信息", value: severityCount.info, itemStyle: { color: t.sev.info } },
+        ].filter((d) => d.value > 0),
       },
     ],
   };
 
   const topIpOption: EChartsOption = {
-    tooltip: {},
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    grid: { left: 8, right: 12, top: 8, bottom: 8, containLabel: true },
     xAxis: { type: "category", data: Object.keys(srcCount).slice(0, 10) },
     yAxis: { type: "value" },
-    series: [{ type: "bar", data: Object.values(srcCount).slice(0, 10) }],
+    series: [
+      { type: "bar", barMaxWidth: 16, data: Object.values(srcCount).slice(0, 10), itemStyle: { color: t.series[0] } },
+    ],
   };
 
   const scoreOption: EChartsOption = {
-    tooltip: {},
-    xAxis: { type: "category", data: groups.slice(0, 20).map((g) => g.src_ips?.[0] || "?").map((s) => s.slice(0, 12)) },
+    tooltip: { trigger: "axis" },
+    grid: { left: 8, right: 12, top: 8, bottom: 8, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: groups.slice(0, 20).map((g) => g.src_ips?.[0] || "?").map((s) => s.slice(0, 12)),
+    },
     yAxis: { type: "value", max: 1 },
-    series: [{ type: "line", data: groups.slice(0, 20).map((g) => g.triage_score) }],
+    series: [
+      {
+        type: "line",
+        smooth: true,
+        symbolSize: 4,
+        data: groups.slice(0, 20).map((g) => g.triage_score),
+        lineStyle: { width: 1.8, color: t.series[0] },
+        itemStyle: { color: t.series[0] },
+      },
+    ],
   };
 
   const highGroups = groups
@@ -93,22 +117,22 @@ export default function DashboardPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-2xl font-bold">驾驶舱</h1>
+        <h1 className="mb-4 text-xl font-medium">驾驶舱</h1>
         {loading ? (
           <p className="text-muted-foreground">加载中…</p>
         ) : (
-          <>
-            <div className="mb-4 grid grid-cols-4 gap-4">
-              <Card><CardHeader><CardTitle className="text-sm">事件组总数</CardTitle></CardHeader><CardContent className="text-3xl font-bold">{groups.length}</CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-sm">高危及以上</CardTitle></CardHeader><CardContent className="text-3xl font-bold text-red-400">{severityCount.critical + severityCount.high}</CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-sm">待确认</CardTitle></CardHeader><CardContent className="text-3xl font-bold text-amber-400">{groups.filter((g) => g.status === "pending_confirmation").length}</CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-sm">涉及源 IP</CardTitle></CardHeader><CardContent className="text-3xl font-bold">{Object.keys(srcCount).length}</CardContent></Card>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">事件组总数</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums">{groups.length}</CardContent></Card>
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">高危及以上</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums text-sev-critical-fg">{severityCount.critical + severityCount.high}</CardContent></Card>
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">待确认</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums text-sev-medium-fg">{groups.filter((g) => g.status === "pending_confirmation").length}</CardContent></Card>
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">涉及源 IP</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums">{Object.keys(srcCount).length}</CardContent></Card>
             </div>
 
-            <div className="mb-4 grid grid-cols-3 gap-4">
-              <Card><CardHeader><CardTitle className="text-sm">定级分布</CardTitle></CardHeader><CardContent><Chart option={pieOption} height={260} /></CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-sm">TOP 源 IP</CardTitle></CardHeader><CardContent><Chart option={topIpOption} height={260} /></CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-sm">初筛得分</CardTitle></CardHeader><CardContent><Chart option={scoreOption} height={260} /></CardContent></Card>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">定级分布</CardTitle></CardHeader><CardContent><Chart option={pieOption} height={224} /></CardContent></Card>
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">TOP 源 IP</CardTitle></CardHeader><CardContent><Chart option={topIpOption} height={224} /></CardContent></Card>
+              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">初筛得分</CardTitle></CardHeader><CardContent><Chart option={scoreOption} height={224} /></CardContent></Card>
             </div>
 
             <Card>
@@ -164,7 +188,7 @@ export default function DashboardPage() {
                 ))}
               </CardContent>
             </Card>
-          </>
+          </div>
         )}
       </main>
     </div>

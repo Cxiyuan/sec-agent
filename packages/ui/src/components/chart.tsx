@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import * as echarts from "echarts";
+import { chartTokens } from "../lib/chart-tokens";
 
 /**
  * ECharts 主题：**跟随 CSS 变量**，不再硬编码亮色。
@@ -11,9 +12,8 @@ import * as echarts from "echarts";
  * 只有 2:1，等于不可读；tooltip 还是一块刺眼的白板。两个产品面共用这个组件，
  * 主题不能只照顾其中一边。
  *
- * 现在的做法：每次初始化前把 --chart-* / --sev-* / --border / --font-sans
- * 读出来，现拼一份主题注册上去。亮暗主题各自一份变量，图表自动跟着走，
- * 图表色与 UI 语义色从此是同一套来源（之前 status-charts.ts 里散着 27 个硬编码 hex）。
+ * 现在颜色**全部**从 `chartTokens()`（`lib/chart-tokens.ts`）取，与业务侧的
+ * series 颜色是同一个来源，不会再出现"图表蓝 ≠ UI 蓝"。
  */
 
 const THEME_NAME = "shentong";
@@ -22,69 +22,46 @@ const THEME_NAME = "shentong";
 let cachedSignature = "";
 let themeDone = false;
 
-function cssVar(name: string, fallback: string): string {
-  if (typeof window === "undefined") return fallback;
-  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  if (!raw) return fallback;
-  // 变量存的是 HSL 三段值（如 "212 82% 52%"），拼回合法颜色
-  return raw.includes("%") || /^[\d.]+\s/.test(raw) ? `hsl(${raw})` : raw;
-}
-
 function buildTheme() {
-  const axisColor = cssVar("--chart-axis", "#5f6b7a");
-  const gridColor = cssVar("--chart-grid", "#eef2f7");
-  const trackColor = cssVar("--chart-track", "#e2e8f0");
-  const borderColor = cssVar("--border", "#cdd5df");
-  const fgColor = cssVar("--foreground", "#17202c");
-  const surfaceColor = cssVar("--surface-2", "#ffffff");
-  const fontSans = cssVar("--font-sans", "system-ui, sans-serif");
+  const t = chartTokens();
 
   return {
-    color: [
-      cssVar("--chart-1", "#207ee9"),
-      cssVar("--chart-2", "#1a8fa8"),
-      cssVar("--chart-3", "#239560"),
-      cssVar("--chart-4", "#6a5fd0"),
-      cssVar("--chart-5", "#dc610d"),
-      cssVar("--chart-6", "#c93a6f"),
-      cssVar("--chart-7", "#1a8b8b"),
-      cssVar("--chart-8", "#b4851f"),
-    ],
+    color: t.series,
     backgroundColor: "transparent",
-    textStyle: { color: axisColor, fontFamily: fontSans },
-    title: { textStyle: { color: fgColor }, subtextStyle: { color: axisColor } },
-    legend: { textStyle: { color: axisColor } },
+    textStyle: { color: t.axis, fontFamily: t.font },
+    title: { textStyle: { color: t.fg }, subtextStyle: { color: t.axis } },
+    legend: { textStyle: { color: t.axis } },
     tooltip: {
-      backgroundColor: surfaceColor,
-      borderColor,
+      backgroundColor: t.surface,
+      borderColor: t.border,
       borderWidth: 1,
       padding: [8, 10],
-      textStyle: { color: fgColor, fontSize: 12, fontFamily: fontSans },
+      textStyle: { color: t.fg, fontSize: 12, fontFamily: t.font },
       // 与卡片同一套材质语言：1px 描边 + 柔和投影，不用重阴影
       extraCssText: "box-shadow:0 8px 24px -4px rgba(16,24,40,.14);border-radius:6px;",
     },
     categoryAxis: {
-      axisLine: { lineStyle: { color: borderColor } },
-      axisTick: { lineStyle: { color: borderColor } },
-      axisLabel: { color: axisColor, fontSize: 12 },
-      splitLine: { show: false, lineStyle: { color: gridColor } },
+      axisLine: { lineStyle: { color: t.border } },
+      axisTick: { lineStyle: { color: t.border } },
+      axisLabel: { color: t.axis, fontSize: 12 },
+      splitLine: { show: false, lineStyle: { color: t.grid } },
     },
     valueAxis: {
-      axisLine: { show: false, lineStyle: { color: borderColor } },
+      axisLine: { show: false, lineStyle: { color: t.border } },
       axisTick: { show: false },
-      axisLabel: { color: axisColor, fontSize: 12 },
-      splitLine: { lineStyle: { color: gridColor } },
+      axisLabel: { color: t.axis, fontSize: 12 },
+      splitLine: { lineStyle: { color: t.grid } },
     },
     logAxis: {
-      axisLine: { show: false, lineStyle: { color: borderColor } },
+      axisLine: { show: false, lineStyle: { color: t.border } },
       axisTick: { show: false },
-      axisLabel: { color: axisColor, fontSize: 12 },
-      splitLine: { lineStyle: { color: gridColor } },
+      axisLabel: { color: t.axis, fontSize: 12 },
+      splitLine: { lineStyle: { color: t.grid } },
     },
     graph: {
-      itemStyle: { borderColor: surfaceColor },
-      lineStyle: { color: trackColor },
-      label: { color: fgColor },
+      itemStyle: { borderColor: t.surface },
+      lineStyle: { color: t.track },
+      label: { color: t.fg },
     },
   };
 }
@@ -99,6 +76,7 @@ function ensureTheme(): string {
     "--foreground",
     "--surface-2",
     "--font-sans",
+    "--sev-critical-fg",
   ]
     .map((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim())
     .join("|");

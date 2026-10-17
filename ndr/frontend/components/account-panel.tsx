@@ -104,7 +104,7 @@ export function AccountPanel() {
         <PanelError errors={errs} />
 
         {me && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
             <span className="font-medium">{me.username}</span>
             <Badge variant="outline">{me.role || "admin"}</Badge>
             {me.default_password_in_use ? (
@@ -128,7 +128,7 @@ export function AccountPanel() {
           </p>
         )}
 
-        <form onSubmit={submit} className="space-y-3 rounded-md border p-3">
+        <form onSubmit={submit} className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
           <div className="grid gap-3 md:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">原密码</label>

@@ -110,9 +110,9 @@ function UpDownBar({ out, inb }: { out: number; inb: number }) {
     <div className="min-w-[110px]">
       <div className="flex h-2 overflow-hidden rounded-full bg-muted">
         <span className="bg-primary" style={{ width: `${outPct}%` }} title={`上行 ${formatBytes(out)}`} />
-        <span className="bg-emerald-500" style={{ width: `${100 - outPct}%` }} title={`下行 ${formatBytes(inb)}`} />
+        <span className="bg-sev-ok-fg" style={{ width: `${100 - outPct}%` }} title={`下行 ${formatBytes(inb)}`} />
       </div>
-      <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+      <p className="mt-0.5 font-mono text-xs text-muted-foreground">
         ↑{formatBytes(out)} / ↓{formatBytes(inb)}
       </p>
     </div>
@@ -126,7 +126,7 @@ function PortChips({ ports }: { ports: PortRow[] }) {
       {ports.slice(0, 10).map((p) => (
         <span
           key={`${p.port}-${p.app}`}
-          className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+          className="rounded-xs bg-surface-1 px-1.5 py-0.5 text-xs text-muted-foreground"
           title={`${p.app}（${p.port}）${formatBytes(p.bytes)}`}
         >
           {p.app}（{p.port}）· {formatBytes(p.bytes)}
@@ -345,7 +345,7 @@ export function TrafficPanel({ view }: { view: View }) {
             </p>
           ) : null}
           {data?.note ? (
-            <p className="mx-4 mt-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            <p className="mx-4 mt-3 rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
               {data.note}
             </p>
           ) : null}
@@ -391,7 +391,7 @@ export function TrafficPanel({ view }: { view: View }) {
                     </TableCell>
                     <TableCell className="whitespace-nowrap font-mono text-xs">
                       {formatBytes(row.bytes_total)}
-                      <span className="ml-1 text-[10px] text-muted-foreground">
+                      <span className="ml-1 text-xs text-muted-foreground">
                         {row.conns} 条
                       </span>
                     </TableCell>
@@ -407,7 +407,7 @@ export function TrafficPanel({ view }: { view: View }) {
                             .map((r) => (
                               <span
                                 key={r.region}
-                                className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                className="rounded-xs bg-surface-1 px-1.5 py-0.5 text-xs text-muted-foreground"
                                 title={
                                   view === "egress"
                                     ? "按对端目的 IP 统计的地域出现次数"
@@ -457,13 +457,13 @@ export function TrafficPanel({ view }: { view: View }) {
             className="flex-1 bg-black/40"
             onClick={() => setPeers(null)}
           />
-          <aside className="flex h-full w-[720px] max-w-[94vw] flex-col border-l bg-card shadow-2xl">
+          <aside className="flex h-full w-[720px] max-w-[94vw] flex-col border-l border-border bg-card shadow-3">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold">
                   {meta.title} · 连接拓扑
                 </p>
-                <p className="truncate font-mono text-[11px] text-muted-foreground">
+                <p className="truncate font-mono text-xs text-muted-foreground">
                   {peers.center} · 最近 {minutes} 分钟 · {peers.nodes.length - 1} 个对端
                 </p>
               </div>
@@ -480,14 +480,14 @@ export function TrafficPanel({ view }: { view: View }) {
                 <Chart option={graphOption} height="100%" />
               )}
             </div>
-            <div className="max-h-40 overflow-auto border-t px-4 py-2 text-[11px] text-muted-foreground">
+            <div className="max-h-40 overflow-auto border-t px-4 py-2 text-xs text-muted-foreground">
               <p className="mb-1">
                 中心：<span className="font-mono text-foreground">{peers.center}</span> ·
                 深蓝 = 中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量 · 悬停线路看上下行
               </p>
               <div className="flex flex-wrap gap-2">
                 {peers.edges.slice(0, 20).map((e) => (
-                  <span key={`${e.source}-${e.target}`} className="rounded border px-1.5 py-0.5">
+                  <span key={`${e.source}-${e.target}`} className="rounded-xs bg-surface-1 px-1.5 py-0.5">
                     {e.target === peers.center ? e.source : e.target} · {formatBytes(e.bytes)}
                   </span>
                 ))}

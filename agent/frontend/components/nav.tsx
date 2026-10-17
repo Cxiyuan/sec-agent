@@ -40,7 +40,7 @@ export function Nav() {
     <aside className="fixed left-0 top-0 flex h-screen w-56 flex-col border-r bg-card">
       <div className="flex items-center gap-2 border-b p-4">
         <Shield className="h-6 w-6 text-primary" />
-        <span className="text-lg font-bold">深瞳</span>
+        <span className="text-base font-medium">深瞳</span>
       </div>
       <nav className="flex-1 space-y-1 overflow-auto p-3">
         {items.map((it) => {
@@ -53,8 +53,10 @@ export function Nav() {
               href={it.href}
               className={cn(
                 "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                // 选中态用"淡主色底 + 主色字"，与 NDR 侧边栏同一套：整块实心主色填充
+                // 在暗色主题下是一大块高亮蓝，会把旁边的告警色全压掉。
                 active
-                  ? "bg-primary text-primary-foreground"
+                  ? "bg-primary/10 font-medium text-primary"
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               )}
             >

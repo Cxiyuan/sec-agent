@@ -188,7 +188,7 @@ export function ExclusionsPanel() {
         {msg && <p className="text-sm text-primary">{msg}</p>}
         <PanelError errors={errs} />
 
-        <div className="space-y-3 rounded-md border p-3">
+        <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
           <div className="grid grid-cols-4 gap-3">
             <div className="col-span-2">
               <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>

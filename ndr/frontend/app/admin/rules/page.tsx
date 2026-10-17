@@ -16,6 +16,8 @@ import {
   ApiError,
   apiFetch,
   errorText,
+  severityText,
+  severityVariant,
 } from "@shentong/ui";
 
 import type { RuleItem } from "@/lib/api";
@@ -48,16 +50,12 @@ function ruleType(r: RuleItem): string {
   return "逐条";
 }
 
+/** 严重度徽章：**每一级一个独立变体**。
+ *  原来 high 与 critical 都映射到 `critical`（同一个红底徽章），列表里"严重"和"高危"
+ *  看起来完全一样 —— 严重度这一列等于白给。文案也统一走共享的 severityText
+ *  （这里原来叫"紧急"、共享库叫"严重"，同一条规则两个页面两个叫法）。 */
 function severityBadge(sev: string): React.ReactElement {
-  const map: Record<string, { variant: "critical" | "medium" | "low" | "outline"; text: string }> = {
-    critical: { variant: "critical", text: "紧急" },
-    high: { variant: "critical", text: "高危" },
-    medium: { variant: "medium", text: "中危" },
-    low: { variant: "low", text: "低危" },
-    info: { variant: "outline", text: "提示" },
-  };
-  const it = map[sev] || { variant: "outline" as const, text: sev || "-" };
-  return <Badge variant={it.variant}>{it.text}</Badge>;
+  return <Badge variant={severityVariant(sev)}>{severityText(sev)}</Badge>;
 }
 
 /** 树节点：可展开/收缩的容器（顶层是 网络/主机 两个分类，子节点是规则来源）。 */
@@ -363,7 +361,7 @@ export default function RulesPage() {
                           每次启动会被内置定义覆盖，**只有启用状态会保留**）
                         </p>
                         <p className="mb-1 text-xs">{r.description || "（无描述）"}</p>
-                        <pre className="max-h-56 overflow-auto rounded-md border p-2 font-mono text-[11px] leading-4">
+                        <pre className="max-h-56 overflow-auto rounded-sm border border-border-subtle bg-surface-1 p-2 font-mono text-xs leading-4">
                           {JSON.stringify(r.conditions || {}, null, 2)}
                         </pre>
                       </TableCell>
@@ -526,11 +524,11 @@ export default function RulesPage() {
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">级别</label>
               <select className={SELECT_CLS} value={sev} onChange={(e) => setSev(e.target.value)}>
-                <option value="critical">紧急</option>
+                <option value="critical">严重</option>
                 <option value="high">高危</option>
                 <option value="medium">中危</option>
                 <option value="low">低危</option>
-                <option value="info">提示</option>
+                <option value="info">信息</option>
               </select>
             </div>
             <div>
@@ -556,7 +554,7 @@ export default function RulesPage() {
             onAdd={() => setConds((cs) => [...cs, { field: "dst_port", op: "in", value: "" }])}
           />
 
-          <div className="flex flex-wrap items-end gap-3 rounded-md border p-3">
+          <div className="flex flex-wrap items-end gap-3 rounded-xs bg-surface-1 px-3 py-2">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"

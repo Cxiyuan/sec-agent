@@ -82,7 +82,7 @@ export default function DocumentsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-2xl font-bold">知识文档</h1>
+        <h1 className="mb-4 text-xl font-medium">知识文档</h1>
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
 
         <Card className="mb-4">

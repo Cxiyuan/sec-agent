@@ -169,7 +169,7 @@ export function ConditionEditor({
   onAdd: () => void;
 }) {
   return (
-    <div className="space-y-2 rounded-md border p-3">
+    <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
       <div className="flex items-center gap-2 text-sm">
         <span className="text-muted-foreground">条件组合：</span>
         <select value={logic} onChange={(e) => onLogic(e.target.value)} className={SELECT_CLS}>

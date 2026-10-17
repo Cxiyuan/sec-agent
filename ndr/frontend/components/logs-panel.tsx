@@ -428,7 +428,7 @@ export function LogsPanel() {
                     setForm({ ...form, logType: it.value });
                     void run(0);
                   }}
-                  className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary/50 hover:text-primary"
+                  className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary"
                 >
                   {it.value || "(空)"} · {it.count}
                 </button>
@@ -490,7 +490,7 @@ export function LogsPanel() {
                           : cellText(item.doc[field])}
                       </TableCell>
                     ))}
-                    <TableCell className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                       {endpointLabel(item.doc)}
                     </TableCell>
                   </TableRow>
@@ -515,11 +515,11 @@ export function LogsPanel() {
             className="flex-1 bg-black/40"
             onClick={() => setDetail(null)}
           />
-          <aside className="flex h-full w-[560px] max-w-[92vw] flex-col border-l bg-card shadow-2xl">
+          <aside className="flex h-full w-[560px] max-w-[92vw] flex-col border-l border-border bg-card shadow-3">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">日志详情</p>
-                <p className="truncate font-mono text-[11px] text-muted-foreground">
+                <p className="truncate font-mono text-xs text-muted-foreground">
                   {detail.index} · {detail.id}
                 </p>
               </div>
@@ -570,7 +570,7 @@ export function LogsPanel() {
               ) : null}
               <div>
                 <p className="mb-1 text-xs text-muted-foreground">完整内容（原始文档 JSON）</p>
-                <pre className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-3 text-[11px] leading-relaxed">
+                <pre className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-relaxed">
                   {JSON.stringify(detail.doc, null, 2)}
                 </pre>
               </div>

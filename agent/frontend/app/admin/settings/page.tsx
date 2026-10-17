@@ -218,7 +218,7 @@ export default function SettingsPage() {
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">系统配置</h1>
+          <h1 className="text-xl font-medium">系统配置</h1>
           <Button onClick={save} disabled={busy}>
             {busy ? "保存中…" : "保存"}
           </Button>
@@ -233,7 +233,7 @@ export default function SettingsPage() {
               <CardHeader>
                 <CardTitle className="text-sm">{g.name}</CardTitle>
               </CardHeader>
-              <CardContent className="grid grid-cols-3 gap-4">
+              <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {g.fields.map((f) => (
                   <div key={f.key}>
                     <label
@@ -243,7 +243,7 @@ export default function SettingsPage() {
                       {f.label}
                     </label>
                     {renderField(f)}
-                    {f.hint && <p className="mt-1 text-[11px] text-muted-foreground">{f.hint}</p>}
+                    {f.hint && <p className="mt-1 text-xs text-muted-foreground">{f.hint}</p>}
                   </div>
                 ))}
               </CardContent>

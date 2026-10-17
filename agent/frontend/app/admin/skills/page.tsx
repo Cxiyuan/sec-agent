@@ -167,7 +167,7 @@ export default function SkillsPage() {
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-medium">
             技能库{" "}
             <span className="text-sm text-muted-foreground">
               （安全事件分析 SOP + 脚本工具，按事件类型路由）
@@ -244,7 +244,7 @@ export default function SkillsPage() {
                         />
                         <span>
                           <span className="font-mono text-xs">{t.name}</span>
-                          <span className="block text-[11px] text-muted-foreground">
+                          <span className="block text-xs text-muted-foreground">
                             [{t.category}] {t.description}
                           </span>
                         </span>

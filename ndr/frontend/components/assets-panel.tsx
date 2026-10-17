@@ -313,7 +313,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   {row.ports.slice(0, 8).map((p) => (
                     <span
                       key={`${row.ip}-${p.port}`}
-                      className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      className="rounded-xs bg-surface-1 px-1.5 py-0.5 text-xs text-muted-foreground"
                     >
                       {p.app}（{p.port}）
                     </span>
@@ -331,7 +331,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
               </TableCell>
               <TableCell>
                 {row.managed ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                  <span className="inline-flex items-center gap-1 text-xs text-sev-ok-fg">
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     已纳管
                   </span>
@@ -382,7 +382,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
               </p>
             ) : null}
             {hosts?.note ? (
-              <p className="mx-4 mb-2 mt-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+              <p className="mx-4 mb-2 mt-2 rounded-md border border-sev-info-bd bg-sev-info-bg px-3 py-2 text-xs text-sev-info-fg">
                 {hosts.note}
               </p>
             ) : null}
@@ -422,7 +422,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
               </p>
             ) : null}
             {scan?.note ? (
-              <p className="mx-4 mt-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              <p className="mx-4 mt-2 rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
                 {scan.note}
               </p>
             ) : null}
@@ -430,7 +430,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
               <div className="mx-4 flex flex-wrap items-center gap-1.5">
                 <span className="text-xs text-muted-foreground">网段内最常见暴露端口：</span>
                 {scan.top_ports.map((p) => (
-                  <span key={p.label} className="rounded border px-2 py-0.5 text-[11px] text-muted-foreground">
+                  <span key={p.label} className="rounded-xs bg-surface-1 px-2 py-0.5 text-xs text-muted-foreground">
                     {p.label} · {p.hosts} 台
                   </span>
                 ))}

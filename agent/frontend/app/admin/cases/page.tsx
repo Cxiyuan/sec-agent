@@ -98,7 +98,7 @@ export default function CasesPage() {
       <Nav />
       <main className="ml-56 p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">攻击者案件</h1>
+          <h1 className="text-xl font-medium">攻击者案件</h1>
           <div className="flex items-center gap-2">
             <Input
               placeholder="按攻击者标识/标题搜索"
@@ -221,11 +221,11 @@ export default function CasesPage() {
                         {c.attacker_key}
                       </Link>
                       {c.merge_suggestion?.case_ids?.length ? (
-                        <span className="ml-2 text-[11px] text-amber-500">建议合并</span>
+                        <span className="ml-2 text-xs text-sev-medium-fg">建议合并</span>
                       ) : null}
                       {c.contradiction ? (
                         <span
-                          className="ml-2 text-[11px] text-amber-500"
+                          className="ml-2 text-xs text-sev-medium-fg"
                           title="结论声称高级攻击行为，但缺少对应结构化证据（一致性校验）"
                         >
                           结论存疑
@@ -233,7 +233,7 @@ export default function CasesPage() {
                       ) : null}
                       {(c.group_count || 0) > 40 ? (
                         <span
-                          className="ml-2 text-[11px] text-amber-500"
+                          className="ml-2 text-xs text-sev-medium-fg"
                           title="成员组超过规模上限，建议用下方「存量重建」拆分"
                         >
                           超大案件
@@ -250,7 +250,7 @@ export default function CasesPage() {
                     <TableCell>
                       {statusText(c.status)}
                       {c.last_error ? (
-                        <span className="ml-1 text-[11px] text-destructive" title={c.last_error}>
+                        <span className="ml-1 text-xs text-destructive" title={c.last_error}>
                           ⚠
                         </span>
                       ) : null}

@@ -148,7 +148,7 @@ export function LogstashPanel() {
 
         {/* 状态区 */}
         {data && (
-          <div className="rounded-md border p-3 text-xs">
+          <div className="rounded-xs bg-surface-1 px-3 py-2 text-xs">
             <div className="mb-1 flex flex-wrap items-center gap-2">
               <Badge variant={ls?.alive ? "info" : "critical"}>
                 {ls?.alive ? "运行中" : "不可达"}
@@ -178,12 +178,12 @@ export function LogstashPanel() {
                 {rate.delivered_per_min ?? "-"}/分 · 分析 {rate.analyzed_per_min ?? "-"}/分 · 模型容量{" "}
                 {rate.agent_capacity_per_min ?? "-"}/分
                 {(rate.limit_saturated ?? 0) > 0 && (
-                  <span className="text-amber-500">
+                  <span className="text-sev-medium-fg">
                     {" · "}额度饱和 {rate.limit_saturated} 次
                   </span>
                 )}
                 {(rate.raw_trimmed_total ?? 0) > 0 && (
-                  <span className="text-amber-500">
+                  <span className="text-sev-medium-fg">
                     {" · "}已裁剪 {rate.raw_trimmed_total} 条（扫描跟不上入队）
                   </span>
                 )}
@@ -199,7 +199,7 @@ export function LogstashPanel() {
                 {Object.keys(det.dropped).length > 0 && (
                   <>
                     {" · "}
-                    <span className="text-amber-500">
+                    <span className="text-sev-medium-fg">
                       已丢弃（未进分析）：
                       {Object.entries(det.dropped)
                         .map(([k, v]) => `${k} ${v}`)
@@ -222,7 +222,7 @@ export function LogstashPanel() {
                 {(det.task_failed?.failed_total ?? 0) > 0 && (
                   <>
                     {" · "}
-                    <span className="text-amber-500">
+                    <span className="text-sev-medium-fg">
                       分析失败 {det.task_failed?.failed_total} 条（在途超时后会重投）
                     </span>
                   </>
@@ -246,7 +246,7 @@ export function LogstashPanel() {
                 {(det.handled_skipped ?? 0) > 0 && (
                   <>
                     {" · "}
-                    <span className="text-amber-500">
+                    <span className="text-sev-medium-fg">
                       登记丢弃 {det.handled_skipped} 条（会重复分析）
                     </span>
                   </>
@@ -356,7 +356,7 @@ export function LogstashPanel() {
             <p className="mb-1 text-xs font-medium text-muted-foreground">
               参数生成的管道预览（未保存）
             </p>
-            <pre className="max-h-64 overflow-auto rounded-md border p-2 text-[11px]">{preview}</pre>
+            <pre className="max-h-64 overflow-auto rounded-sm border border-border-subtle bg-surface-1 p-2 text-xs">{preview}</pre>
           </div>
         )}
       </CardContent>

@@ -46,7 +46,7 @@ export default function ReportsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-2xl font-bold">报告</h1>
+        <h1 className="mb-4 text-xl font-medium">报告</h1>
         <Card>
           <CardHeader><CardTitle className="text-sm">事件报告</CardTitle></CardHeader>
           <CardContent className="p-0">

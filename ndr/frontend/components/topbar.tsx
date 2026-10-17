@@ -133,10 +133,10 @@ export function TopBar() {
   const notices = noticesOf(stats, push);
 
   return (
-    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b bg-card px-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-border bg-card px-4">
       <div className="flex items-center gap-2 px-1">
         <Shield className="h-6 w-6 text-primary" />
-        <span className="whitespace-nowrap text-base font-bold tracking-tight">深瞳 · NDR</span>
+        <span className="whitespace-nowrap text-base font-semibold tracking-tight">深瞳 · NDR</span>
       </div>
 
       {/* 一级菜单：分析中心鼠标停留展开二级菜单，其余直接进默认子页 */}
@@ -161,8 +161,8 @@ export function TopBar() {
                 ) : null}
               </Link>
               {section.dropdown ? (
-                <div className="invisible absolute left-0 top-full z-50 w-72 pt-1 opacity-0 transition-opacity duration-100 group-hover:visible group-hover:opacity-100">
-                  <div className="rounded-lg border bg-card p-1.5 shadow-lg">
+                <div className="invisible absolute left-0 top-full z-50 w-72 pt-1 opacity-0 transition-opacity duration-100 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+                  <div className="rounded-xl border border-border bg-card p-1.5 shadow-3">
                     {section.dropdown.map((item) => (
                       <Link
                         key={item.href}
@@ -173,7 +173,7 @@ export function TopBar() {
                         <span className="min-w-0">
                           <span className="block text-sm font-medium text-foreground">{item.label}</span>
                           {item.desc ? (
-                            <span className="mt-0.5 block text-[11px] text-muted-foreground">{item.desc}</span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground">{item.desc}</span>
                           ) : null}
                         </span>
                       </Link>
@@ -197,13 +197,13 @@ export function TopBar() {
           >
             <Bell className="h-5 w-5" />
             {notices.length > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground">
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-xs font-medium leading-none text-destructive-foreground">
                 {notices.length > 9 ? "9+" : notices.length}
               </span>
             )}
           </button>
           {open && (
-            <div className="absolute right-0 mt-2 w-80 rounded-md border bg-card p-2 shadow-lg">
+            <div className="absolute right-0 mt-2 w-80 rounded-lg border border-border bg-card p-2 shadow-3">
               <p className="px-2 py-1 text-xs text-muted-foreground">
                 {notices.length ? `需要处理的运行告警（${notices.length}）` : "暂无需要处理的运行告警"}
               </p>

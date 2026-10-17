@@ -117,7 +117,7 @@ export function RebuildPanel() {
               <span>
                 单案最大成员组：旧 {dry.old_max_groups} → 新 <b>{dry.new_max_groups}</b>
               </span>
-              <span className={dry.oversized_after > 0 ? "text-amber-500" : "text-muted-foreground"}>
+              <span className={dry.oversized_after > 0 ? "text-sev-medium-fg" : "text-muted-foreground"}>
                 超上限案件：旧 {dry.oversized_before} → 新 {dry.oversized_after}
               </span>
               <span className="text-muted-foreground">脏域名键案件（旧）：{dry.junk_keys_before}</span>
@@ -144,10 +144,10 @@ export function RebuildPanel() {
                       <Badge variant="outline">{p.groups} 组</Badge>
                       <span className="font-mono">{p.attacker_key}</span>
                       {p.split_reason ? (
-                        <span className="text-[11px] text-amber-500">{p.split_reason.slice(0, 30)}</span>
+                        <span className="text-xs text-sev-medium-fg">{p.split_reason.slice(0, 30)}</span>
                       ) : null}
                       {p.merge_basis?.length ? (
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           依据 {p.merge_basis.slice(0, 2).join("、")}
                         </span>
                       ) : null}

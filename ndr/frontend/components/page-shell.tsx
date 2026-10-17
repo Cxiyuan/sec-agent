@@ -47,8 +47,11 @@ export function PageShell({
           fill && "flex h-screen flex-col overflow-hidden",
         )}
       >
-        {/* 2026-10 用户要求：页面不再显示 h1 标题与说明段落（信息都在页头菜单与卡片标题里），
-            正文直接铺满；`title/desc` 仅保留为可访问性/调试用途，不渲染。 */}
+        {/* 2026-10 用户要求：页面不再**显示** h1 标题与说明段落（信息都在页头菜单与卡片标题里），
+            正文直接铺满。但 h1 不能真的没有 —— 读屏与浏览器大纲靠它识别"这一页是什么"，
+            所以用 sr-only 保留：视觉上不可见，语义上存在。 */}
+        <h1 className="sr-only">{title}</h1>
+        {desc ? <p className="sr-only">{desc}</p> : null}
         <div
           className={cn(
             fill ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-4",

@@ -116,7 +116,7 @@ export default function CaseDetailPage() {
           <Link href="/admin/cases" className="text-sm text-muted-foreground hover:underline">
             ← 攻击者案件
           </Link>
-          <h1 className="font-mono text-xl font-bold">{data.attacker_key}</h1>
+          <h1 className="font-mono text-xl font-semibold">{data.attacker_key}</h1>
           {data.display_id && (
             <span className="font-mono text-xs text-muted-foreground">{data.display_id}</span>
           )}
@@ -127,12 +127,12 @@ export default function CaseDetailPage() {
             </span>
           ) : null}
           {data.split_reason ? (
-            <span className="text-xs text-amber-500" title={data.split_reason}>
+            <span className="text-xs text-sev-medium-fg" title={data.split_reason}>
               自动拆分
             </span>
           ) : null}
           {data.contradiction ? (
-            <span className="text-xs text-amber-500" title="结论声称高级行为但缺少结构化证据，仅作参考">
+            <span className="text-xs text-sev-medium-fg" title="结论声称高级行为但缺少结构化证据，仅作参考">
               结论存疑（不作为定级依据）
             </span>
           ) : null}
@@ -210,12 +210,12 @@ export default function CaseDetailPage() {
         {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
         {data.last_error && <p className="mb-3 text-sm text-destructive">上次错误：{data.last_error}</p>}
         {data.merge_suggestion?.case_ids?.length ? (
-          <p className="mb-3 text-sm text-amber-500">
+          <p className="mb-3 text-sm text-sev-medium-fg">
             归集提示：{data.merge_suggestion.reason}（候选案件 {data.merge_suggestion.case_ids.join(", ")}）
           </p>
         ) : null}
 
-        <div className="mb-4 grid grid-cols-3 gap-4">
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Card className="col-span-2">
             <CardHeader><CardTitle className="text-sm">案件概要</CardTitle></CardHeader>
             <CardContent className="text-sm">
@@ -285,7 +285,7 @@ export default function CaseDetailPage() {
           </Card>
         )}
 
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="col-span-2 space-y-4">
             <Card>
               <CardHeader><CardTitle className="text-sm">完整攻击路径</CardTitle></CardHeader>
@@ -318,7 +318,7 @@ export default function CaseDetailPage() {
                             证据 {ref} {openRef === ref ? "▲" : "▼"}
                           </button>
                           {openRef === ref && (
-                            <pre className="mt-1 max-h-64 overflow-auto rounded bg-muted p-2 text-[11px]">
+                            <pre className="mt-1 max-h-64 overflow-auto rounded bg-muted p-2 text-xs">
                               {JSON.stringify(evidenceByRef[ref] ?? { ref, note: "证据未在清单中（可能超出导出上限）" }, null, 2)}
                             </pre>
                           )}
@@ -358,7 +358,7 @@ export default function CaseDetailPage() {
                           <TableCell className="font-mono text-xs">{t.src}</TableCell>
                           <TableCell className="font-mono text-xs">{t.dst}</TableCell>
                           <TableCell className="text-xs">{t.summary}</TableCell>
-                          <TableCell className="font-mono text-[10px]">{t.ref}</TableCell>
+                          <TableCell className="font-mono text-xs">{t.ref}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -372,18 +372,18 @@ export default function CaseDetailPage() {
                 <CardHeader><CardTitle className="text-sm">横向移动与数据外泄</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   {(current?.lateral || []).map((l, i) => (
-                    <div key={`l${i}`} className="rounded border p-2">
+                    <div key={`l${i}`} className="rounded-xs bg-surface-1 p-2">
                       横向：<span className="font-mono text-xs">{l.src}</span> →{" "}
                       <span className="font-mono text-xs">{l.dst}</span>　方式：{l.method}
-                      <div className="font-mono text-[10px] text-muted-foreground">
+                      <div className="font-mono text-xs text-muted-foreground">
                         {(l.evidence_refs || []).join(" ")}
                       </div>
                     </div>
                   ))}
                   {(current?.exfil || []).map((e, i) => (
-                    <div key={`e${i}`} className="rounded border p-2">
+                    <div key={`e${i}`} className="rounded-xs bg-surface-1 p-2">
                       外泄：<span className="font-mono text-xs">{e.dst}</span>　字节 {e.bytes}
-                      <div className="font-mono text-[10px] text-muted-foreground">
+                      <div className="font-mono text-xs text-muted-foreground">
                         {(e.evidence_refs || []).join(" ")}
                       </div>
                     </div>
@@ -397,7 +397,7 @@ export default function CaseDetailPage() {
                 <CardHeader><CardTitle className="text-sm">未解缺口（可据此下追问指令）</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   {(current?.gaps || []).map((g, i) => (
-                    <div key={i} className="rounded border border-amber-500/40 bg-amber-500/5 p-2">
+                    <div key={i} className="rounded-xs border border-sev-medium-bd bg-sev-medium-bg p-2">
                       <p className="font-medium">{g.missing}</p>
                       <p className="text-xs text-muted-foreground">原因：{g.why || "-"}</p>
                       <p className="text-xs text-muted-foreground">建议：{g.next_action || "-"}</p>
@@ -410,7 +410,7 @@ export default function CaseDetailPage() {
             {(current?.dropped || []).length > 0 && (
               <Card>
                 <CardHeader><CardTitle className="text-sm">因证据不足被丢弃的结论（可审计）</CardTitle></CardHeader>
-                <CardContent className="space-y-1 font-mono text-[11px] text-muted-foreground">
+                <CardContent className="space-y-1 font-mono text-xs text-muted-foreground">
                   {(current?.dropped || []).map((d, i) => (
                     <div key={i}>{d}</div>
                   ))}
@@ -437,16 +437,16 @@ export default function CaseDetailPage() {
                 <CardHeader><CardTitle className="text-sm">IOC 与情报</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-xs">
                   {(current?.iocs || []).map((v, i) => (
-                    <div key={i} className="rounded border p-2">
+                    <div key={i} className="rounded-xs bg-surface-1 p-2">
                       <div className="font-mono">
                         [{v.type}] {v.value}
                       </div>
                       {v.intel && Object.keys(v.intel).length > 0 && (
-                        <pre className="mt-1 max-h-24 overflow-auto text-[10px] text-muted-foreground">
+                        <pre className="mt-1 max-h-24 overflow-auto text-xs text-muted-foreground">
                           {JSON.stringify(v.intel)}
                         </pre>
                       )}
-                      <div className="font-mono text-[10px] text-muted-foreground">
+                      <div className="font-mono text-xs text-muted-foreground">
                         {(v.evidence_refs || []).join(" ")}
                       </div>
                     </div>
@@ -475,13 +475,13 @@ export default function CaseDetailPage() {
               <CardHeader><CardTitle className="text-sm">成员事件组</CardTitle></CardHeader>
               <CardContent className="space-y-1 text-xs">
                 {data.groups.map((g) => (
-                  <div key={g.fingerprint} className="rounded border p-2">
-                    <div className="font-mono text-[10px] text-muted-foreground">{g.fingerprint}</div>
+                  <div key={g.fingerprint} className="rounded-xs bg-surface-1 p-2">
+                    <div className="font-mono text-xs text-muted-foreground">{g.fingerprint}</div>
                     <div>
                       {formatDateTime(g.window_start)}　事件{" "}
                       {g.event_count}　{severityText(g.severity)}
                     </div>
-                    <div className="font-mono text-[10px] text-muted-foreground">
+                    <div className="font-mono text-xs text-muted-foreground">
                       {g.src_ips.join(", ")} → {g.dst_ips.join(", ")}
                     </div>
                   </div>
@@ -493,9 +493,9 @@ export default function CaseDetailPage() {
             {(current?.query_trail || []).length > 0 && (
               <Card>
                 <CardHeader><CardTitle className="text-sm">取证查询轨迹（审计）</CardTitle></CardHeader>
-                <CardContent className="space-y-1 text-[11px]">
+                <CardContent className="space-y-1 text-xs">
                   {(current?.query_trail || []).map((q, i) => (
-                    <div key={i} className="rounded border p-1">
+                    <div key={i} className="rounded-xs bg-surface-1 p-1">
                       <span className="font-mono">
                         {q.step}. {q.tool}
                       </span>
@@ -503,7 +503,7 @@ export default function CaseDetailPage() {
                         <span className="text-muted-foreground"> → {q.result_count} 条</span>
                       ) : null}
                       {q.error ? <span className="text-destructive"> 错误：{q.error}</span> : null}
-                      <div className="max-h-16 overflow-auto font-mono text-[10px] text-muted-foreground">
+                      <div className="max-h-16 overflow-auto font-mono text-xs text-muted-foreground">
                         {JSON.stringify(q.params)}
                       </div>
                     </div>

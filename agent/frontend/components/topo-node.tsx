@@ -114,7 +114,7 @@ export function TopoNodeView({ data, selected }: NodeProps<TopoFlowNode>) {
   return (
     <div
       className={[
-        "min-w-[150px] rounded-md border bg-card px-3 py-2 shadow-sm",
+        "min-w-[150px] rounded-md border border-border bg-card px-3 py-2 shadow-1",
         selected ? "border-primary ring-1 ring-primary" : "border-border",
       ].join(" ")}
       style={{ borderLeft: `4px solid ${color}` }}
@@ -129,10 +129,10 @@ export function TopoNodeView({ data, selected }: NodeProps<TopoFlowNode>) {
         <span className="text-sm font-medium">{data.label || "未命名设备"}</span>
       </div>
       {data.zone ? (
-        <div className="mt-0.5 text-[11px] text-muted-foreground">区域：{data.zone}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">区域：{data.zone}</div>
       ) : null}
       {assetLabels.length > 0 ? (
-        <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+        <div className="mt-0.5 font-mono text-xs text-muted-foreground">
           {assetLabels.slice(0, 3).join("、")}
           {assetLabels.length > 3 ? ` 等${assetLabels.length}个` : ""}
         </div>
