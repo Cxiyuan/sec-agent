@@ -60,7 +60,7 @@ def _in(ip: str, nets: Iterable[ipaddress._BaseNetwork]) -> bool:
         addr = ipaddress.ip_address(str(ip))
     except ValueError:
         return False
-    return any(addr in net for net in nets if net.version == addr.version)
+    return any(addr in net for net in nets if getattr(net, "version", 0) == addr.version)
 
 
 # ---------- 分组 ----------

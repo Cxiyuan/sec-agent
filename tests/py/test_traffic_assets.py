@@ -76,6 +76,10 @@ def test_shape_pairs_classifies_each_view(
     monkeypatch.setattr(traffic, "_nets", lambda: [ipaddress.ip_network("10.0.0.0/8")])
     resp = {
         "aggregations": {
+            # 主机名单独按主语给（字节在 conn、域名在 http，按"对"取会全空）
+            "subject_hosts": {
+                "buckets": [{"key": "10.1.2.3", "names": {"buckets": [{"key": "srv.example"}]}}]
+            },
             "pairs": {
                 "buckets": [
                     _pair("198.51.100.9", "10.1.2.3", bo=1000, bi=9000),  # 公网 → 内网资产

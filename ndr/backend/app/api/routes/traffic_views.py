@@ -25,6 +25,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
+from app import geoip
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
@@ -127,7 +128,8 @@ def _in(ip: str, nets: Iterable[ipaddress._BaseNetwork]) -> bool:
         addr = ipaddress.ip_address(str(ip))
     except ValueError:
         return False
-    return any(addr in net for net in nets if net.version == addr.version)
+    # 用 getattr 取版本：ipaddress 的抽象基类在类型存根里没有暴露 version
+    return any(addr in net for net in nets if getattr(net, "version", 0) == addr.version)
 
 
 def _clean_hostname(hostname: str, ip: str) -> str:
@@ -138,15 +140,22 @@ def _clean_hostname(hostname: str, ip: str) -> str:
     bare = text.rsplit(":", 1)[0] if text.count(":") == 1 else text
     if bare == ip or text.startswith(ip):
         return ""
+    # 纯 IP 不算主机名（实测有把对端 IP 写进 host 字段的情况）
+    try:
+        ipaddress.ip_address(bare)
+        return ""
+    except ValueError:
+        pass
+    if "/" in text or " " in text:
+        return ""
     return text[:255]
 
 
 def _geo_available() -> bool:
     """地理库是否可用（配了路径且能打开）。"""
     try:
-        from app import geoip
-
-        return bool(geoip.resolve("1.1.1.1")) and geoip.resolve("1.1.1.1") != "未知"
+        label = geoip.resolve("1.1.1.1")
+        return bool(label) and label != "未知"
     except Exception:  # noqa: BLE001
         return False
 
@@ -206,8 +215,6 @@ def _regions_from_peers(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
     counts = {str(p.get("ip") or ""): 1 for p in peers if p.get("ip")}
     try:
-        from app import geoip
-
         return geoip.region_counts(counts, top=5)
     except Exception as exc:  # noqa: BLE001 — 地理库坏了不能挡住流量页
         log.warning("地域统计失败：%s", exc)
@@ -232,6 +239,12 @@ def _pair_body(*, minutes: int, size: int) -> dict[str, Any]:
             }
         },
         "aggs": {
+            # 主机名单独按**主语**取：字节数来自 conn（无主机名），
+            # 主机名来自 http/ssl（字节少），按"对"取会取不到（2026-10 QA 实测全空）。
+            "subject_hosts": {
+                "terms": {"field": "dst_ip.keyword", "size": size},
+                "aggs": {"names": {"terms": {"field": "hostname.keyword", "size": 5}}},
+            },
             "pairs": {
                 "composite": {
                     "size": size,
@@ -272,6 +285,16 @@ def _classify(view: str, src: str, dst: str, nets: list[ipaddress._BaseNetwork])
 def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
     """(源,目的) 对 → 每台主机的行（按视角选主语）。"""
     nets = _nets()
+    # 主语 → 候选主机名（按出现次数；对外业务视角用它给资产配域名）
+    host_by_subject: dict[str, list[str]] = {}
+    for hb in (((resp.get("aggregations") or {}).get("subject_hosts") or {}).get("buckets")) or []:
+        key = str(hb.get("key") or "")
+        names = [
+            str(nb.get("key") or "")
+            for nb in (((hb.get("names") or {}).get("buckets")) or [])
+        ]
+        if key and names:
+            host_by_subject[key] = names
     buckets = (((resp.get("aggregations") or {}).get("pairs") or {}).get("buckets")) or []
     agg: dict[str, dict[str, Any]] = {}
     kept_pairs = 0
@@ -303,12 +326,11 @@ def shape_pairs(resp: Any, *, view: str, limit: int) -> dict[str, Any]:
         row["conns"] += int((bucket.get("docs") or {}).get("value") or 0)
         last = (bucket.get("last_seen") or {}).get("value_as_string") or ""
         row["last_seen"] = max(row["last_seen"], last)
-        hosts = ((bucket.get("hostname") or {}).get("buckets")) or []
         # 主机名只从"对外业务"视角取（那时它才是被访问资产的域名）；
         # 横向/外连视角里 hostname 是"客户端访问过的域名"，不是这台主机自己的名字。
-        if hosts and view == "outbound" and not row["hostname"]:
-            for host in hosts:
-                cleaned = _clean_hostname(str(host.get("key") or ""), subject)
+        if view == "outbound" and not row["hostname"]:
+            for name in host_by_subject.get(subject, []):
+                cleaned = _clean_hostname(name, subject)
                 if cleaned:
                     row["hostname"] = cleaned
                     break
