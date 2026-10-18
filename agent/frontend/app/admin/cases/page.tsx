@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
   EmptyState,
   Input,
   Section,
@@ -58,9 +59,13 @@ export default function CasesPage() {
   // 空壳案件默认隐藏：列表被零轮次的 info 级案件刷满过（实测 25 个里 20 个）
   const [showShelved, setShowShelved] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  /** 提示语气：删除失败不能画成和成功一样的蓝色 */
+  const [msgErr, setMsgErr] = React.useState(false);
   const [busy, setBusy] = React.useState("");
   // 勾选删除：批量清理误报/测试案件
   const [picked, setPicked] = React.useState<string[]>([]);
+  /** 批量删除不可逆：走共享 Dialog 二次确认（原生 confirm 与全站弹层材质对不上） */
+  const [askDel, setAskDel] = React.useState(false);
 
   const load = React.useCallback(async () => {
     const params = new URLSearchParams();
@@ -86,9 +91,9 @@ export default function CasesPage() {
 
   async function removePicked() {
     if (!picked.length) return;
-    if (!window.confirm(`确认删除选中的 ${picked.length} 个案件？（连带其调查轮次与报告；事件组会保留，只清掉案件指针）`)) return;
     setBusy("del");
     setMsg("");
+    setMsgErr(false);
     try {
       const r = await apiFetch<{ deleted: number }>("/api/cases/delete", {
         method: "POST",
@@ -98,9 +103,11 @@ export default function CasesPage() {
       setPicked([]);
       await load();
     } catch (e) {
+      setMsgErr(true);
       setMsg(e instanceof Error ? e.message : "删除失败");
     } finally {
       setBusy("");
+      setAskDel(false);
     }
   }
 
@@ -158,7 +165,7 @@ export default function CasesPage() {
                   variant="destructive"
                   size="sm"
                   disabled={busy !== "" || picked.length === 0}
-                  onClick={() => removePicked().catch(() => {})}
+                  onClick={() => setAskDel(true)}
                 >
                   {busy === "del" ? "删除中…" : `删除选中（${picked.length}）`}
                 </Button>
@@ -223,7 +230,14 @@ export default function CasesPage() {
 
           <RebuildPanel />
 
-          {msg && <p className="text-xs text-primary">{msg}</p>}
+          {msg && (
+            <p
+              role={msgErr ? "alert" : "status"}
+              className={msgErr ? "text-13 text-sev-critical-fg" : "text-13 text-primary"}
+            >
+              {msg}
+            </p>
+          )}
 
           <Section title="案件列表" description="按最近活动倒序">
             <Card>
@@ -369,6 +383,34 @@ export default function CasesPage() {
               </CardContent>
             </Card>
           </Section>
+
+          {/* 批量删除确认：标题给数量，正文逐条写清「会删什么、不会删什么」 */}
+          <Dialog
+            open={askDel}
+            title={`删除选中的 ${picked.length} 个案件？`}
+            onClose={() => setAskDel(false)}
+            footer={
+              <div className="flex items-center justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setAskDel(false)}>
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={busy !== ""}
+                  onClick={() => void removePicked()}
+                >
+                  删除
+                </Button>
+              </div>
+            }
+          >
+            <ul className="space-y-1.5 text-13 leading-relaxed text-muted-foreground">
+              <li>会删除：案件本身，连带其调查轮次与报告。</li>
+              <li>保留：事件组仍存在，只清掉指向案件的引用。</li>
+              <li>保留：ES 里的原始日志不受影响。</li>
+            </ul>
+          </Dialog>
         </div>
       </main>
     </div>

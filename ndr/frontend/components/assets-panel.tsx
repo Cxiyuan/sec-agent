@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
   EmptyState,
   Input,
   Section,
@@ -133,6 +134,10 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
   /** 空态里的「新建分组 / 新增资产」直接复用上面的表单：聚焦输入框，不另写创建逻辑。 */
   const groupNameRef = React.useRef<HTMLInputElement>(null);
   const ipInputRef = React.useRef<HTMLInputElement>(null);
+  /** 删除类操作统一走共享 `Dialog` 二次确认：原生 `window.confirm` 与全站的弹层材质对不上。 */
+  const [pendingDelete, setPendingDelete] = React.useState<
+    { kind: "record"; id: string; ip: string } | { kind: "group"; row: GroupRow } | null
+  >(null);
 
   const SRC = {
     hosts: "被动发现（/api/assets/discover）",
@@ -223,8 +228,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
   );
 
   const deleteRecord = React.useCallback(
-    async (id: string, ip: string) => {
-      if (!window.confirm(`从台账里删除 ${ip}？（不影响流量数据）`)) return;
+    async (id: string) => {
       const ok = await apiFetch(`/api/assets/records/${id}`, { method: "DELETE" })
         .then(() => true)
         .catch(() => false);
@@ -265,7 +269,6 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
 
   const deleteGroup = React.useCallback(
     async (row: GroupRow) => {
-      if (!window.confirm(`删除分组「${row.name}」？组内 ${row.assets} 个资产会变成"未分组"。`)) return;
       const ok = await apiFetch(`/api/assets/groups/${row.id}`, { method: "DELETE" })
         .then(() => true)
         .catch(() => false);
@@ -605,7 +608,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                               size="sm"
                               variant="ghost"
                               aria-label={`删除分组 ${g.name}`}
-                              onClick={() => void deleteGroup(g)}
+                              onClick={() => setPendingDelete({ kind: "group", row: g })}
                             >
                               <Trash2 className="h-3.5 w-3.5 text-sev-critical-fg" />
                             </Button>
@@ -790,7 +793,9 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                               size="sm"
                               variant="ghost"
                               aria-label={`从台账删除 ${row.ip}`}
-                              onClick={() => void deleteRecord(row.id, row.ip)}
+                              onClick={() =>
+                                setPendingDelete({ kind: "record", id: row.id, ip: row.ip })
+                              }
                             >
                               <Trash2 className="h-3.5 w-3.5 text-sev-critical-fg" />
                             </Button>
@@ -812,6 +817,46 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
           读取失败的接口见上方错误条，页面数据可能不是最新。
         </p>
       ) : null}
+
+      <Dialog
+        open={pendingDelete !== null}
+        title={
+          pendingDelete?.kind === "group"
+            ? `删除分组「${pendingDelete.row.name}」？`
+            : pendingDelete
+              ? `从台账删除 ${pendingDelete.ip}？`
+              : "确认删除？"
+        }
+        onClose={() => setPendingDelete(null)}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setPendingDelete(null)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                const p = pendingDelete;
+                setPendingDelete(null);
+                if (!p) return;
+                if (p.kind === "record") void deleteRecord(p.id);
+                else void deleteGroup(p.row);
+              }}
+            >
+              删除
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {pendingDelete?.kind === "group" ? (
+            <>组内 {pendingDelete.row.assets} 个资产会变成"未分组"。</>
+          ) : pendingDelete ? (
+            <>不影响流量数据。</>
+          ) : null}
+        </p>
+      </Dialog>
     </div>
   );
 }

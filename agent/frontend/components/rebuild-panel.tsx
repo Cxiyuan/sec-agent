@@ -4,6 +4,7 @@ import * as React from "react";
 import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent } from "@shentong/ui";
+import { Dialog } from "@shentong/ui";
 import { Section } from "@shentong/ui";
 import { apiFetch, type RebuildDryRun, type RebuildRun } from "@/lib/api";
 import { formatDateTime, statusText } from "@shentong/ui";
@@ -20,6 +21,13 @@ export function RebuildPanel() {
   const [runs, setRuns] = React.useState<RebuildRun[]>([]);
   const [busy, setBusy] = React.useState("");
   const [msg, setMsg] = React.useState("");
+  /**
+   * 待确认的不可逆动作：重建会整体退场现有案件，回滚会删掉整批新案件。
+   * 两者都走共享 Dialog 二次确认（原来用 window.confirm，与全站弹层材质对不上）。
+   */
+  const [ask, setAsk] = React.useState<{ kind: "apply" } | { kind: "rollback"; runId: string } | null>(
+    null
+  );
 
   const loadRuns = React.useCallback(async () => {
     try {
@@ -49,9 +57,6 @@ export function RebuildPanel() {
   }
 
   async function apply() {
-    if (!window.confirm("确认执行重建？现有案件会全部置为「已退场（superseded）」，可用回滚恢复。")) {
-      return;
-    }
     setBusy("apply");
     setMsg("");
     try {
@@ -64,11 +69,11 @@ export function RebuildPanel() {
       setMsg(e instanceof Error ? e.message : "派发失败");
     } finally {
       setBusy("");
+      setAsk(null);
     }
   }
 
   async function rollback(runId: string) {
-    if (!window.confirm(`回滚批次 ${runId.slice(0, 8)}…？将删除该批次新建的案件并恢复旧案件。`)) return;
     setBusy(runId);
     setMsg("");
     try {
@@ -82,6 +87,7 @@ export function RebuildPanel() {
       setMsg(e instanceof Error ? e.message : "回滚失败");
     } finally {
       setBusy("");
+      setAsk(null);
     }
   }
 
@@ -99,7 +105,7 @@ export function RebuildPanel() {
           >
             {busy === "dry" ? "计算中…" : "① Dry-run（只算不写）"}
           </Button>
-          <Button size="sm" disabled={busy !== "" || !dry} onClick={() => apply().catch(() => {})}>
+          <Button size="sm" disabled={busy !== "" || !dry} onClick={() => setAsk({ kind: "apply" })}>
             {busy === "apply" ? "派发中…" : "② 执行重建"}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => loadRuns().catch(() => {})}>
@@ -179,7 +185,7 @@ export function RebuildPanel() {
                     size="sm"
                     variant="ghost"
                     disabled={busy !== ""}
-                    onClick={() => rollback(r.id).catch(() => {})}
+                    onClick={() => setAsk({ kind: "rollback", runId: r.id })}
                   >
                     回滚
                   </Button>
@@ -190,7 +196,46 @@ export function RebuildPanel() {
         </Card>
       )}
 
-      {msg && <p className="text-xs text-primary">{msg}</p>}
+      {msg && <p className="text-13 text-primary">{msg}</p>}
+
+      <Dialog
+        open={!!ask}
+        title={ask?.kind === "apply" ? "执行存量重建？" : "回滚这个批次？"}
+        onClose={() => setAsk(null)}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setAsk(null)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={busy !== ""}
+              onClick={() => {
+                if (!ask) return;
+                if (ask.kind === "apply") void apply();
+                else void rollback(ask.runId);
+              }}
+            >
+              {ask?.kind === "apply" ? "执行重建" : "回滚"}
+            </Button>
+          </div>
+        }
+      >
+        {ask?.kind === "apply" ? (
+          <ul className="space-y-1.5 text-13 leading-relaxed text-muted-foreground">
+            <li>现有案件会全部置为「已退场（superseded）」，不再出现在默认列表里。</li>
+            <li>新案件按当前规则重新归并生成，旧案件的数据不会被删除。</li>
+            <li>执行后可在下方按批次号回滚恢复。</li>
+          </ul>
+        ) : (
+          <ul className="space-y-1.5 text-13 leading-relaxed text-muted-foreground">
+            <li>会删除该批次新建的案件。</li>
+            <li>会恢复该批次执行前退场的旧案件。</li>
+            <li>回滚本身不可再撤销。</li>
+          </ul>
+        )}
+      </Dialog>
     </Section>
   );
 }

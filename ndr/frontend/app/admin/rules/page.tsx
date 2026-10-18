@@ -5,6 +5,7 @@ import { PageShell } from "@/components/page-shell";
 import {
   Badge,
   Button,
+  Dialog,
   Drawer,
   EmptyState,
   Input,
@@ -118,6 +119,8 @@ export default function RulesPage() {
   const [msgErr, setMsgErr] = React.useState(false);
   /** 首次加载：规则还没回来时画骨架，不要先显示「这一组还没有规则」 */
   const [loading, setLoading] = React.useState(true);
+  /** 待删除的自定义规则：删除不可逆，走共享 Dialog 二次确认（原生 confirm 与全站弹层材质对不上） */
+  const [askDel, setAskDel] = React.useState<RuleItem | null>(null);
 
   // 自定义规则表单（抽屉）：editId 为空 = 新增
   const [drawer, setDrawer] = React.useState(false);
@@ -314,7 +317,6 @@ export default function RulesPage() {
   }
 
   async function remove(r: RuleItem) {
-    if (!window.confirm(`删除自定义规则「${r.name}」？`)) return;
     setBusy(r.id);
     setMsgErr(false);
     try {
@@ -326,6 +328,7 @@ export default function RulesPage() {
       setMsg(e instanceof ApiError ? errorText(e.body) : "删除失败");
     } finally {
       setBusy("");
+      setAskDel(null);
     }
   }
 
@@ -467,7 +470,7 @@ export default function RulesPage() {
                     编辑
                   </Button>
                   {/* 删除是不可逆操作：独立用 destructive，和「编辑」不在同一层级 */}
-                  <Button size="sm" variant="destructive" disabled={busy === r.id} onClick={() => void remove(r)}>
+                  <Button size="sm" variant="destructive" disabled={busy === r.id} onClick={() => setAskDel(r)}>
                     删除
                   </Button>
                 </div>
@@ -553,6 +556,34 @@ export default function RulesPage() {
             </TreeNode>
           </div>
         </Section>
+
+        {/* 删除确认：标题带对象名，正文只写后果（「不可撤销」在按钮上体现为 destructive） */}
+        <Dialog
+          open={!!askDel}
+          title={askDel ? `删除自定义规则「${askDel.name}」？` : ""}
+          onClose={() => setAskDel(null)}
+          footer={
+            <div className="flex items-center justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setAskDel(null)}>
+                取消
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={!!busy}
+                onClick={() => {
+                  if (askDel) void remove(askDel);
+                }}
+              >
+                删除
+              </Button>
+            </div>
+          }
+        >
+          <p className="text-13 leading-relaxed text-muted-foreground">
+            这条规则会从检测链路上移除，之后新到的事件不再按它判定。已产生的事件与判定结果不受影响。
+          </p>
+        </Dialog>
 
         <Drawer
           open={drawer}

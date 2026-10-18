@@ -16,6 +16,7 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
   EmptyState,
   Input,
   Section,
@@ -93,6 +94,8 @@ export function McpPanel() {
   const [showTools, setShowTools] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  /** 轮换会立刻作废旧明文：走共享 `Dialog` 二次确认，不用 `window.confirm`。 */
+  const [rotateAsk, setRotateAsk] = React.useState<McpToken | null>(null);
   /** 这一轮接口读完了没（成功或失败都算读完）——「正在读」要和「真的没有」分开画。 */
   const [ready, setReady] = React.useState(false);
   const errs = usePanelErrors();
@@ -162,14 +165,6 @@ export function McpPanel() {
 
   /** 原地轮换：换新明文，旧明文立即失效（名称 / 用量 / 到期时间都保留）。 */
   async function rotateToken(t: McpToken) {
-    const who = t.name || `${t.prefix}…`;
-    if (
-      !window.confirm(
-        `轮换令牌「${who}」？会立刻换一个新明文，旧明文马上失效（智能体那边必须同步改，否则会连不上）。`,
-      )
-    ) {
-      return;
-    }
     setBusy(true);
     setMsg("");
     setFresh("");
@@ -490,7 +485,7 @@ export function McpPanel() {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => rotateToken(t)}
+                                onClick={() => setRotateAsk(t)}
                                 disabled={busy}
                               >
                                 轮换
@@ -748,6 +743,33 @@ export function McpPanel() {
           </CardContent>
         </Card>
       </Section>
+
+      <Dialog
+        open={rotateAsk !== null}
+        title={rotateAsk ? `轮换令牌「${rotateAsk.name || `${rotateAsk.prefix}…`}」？` : "轮换令牌？"}
+        onClose={() => setRotateAsk(null)}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setRotateAsk(null)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                const t = rotateAsk;
+                setRotateAsk(null);
+                if (t) void rotateToken(t);
+              }}
+            >
+              确认轮换
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          会立刻换一个新明文，旧明文马上失效（智能体那边必须同步改，否则会连不上）。
+        </p>
+      </Dialog>
     </div>
   );
 }

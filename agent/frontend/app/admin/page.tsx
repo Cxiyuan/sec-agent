@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
   Drawer,
   EmptyState,
   Section,
@@ -47,6 +48,10 @@ export default function AdminEventsPage() {
   const [foldSiblings, setFoldSiblings] = React.useState<EventGroupItem[]>([]);
   // 勾选删除：批量清理误报/测试事件组（只删 PG 分析产物，ES 原始日志保留）
   const [picked, setPicked] = React.useState<string[]>([]);
+  /** 批量删除的二次确认与结果提示：原来用 window.confirm / window.alert，与全站弹层和提示条材质都不一致 */
+  const [askDel, setAskDel] = React.useState(false);
+  const [msg, setMsg] = React.useState("");
+  const [msgErr, setMsgErr] = React.useState(false);
 
   async function load() {
     const suffix = showExcluded ? "&include_excluded=true" : "";
@@ -96,8 +101,9 @@ export default function AdminEventsPage() {
 
   async function removePicked() {
     if (!picked.length) return;
-    if (!window.confirm(`确认删除选中的 ${picked.length} 个事件组？（连带其事件与报告；ES 原始日志保留）`)) return;
     setLoadingDetail(false);
+    setMsg("");
+    setMsgErr(false);
     try {
       const r = await apiFetch<{ deleted: number }>("/api/events/groups/delete", {
         method: "POST",
@@ -105,10 +111,13 @@ export default function AdminEventsPage() {
       });
       setPicked([]);
       await load();
-      // 简单反馈：用浏览器提示条即可（列表本身会立刻刷新）
-      window.alert(`已删除 ${r.deleted} 个事件组`);
+      // 反馈走页面提示条（原来用 window.alert，会打断操作且不跟随主题）
+      setMsg(`已删除 ${r.deleted} 个事件组`);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "删除失败");
+      setMsgErr(true);
+      setMsg(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setAskDel(false);
     }
   }
 
@@ -146,6 +155,14 @@ export default function AdminEventsPage() {
       <main className="ml-56 p-6">
         <h1 className="sr-only">事件列表</h1>
         <div className="space-y-4">
+          {msg && (
+            <p
+              role={msgErr ? "alert" : "status"}
+              className={msgErr ? "text-13 text-sev-critical-fg" : "text-13 text-primary"}
+            >
+              {msg}
+            </p>
+          )}
           <Section
             title="事件列表"
             description="点击任意行查看详情与证据链；默认按同源折叠重复组"
@@ -155,7 +172,7 @@ export default function AdminEventsPage() {
                   variant="destructive"
                   size="sm"
                   disabled={picked.length === 0}
-                  onClick={() => removePicked().catch(() => {})}
+                  onClick={() => setAskDel(true)}
                 >
                   删除选中（{picked.length}）
                 </Button>
@@ -792,6 +809,28 @@ export default function AdminEventsPage() {
             </div>
           )}
         </Drawer>
+
+        {/* 批量删除确认：标题给数量，正文逐条写清「会删什么、不会删什么」 */}
+        <Dialog
+          open={askDel}
+          title={`删除选中的 ${picked.length} 个事件组？`}
+          onClose={() => setAskDel(false)}
+          footer={
+            <div className="flex items-center justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setAskDel(false)}>
+                取消
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => void removePicked()}>
+                删除
+              </Button>
+            </div>
+          }
+        >
+          <ul className="space-y-1.5 text-13 leading-relaxed text-muted-foreground">
+            <li>会删除：事件组本身，连带其事件与报告。</li>
+            <li>保留：ES 里的原始日志仍可按时间检索。</li>
+          </ul>
+        </Dialog>
       </main>
     </div>
   );
