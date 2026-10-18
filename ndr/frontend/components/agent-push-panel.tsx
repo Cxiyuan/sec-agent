@@ -17,6 +17,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -210,28 +212,25 @@ export function AgentPushPanel() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label
-                          htmlFor="push-url"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          推送地址
-                        </label>
+                    <FieldGrid maxCols={4}>
+                      <Field
+                        label="推送地址"
+                        htmlFor="push-url"
+                        /* URL 类字段占 2 列：两列等宽时 http://agent:8000/api/push/digests 会被截断，
+                           而地址错了整个推送链就断了 */
+                        span="lg"
+                      >
                         <Input
                           id="push-url"
                           value={url}
                           placeholder="http://agent:8000/api/push/digests"
                           onChange={(e) => setUrl(e.target.value)}
                         />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="push-token"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          令牌（与智能体 ST_PUSH_TOKEN 一致；留空 = 不改动已保存的令牌）
-                        </label>
+                      </Field>
+                      <Field
+                        label="令牌（与智能体 ST_PUSH_TOKEN 一致；留空 = 不改动已保存的令牌）"
+                        htmlFor="push-token"
+                      >
                         <Input
                           id="push-token"
                           value={token}
@@ -260,36 +259,24 @@ export function AgentPushPanel() {
                             </span>
                           </label>
                         )}
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="push-timeout"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          超时（秒）
-                        </label>
+                      </Field>
+                      <Field label="超时（秒）" htmlFor="push-timeout">
                         <Input
                           id="push-timeout"
                           className="tabular-nums"
                           value={String(timeout)}
                           onChange={(e) => setTimeoutSeconds(Number(e.target.value) || 10)}
                         />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="push-max"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          单次最多推多少条摘要
-                        </label>
+                      </Field>
+                      <Field label="单次最多推多少条摘要" htmlFor="push-max">
                         <Input
                           id="push-max"
                           className="tabular-nums"
                           value={String(maxPerPush)}
                           onChange={(e) => setMaxPerPush(Number(e.target.value) || 200)}
                         />
-                      </div>
-                    </div>
+                      </Field>
+                    </FieldGrid>
 
                     <label className="flex items-start gap-2 text-xs">
                       <input
@@ -358,14 +345,32 @@ export function AgentPushPanel() {
                 {loading ? (
                   <Skeleton className="h-9 w-full" />
                 ) : cfg ? (
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                    <span className="break-all font-mono">{cfg.url || "(未填地址)"}</span>
-                    <span className="text-muted-foreground">
-                      令牌 {cfg.token_set ? `已设置（${cfg.token_masked}）` : "未设置"}
-                    </span>
-                    {data?.env.url && (
-                      <span className="text-muted-foreground">环境默认 {data.env.url}</span>
-                    )}
+                  // 补两行：超时与单批上限 —— 这两个是排查「推送慢 / 一次推不完」时最先要看的数
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p className="pb-1">
+                      <span className="text-muted-foreground">推送地址</span>
+                      <span className="mt-0.5 block break-all font-mono">{cfg.url || "(未填地址)"}</span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">令牌</span>
+                      <span className="mt-0.5 block font-mono">
+                        {cfg.token_set ? `已设置（${cfg.token_masked}）` : "未设置"}
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">超时</span>
+                      <span className="mt-0.5 block tabular-nums">{cfg.timeout_seconds} 秒</span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">单批上限</span>
+                      <span className="mt-0.5 block tabular-nums">{cfg.max_per_push} 条</span>
+                    </p>
+                    {data?.env.url ? (
+                      <p className="pt-1">
+                        <span className="text-muted-foreground">环境默认</span>
+                        <span className="mt-0.5 block break-all font-mono">{data.env.url}</span>
+                      </p>
+                    ) : null}
                   </div>
                 ) : (
                   <EmptyState

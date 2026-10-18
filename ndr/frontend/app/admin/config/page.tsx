@@ -63,7 +63,7 @@ export default function ConfigAuditPage() {
   const okCount = items.length - warned;
 
   return (
-    <PageShell title="配置体检">
+    <PageShell title="配置体检" width="wide">
       <div className="space-y-4">
         <PanelError errors={errs} />
 
@@ -209,6 +209,12 @@ export default function ConfigAuditPage() {
                         <li key={i}>{w}</li>
                       ))}
                     </ul>
+                    {/* 与主列的「逐项正常」Stat 呼应：整段结论之外还有多少项带提示 */}
+                    {warned > 0 ? (
+                      <p className="mt-2 border-t border-sev-medium-bd pt-2 text-xs tabular-nums text-sev-medium-fg">
+                        其余 {warned} 项带提示（见左表「说明 / 提示」列）
+                      </p>
+                    ) : null}
                   </CardContent>
                 </Card>
               ) : data && !data.error && !errs.has ? (

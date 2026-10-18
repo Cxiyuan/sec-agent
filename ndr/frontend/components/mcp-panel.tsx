@@ -20,6 +20,8 @@ import {
   CardTitle,
   Dialog,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -286,8 +288,8 @@ export function McpPanel() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Skeleton className="h-9" />
-                    <Skeleton className="h-9" />
+                    <Skeleton className="h-14" />
+                    <Skeleton className="h-14" />
                   </div>
                   <Skeleton className="h-8 w-28" />
                 </CardContent>
@@ -319,6 +321,22 @@ export function McpPanel() {
             <CardContent className="space-y-2">
               <Skeleton className="h-3 w-20" />
               <TableSkeleton rows={4} cols={6} />
+            </CardContent>
+          </Card>
+
+          {/* 后面还有两张整幅卡（写回结论 5 列、工具清单）：骨架只画前两张的话，
+              内容到达时页面会往下长一截，正在读的位置跟着跳。 */}
+          <Card>
+            <CardContent className="space-y-2">
+              <Skeleton className="h-3 w-24" />
+              <TableSkeleton rows={3} cols={5} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="space-y-2">
+              <Skeleton className="h-3 w-40" />
+              <Skeleton className="h-8 w-16" />
             </CardContent>
           </Card>
         </Section>
@@ -354,14 +372,8 @@ export function McpPanel() {
                     {msg}
                   </p>
                 ) : null}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label
-                      htmlFor="mcp-token-name"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      新令牌名称（例如「智能体-生产」）
-                    </label>
+                <FieldGrid maxCols={2}>
+                  <Field label="新令牌名称（例如「智能体-生产」）" htmlFor="mcp-token-name">
                     <Input
                       id="mcp-token-name"
                       ref={nameRef}
@@ -369,14 +381,8 @@ export function McpPanel() {
                       onChange={(e) => setName(e.target.value)}
                       placeholder="留空也行，只是界面里不好认"
                     />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="mcp-token-days"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      有效期（天，留空 = 永不过期）
-                    </label>
+                  </Field>
+                  <Field label="有效期（天，留空 = 永不过期）" htmlFor="mcp-token-days">
                     <Input
                       id="mcp-token-days"
                       value={expiresDays}
@@ -384,8 +390,8 @@ export function McpPanel() {
                       placeholder="例如 90；1~3650"
                       inputMode="numeric"
                     />
-                  </div>
-                </div>
+                  </Field>
+                </FieldGrid>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={createToken} disabled={busy}>
                     生成令牌
@@ -426,24 +432,55 @@ export function McpPanel() {
                 <CardTitle>服务状态</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
+                {/* 补两行：服务不可达时给出 HTTP 码（排障时第一个要的字段）与最近调用时间。
+                    空值一律有文案，不留空白行。 */}
                 {status ? (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
-                    <Badge variant={status.service.reachable ? "success" : "critical"}>
-                      {status.service.reachable ? "服务在线" : "服务不可达"}
-                    </Badge>
-                    <span className="break-all font-mono">{status.service.url}</span>
-                    <span className="text-muted-foreground">工具 {status.tools.count} 个</span>
-                    <span className="text-muted-foreground">
-                      令牌 {status.tokens.enabled}/{status.tokens.total} 启用
-                      {status.tokens.expired ? `（${status.tokens.expired} 个已过期）` : ""}
-                    </span>
-                    <span className="text-muted-foreground">
-                      调用留存 {status.calls.kept}（失败 {status.calls.errors}）
-                    </span>
-                    <span className="text-muted-foreground">结论 {status.conclusions.total} 条</span>
-                    {status.service.error && (
-                      <span className="text-muted-foreground">（探测失败：{status.service.error}）</span>
-                    )}
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
+                    <p className="flex flex-wrap items-center gap-2 pb-1">
+                      <Badge variant={status.service.reachable ? "success" : "critical"}>
+                        {status.service.reachable ? "服务在线" : "服务不可达"}
+                      </Badge>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">服务地址</span>
+                      <span className="mt-0.5 block break-all font-mono">{status.service.url || "—"}</span>
+                    </p>
+                    {!status.service.reachable && status.service.status_code ? (
+                      <p className="py-1">
+                        <span className="text-muted-foreground">HTTP 码</span>
+                        <span className="mt-0.5 block">{status.service.status_code}</span>
+                      </p>
+                    ) : null}
+                    <p className="py-1">
+                      <span className="text-muted-foreground">工具</span>
+                      <span className="mt-0.5 block">{status.tools.count ?? "—"} 个</span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">令牌</span>
+                      <span className="mt-0.5 block">
+                        {status.tokens.enabled}/{status.tokens.total} 启用
+                        {status.tokens.expired ? `（${status.tokens.expired} 个已过期）` : ""}
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">调用留存</span>
+                      <span className="mt-0.5 block">
+                        {status.calls.kept}（失败 {status.calls.errors}）
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">最近调用</span>
+                      <span className="mt-0.5 block">
+                        {status.calls.last_at ? formatDateTime(status.calls.last_at) : "—"}
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">结论</span>
+                      <span className="mt-0.5 block">{status.conclusions.total} 条</span>
+                    </p>
+                    {status.service.error ? (
+                      <p className="pt-1 text-muted-foreground">探测失败：{status.service.error}</p>
+                    ) : null}
                   </div>
                 ) : (
                   <EmptyState

@@ -16,6 +16,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -127,9 +129,12 @@ export function AccountPanel() {
             <SettingsMain>
               <Card>
                 <CardContent className="space-y-3 pt-4">
-                  <Skeleton className="h-3 w-24" />
-                  <Skeleton className="h-9 w-full" />
-                  <Skeleton className="h-9 w-2/3" />
+                  {/* 3 个密码框（2 列 → 2 行）+ 提交按钮：骨架要和加载完的形状一致 */}
+                  <FieldGrid maxCols={2}>
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                  </FieldGrid>
                   <Skeleton className="h-8 w-28" />
                 </CardContent>
               </Card>
@@ -137,8 +142,8 @@ export function AccountPanel() {
             <SettingsRail>
               <Card>
                 <CardContent className="space-y-2 pt-4">
-                  <Skeleton className="h-3 w-16" />
-                  <Skeleton className="h-7 w-40" />
+                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-9 w-full" />
                 </CardContent>
               </Card>
             </SettingsRail>
@@ -152,14 +157,9 @@ export function AccountPanel() {
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={submit} className="space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label
-                          htmlFor="account-old-pwd"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          原密码 <span aria-hidden="true">*</span>
-                        </label>
+                    {/* 3 个密码框：2 列而不是 4 列 —— 4 列对 3 个框太散，第二行只剩一个孤零零的框 */}
+                    <FieldGrid maxCols={2}>
+                      <Field label="原密码" htmlFor="account-old-pwd" required>
                         <Input
                           id="account-old-pwd"
                           type="password"
@@ -169,14 +169,8 @@ export function AccountPanel() {
                           onChange={(e) => setOldPwd(e.target.value)}
                           placeholder="当前口令"
                         />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="account-new-pwd"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          新密码（至少 {min} 个字符） <span aria-hidden="true">*</span>
-                        </label>
+                      </Field>
+                      <Field label={`新密码（至少 ${min} 个字符）`} htmlFor="account-new-pwd" required>
                         <Input
                           id="account-new-pwd"
                           type="password"
@@ -186,14 +180,8 @@ export function AccountPanel() {
                           onChange={(e) => setNewPwd(e.target.value)}
                           placeholder={`至少 ${min} 位，别再用 admin123`}
                         />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="account-confirm-pwd"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          再输一遍新密码 <span aria-hidden="true">*</span>
-                        </label>
+                      </Field>
+                      <Field label="再输一遍新密码" htmlFor="account-confirm-pwd" required>
                         <Input
                           id="account-confirm-pwd"
                           type="password"
@@ -203,8 +191,8 @@ export function AccountPanel() {
                           onChange={(e) => setConfirmPwd(e.target.value)}
                           placeholder="两次要一致"
                         />
-                      </div>
-                    </div>
+                      </Field>
+                    </FieldGrid>
 
                     {/* 结果提示固定在操作区上方：成功/失败都用一行提示条，不再是一串彩色小字 */}
                     {msg && (
@@ -251,9 +239,16 @@ export function AccountPanel() {
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {me ? (
-                    <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                      <span className="font-medium text-foreground">{me.username}</span>
-                      <Badge variant="outline">{me.role || "admin"}</Badge>
+                    // 补两行：新口令最短长度（填表单时最想知道的口径）+ 后端说明
+                    <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                      <p className="flex flex-wrap items-center gap-2 pb-1">
+                        <span className="font-medium text-foreground">{me.username}</span>
+                        <Badge variant="outline">{me.role || "admin"}</Badge>
+                      </p>
+                      <p className="py-1 text-muted-foreground">
+                        新口令最短 <span className="tabular-nums">{min}</span> 位
+                      </p>
+                      {me.note ? <p className="pt-1 text-muted-foreground">{me.note}</p> : null}
                     </div>
                   ) : (
                     <EmptyState

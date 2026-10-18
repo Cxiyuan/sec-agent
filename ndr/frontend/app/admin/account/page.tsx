@@ -8,6 +8,7 @@ export default function AccountPage() {
   return (
     <PageShell
       title="账户"
+      width="standard"
       desc="系统只有一个管理员账号；出厂口令是公开的，改掉之后这一页才会显示「口令已修改」。"
     >
       <AccountPanel />

@@ -13,6 +13,7 @@ export default function StoragePage() {
   return (
     <PageShell
       title="数据存储"
+      width="standard"
       desc="归一化后的数据落到哪：Elasticsearch 接入状态与事件索引模板（连接信息由部署环境固定），以及 Logstash 的入库管道状态。"
     >
       <EsPanel />

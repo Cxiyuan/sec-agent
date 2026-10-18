@@ -9,6 +9,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -218,40 +220,36 @@ export function ExclusionsPanel() {
                 {msg && <p className="text-sm text-primary">{msg}</p>}
 
                 <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-                    <div className="sm:col-span-2">
-                      <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>
+                  <FieldGrid maxCols={4}>
+                    <Field label="名称" required span="lg">
                       <Input
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder="如：排除内网健康检查噪声"
                       />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs text-muted-foreground">
-                        优先级（越小越先）
-                      </label>
+                    </Field>
+                    <Field label="优先级（越小越先）">
                       <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
-                    </div>
-                    <div className="flex items-end gap-2">
-                      <label className="flex items-center gap-1 text-sm">
+                    </Field>
+                    <div className="flex items-end gap-2 pb-2">
+                      <label className="flex items-center gap-2 text-xs">
                         <input
                           type="checkbox"
+                          className="h-4 w-4"
                           checked={enabled}
                           onChange={(e) => setEnabled(e.target.checked)}
                         />
                         启用
                       </label>
                     </div>
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">说明（可选）</label>
-                    <Input
-                      value={desc}
-                      onChange={(e) => setDesc(e.target.value)}
-                      placeholder="为什么排除它（便于以后判断能不能删）"
-                    />
-                  </div>
+                    <Field label="说明（可选）" span="full">
+                      <Input
+                        value={desc}
+                        onChange={(e) => setDesc(e.target.value)}
+                        placeholder="为什么排除它（便于以后判断能不能删）"
+                      />
+                    </Field>
+                  </FieldGrid>
 
                   {nested && (
                     <p className="text-xs text-sev-critical-fg">
@@ -291,6 +289,26 @@ export function ExclusionsPanel() {
                 <CardTitle>最近被排除的样例</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
+                {/* 汇总两行（生效条数 / 累计排除）：`stats === null` 时显示 —，
+                    不用 0 冒充"一条没命中"（与表格里「已排除」列同一口径）。 */}
+                {stats ? (
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p className="pb-1">
+                      <span className="text-muted-foreground">生效规则</span>
+                      <span className="mt-0.5 block tabular-nums">
+                        {items.length
+                          ? `${items.filter((f) => f.enabled).length} / ${items.length} 条`
+                          : "还没有排除规则"}
+                      </span>
+                    </p>
+                    <p className="pt-1">
+                      <span className="text-muted-foreground">累计排除</span>
+                      <span className="mt-0.5 block tabular-nums">
+                        {Object.values(stats.counts || {}).reduce((a, b) => a + b, 0)}
+                      </span>
+                    </p>
+                  </div>
+                ) : null}
                 {stats?.last_hit_at && (
                   <p className="text-xs text-muted-foreground">
                     最近命中：{formatDateTime(stats.last_hit_at)}

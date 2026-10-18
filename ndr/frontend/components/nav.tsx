@@ -21,6 +21,14 @@ import { sidebarOf, sidebarSectionOf } from "@/lib/nav-config";
  *   原来按 `href`（/config/collect）判断，只有第一个子页命中，切走就整块消失、正文还会横向跳动。
  * - 顶部写明分区名、子页按 `group` 分组：8 条平铺时找「配置体检」要逐条读，
  *   分成「接入与范围 / 检测与过滤 / 存储与对接 / 诊断与账号」之后是扫一眼定位。
+ *
+ * 2026-10 三次改版（用户反馈「功能配置菜单不美观简洁」）：
+ * - 条目从「图标 + 标题 + 描述」三行改成**单行**（`h-8`，32px）。8 条从 620px 降到约 380px，
+ *   1080p 上不再需要滚动。描述搬到 `title`（鼠标悬停出原生提示），并补一行 `sr-only`
+ *   —— `title` 在键盘聚焦时不弹、读屏支持也不一致，只给 `title` 等于把描述丢给了鼠标用户。
+ * - 选中态从 5 个信号减到 2 个（去掉左侧竖条），hover 从「色相差」改成「表面差」
+ *   （`bg-surface-1`），让 hover 与选中分属两个视觉通道（详见下方注释）。
+ * - 宽度改吃 CSS 变量 `--sidebar-w`，与 `page-shell` 的 `ml-` 同源（见 globals.css）。
  */
 export function SideNav() {
   const pathname = usePathname();
@@ -49,11 +57,14 @@ export function SideNav() {
   if (items.length === 0) return null;
 
   return (
-    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-60 flex-col border-r border-border bg-card">
-      {/* 分区名：页头的一级菜单只标「选中」，侧边栏顶部再写一次，是为了让这块面板有主语 —— 
-          8 个二级页来回切的时候，标题不动、只有下面高亮在动，位置感才稳。 */}
+    // 侧栏宽必须吃 CSS 变量：对面 page-shell 的 `ml-[var(--sidebar-w)]` 是同一个值，
+    // 写两处硬编码（w-60 / ml-60）时改一边就会错位。
+    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-[var(--sidebar-w)] flex-col border-r border-border bg-card">
+      {/* 分区名：页头的一级菜单只标「选中」，侧边栏顶部再写一次，是为了让这块面板有主语 ——
+          8 个二级页来回切的时候，标题不动、只有下面高亮在动，位置感才稳。
+          图标轨（<1024）下 56px 放不下 4 个中文字符（会挤成竖排），整块隐藏。 */}
       {section ? (
-        <div className="shrink-0 border-b border-border-subtle px-4 py-2.5">
+        <div className="shrink-0 border-b border-border-subtle px-4 py-2.5 max-lg:hidden">
           <p className="text-xs font-medium text-muted-foreground">{section.label}</p>
         </div>
       ) : null}
@@ -64,45 +75,56 @@ export function SideNav() {
           return (
             <React.Fragment key={it.href}>
               {groupHead ? (
-                <p
-                  className={cn(
-                    "px-3 pb-1 text-xs font-medium text-muted-foreground/70",
-                    i === 0 ? "pt-0" : "pt-4",
-                  )}
-                >
-                  {it.group}
-                </p>
+                <>
+                  {/* 图标轨下组名放不下，分组的「隔断」语义用 1px 分隔线表达 */}
+                  <div
+                    aria-hidden
+                    className="mx-2 my-2 border-t border-border-subtle lg:hidden"
+                  />
+                  <p
+                    className={cn(
+                      "px-3 pb-1.5 text-xs font-medium text-muted-foreground/70 max-lg:hidden",
+                      // 分组用「1px 线 + 12px」而不是「16px 空白」：32px 的密集条目之间，
+                      // 只用间距表达的分组会被读成「一条特别宽的空隙」而不是分组边界。
+                      i === 0 ? "pt-0" : "mt-2 border-t border-border-subtle pt-3",
+                    )}
+                  >
+                    {it.group}
+                  </p>
+                </>
               ) : null}
               <Link
                 href={it.href}
-                title={it.desc}
+                // 图标轨下只剩图标，`title` 里必须带上名字；图标轨以外也读得到完整描述 ——
+                // 两种状态都合理的写法，不用 JS 判断当前是不是窄屏。
+                title={it.desc ? `${it.label} · ${it.desc}` : it.label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  // 选中态：淡主色底 + 左侧 2px 竖条。只靠底色的话，一屏 8 个条目里
-                  // "现在在哪"要靠颜色深浅去猜；竖条是位置信号，扫一眼就知道。
-                  // 竖条常驻（未选中时透明），切换时文字不会横向跳动。
-                  "group mb-0.5 flex items-start gap-2.5 rounded-sm border-l-2 px-3 py-2 text-sm transition-colors",
+                  // 选中态信号从 5 个减到 2 个：`bg-brand-50` + `text-primary`（图标继承
+                  // currentColor 算同一个信号）。去掉了左侧 2px 竖条 —— 32px 单行条目下
+                  // 眼睛落在文字上（x≈12）而不是最左边缘（x=0..2），竖条基本看不见，
+                  // 而它 + 底色 + 双色文字在亮色主题上读起来偏重。
+                  // hover 从「色相差」改成「表面差」（bg-surface-1）：原来 `--accent` 与
+                  // `--brand-50` 是同一个值，扫过侧栏时当前页那一条会「消失」在其余 7 条里。
+                  // 表面层级 vs 品牌色是两个通道，不可能混淆。
+                  "group mb-0.5 flex h-8 items-center gap-2 rounded-sm px-3 text-13 transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                  // 图标轨（<1024）：居中图标、取消横向 padding
+                  "max-lg:justify-center max-lg:gap-0 max-lg:px-0",
                   active
-                    ? "border-primary bg-primary/10 font-medium text-primary"
-                    : "border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    ? "bg-brand-50 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
                 )}
               >
                 {it.icon ? (
-                  <it.icon
-                    className={cn(
-                      "mt-0.5 h-4 w-4 shrink-0",
-                      active ? "text-primary" : "text-muted-foreground/70",
-                    )}
-                  />
+                  // 颜色继承 currentColor，不单独染色：选中/未选中的变化由上面的 text-* 统一带出来
+                  <it.icon className="h-4 w-4 shrink-0" />
                 ) : null}
-                <span className="min-w-0">
-                  <span className="block truncate">{it.label}</span>
-                  {it.desc ? (
-                    <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground/80">
-                      {it.desc}
-                    </span>
-                  ) : null}
-                </span>
+                {/* sr-only 不是 hidden：`hidden` 会把标签从无障碍树里一起移除，
+                    图标轨下这条导航就只剩一个无名的 SVG，读屏会宣读「链接」。
+                    sr-only 是 position:absolute + clip，视觉上等于隐藏但保留可访问名。 */}
+                <span className="truncate max-lg:sr-only">{it.label}</span>
+                {it.desc ? <span className="sr-only">{it.desc}</span> : null}
               </Link>
             </React.Fragment>
           );
@@ -112,10 +134,12 @@ export function SideNav() {
         <div className="border-t border-border-subtle p-3">
           <Link
             href="/config/account"
-            className="flex items-start gap-2 rounded-sm border border-sev-critical-bd bg-sev-critical-bg px-2 py-2 text-xs text-sev-critical-fg hover:brightness-[0.98]"
+            title="仍在使用出厂口令 —— 点这里去改"
+            className="flex items-start gap-2 rounded-sm border border-sev-critical-bd bg-sev-critical-bg px-2 py-2 text-xs text-sev-critical-fg hover:brightness-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 max-lg:justify-center max-lg:gap-0 max-lg:px-0"
           >
-            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>仍在使用出厂口令 —— 点这里去改</span>
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 max-lg:mt-0" />
+            {/* 图标轨下文字会挤成竖排，只留图标 + title */}
+            <span className="max-lg:sr-only">仍在使用出厂口令 —— 点这里去改</span>
           </Link>
         </div>
       )}

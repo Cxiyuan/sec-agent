@@ -10,6 +10,8 @@ import {
   CardTitle,
   Dialog,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -22,6 +24,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
   cn,
   formatDateTime,
 } from "@shentong/ui";
@@ -330,11 +333,8 @@ export function IngestFiltersPanel() {
                 <CardTitle>{editId ? "编辑过滤器" : "新建过滤器"}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="ingest-name" className="mb-1 block text-xs text-muted-foreground">
-                      名称 <span aria-hidden="true">*</span>
-                    </label>
+                <FieldGrid maxCols={4}>
+                  <Field label="名称" htmlFor="ingest-name" required>
                     <Input
                       id="ingest-name"
                       value={name}
@@ -342,32 +342,23 @@ export function IngestFiltersPanel() {
                       onChange={(e) => setName(e.target.value)}
                       placeholder="如：挡掉内网漏洞扫描噪声"
                     />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="ingest-priority"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      优先级（越小越先匹配）
-                    </label>
+                  </Field>
+                  <Field label="优先级（越小越先匹配）" htmlFor="ingest-priority">
                     <Input
                       id="ingest-priority"
                       className="tabular-nums"
                       value={priority}
                       onChange={(e) => setPriority(e.target.value)}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="ingest-desc" className="mb-1 block text-xs text-muted-foreground">
-                      说明（可选）
-                    </label>
+                  </Field>
+                  <Field label="说明（可选）" htmlFor="ingest-desc">
                     <Input
                       id="ingest-desc"
                       value={desc}
                       onChange={(e) => setDesc(e.target.value)}
                       placeholder="为什么挡它（便于以后判断能不能删）"
                     />
-                  </div>
+                  </Field>
                   <div className="flex items-end pb-2">
                     <label className="flex items-center gap-2 text-xs">
                       <input
@@ -379,7 +370,7 @@ export function IngestFiltersPanel() {
                       启用
                     </label>
                   </div>
-                </div>
+                </FieldGrid>
 
                 {examples.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
@@ -423,36 +414,24 @@ export function IngestFiltersPanel() {
                   <Button size="sm" variant="outline" onClick={dryRun} disabled={dryBusy}>
                     {dryBusy ? "试运行中…" : "试运行（不保存）"}
                   </Button>
-                  <div className="flex items-end gap-2">
-                    <div>
-                      <label
-                        htmlFor="ingest-hours"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        回看小时
-                      </label>
+                  <FieldGrid maxCols={4} className="items-end">
+                    <Field label="回看小时" htmlFor="ingest-hours">
                       <Input
                         id="ingest-hours"
-                        className="w-20 tabular-nums"
+                        className="tabular-nums"
                         value={hours}
                         onChange={(e) => setHours(e.target.value)}
                       />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="ingest-limit"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        最多取样
-                      </label>
+                    </Field>
+                    <Field label="最多取样" htmlFor="ingest-limit">
                       <Input
                         id="ingest-limit"
-                        className="w-24 tabular-nums"
+                        className="tabular-nums"
                         value={limit}
                         onChange={(e) => setLimit(e.target.value)}
                       />
-                    </div>
-                  </div>
+                    </Field>
+                  </FieldGrid>
                   {editId && (
                     <Button size="sm" variant="outline" onClick={reset}>
                       取消编辑
@@ -496,8 +475,38 @@ export function IngestFiltersPanel() {
                 <CardTitle>最近被挡下的事件（每条例最多留 3 条）</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
+                {/* 汇总三行（生效条数 / 累计挡下 / 最近命中）：样例行只回答"挡的是不是想挡的"，
+                    这几行回答"到底挡了多少" —— 两者都是只读事实，都放侧栏。 */}
+                {!loading && (
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p className="pb-1">
+                      <span className="text-muted-foreground">生效过滤器</span>
+                      <span className="mt-0.5 block tabular-nums">
+                        {items.length ? `${items.filter((f) => f.enabled).length} / ${items.length} 条` : "还没有过滤器"}
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      <span className="text-muted-foreground">累计挡下</span>
+                      <span className="mt-0.5 block tabular-nums">
+                        {items.reduce((s, f) => s + (f.hit_count ?? 0), 0)}
+                      </span>
+                    </p>
+                    <p className="pt-1">
+                      <span className="text-muted-foreground">最近命中</span>
+                      <span className="mt-0.5 block tabular-nums">
+                        {lastHitAt ? formatDateTime(lastHitAt) : "—"}
+                      </span>
+                    </p>
+                  </div>
+                )}
+                {/* 3 条样例行（每行 16px）+ 一行时间：原来是 h-12（48px），基本对齐，保持 */}
                 {loading ? (
-                  <Skeleton className="h-12 w-full" />
+                  <div className="space-y-1">
+                    <Skeleton className="h-3 w-full" />
+                    <Skeleton className="h-3 w-4/5" />
+                    <Skeleton className="h-3 w-2/3" />
+                    <Skeleton className="h-3 w-32" />
+                  </div>
                 ) : items.some((f) => f.samples?.length) ? (
                   <>
                     {items
@@ -537,8 +546,10 @@ export function IngestFiltersPanel() {
             </Badge>
           </CardHeader>
           <CardContent>
+            {/* 列表的骨架：原来只在上方的表单卡里画了骨架，这张表的位置是空白 ——
+                接口慢的时候会先看到「暂无降噪过滤」的错觉位置。 */}
             {loading ? (
-              <Skeleton className="h-32 w-full" />
+              <TableSkeleton rows={5} cols={5} />
             ) : (
               <Table>
                 <TableHeader>

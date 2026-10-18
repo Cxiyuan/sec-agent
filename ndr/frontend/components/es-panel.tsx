@@ -16,6 +16,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -23,6 +25,7 @@ import {
   SettingsRail,
   Skeleton,
   Stat,
+  StatSkeleton,
   Table,
   TableBody,
   TableCell,
@@ -132,11 +135,12 @@ export function EsPanel() {
   /** 首次读、读失败、读到：三种状态分开画，别把「正在读」和「没有配置」画成同一个空态。 */
   function connectionBody() {
     if (loading) {
+      // 3 行的行高是 36（gap-2），原来画的是 3×40 无间隔，形状对不上
       return (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
+        <div className="space-y-2">
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
         </div>
       );
     }
@@ -155,21 +159,48 @@ export function EsPanel() {
       );
     }
     return (
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
-        <div>
-          <p className="text-xs text-muted-foreground">地址</p>
-          <p className="mt-1 truncate font-mono text-xs text-foreground" title={cfg.url || "-"}>
+      // 补两行：保留下限（「不得小于 N 天」—— 填保留天数时最需要的口径）与 ILM 策略名。
+      // 空值一律有文案，不出现裸 `-` 或空白行。
+      <div className="divide-y divide-border-subtle text-xs">
+        <p className="pb-1">
+          <span className="text-muted-foreground">地址</span>
+          <span
+            className="mt-0.5 block break-all font-mono text-foreground"
+            title={cfg.url || "-"}
+          >
             {cfg.url || "-"}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">用户名</p>
-          <p className="mt-1 font-mono text-xs text-foreground">{cfg.username || "（免认证）"}</p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">密码</p>
-          <p className="mt-1 text-xs text-foreground">{cfg.password_set ? "已设置" : "未设置"}</p>
-        </div>
+          </span>
+        </p>
+        <p className="py-1">
+          <span className="text-muted-foreground">用户名</span>
+          <span className="mt-0.5 block font-mono text-foreground">
+            {cfg.username || "（免认证）"}
+          </span>
+        </p>
+        <p className="py-1">
+          <span className="text-muted-foreground">密码</span>
+          <span className="mt-0.5 block text-foreground">
+            {cfg.password_set ? "已设置" : "未设置"}
+          </span>
+        </p>
+        <p className="py-1">
+          <span className="text-muted-foreground">保留天数</span>
+          <span className="mt-0.5 block tabular-nums text-foreground">
+            {cfg.retention_days ?? "—"}
+          </span>
+        </p>
+        <p className="py-1">
+          <span className="text-muted-foreground">保留下限</span>
+          <span className="mt-0.5 block tabular-nums text-foreground">
+            {cfg.retention_min_days ? `不得小于 ${cfg.retention_min_days} 天` : "—"}
+          </span>
+        </p>
+        <p className="pt-1">
+          <span className="text-muted-foreground">ILM 策略</span>
+          <span className="mt-0.5 block break-all font-mono text-foreground">
+            {cfg.ilm_policy || "—"}
+          </span>
+        </p>
       </div>
     );
   }
@@ -177,13 +208,10 @@ export function EsPanel() {
   /** 集群状态体：骨架 / 空态（区分读取失败）/ 指标格 + 索引表。 */
   function clusterBody() {
     if (loading) {
+      // StatSkeleton 会把 Stat 的 bg-surface-1 底色块一起画出来，比三块灰更像"这里要出三个指标"
       return (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Skeleton className="h-14 w-full" />
-            <Skeleton className="h-14 w-full" />
-            <Skeleton className="h-14 w-full" />
-          </div>
+          <StatSkeleton count={3} className="grid-cols-2 sm:grid-cols-3" />
           <Skeleton className="h-32 w-full" />
         </>
       );
@@ -283,39 +311,39 @@ export function EsPanel() {
                 <CardTitle>索引与保留</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label
-                      htmlFor="es-events-index"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      索引模式（两类采集统一落这一族）
-                    </label>
-                    <Input
-                      id="es-events-index"
-                      value={eventsIndex}
-                      disabled={!cfg}
-                      onChange={(e) => setEventsIndex(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="es-retention"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      保留天数（≥{cfg?.retention_min_days ?? 7}）
-                    </label>
-                    <Input
-                      id="es-retention"
-                      type="number"
-                      className="tabular-nums"
-                      value={retention}
-                      disabled={!cfg}
-                      onChange={(e) => setRetention(e.target.value)}
-                      min={cfg?.retention_min_days ?? 7}
-                    />
-                  </div>
-                </div>
+                {loading ? (
+                  /* 原来这块没有骨架（接口没回来时是一片空白，先闪一下再出内容）。
+                     加载完是 2 个字段 + 3 个按钮，骨架照这个形状画。 */
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Skeleton className="h-14 w-full" />
+                      <Skeleton className="h-14 w-full" />
+                    </div>
+                    <Skeleton className="h-8 w-40" />
+                  </>
+                ) : (
+                  <FieldGrid maxCols={4}>
+                    <Field label="索引模式（两类采集统一落这一族）" htmlFor="es-events-index">
+                      <Input
+                        id="es-events-index"
+                        value={eventsIndex}
+                        disabled={!cfg}
+                        onChange={(e) => setEventsIndex(e.target.value)}
+                      />
+                    </Field>
+                    <Field label={`保留天数（≥${cfg?.retention_min_days ?? 7}）`} htmlFor="es-retention">
+                      <Input
+                        id="es-retention"
+                        type="number"
+                        className="tabular-nums"
+                        value={retention}
+                        disabled={!cfg}
+                        onChange={(e) => setRetention(e.target.value)}
+                        min={cfg?.retention_min_days ?? 7}
+                      />
+                    </Field>
+                  </FieldGrid>
+                )}
 
                 {msg && (
                   <p

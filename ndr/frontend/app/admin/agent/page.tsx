@@ -9,6 +9,7 @@ export default function AgentPage() {
   return (
     <PageShell
       title="智能体对接"
+      width="standard"
       desc="智能体这一侧的两个接口：MCP 服务是它回溯取证的唯一取数入口；摘要推送是 NDR 主动把事件组交给它分析。"
     >
       <McpPanel />

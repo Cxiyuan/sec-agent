@@ -17,12 +17,15 @@ import {
   CardTitle,
   Dialog,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
   Skeleton,
   Stat,
+  StatSkeleton,
   cn,
 } from "@shentong/ui";
 import { PanelError, loadInto, usePanelErrors } from "@/components/panel-error";
@@ -70,8 +73,20 @@ function resultText(item: SuricataRulesCheck | null | undefined): string {
  * 两条硬规则（与后端一致）：
  * - 规则由开发人员维护，界面只配置「在线地址（manifest：文件列表 + sha256）」；
  * - **检查 ≠ 生效**：检查只做「拉取 + 下载 + 容器校验」，生效必须人工在这里确认。
+ *
+ * `variant`：
+ * - `"card"`（默认）：独立使用时卡片就是容器；
+ * - `"inline"`：挂在检测规则树的 L2 节点下用。整棵树装在一张 Card 里，树内**禁止再出现 Card**
+ *   （这是全站层级约定），所以这里把所有 Card 降级成内联格：只留 `bg-surface-1` 底色，
+ *   去掉描边与投影。顺带把 SettingsGrid 的 rail 收窄一点 —— 树里还有两级 20px 缩进，
+ *   19rem 的 rail 会把主列压到 700px 以下。
  */
-export function SuricataRulesPanel() {
+export function SuricataRulesPanel({ variant = "card" }: { variant?: "card" | "inline" }) {
+  const inline = variant === "inline";
+  /** inline 下把 Card 压回树内的内联格（L3）：只有底色、不要描边与投影 */
+  const cardCls = inline ? "rounded-sm border-0 bg-surface-1 shadow-none" : undefined;
+  const headCls = inline ? "p-0 pb-2" : undefined;
+  const bodyCls = inline ? "p-0 pt-2" : undefined;
   const [status, setStatus] = React.useState<SuricataRulesStatus | null>(null);
   const [url, setUrl] = React.useState("");
   const [token, setToken] = React.useState("");
@@ -167,10 +182,12 @@ export function SuricataRulesPanel() {
   // 所以这里不再套 Section —— 用一组卡片分区，避免标题重复与卡片套卡片。
   return (
     <div className="space-y-4">
+      {/* 错误条必须在最顶端：它是「这一页现在不可信」的声明，放在说明段落之后会被当成
+          某个具体区块的报错（抢占它的位置也让它更早可见）。 */}
+      <PanelError errors={errs} />
       <p className="text-xs text-muted-foreground">
         规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，校验通过后人工确认才生效。
       </p>
-      <PanelError errors={errs} />
 
       {(active?.rule_count ?? 0) === 0 && !loading && (
         <p className="rounded-xs border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
@@ -180,11 +197,16 @@ export function SuricataRulesPanel() {
       )}
 
       {/* 主列＝能改的（含版本切换与更新来源表单）；侧栏＝只能看的（更新记录）。 */}
-      <SettingsGrid>
+      <SettingsGrid className={inline ? "xl:grid-cols-[minmax(0,1fr)_16rem]" : undefined}>
         <SettingsMain>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-              <CardTitle>生效规则</CardTitle>
+          <Card className={cardCls}>
+            <CardHeader
+              className={cn(
+                "flex flex-row items-center justify-between gap-2 space-y-0",
+                headCls,
+              )}
+            >
+              <CardTitle className={inline ? "text-13" : undefined}>生效规则</CardTitle>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={alive ? "success" : "secondary"}>
                   {alive ? "引擎运行中" : "引擎未运行"}
@@ -194,13 +216,12 @@ export function SuricataRulesPanel() {
                 </Badge>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className={cn("space-y-3", bodyCls)}>
               {loading ? (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                  </div>
+                  {/* 骨架用 StatSkeleton：加载完是两个带底色的 Stat 格，
+                      只画两块灰会在内容到达时跳版（骨架的形状要等于内容的形状） */}
+                  <StatSkeleton count={2} className="grid-cols-2" />
                   <Skeleton className="h-8 w-full" />
                 </>
               ) : status ? (
@@ -243,14 +264,19 @@ export function SuricataRulesPanel() {
           </Card>
 
           {pending && (
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-                <CardTitle>待确认版本</CardTitle>
+            <Card className={cardCls}>
+              <CardHeader
+                className={cn(
+                  "flex flex-row items-center justify-between gap-2 space-y-0",
+                  headCls,
+                )}
+              >
+                <CardTitle className={inline ? "text-13" : undefined}>待确认版本</CardTitle>
                 <Badge variant={pending.validated ? "medium" : "critical"}>
                   {pending.validated ? "校验通过，待确认" : "校验未通过"}
                 </Badge>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className={cn("space-y-3", bodyCls)}>
                 <div className="space-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs">
                   <p>
                     版本 <span className="font-mono">{pending.version}</span>
@@ -294,31 +320,27 @@ export function SuricataRulesPanel() {
             </Card>
           )}
 
-          <Card>
-            <CardHeader>
-              <CardTitle>更新来源</CardTitle>
+          <Card className={cardCls}>
+            <CardHeader className={headCls}>
+              <CardTitle className={inline ? "text-13" : undefined}>更新来源</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div>
-                <label htmlFor="suricata-url" className="mb-1 block text-xs text-muted-foreground">
-                  规则更新地址（manifest：文件列表 + sha256；可填目录，会自动补 manifest.json）
-                </label>
-                <Input
-                  id="suricata-url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://example.com/shentong-rules/manifest.json"
-                />
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label
-                    htmlFor="suricata-token"
-                    className="mb-1 block text-xs text-muted-foreground"
-                  >
-                    访问令牌（可选；留空 = 保持不变）
-                  </label>
+            <CardContent className={cn("space-y-3", bodyCls)}>
+              {/* 长字段（URL）整行、短字段（令牌 + 两个开关）并排：
+                  两列等宽会让 URL 输入框只剩一半，manifest 地址根本放不进去。 */}
+              <FieldGrid maxCols={2}>
+                <Field
+                  label="规则更新地址（manifest：文件列表 + sha256；可填目录，会自动补 manifest.json）"
+                  htmlFor="suricata-url"
+                  span="full"
+                >
+                  <Input
+                    id="suricata-url"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://example.com/shentong-rules/manifest.json"
+                  />
+                </Field>
+                <Field label="访问令牌（可选；留空 = 保持不变）" htmlFor="suricata-token">
                   <Input
                     id="suricata-token"
                     value={token}
@@ -326,7 +348,7 @@ export function SuricataRulesPanel() {
                     placeholder={status?.source.token_set ? "已配置（留空不修改）" : "未配置"}
                     type="password"
                   />
-                </div>
+                </Field>
                 <div className="flex flex-col justify-end gap-2 pb-1">
                   <label className="flex items-center gap-2 text-xs">
                     <input
@@ -347,7 +369,7 @@ export function SuricataRulesPanel() {
                     启用定时检查（每 12 小时）
                   </label>
                 </div>
-              </div>
+              </FieldGrid>
 
               {msg && (
                 <p
@@ -403,13 +425,14 @@ export function SuricataRulesPanel() {
         </SettingsMain>
 
         <SettingsRail>
-          <Card>
-            <CardHeader>
-              <CardTitle>最近更新记录</CardTitle>
+          <Card className={cardCls}>
+            <CardHeader className={headCls}>
+              <CardTitle className={inline ? "text-13" : undefined}>最近更新记录</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className={cn(bodyCls)}>
+              {/* 5 行 font-mono text-xs ≈ 76px，骨架给 80px（原来是 64px，内容到达时会跳 16px） */}
               {loading ? (
-                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-20 w-full" />
               ) : (status?.history?.length ?? 0) > 0 ? (
                 <ul className="space-y-1 text-xs">
                   {status?.history.slice(0, 5).map((item, idx) => (

@@ -10,6 +10,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -74,6 +76,9 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
   const nets = parseNets(netsText);
   const showIface = section === "all" || section === "iface";
   const showNets = section === "all" || section === "networks";
+  /** 所选网卡的运行状态（`ZeekIfaceInfo.state`）：后端没有 PID 字段，用它能表达"这块网卡现在是什么状态" */
+  const ifaceState =
+    status?.detected.find((i) => i.name === (status.interface || iface))?.state || "";
 
   async function load() {
     errs.reset();
@@ -165,14 +170,19 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                       {section === "all" && <Skeleton className="h-14 w-full" />}
                     </div>
                   ) : (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label
-                          htmlFor="zeek-iface"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          监听网卡（{status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）
-                        </label>
+                    <FieldGrid maxCols={4}>
+                      <Field
+                        label={`监听网卡（${status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）`}
+                        htmlFor="zeek-iface"
+                        span="md"
+                        /* 下拉退化成手填时要说清楚为什么没得选 —— 原来是静默退化，
+                           用户不知道是采集器没跑还是自己配错了 */
+                        hint={
+                          status && status.detected.length === 0
+                            ? "没探测到网卡清单（采集器未运行或权限不足），可手填"
+                            : undefined
+                        }
+                      >
                         {status && status.detected.length > 0 ? (
                           <select
                             id="zeek-iface"
@@ -198,24 +208,22 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                             placeholder="eth0（未探测到清单，可手填）"
                           />
                         )}
-                      </div>
+                      </Field>
                       {section === "all" && (
-                        <div>
-                          <label
-                            htmlFor="zeek-bpf-extra"
-                            className="mb-1 block text-xs text-muted-foreground"
-                          >
-                            附加 BPF 条件（可选，如 not port 22）
-                          </label>
+                        <Field
+                          label="附加 BPF 条件（可选，如 not port 22）"
+                          htmlFor="zeek-bpf-extra"
+                          span="md"
+                        >
                           <Input
                             id="zeek-bpf-extra"
                             value={bpfExtra}
                             onChange={(e) => setBpfExtra(e.target.value)}
                             placeholder="留空表示附加条件为空"
                           />
-                        </div>
+                        </Field>
                       )}
-                    </div>
+                    </FieldGrid>
                   )}
                 </CardContent>
               </Card>
@@ -228,111 +236,95 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {loading ? (
-                    <Skeleton className="h-28 w-full" />
+                    <Skeleton className="h-32 w-full" />
                   ) : (
-                    <div>
-                      <label
+                    <FieldGrid maxCols={4}>
+                      <Field
+                        label="监控网段（一行一条，支持 CIDR 与单个 IP；也可用逗号分隔）"
                         htmlFor="zeek-networks"
-                        className="mb-1 block text-xs text-muted-foreground"
+                        span="full"
+                        required
+                        hint={
+                          <>
+                            已识别 <span className="tabular-nums">{nets.length}</span> 条；BPF
+                            过滤器与 Site::local_nets 由这份清单自动生成（源或目的落在其中即抓取）。
+                            不填则无法保存 —— 未配置时前端会强制进首次向导。
+                          </>
+                        }
                       >
-                        监控网段 <span aria-hidden="true">*</span>
-                        （一行一条，支持 CIDR 与单个 IP；也可用逗号分隔）
-                      </label>
-                      <textarea
-                        id="zeek-networks"
-                        value={netsText}
-                        aria-required="true"
-                        onChange={(e) => setNetsText(e.target.value)}
-                        className={TEXTAREA_CLS}
-                        placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
-                      />
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        已识别 <span className="tabular-nums">{nets.length}</span> 条；BPF 过滤器与
-                        Site::local_nets 由这份清单自动生成（源或目的落在其中即抓取）。不填则无法保存
-                        —— 未配置时前端会强制进首次向导。
-                      </p>
-                    </div>
+                        <textarea
+                          id="zeek-networks"
+                          value={netsText}
+                          aria-required="true"
+                          onChange={(e) => setNetsText(e.target.value)}
+                          className={TEXTAREA_CLS}
+                          placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
+                        />
+                      </Field>
+                      <Field label="请求正文上限（KB，1~1024）" htmlFor="zeek-body-kb">
+                        <Input
+                          id="zeek-body-kb"
+                          className="tabular-nums"
+                          disabled={loading}
+                          value={bodyKb}
+                          onChange={(e) => setBodyKb(e.target.value)}
+                          placeholder="16"
+                        />
+                      </Field>
+                      <Field label="响应正文上限（KB，1~1024）" htmlFor="zeek-resp-kb">
+                        <Input
+                          id="zeek-resp-kb"
+                          className="tabular-nums"
+                          disabled={loading}
+                          value={respKb}
+                          onChange={(e) => setRespKb(e.target.value)}
+                          placeholder="64"
+                        />
+                      </Field>
+                      {section === "networks" && (
+                        <Field
+                          label="附加 BPF 条件（可选，如 not port 22）"
+                          htmlFor="zeek-bpf-extra"
+                        >
+                          <Input
+                            id="zeek-bpf-extra"
+                            value={bpfExtra}
+                            onChange={(e) => setBpfExtra(e.target.value)}
+                            placeholder="留空表示附加条件为空"
+                          />
+                        </Field>
+                      )}
+                      <Field
+                        label="按 TLS 解析的端口（可选，如 8000, 8008）"
+                        htmlFor="zeek-tls-ports"
+                        span="full"
+                        hint={
+                          <>
+                            列在这里的端口<b>不再按 HTTP 解析</b>。采集器默认把 8000/8008 当 HTTP，
+                            如果这两个端口实际跑的是 TLS，它会把 TLS 字节当 HTTP 文本行读，
+                            刷出大量假协议异常（实测过 15 分钟一万多条）。
+                            <b>明文 HTTP 端口不要填进来</b>（例如本环境 8013 就是真 HTTP）。
+                          </>
+                        }
+                      >
+                        <Input
+                          id="zeek-tls-ports"
+                          className="tabular-nums"
+                          disabled={loading}
+                          value={tlsPorts}
+                          onChange={(e) => setTlsPorts(e.target.value)}
+                          placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
+                        />
+                      </Field>
+                    </FieldGrid>
                   )}
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div>
-                      <label
-                        htmlFor="zeek-body-kb"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        请求正文上限（KB，1~1024）
-                      </label>
-                      <Input
-                        id="zeek-body-kb"
-                        className="tabular-nums"
-                        disabled={loading}
-                        value={bodyKb}
-                        onChange={(e) => setBodyKb(e.target.value)}
-                        placeholder="16"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="zeek-resp-kb"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        响应正文上限（KB，1~1024）
-                      </label>
-                      <Input
-                        id="zeek-resp-kb"
-                        className="tabular-nums"
-                        disabled={loading}
-                        value={respKb}
-                        onChange={(e) => setRespKb(e.target.value)}
-                        placeholder="64"
-                      />
-                    </div>
-                  </div>
+                  {/* 两个上限字段的共同口径：跨字段的说明放网格外面，避免被当成某一个字段的 hint */}
                   <p className="text-xs text-muted-foreground">
                     采集器侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
                     <span className="font-mono">resp_body_len</span> /{" "}
                     <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
                     约 10 秒内重载采集器。
                   </p>
-
-                  {section === "networks" && (
-                    <div>
-                      <label
-                        htmlFor="zeek-bpf-extra"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        附加 BPF 条件（可选，如 not port 22）
-                      </label>
-                      <Input
-                        id="zeek-bpf-extra"
-                        value={bpfExtra}
-                        onChange={(e) => setBpfExtra(e.target.value)}
-                        placeholder="留空表示附加条件为空"
-                      />
-                    </div>
-                  )}
-
-                  <div>
-                    <label
-                      htmlFor="zeek-tls-ports"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      按 TLS 解析的端口（可选，如 8000, 8008）
-                    </label>
-                    <Input
-                      id="zeek-tls-ports"
-                      className="tabular-nums"
-                      disabled={loading}
-                      value={tlsPorts}
-                      onChange={(e) => setTlsPorts(e.target.value)}
-                      placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      列在这里的端口**不再按 HTTP 解析**。采集器默认把 8000/8008 当 HTTP，
-                      如果这两个端口实际跑的是 TLS，它会把 TLS 字节当 HTTP 文本行读，刷出大量假协议异常
-                      （实测过 15 分钟一万多条）。**明文 HTTP 端口不要填进来**（例如本环境 8013 就是真 HTTP）。
-                    </p>
-                  </div>
 
                   <p className="text-xs text-muted-foreground">
                     这份网卡与网段配置**同时**用于网络采集器与签名引擎（Suricata）：签名引擎的 HOME_NET
@@ -402,27 +394,55 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
               </CardHeader>
               <CardContent className="space-y-2">
                 {loading ? (
-                  <Skeleton className="h-16 w-full" />
+                  // 骨架分行画：卡头徽章组 + 6 行 key/value，和加载完的形状对上才不跳版
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-20" />
+                    <Skeleton className="h-5 w-4/5" />
+                    <div className="space-y-1">
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-2/3" />
+                      <Skeleton className="h-3 w-1/2" />
+                    </div>
+                  </div>
                 ) : status ? (
-                  <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                    <p>
-                      网卡 <span className="font-mono">{status.interface}</span>
-                      {status.bpf_filter ? (
-                        <>
-                          {" · BPF "}
-                          <span className="font-mono">{status.bpf_filter}</span>
-                        </>
-                      ) : (
-                        " · 无 BPF 过滤（抓全部）"
-                      )}
+                  /* 这里没有「PID」：`ZeekStatus` 根本没有进程 id 字段。
+                     要真正的进程状态需要后端在 /api/zeek/status 增字段，属业务变更，本轮不做。
+                     改用真实字段表达同一件事：所选网卡的状态（detected[].state）、最近重载时间、
+                     探测到的网卡数。 */
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p className="pb-1">
+                      监听网卡 <span className="font-mono">{status.interface || "—"}</span>
+                      {ifaceState ? `（${ifaceState}）` : ""}
                     </p>
-                    <p>
+                    <p className="py-1">
+                      BPF 过滤器{" "}
+                      <span className="font-mono">
+                        {status.bpf_filter || "无 BPF 过滤（抓全部）"}
+                      </span>
+                    </p>
+                    <p className="py-1">
                       本地网段：
                       <span className="font-mono">
                         {status.local_nets || "（空，用采集器默认判定）"}
                       </span>
                     </p>
-                    <p className="break-all font-mono text-muted-foreground">{status.config_path}</p>
+                    <p className="py-1">
+                      最近重载{" "}
+                      <span className="tabular-nums">
+                        {status.last_reload ? formatDateTime(status.last_reload) : "从未重载"}
+                      </span>
+                    </p>
+                    <p className="py-1">
+                      探测网卡{" "}
+                      <span className="tabular-nums">
+                        {status.detected.length
+                          ? `探测到 ${status.detected.length} 张`
+                          : "未探测到网卡（可手填）"}
+                      </span>
+                    </p>
+                    <p className="break-all pt-1 font-mono text-muted-foreground">
+                      {status.config_path || "—"}
+                    </p>
                   </div>
                 ) : (
                   <EmptyState

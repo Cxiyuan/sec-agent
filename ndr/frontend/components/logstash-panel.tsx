@@ -10,6 +10,8 @@ import {
   CardTitle,
   Dialog,
   EmptyState,
+  Field,
+  FieldGrid,
   Input,
   Section,
   SettingsGrid,
@@ -17,6 +19,7 @@ import {
   SettingsRail,
   Skeleton,
   Stat,
+  StatSkeleton,
   cn,
   formatDateTime,
 } from "@shentong/ui";
@@ -219,36 +222,36 @@ export function LogstashPanel() {
               </CardHeader>
               <CardContent className="space-y-3">
                 {loading ? (
-                  <Skeleton className="h-24 w-full" />
+                  /* 加载完是「说明块 + ES 地址 + 索引名」三项，骨架照三项画（原来是一整块 h-24） */
+                  <FieldGrid maxCols={4}>
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                  </FieldGrid>
                 ) : params ? (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <p className="mb-1 text-xs text-muted-foreground">Elasticsearch 输出（历史归档）</p>
+                    <FieldGrid maxCols={4}>
+                      <Field label="Elasticsearch 输出（历史归档）">
                         <p className="text-xs text-muted-foreground">
                           归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
                         </p>
-                      </div>
-                      <div>
-                        <p className="mb-1 text-xs text-muted-foreground">ES 地址（由部署环境固定）</p>
+                      </Field>
+                      <Field label="ES 地址（由部署环境固定）">
                         <p className="flex h-9 items-center truncate rounded-sm border border-border-subtle bg-surface-1 px-3 font-mono text-xs">
                           {params.es_host}
                         </p>
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="ls-events-index"
-                          className="mb-1 block text-xs text-muted-foreground"
-                        >
-                          索引名（两类采集统一落这一族，支持 %&#123;...&#125; 占位）
-                        </label>
+                      </Field>
+                      <Field
+                        label="索引名（两类采集统一落这一族，支持 %{...} 占位）"
+                        htmlFor="ls-events-index"
+                      >
                         <Input
                           id="ls-events-index"
                           value={params.events_index}
                           onChange={(e) => set("events_index", e.target.value)}
                         />
-                      </div>
-                    </div>
+                      </Field>
+                    </FieldGrid>
 
                     {noticeFor("params")}
 
@@ -324,12 +327,7 @@ export function LogstashPanel() {
               </CardHeader>
               <CardContent className="space-y-3">
                 {loading ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                  </div>
+                  <StatSkeleton count={4} className="grid-cols-2" />
                 ) : data ? (
                   <div className="grid grid-cols-2 gap-3">
                     <Stat size="sm" label="入队" value={ls?.events_in ?? "-"} />
@@ -373,8 +371,9 @@ export function LogstashPanel() {
             <CardTitle>运行明细</CardTitle>
           </CardHeader>
           <CardContent>
+            {/* 运行明细是 4–6 行文本，实高约 130px；原来给 64px，内容到达时会跳 66px */}
             {loading ? (
-              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-32 w-full" />
             ) : data ? (
             <div className="space-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
               <p className="text-muted-foreground">
@@ -506,15 +505,15 @@ export function LogstashPanel() {
             <CardTitle>管道全文（高级）</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div>
-              <label
-                htmlFor="ls-pipeline-text"
-                className="mb-1 block text-xs text-muted-foreground"
-              >
-                保存前会做静态校验：非空 / 含 input 与 output / 括号配平 / 至少一个输出
-              </label>
+            <Field
+              label="保存前会做静态校验：非空 / 含 input 与 output / 括号配平 / 至少一个输出"
+              htmlFor="ls-pipeline-text"
+              span="full"
+            >
+              {/* rows=14 的 textarea：`text-xs leading-relaxed` 行高 19.5px × 14 + p-2(16) + 边框 2 ≈ 291px，
+                  骨架给 288（h-72）；原来给 224，内容到达时会跳 67px */}
               {loading ? (
-                <Skeleton className="h-56 w-full" />
+                <Skeleton className="h-72 w-full" />
               ) : (
                 <textarea
                   id="ls-pipeline-text"
@@ -525,7 +524,7 @@ export function LogstashPanel() {
                   spellCheck={false}
                 />
               )}
-            </div>
+            </Field>
             {noticeFor("pipeline")}
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={savePipeline} disabled={busy || loading}>
