@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   Badge,
   Button,
@@ -9,13 +10,6 @@ import {
   CardHeader,
   CardTitle,
   Chart,
-  Dialog,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
   Section,
   Stat,
   EmptyState,
@@ -23,12 +17,6 @@ import {
   StatSkeleton,
   Skeleton,
   formatDateTime,
-  ruleText,
-  severityText,
-  severityVariant,
-  apiFetch,
-  ApiError,
-  errorText,
 } from "@shentong/ui";
 import type {
   AgentPushPayload,
@@ -39,8 +27,6 @@ import type {
   DetectorCoverage,
   DetectorHistory,
   DetectorRate,
-  HitEventItem,
-  HitEventList,
   DetectorStats,
   EsStatus,
   LogstashStatus,
@@ -74,7 +60,8 @@ import {
  * 总览（默认落地页）：服务器状态 → 组件呼吸灯 → 威胁事件 → 24h 流量与协议 → 链路细节。
  *
  * 几个刻意的取舍：
- * - **一次并行取 12 个接口**，单个失败只让对应卡片变「读取失败」，不整页白屏（沿用 PanelError 约定）。
+ * - **一次并行取 11 个接口**，单个失败只让对应卡片变「读取失败」，不整页白屏（沿用 PanelError 约定）。
+ *   （命中事件列表 2026-10 迁到一级菜单「事件中心」`/events`，本页只剩图；入口见「威胁事件」区块的链接。）
  * - **图表 option 全部 memo**，加上 `Chart` 内部改成原地 `setOption`（见 packages/ui）——
  *   否则 15 秒轮询会让每张图 dispose 重建一次、整页闪。
  * - 取不到数就说「暂无采样 / 暂无数据」，不画空轴：趋势类接口在部署后前 5 分钟本来就是空的。
@@ -87,7 +74,6 @@ const SRC = {
   history: "检测器历史采样",
   rate: "检测器速率",
   coverage: "投递覆盖率",
-  hits: "命中事件",
   traffic: "近期流量",
   stats: "检测器队列",
   push: "摘要推送",
@@ -128,124 +114,6 @@ function Kpi({
   danger?: boolean;
 }) {
   return <Stat label={label} value={value} hint={hint} tone={danger ? "critical" : "default"} />;
-}
-
-/** 「事件内容」里字段名的中文名（用户要求：显示出来的字段一律中文）。
- *  覆盖实测出现过的全部字段（Zeek 与 Suricata EVE 两套命名），未收录的按原名显示。 */
-const FIELD_LABELS: Record<string, string> = {
-  proxy_user: "代理认证账号",
-  ts: "事件时间",
-  timestamp: "事件时间",
-  uid: "连接标识",
-  source: "来源",
-  app_proto: "应用协议",
-  direction: "方向",
-  protocol: "协议",
-  conn_state: "连接状态",
-  signature: "命中签名",
-  signature_id: "签名编号（SID）",
-  signature_category: "签名类别",
-  signature_severity: "签名严重度",
-  signature_threat_type: "威胁类型",
-  alert_action: "引擎动作",
-  payload_printable: "命中载荷",
-  summary: "摘要",
-  "tls.sni": "TLS 域名（SNI）",
-  "tls.version": "TLS 版本",
-  tls_version: "TLS 版本",
-  "tls.subject": "证书主体",
-  "tls.issuerdn": "证书签发者",
-  cert_issuer: "证书签发者",
-  "tls.serial": "证书序列号",
-  "tls.fingerprint": "证书指纹",
-  "tls.notbefore": "证书生效时间",
-  "tls.notafter": "证书到期时间",
-  "tls.session_resumed": "会话复用",
-  ja3: "JA3 客户端指纹",
-  ja3s: "JA3S 服务端指纹",
-  ja4: "JA4 指纹",
-  "http.url": "请求 URL",
-  "http.hostname": "域名（Host）",
-  "http.http_method": "请求方法",
-  "http.status": "状态码",
-  "http.length": "响应长度",
-  "http.protocol": "HTTP 版本",
-  "http.http_user_agent": "User-Agent",
-  "http.http_content_type": "内容类型",
-  "http.http_refer": "来源页（Referer）",
-  "http.xff": "代理头（XFF）",
-  "http.http_port": "HTTP 端口",
-  uri_path: "请求路径",
-  query_string: "查询串",
-  method: "方法",
-  status_code: "状态码",
-  user_agent: "User-Agent",
-  referer: "来源页",
-  content_type: "内容类型",
-  body: "请求体",
-  resp_body: "响应体",
-  req_headers: "请求头",
-  account: "账号",
-  session_id: "会话 ID",
-  query: "DNS 查询名",
-  qtype: "查询类型",
-  filename: "文件名",
-  md5: "MD5",
-  sha1: "SHA1",
-  sha256: "SHA256",
-  // Zeek 原始字段（出现在「其它字段」里）
-  client_version: "客户端版本",
-  client_ciphers: "客户端密码套件",
-  client_comp_methods: "客户端压缩方法",
-  client_curves: "客户端曲线",
-  client_key_share_groups: "客户端密钥共享组",
-  client_supported_versions: "客户端支持版本",
-  cipher: "密码套件",
-  curve: "椭圆曲线",
-  hashalgs: "哈希算法",
-  established: "握手完成",
-  server_name: "服务器名",
-  resumed: "会话复用",
-};
-
-/** 不在「事件内容」里重复显示的字段（详情别处已有，或属实现细节）——用户 2026-10 指定。 */
-const HIDDEN_FIELDS = new Set([
-  "src_ip",
-  "src_port",
-  "dst_ip",
-  "dst_port",
-  "dest_ip",
-  "dest_port",
-  "flow_id",
-  "log_type",
-  "event_type",
-  "timestamp",
-  "alert_action",
-  "community_id",
-  "other_fields",
-  "source",
-]);
-
-/** 字段名 → 中文名（未收录的按原名，界面其它地方不会出现纯英文标签） */
-function fieldLabel(key: string): string {
-  return FIELD_LABELS[key] ?? key;
-}
-
-/** 事件时间：Zeek 的 `ts` 可能是数字、也可能是字符串化的秒级时间戳（实测 "1791816302.15616"），
- *  统一按北京时间显示；不是时间戳就按原字符串交给共享格式化。 */
-function eventTime(value: unknown): string {
-  const num = typeof value === "number" ? value : Number(value);
-  if (Number.isFinite(num) && num > 1e9) return formatDateTime(new Date(num * 1000));
-  return formatDateTime(String(value));
-}
-
-/** 严重度文案统一走 `severityText`（共享库唯一来源）。
- *  这里原来自己维护了一份 `{critical:"紧急", info:"提示"}`，和共享库的
- *  `{critical:"严重", info:"信息"}` 不一致 —— 同一条告警在总览页叫"紧急"、
- *  在规则页叫"严重"，运维对不上话。 */
-function severityBadge(sev: string): React.ReactElement {
-  const key = (sev || "info").toLowerCase();
-  return <Badge variant={severityVariant(key)}>{severityText(key)}</Badge>;
 }
 
 /** 图表卡片：**统一的高度只有三档**（176 微图 / 224 默认 / 288 主图）。
@@ -315,95 +183,14 @@ export function StatusPanel() {
   const [history, setHistory] = React.useState<DetectorHistory | null>(null);
   const [rate, setRate] = React.useState<DetectorRate | null>(null);
   const [coverage, setCoverage] = React.useState<DetectorCoverage | null>(null);
-  const [hits, setHits] = React.useState<HitEventList | null>(null);
   /** 近期流量（线条按秒画，X 轴每分钟一个刻度） */
   const [traffic, setTraffic] = React.useState<TrafficMinutes | null>(null);
-  /** 详情弹窗：打开的那条命中事件（含证据） */
-  const [hitDetail, setHitDetail] = React.useState<HitEventItem | null>(null);
-  const [hitBusy, setHitBusy] = React.useState(false);
-  const [hitMsg, setHitMsg] = React.useState("");
-  const [whitelistScope, setWhitelistScope] = React.useState<"src" | "src_dst">("src");
-  /**
-   * 命中事件的来源筛选（契约四.5：可按 `source_kind` 过滤三类；留空 = 全部）。
-   * ref 与 state 双写：轮询 effect 只跑一次（hitKind 不能进它的依赖，会重建定时器），
-   * load() 读 ref 保证轮询始终用最新口径；筛选变化时立刻重取一次，不等下一个 5 秒 tick。
-   */
-  const [hitKind, setHitKind] = React.useState("");
-  const hitKindRef = React.useRef("");
-
-  function changeHitKind(kind: string) {
-    hitKindRef.current = kind;
-    setHitKind(kind);
-    void loadInto(
-      errs,
-      SRC.hits,
-      `/api/detector/hits?limit=50${kind ? `&source_kind=${kind}` : ""}`,
-      setHits,
-    );
-  }
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
   const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
   const [esStatus, setEsStatus] = React.useState<EsStatus | null>(null);
   const [logstash, setLogstash] = React.useState<LogstashStatus | null>(null);
   const [overview, setOverview] = React.useState<StatsOverview | null>(null);
-
-  /**
-   * 打开详情：**必须再拉一次详情接口** —— 列表按设计不带证据（证据只随详情返回），
-   * 直接把列表行塞进弹窗会显示「这条命中没有留下样例事件」（2026-10 用户反馈）。
-   */
-  async function openHitDetail(row: HitEventItem) {
-    setHitMsg("");
-    setWhitelistScope("src");
-    setHitDetail(row); // 先显示已有字段，避免空白等待
-    setHitBusy(true);
-    try {
-      const full = await apiFetch<HitEventItem>(`/api/detector/hits/${row.id}`);
-      if (full?.error) {
-        setHitMsg(full.error);
-        return;
-      }
-      setHitDetail(full);
-    } catch (e) {
-      setHitMsg(e instanceof ApiError ? errorText(e.body) : "读取详情失败");
-    } finally {
-      setHitBusy(false);
-    }
-  }
-
-  /** 详情弹窗里的动作：忽略 / 加白名单（加白会自动刷新列表与消息） */
-  async function hitAction(kind: "ignore" | "whitelist") {
-    if (!hitDetail) return;
-    setHitBusy(true);
-    setHitMsg("");
-    try {
-      const out = await apiFetch<{
-        ok?: boolean;
-        filter_id?: string;
-        name?: string;
-        note?: string;
-        error?: string;
-      }>(`/api/detector/hits/${hitDetail.id}/${kind}`, {
-        method: "POST",
-        body: JSON.stringify(kind === "whitelist" ? { scope: whitelistScope } : { reason: "" }),
-      });
-      if (out.error) {
-        setHitMsg(out.error);
-        return;
-      }
-      setHitMsg(
-        kind === "ignore"
-          ? `已忽略事件 ${hitDetail.id.slice(0, 8)}（行保留，可在数据库/接口查回）`
-          : `已加白名单「${out.name || ""}」：库里降噪 → 排除过滤器可查可撤`,
-      );
-      setHitDetail(null);
-      await load();
-    } catch (e) {
-      setHitMsg(e instanceof ApiError ? errorText(e.body) : "操作失败");
-    } finally {
-      setHitBusy(false);
-    }
-  }
 
   async function load() {
     errs.reset();
@@ -413,12 +200,6 @@ export function StatusPanel() {
       loadInto(errs, SRC.history, "/api/detector/history?limit=288", setHistory),
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
-      loadInto(
-        errs,
-        SRC.hits,
-        `/api/detector/hits?limit=50${hitKindRef.current ? `&source_kind=${hitKindRef.current}` : ""}`,
-        setHits,
-      ),
       loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
@@ -638,7 +419,20 @@ export function StatusPanel() {
         </Section>
 
         {/* ---------- 二、威胁事件 ---------- */}
-        <Section id="threats" title="威胁事件">
+        <Section
+          id="threats"
+          title="威胁事件"
+          description={
+            <>
+              统计口径：24 小时 · 增量求和。
+              {/* 命中事件列表 2026-10 迁到一级菜单「事件中心」（/events）：这里只剩图，
+                  值班从图上看到异常时的下一步动作必须有着落，否则会以为命中事件"没了" */}
+              <Link href="/events" className="ml-1 text-primary hover:underline">
+                完整列表与处置 → 事件中心
+              </Link>
+            </>
+          }
+        >
           {/* 一张主图 + 一张配套图：趋势占 2/3，严重度分布占 1/3。
               原来是三张等宽等高的图并排，读者分不清先看哪张。 */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -665,249 +459,6 @@ export function StatusPanel() {
             empty={historyItems.length ? undefined : noHistory}
           />
 
-          {/* 命中事件：每条都有**系统唯一事件 ID**（存 PG），可看详情/证据、可忽略、可加白名单。
-              为什么不再用 Redis 流水：事件要能被长期引用与关联分析（用户 2026-10 要求）。 */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="flex flex-wrap items-center gap-2">
-                命中事件（最近）
-                {/* 来源三类筛选（契约四.5）：与规则页的三组同口径，换口径立刻重取 */}
-                <select
-                  className="h-7 rounded-md border bg-transparent px-2 text-xs"
-                  value={hitKind}
-                  onChange={(e) => changeHitKind(e.target.value)}
-                  aria-label="按来源筛选命中事件"
-                  title="按事件来源筛选：特征匹配 / 行为分析 / 基线偏离"
-                >
-                  <option value="">全部来源</option>
-                  <option value="feature_match">特征匹配</option>
-                  <option value="behavior_analysis">行为分析</option>
-                  <option value="baseline_deviation">基线偏离</option>
-                </select>
-                {hits?.total ? (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    共 {hits.total} 条 · 每条有唯一事件 ID · 点「详情」看证据
-                  </span>
-                ) : null}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {hitMsg ? <p className="mb-2 text-xs text-muted-foreground">{hitMsg}</p> : null}
-              {hits?.items?.length ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>最近时间</TableHead>
-                      <TableHead>事件 ID</TableHead>
-                      <TableHead>规则</TableHead>
-                      <TableHead>来源</TableHead>
-                      <TableHead>严重度</TableHead>
-                      <TableHead>请求方</TableHead>
-                      <TableHead className="text-right">次数</TableHead>
-                      <TableHead>目的（IP:端口）</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {hits.items.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell className="whitespace-nowrap">
-                          {formatDateTime(row.last_seen || row.created_at)}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          <span title={row.id}>{row.id.slice(0, 8)}</span>
-                        </TableCell>
-                        <TableCell>
-                          {ruleText(row.rule) || "—"}
-                          {row.ignored ? (
-                            <Badge variant="outline" className="ml-1">
-                              已忽略
-                            </Badge>
-                          ) : null}
-                          {row.whitelist_id ? (
-                            <Badge variant="outline" className="ml-1">
-                              已加白
-                            </Badge>
-                          ) : null}
-                        </TableCell>
-                        {/* 来源三类（契约 1.1）：界面按这三类展示，不体现采集器名字 */}
-                        <TableCell className="text-muted-foreground">
-                          {row.source_label || "—"}
-                        </TableCell>
-                        <TableCell>{severityBadge(row.severity)}</TableCell>
-                        <TableCell>
-                          {/* 真实请求方优先：中继链路上 src_ip 是代理/WAF 自己 */}
-                          <span title={row.client_source === "xff" ? "来自可信代理头（XFF/X-Real-IP）" : "直连对端"}>
-                            {row.client || row.src_ip || "—"}
-                          </span>
-                          {row.via ? (
-                            <span
-                              className="ml-1 text-muted-foreground"
-                              title={`这一跳经过 ${row.via}（代理/中继），它不是发起方`}
-                            >
-                              经 {row.via}
-                            </span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {row.count}
-                        </TableCell>
-                        <TableCell className="max-w-[20rem] text-muted-foreground">
-                          {row.dst_pairs?.length
-                            ? row.dst_pairs.slice(0, 3).join("、") +
-                              (row.dst_pairs.length > 3 ? ` 等 ${row.dst_pairs.length} 个` : "")
-                            : "—"}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void openHitDetail(row)}
-                          >
-                            详情
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  {hits?.error ? `读取失败：${hits.error}` : "还没有命中事件（检测器未运行，或还没到聚合窗口）"}
-                </p>
-              )}
-
-              {/* 详情弹窗：事件信息 + 证据样例 + 忽略 / 加白名单 */}
-              <Dialog
-                open={hitDetail !== null}
-                title="命中事件详情"
-                onClose={() => setHitDetail(null)}
-                footer={
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={hitBusy}
-                      onClick={() => void hitAction("ignore")}
-                    >
-                      忽略这条
-                    </Button>
-                    <select
-                      className="h-8 rounded-md border bg-transparent px-2 text-xs"
-                      value={whitelistScope}
-                      onChange={(e) => setWhitelistScope(e.target.value as "src" | "src_dst")}
-                    >
-                      <option value="src">白名单：同源 + 同规则</option>
-                      <option value="src_dst">白名单：同源 + 同规则 + 同目的</option>
-                    </select>
-                    <Button size="sm" disabled={hitBusy} onClick={() => void hitAction("whitelist")}>
-                      加入白名单
-                    </Button>
-                  </div>
-                }
-              >
-                {hitDetail ? (
-                  <div className="space-y-3 text-xs">
-                    <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-                      <div>
-                        <span className="text-muted-foreground">事件 ID：</span>
-                        <span className="font-mono">{hitDetail.id}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">规则：</span>
-                        {ruleText(hitDetail.rule)}
-                        <span className="ml-1 text-muted-foreground">
-                          （{severityText(hitDetail.severity)}）
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">来源：</span>
-                        {hitDetail.source_label || "—"}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">首次/最近：</span>
-                        {formatDateTime(hitDetail.first_seen)} / {formatDateTime(hitDetail.last_seen)}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">次数：</span>
-                        {hitDetail.count}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">请求方：</span>
-                        {hitDetail.client || hitDetail.src_ip}
-                        {hitDetail.via ? `（经 ${hitDetail.via}）` : ""}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">目的：</span>
-                        {hitDetail.dst_pairs?.length ? hitDetail.dst_pairs.join("、") : "无"}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">事件类型：</span>
-                        {hitDetail.event_types?.length ? hitDetail.event_types.join("、") : "无"}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">连接状态：</span>
-                        {hitDetail.conn_states?.length
-                          ? hitDetail.conn_states.join("、")
-                          : hitDetail.log_types?.includes("suricata")
-                            ? "不适用（签名引擎告警不带连接状态）"
-                            : "未记录"}
-                      </div>
-                      {hitDetail.real_client_ips?.length ? (
-                        <div className="sm:col-span-2">
-                          <span className="text-muted-foreground">代理头里的真实客户端：</span>
-                          {hitDetail.real_client_ips.join("、")}
-                        </div>
-                      ) : null}
-                      {hitDetail.ignored_reason ? (
-                        <div className="sm:col-span-2">
-                          <span className="text-muted-foreground">处理记录：</span>
-                          {hitDetail.ignored_reason}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div>
-                      <p className="mb-1 font-medium">事件内容</p>
-                      {hitDetail.evidence?.length ? (
-                        <div className="space-y-2">
-                          {hitDetail.evidence.map((ev, i) => {
-                            const at = ev["ts"] ?? ev["timestamp"];
-                            return (
-                              <div key={i} className="rounded-md border px-2 py-1">
-                                <div className="mb-1 text-muted-foreground">
-                                  样例 {i + 1}
-                                  {at !== undefined && at !== null ? ` · ${eventTime(at)}` : ""}
-                                  {ev["source"] ? ` · 来源 ${String(ev["source"])}` : ""}
-                                </div>
-                                <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
-                                  {Object.entries(ev)
-                                    .filter(([k]) => !HIDDEN_FIELDS.has(k))
-                                    .map(([k, v]) => (
-                                      <div key={k} className="truncate" title={`${fieldLabel(k)}：${String(v)}`}>
-                                        <span className="text-muted-foreground">{fieldLabel(k)}：</span>
-                                        <span className="font-mono">{String(v)}</span>
-                                      </div>
-                                    ))}
-                                </div>
-                                {Array.isArray(ev["other_fields"]) && ev["other_fields"].length ? (
-                                  <div className="mt-1 text-muted-foreground">
-                                    其它字段：
-                                    {(ev["other_fields"] as string[]).map((k) => fieldLabel(k)).join("、")}
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-muted-foreground">这条命中没有留下样例事件</p>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-              </Dialog>
-            </CardContent>
-          </Card>
         </Section>
 
         {/* ---------- 三、24 小时流量与协议 ---------- */}

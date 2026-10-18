@@ -16,6 +16,7 @@ import {
   Search,
   Settings,
   Share2,
+  Siren,
   SlidersHorizontal,
   UserRound,
   Waypoints,
@@ -24,9 +25,10 @@ import {
 /**
  * 一级导航结构（2026-10 用户定）：**页头承载一级菜单**，侧边栏只是「某个一级菜单里的子页」。
  *
- * 五个一级分区：
+ * 六个一级分区：
  * - 运营中心：可视化仪表 + 状态监控 + 告警聚合（**无侧边栏**）
  * - 分析中心：悬停弹出 → 日志检索（无侧边栏）/ 可视化流量（有侧边栏）
+ * - 事件中心：命中事件的检索 / 详情 / 处置（**无侧边栏**，2026-10 从运营中心迁出）
  * - 资产中心：资产发现 / 资产分组 / 资产扫描 / 资产管理（有侧边栏）
  * - 行为画像：账号会话画像（无侧边栏）
  * - 配置管理：采集、网段、规则、存储…（有侧边栏）
@@ -138,6 +140,14 @@ export const NAV_SECTIONS: NavSection[] = [
         sidebar: TRAFFIC_ITEMS,
       },
     ],
+  },
+  {
+    key: "events",
+    href: "/events",
+    label: "事件中心",
+    desc: "命中事件 · 检索 · 详情 · 处置",
+    icon: Siren,
+    match: "/events",
   },
   {
     key: "assets",

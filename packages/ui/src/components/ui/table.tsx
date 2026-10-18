@@ -40,7 +40,10 @@ export const TableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttribut
     <tr
       ref={ref}
       className={cn(
-        "border-b border-border-subtle transition-colors hover:bg-brand-50 data-[state=selected]:bg-accent",
+        // focus-visible 环：整行可点的表格（事件中心、日志检索）给行加了 tabIndex={0}，
+        // 没有焦点环的话键盘用户 Tab 到行上看不出停在哪一行，tabIndex 反而变成陷阱。
+        // 与 Input / Switch 同一款 ring；全站表格行一起受益。
+        "border-b border-border-subtle transition-colors hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset data-[state=selected]:bg-accent",
         className
       )}
       {...props}

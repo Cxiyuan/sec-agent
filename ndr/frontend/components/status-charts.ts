@@ -34,8 +34,8 @@ import type { TrafficMinutes } from "@/lib/api";
 
 // ---------- 统一的版式常量 ----------
 
-/** 默认栅格：容器自带内边距，图里不再手写偏移 */
-const GRID = { left: 8, right: 12, top: 8, bottom: 8, containLabel: true };
+/** 默认栅格：容器自带内边距，图里不再手写偏移（事件中心的趋势图复用同一套，export 给 event-charts） */
+export const GRID = { left: 8, right: 12, top: 8, bottom: 8, containLabel: true };
 /** 有图例时给顶部留一行（图例固定在右上角，不跟卡片标题抢位置） */
 const GRID_LEGEND = { ...GRID, top: 28 };
 /** 数值轴横向条（类目名在左）右侧要留数值标签的空间 */
@@ -55,11 +55,11 @@ const LEGEND = {
  * 轴不写字号：字号由 ECharts 主题统一给 12px（`packages/ui/chart.tsx`）。
  * 原来每个 option 各写 fontSize:10，全站图表的字都比正文小两号 —— 盯久了很累。
  */
-const AXIS = { type: "category" as const };
+export const AXIS = { type: "category" as const };
 const VAL = { type: "value" as const };
 
-/** 数值轴不要竖网格线：横向条一多，竖线会跟柱子打成一片 */
-function valueAxis(extra: Record<string, unknown> = {}) {
+/** 数值轴不要竖网格线：横向条一多，竖线会跟柱子打成一片（事件中心复用，export） */
+export function valueAxis(extra: Record<string, unknown> = {}) {
   return { ...VAL, axisLine: { show: false }, axisTick: { show: false }, ...extra };
 }
 

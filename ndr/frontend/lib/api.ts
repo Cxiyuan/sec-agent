@@ -749,6 +749,8 @@ export interface HitEventItem {
   client_source?: string;
   /** 与 src_ip 不同时表示这一跳经过了谁（中继/反代） */
   via?: string;
+  /** true = 这条命中的请求头显示它经过代理（后端 `_rows_to_dict` 一直在返，前端类型没跟上） */
+  proxied?: boolean;
   count: number;
   /** 目的 **IP:端口 成对**（分开存 ips/ports 看不出谁配谁） */
   dst_pairs: string[];
@@ -771,6 +773,47 @@ export interface HitEventList {
   items: HitEventItem[];
   total: number;
   returned: number;
+  error?: string;
+}
+
+/**
+ * `GET /api/detector/hits/stats` 的一分组组成员（来源三类 / 严重度通用）。
+ *
+ * ⚠️ `label` 的语义分两种（后端 `group_by` 用同一张 `SOURCE_LABELS` 表）：
+ * - `by_source_kind` 分组：label 是中文（「特征匹配」…），界面可直接显示；
+ * - `by_severity` 分组：label 回落成**原始英文 key**（SOURCE_LABELS 不含严重度），
+ *   界面一律用 `severityText(key)`，不要用 label。
+ */
+export interface HitStatsGroup {
+  key: string;
+  label: string;
+  count: number;
+}
+
+/** TOP 规则分组：字段名是 `rule`（不是 key/label）；展示要过 `ruleText()` 剥「内置-」前缀 */
+export interface HitTopRule {
+  rule: string;
+  count: number;
+}
+
+/** 趋势桶：`ts` 是 UTC ISO8601，界面一律转北京时间；
+ *  **有断桶**（后端只含有事件的桶），前端按 `bucket_seconds` 补零后再喂图表 */
+export interface HitTrendPoint {
+  ts: string;
+  count: number;
+}
+
+/** `GET /api/detector/hits/stats?minutes=…`：事件中心概览区的一次聚合 */
+export interface HitEventStats {
+  minutes: number;
+  bucket_seconds: number;
+  total: number;
+  ignored: number;
+  by_source_kind: HitStatsGroup[];
+  by_severity: HitStatsGroup[];
+  top_rules: HitTopRule[];
+  trend: HitTrendPoint[];
+  /** 失败时后端只回 { error, total: 0 }，上面这些字段全部缺失 —— 读取点一律写 ?? [] */
   error?: string;
 }
 
