@@ -23,9 +23,6 @@ log = get_logger(__name__)
 
 # 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
 _MIGRATIONS = (
-    # 规则改名（2026-10：去掉「」前缀，直接叫事件类型名）：幂等；
-    # 库里已有规则行必须一起改名，否则停用/删除逻辑按名字匹配不到。
-    "UPDATE rules SET name = replace(name, '', '') WHERE name LIKE '%'",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS is_external BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS allow_ip_share BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) NOT NULL DEFAULT ''",
@@ -57,6 +54,43 @@ _CONFIG_DRIVEN_RULES = {"JA3指纹命中"}
 #: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
 #: 主机监控」，旧库靠这张表就地改名。
 _RENAMED_BUILTINS: dict[str, str] = {}
+
+
+#: 规则名的历史前缀（拆开拼，别写成连续字面量 —— 2026-10 那次"全局去前缀"的批量替换
+#: 把迁移 SQL 里的这个字面量一起改掉了，SQL 变成 `replace(name,'','') WHERE name LIKE '%'`，
+#: psycopg 又把裸 `%` 当占位符 → 后端启动直接崩。用 Python 改名 + 拼字面量，两头都躲开。）
+_LEGACY_RULE_PREFIX = "内置" + "-"
+
+
+def _migrate_rule_names() -> None:
+    """把库里规则名的历史前缀去掉（幂等，纯 ORM，不拼 SQL）。
+
+    为什么需要：`DELETED_RULES` / `RETIRED_RULES` 是按名字匹配库里已有行的 ——
+    代码里的规则名去掉前缀后，老库里的行还带着旧前缀，就变成"两套规则"。
+    新名字已存在（历史上手工建过同名）时，以新名字那行为准，删掉旧前缀那条。
+    """
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(Rule).where(Rule.name.startswith(_LEGACY_RULE_PREFIX))
+            ).all()
+            if not rows:
+                return
+            renamed = 0
+            for row in rows:
+                new_name = row.name.replace(_LEGACY_RULE_PREFIX, "", 1).strip()
+                if not new_name:
+                    continue
+                existing = db.scalars(select(Rule).where(Rule.name == new_name)).first()
+                if existing is not None:
+                    db.delete(row)  # 新名字那行更权威（可能被人工改过条件/开关）
+                    continue
+                row.name = new_name
+                renamed += 1
+            db.commit()
+            log.info("规则名迁移：改名 %d 行，清理重复 %d 行", renamed, len(rows) - renamed)
+    except Exception as exc:  # noqa: BLE001 — 迁移失败不能挡住启动
+        log.warning("规则名迁移失败（不影响启动）：%s", exc)
 
 
 def _delete_builtin_rules(db: Any) -> None:
