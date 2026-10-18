@@ -93,3 +93,59 @@ export function StatSkeleton({ count = 4, className }: { count?: number; classNa
     </div>
   );
 }
+
+/**
+ * 树形列表占位：按树的几何（每级缩进 `pl-5`）画三层。
+ *
+ * 为什么不能拿 `TableSkeleton` 顶替：平的一排一行预告的是表格，内容到达时会变成缩进三层
+ * 的树，版式跳一下。这里让它"提前 200ms 长得像一棵树"，行数与真实结构对齐，出数时不跳版。
+ *
+ * 最后一组（规则树里是签名面板）的子级是一整块表单，约 300–400px 高 —— 画成 5 行叶子会差一个
+ * 数量级，所以单独给 `h-40`。骨架只求"形状的数量级对"，不追求像素精确。
+ *
+ * **但最后一组默认收起时不要画那 160px**（`lastGroupTall`）：签名组在规则树里是默认收起的，
+ * 首屏画一块 160px 的占位会让骨架比真实首屏高出一截，内容到达时反而往下跳一次 —— 骨架比
+ * 内容高和比内容矮一样是跳版。
+ */
+export function TreeSkeleton({
+  rootRows = 1,
+  groupRows = 3,
+  leafRows = 5,
+  lastGroupTall = true,
+  className,
+}: {
+  rootRows?: number;
+  groupRows?: number;
+  leafRows?: number;
+  /** 最后一组是否展开（展开才画那一大块占位）。规则树的首屏传 false。 */
+  lastGroupTall?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={cn("space-y-1 p-3", className)} aria-busy="true">
+      {/* L1 */}
+      {Array.from({ length: rootRows }).map((_, r) => (
+        <Skeleton key={`root-${r}`} className="h-11 w-full" />
+      ))}
+      {/* L2 + 各自的 L3 子级 */}
+      <div className="space-y-1 pl-5">
+        {Array.from({ length: groupRows }).map((_, g) => (
+          <div key={`group-${g}`} className="space-y-1">
+            <Skeleton className="h-10 w-full" />
+            <div className="space-y-1 pl-5">
+              {g === groupRows - 1 && lastGroupTall ? (
+                <Skeleton className="h-40 w-full" />
+              ) : g === groupRows - 1 ? (
+                null
+              ) : (
+                Array.from({ length: leafRows }).map((_, l) => (
+                  <Skeleton key={l} className="h-12 w-full" />
+                ))
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

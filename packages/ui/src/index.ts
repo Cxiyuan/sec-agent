@@ -15,4 +15,7 @@ export * from "./components/ui/settings-grid";
 export * from "./components/ui/stat";
 export * from "./components/ui/empty-state";
 export * from "./components/ui/skeleton";
+export * from "./components/ui/switch";
+export * from "./components/ui/field";
+export * from "./components/ui/panel-toolbar";
 export * from "./components/chart";
