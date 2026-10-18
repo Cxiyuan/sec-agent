@@ -170,6 +170,13 @@ bootstrap_rules() {
       [ -f "$f" ] || continue
       cp -f "$f" "${ACTIVE_DIR}/$(basename "$f")" && copied=$((copied + 1))
     done
+    # 哈希清单也要跟着走：规则里的 `filemd5:` / `filesha256:` 是**相对规则文件目录**去找文件的，
+    # 只复制 *.rules 会让 suricata -T 直接报
+    # "detect-file-hash-common: opening hash file ...: No such file or directory"（2026-10 实机 CI 踩到）。
+    for f in "$builtin_dir"/*.txt; do
+      [ -f "$f" ] || continue
+      cp -f "$f" "${ACTIVE_DIR}/$(basename "$f")" || true
+    done
     # 分类索引抄进卷里：后端/界面据此按攻击类型展示（镜像内的文件容器外部读不到）
     cp -f "$builtin_dir/index.json" "${RULES_DIR}/builtin-index.json" 2>/dev/null || true
   fi

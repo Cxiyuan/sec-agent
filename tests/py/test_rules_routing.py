@@ -61,7 +61,7 @@ def test_capture_anomaly_not_matched_by_protocol_anomaly_rule() -> None:
     2. 该规则改成 `mode=count`（同源窗口内 ≥5 次）：摘要按「源 IP × 规则」分组，
        一次单发的怪象也会各占一条摘要 —— 实测残留的 ~52 个源每 5 分钟就吃掉 52~68 条额度。
     """
-    rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "内置-协议异常")
+    rule = next(r for r in builtin.BUILTIN_RULES if r["name"] == "协议异常")
     conditions = rule["conditions"]
     assert conditions["mode"] == "count"
     assert conditions["key"] == ["src_ip"]
@@ -293,7 +293,7 @@ def test_session_rule_keys_on_session_id_not_whole_cookie() -> None:
     2026-10 实测：整条 Cookie 头当键时，`Path=/`（应用造的常量 cookie）跨 2 个源 IP、
     `EPORTAL_COOKIE_PASSWORD=` 空值模板跨 164 个源 IP ⇒ 24h 337 条 critical 摘要零真命中。
     """
-    rule = _builtin("内置-会话跨IP复用")
+    rule = _builtin("会话跨IP复用")
     # 同一个真会话 cookie 从两个源 IP 来 → 触发
     assert _fires(rule, _http_events("JSESSIONID=abc", ["10.1.2.1", "10.1.2.2"])) is True
     # 常量 cookie 跨 100 个源 IP → 不触发（session_id 为空 ⇒ 条件就不成立）
@@ -309,7 +309,7 @@ def test_fast_port_scan_fires_on_fanout_only() -> None:
     依据（2026-10 实测）：被退役的「扫描尝试连接」误报 ≈ 100% —— 近 15 分钟 92 个源里
     不同目的端口最多的只有 **3 个**；所以 ≥8 个不同端口这个门槛有 ~2.6× 余量。
     """
-    rule = _builtin("内置-快速端口扫描")
+    rule = _builtin("快速端口扫描")
     window = _FreqWindow(_FakeRedis(), 300, 300)
     fired = [window.observe(rule, entry) for entry in _conn_events(list(range(1, 13)))]
     assert any(fired), "12 个不同目的端口应当触发"
@@ -326,7 +326,7 @@ def test_fast_port_scan_counts_rejected_not_established_resets() -> None:
     `RSTO`/`RSTR` 是「握手已建立、随后一方 RST 断开」= 正常业务断连（见 conn_states 表），
     把它们算进来会立刻引入新一批误报。
     """
-    rule = _builtin("内置-快速端口扫描")
+    rule = _builtin("快速端口扫描")
     cond = rule["conditions"]
     assert evaluate_conditions(cond, _conn_events([443])[0]) is True
     assert evaluate_conditions(cond, _conn_events([443], conn_state="REJ")[0]) is True

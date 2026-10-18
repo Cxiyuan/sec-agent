@@ -1,0 +1,10 @@
+# 攻防演练实证样本 SHA256 清单
+# 用法：与本目录上级的「11-恶意文件投递.rules」配合使用，规则内 filesha256 引用本文件
+# 新增样本哈希直接追加一行即可，无需改动规则本体
+#
+# ws_windows_amd64.exe —— 4608 字节 PE32+ 图形界面后门，硬编码 C2 地址，轮询式 HTTP GET 信标
+#   文件名: ws_windows_amd64.exe
+#   MD5   : 64e68ed6c6f4cc103b07e6e5cd8f5d38
+#   SHA1  : db9c8d69add5df833851a0e56c396f0a9562d88b
+#   情报  : https://www.virustotal.com/gui/search/db9c8d69add5df833851a0e56c396f0a9562d88b
+8dffb26f3a897f3c2d5ca847555fbd9555e14099620848d7c208b79b9c4e526b

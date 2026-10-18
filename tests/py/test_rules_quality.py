@@ -188,13 +188,13 @@ def test_capture_weird_maps_to_capture_anomaly(mods: dict[str, Any]) -> None:
 
 
 def test_fast_port_scan_rule_is_fanout_gated(mods: dict[str, Any]) -> None:
-    """「内置-快速端口扫描」必须按**扇出**判定，且只认未建立的失败尝试。
+    """「快速端口扫描」必须按**扇出**判定，且只认未建立的失败尝试。
 
-    2026-10 实机实测：原「内置-扫描尝试连接」（单次 S0 就告警）误报率 ≈ 100% —— 近 15 分钟
+    2026-10 实机实测：原「扫描尝试连接」（单次 S0 就告警）误报率 ≈ 100% —— 近 15 分钟
     9,165 条 S0 / 92 个源里，不同目的端口最多的源只有 **3 个**。改成扇出后：≥10 次失败
     且≥8 个不同目的端口才算扫描（实测正常重试的端口扇出 ≤3，有 ~2.6× 余量）。
     """
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-快速端口扫描")
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "快速端口扫描")
     cond = rule["conditions"]
     assert cond["mode"] == "count"
     assert cond["key"] == ["src_ip"]
@@ -210,30 +210,35 @@ def test_fast_port_scan_rule_is_fanout_gated(mods: dict[str, Any]) -> None:
 
 
 def test_retired_scan_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
-    """退役的「内置-扫描尝试连接」不能再回到规则表，且必须在 RETIRED_RULES 里备案。"""
+    """「扫描尝试连接」不能再回到规则表，且必须在 DELETED_RULES 里备案。
+
+    2026-10 用户口径：**已经停用的规则直接删掉**，不要留在库里当"停用条目"。
+    所以它从 RETIRED_RULES 搬到了 DELETED_RULES（启动时删行）。
+    """
     names = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
-    assert "内置-扫描尝试连接" not in names
-    retired = mods["builtin"].RETIRED_RULES
-    assert "内置-扫描尝试连接" in retired
-    assert "已停用" in retired["内置-扫描尝试连接"]
+    assert "扫描尝试连接" not in names
+    retired = mods["builtin"].DELETED_RULES
+    assert "扫描尝试连接" in retired
+    assert "已删除" in retired["扫描尝试连接"]
+    assert "扫描尝试连接" not in mods["builtin"].RETIRED_RULES, "停用清单里不该再有它"
     # 接手它的扇出型规则必须都在
-    for name in ("内置-快速端口扫描", "内置-高频扫描连接", "内置-内网慢速服务枚举"):
+    for name in ("快速端口扫描", "高频扫描连接", "内网慢速服务枚举"):
         assert name in names, name
 
 
 def test_deleted_notice_rule_is_gone_and_marked(mods: dict[str, Any]) -> None:
-    """notice 型死规则「内置-端口扫描」必须从规则表移除，并在 DELETED_RULES 备案。
+    """notice 型死规则「端口扫描」必须从规则表移除，并在 DELETED_RULES 备案。
 
     （"Ensure 'Turn on e-mail scanning'…"），不是扫描；采集面又已关掉 Zeek 自带 notice →
     这条规则没有任何有效命中路径。
     """
     builtin_mod = mods["builtin"]
     names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
-    assert "内置-端口扫描" not in names
-    assert "内置-端口扫描" in builtin_mod.DELETED_RULES
+    assert "端口扫描" not in names
+    assert "端口扫描" in builtin_mod.DELETED_RULES
     # 明文凭证传输（2026-10 用户口径）同样删除：校园 App 正常登录逐次报，属配置事实不是攻击事件
-    assert "内置-明文凭证传输(HTTP登录)" not in names
-    assert "内置-明文凭证传输(HTTP登录)" in builtin_mod.DELETED_RULES
+    assert "明文凭证传输(HTTP登录)" not in names
+    assert "明文凭证传输(HTTP登录)" in builtin_mod.DELETED_RULES
 
 
 def test_multi_path_probe_statuses_exclude_200(mods: dict[str, Any]) -> None:
@@ -246,9 +251,9 @@ def test_multi_path_probe_statuses_exclude_200(mods: dict[str, Any]) -> None:
     """
     builtin_mod = mods["builtin"]
     names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
-    assert "内置-目录/路径爆破" not in names
-    assert "内置-目录/路径爆破" in builtin_mod.DELETED_RULES
-    rule = _by_name(builtin_mod.BUILTIN_RULES, "内置-多路径探测(漏洞挖掘)")
+    assert "目录/路径爆破" not in names
+    assert "目录/路径爆破" in builtin_mod.DELETED_RULES
+    rule = _by_name(builtin_mod.BUILTIN_RULES, "多路径探测(漏洞挖掘)")
     statuses = [r for r in rule["conditions"]["rules"] if r["field"] == "status_code"]
     assert statuses and set(statuses[0]["value"]) == {401, 403, 404}
 
@@ -261,8 +266,8 @@ def test_self_signed_cert_rule_deleted(mods: dict[str, Any]) -> None:
     """
     builtin_mod = mods["builtin"]
     names = {r["name"] for r in builtin_mod.BUILTIN_RULES}
-    assert "内置-自签或异常证书" not in names
-    assert "内置-自签或异常证书" in builtin_mod.DELETED_RULES
+    assert "自签或异常证书" not in names
+    assert "自签或异常证书" in builtin_mod.DELETED_RULES
 
 
 def test_session_rule_keys_on_session_id(mods: dict[str, Any]) -> None:
@@ -271,7 +276,7 @@ def test_session_rule_keys_on_session_id(mods: dict[str, Any]) -> None:
     2026-10 实测：用整条 Cookie 头当键时，跨用户恒定的值（`Path=/` 应用造的常量 cookie、
     `EPORTAL_COOKIE_PASSWORD=` 空值模板）会让它产出 337 条 critical 摘要而零真命中。
     """
-    rule = _by_name(mods["builtin"].BUILTIN_RULES, "内置-会话跨IP复用")
+    rule = _by_name(mods["builtin"].BUILTIN_RULES, "会话跨IP复用")
     cond = rule["conditions"]
     assert cond["mode"] == "count"
     assert cond["key"] == ["session_id"]
@@ -305,7 +310,7 @@ def test_delete_builtin_rules_is_idempotent() -> None:
         def flush(self) -> None:
             return None
 
-    row = SimpleNamespace(name="内置-端口扫描")
+    row = SimpleNamespace(name="端口扫描")
     first = _Session(row)
     main_mod._delete_builtin_rules(first)
     assert first.deleted == [row]
@@ -314,8 +319,12 @@ def test_delete_builtin_rules_is_idempotent() -> None:
     assert second.deleted == []
 
 
-def test_retire_builtin_rules_is_idempotent() -> None:
-    """退役步骤幂等：首跑置停用 + 记说明；再跑不动它（不把用户后来打开的开关按回去）。"""
+def test_retire_builtin_rules_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """退役步骤幂等：首跑置停用 + 记说明；再跑不动它（不把用户后来打开的开关按回去）。
+
+    真实条目「扫描尝试连接」已按用户口径改为**直接删行**（`DELETED_RULES`），
+    所以这里用 `monkeypatch` 临时注入一条样例，只为验证"停用机制本身"还能工作。
+    """
     import importlib
     from types import SimpleNamespace
 
@@ -332,7 +341,9 @@ def test_retire_builtin_rules_is_idempotent() -> None:
         def flush(self) -> None:
             self.flushed = True
 
-    row = SimpleNamespace(name="内置-扫描尝试连接", enabled=True, description="原描述")
+    # pytest 的 monkeypatch 对模块属性打补丁是类型安全的（直接赋值 ModuleType 属性 pyright 会报错）
+    monkeypatch.setattr(main_mod, "RETIRED_RULES", {"样例退役规则": "已停用：用例专用"})
+    row = SimpleNamespace(name="样例退役规则", enabled=True, description="原描述")
     main_mod._retire_builtin_rules(_Session(row))
     assert row.enabled is False
     assert "已停用" in row.description and "原描述" in row.description
@@ -380,11 +391,11 @@ def test_web_attack_rules_moved_to_signature_engine(mods: dict[str, Any]) -> Non
     """
     moved = set(mods["builtin"].DELETED_RULES)
     for name in (
-        "内置-表达式注入与JNDI(Log4Shell)",
-        "内置-命令注入特征",
-        "内置-SQL注入-基础特征",
-        "内置-WebShell上传",
-        "内置-WebShell访问",
+        "表达式注入与JNDI(Log4Shell)",
+        "命令注入特征",
+        "SQL注入-基础特征",
+        "WebShell上传",
+        "WebShell访问",
     ):
         assert name in moved, f"{name} 应已移交签名引擎（不在删除名单里）"
     live = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
@@ -393,7 +404,7 @@ def test_web_attack_rules_moved_to_signature_engine(mods: dict[str, Any]) -> Non
 
 def test_no_always_true_rule_conditions(mods: dict[str, Any]) -> None:
     """`src_ip exists` 之类恒真条件等于「无条件按源计数」，是最典型的 FP 洪泛源。"""
-    big = _by_name(mods["builtin"].BUILTIN_RULES, "内置-大面积目标探测")
+    big = _by_name(mods["builtin"].BUILTIN_RULES, "大面积目标探测")
     assert {"field": "src_ip", "op": "exists"} not in big["conditions"]["rules"]
     assert big["conditions"]["rules"], "必须有真实判据"
 

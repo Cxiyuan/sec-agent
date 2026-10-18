@@ -38,7 +38,7 @@ def _digest(**kw: Any) -> dict[str, Any]:
         "src_ip": "10.1.2.10",
         "real_client_ips": ["198.51.100.111"],
         "proxied": True,
-        "rule": "内置-多路径探测(漏洞挖掘)",
+        "rule": "多路径探测(漏洞挖掘)",
         "rule_severity": "high",
         "rule_source": "builtin",
         "count": 3,
@@ -191,7 +191,7 @@ def test_panel_shows_pairs_id_and_detail() -> None:
 def test_evidence_extracts_suricata_signature(hits: Any) -> None:
     """签名命中的证据要能看出**是哪条签名**（Suricata 原始 EVE 把签名放在嵌套 alert 里）。
 
-    实测背景：某条命中只显示「内置-签名命中(高危)」，看不出是 Cobalt Strike JA3S 还是别的 ——
+    实测背景：某条命中只显示「签名命中(高危)」，看不出是 Cobalt Strike JA3S 还是别的 ——
     因为证据取的是顶层字段，而签名在 `alert.signature` / `alert.signature_id` 里。
     """
     digest = _digest(
@@ -272,12 +272,12 @@ def test_agg_key_separates_signatures(request: pytest.FixtureRequest) -> None:
     if request.config.getoption("--stack") != "ndr":
         pytest.skip("检测器聚合只在 NDR 侧")
     agg = importlib.import_module("app.detector.aggregate")
-    same = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000844")
-    other = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000845")
-    again = agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, "sig:1000844")
+    same = agg._agg_key("10.0.0.9", "签名命中(高危)", False, "sig:1000844")
+    other = agg._agg_key("10.0.0.9", "签名命中(高危)", False, "sig:1000845")
+    again = agg._agg_key("10.0.0.9", "签名命中(高危)", False, "sig:1000844")
     assert same != other, "不同签名不能并进同一条事件"
     assert same == again, "同源同签名仍应是同一条事件"
-    assert same != agg._agg_key("10.0.0.9", "内置-签名命中(高危)", False, ""), "非签名规则不受影响"
+    assert same != agg._agg_key("10.0.0.9", "签名命中(高危)", False, ""), "非签名规则不受影响"
 
 
 def test_runner_scopes_suricata_hits_by_signature(request: pytest.FixtureRequest) -> None:
@@ -307,13 +307,13 @@ def test_runner_scopes_suricata_hits_by_signature(request: pytest.FixtureRequest
     runner._aggregate(
         _Agg(),
         entry,
-        {"name": "内置-签名命中(高危)", "severity": "high"},
+        {"name": "签名命中(高危)", "severity": "high"},
         entry.raw,
         "es",
         stats=__import__("collections").Counter(),
     )
     assert captured.get("scope") == "sig:1000845"
-    assert captured.get("rule") == "内置-签名命中(高危)"
+    assert captured.get("rule") == "签名命中(高危)"
 
 
 def test_evidence_hides_redundant_fields(hits: Any) -> None:

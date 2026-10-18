@@ -542,7 +542,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 - **坏消息不再静默丢**：`ndr/backend/app/collector/normalizer_service.py` 归一化异常的原始消息进死信 `shentong:events:dead`（LPUSH + LTRIM 保最新 1 万）、`shentong:collector:stats` HINCRBY 持久计数、按积压量告警；仍 ack 不卡链路。
 - **队列裁剪方向纠错**：原 `ltrim(key, 0, limit-1)` 丢的其实是**最新**（Filebeat 用 `RPUSH` 写右端），改为 `ltrim(key, -limit, -1)` 保最新、丢最旧。
-- **`conn_state` 语义纠错**：只有 `S0`（只发 SYN、无任何回应）算 `scan_attempt`，`S1/S2/S3/SF/RSTO/RSTR` 归 `conn_established`。原实现把已建立的连接也判成扫描 → 「内置-横向移动管理端口」「内置-异常外联端口」里的 `event_type ne scan_attempt` 永不命中，而「内置-扫描尝试连接」被灌误报。（2026-10-03 进一步把这套语义收进唯一事实来源，见下节「连接状态语义收口」。）
+- **`conn_state` 语义纠错**：只有 `S0`（只发 SYN、无任何回应）算 `scan_attempt`，`S1/S2/S3/SF/RSTO/RSTR` 归 `conn_established`。原实现把已建立的连接也判成扫描 → 「横向移动管理端口」「异常外联端口」里的 `event_type ne scan_attempt` 永不命中，而「扫描尝试连接」被灌误报。（2026-10-03 进一步把这套语义收进唯一事实来源，见下节「连接状态语义收口」。）
 - **检测器投递不再谎报成功**：`ndr/backend/app/detector/runner.py` 在 `push.deliver()` 返回 `off`（未配推送地址）时改记 `undelivered` + ack，不再把摘要写进无人消费的退役队列 `shentong:events:dispatch` 并计 `delivered`。
 - **异常消息不再无条件丢弃**：`runner.py` 处理失败的消息进隔离队列 `shentong:detector:failed`（1 千上限 + 7 天 TTL）并计数，取代 `log.exception` + `finally ack`。
 - **推送重试队列有界**：`ndr/backend/app/detector/push.py` 给 `shentong:events:pushretry` 加 `_RETRY_QUEUE_MAX = 2000`（LTRIM 保最新，丢弃计 `retry_dropped`）；区分可重试（网络/超时/5xx/408/429 → 放回队尾、结束本轮，与 `docs` 第 5 期"停止本轮"的设计意图一致）与永久失败（持续 4xx → 记 5 次后判 `retry_lost`）；`recover_pending()` 加 SET NX 锁并与 `/api/agent-push/retry` 收敛，避免两个写者互抢 processing 批造成重复推送。
@@ -563,7 +563,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 **清理（死代码 / 死配置 / 注释）**
 
 - 删：`ingestion/dedup.py`（两侧）、`ingestion/es_schema.py` 整条链、`rules/engine.py::match_count_rule`、`baseline/profile.py::window_observations`、`triage_policy.py` 的 `evidence_tier`/`cap_severity`/`should_escalate`（真源在智能体侧 `agent/backend/app/agents/triage_policy.py`）、`detector/handled.py::filter_unhandled`、`investigation/es_query.py::count`、六个「目录生成」函数、`ndr/frontend/lib/api.ts` 的三个零引用类型。
-- 死配置：`es_events_src_fields` / `es_events_dst_fields`、`max_logs_per_window`、`digest_suppress_hours`、`digest_merge_family`、`CONFIG_KEYS`、compose 里两组 `ZEEK_*` 旋钮；`policy_skip_rules` 里的规则名不存在 → 改成真实名字（`内置-扫描尝试连接`、`内置-恶意文件传输`）。
+- 死配置：`es_events_src_fields` / `es_events_dst_fields`、`max_logs_per_window`、`digest_suppress_hours`、`digest_merge_family`、`CONFIG_KEYS`、compose 里两组 `ZEEK_*` 旋钮；`policy_skip_rules` 里的规则名不存在 → 改成真实名字（`扫描尝试连接`、`恶意文件传输`）。
 - 注释与实现对齐：`ingestion/es_config.py`、`mcp/__init__.py` 的模块名、`agent-push-panel` 的 `queued` 语义、`push.py` 的 `recover()` docstring、`runner.py` 的「睡到分钟桶边界」、Zeek 保留策略与 `ZEEK_LOG_DIR` 等。
 - ~~**只报告未改**（口径未定，等用户拍板）：`triage_policy.py::SUCCESS_CONN_STATES` 含 `RSTO`/`RSTR`（连接被重置，实际未成功），而 `_zeek_event_type` 把它们映射成 `generic`，两处对"成功连接"的定义不一致~~ → **已于 2026-10-03 彻底解决**：`RSTO`/`RSTR` 是「握手已建立、随后一方 RST 断开」，算握手完成；`SH`/`SHR` 从未完成握手，不算。语义收进 `conn_states.py` 一张表，三处调用点共用，见下节。
 - **已知未动**：`investigation/tools.py` 的 `_timeline` / `_net_flows` 有与已修多来源截断同型的 `hits[:limit]`（风险更低）；`shentong:events:dispatch` 退役队列里积压的约 400 条（推送线路未部署，部署后 `DEL`）。
@@ -647,13 +647,13 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 - **x509 自签判定**：`cert_issuer` 原来只取顶层 `issuer`，而 Zeek 把签发者嵌套在 `certificate.issuer`（恒空）→「自签或异常证书」死规则。现解析嵌套并新增 `cert_self_signed`（subject == issuer，引擎无法比字段，只能在归一化层算）。
 - `schemas` 两侧新增 `cert_self_signed`；`triage_policy.SUCCESS_EVENT_TYPES` 里的 `conn_http` **全仓无生产者**（HTTP 侧永远判「无成功连接」），换成真实存在的 `http_login`/`http_upload`/`http_request`。
 - `config.web_login_path_regex` 补常见登录形态（`/wp-login.php`、`/admin/login.do`、`/api/v2/authenticate`、`/user/sign_in`）并加词首边界：原正则漏掉它们，让「登录接口爆破 / 密码喷洒 / 明文凭证传输」整链漏报。
-- `policy_skip_rules` 移除「内置-恶意文件传输」：它 `severity=high ≥ min_severity=medium`，**永远不生效**（死配置）；顺带把该规则改为只报上传方向（`file_is_orig`），不再把软件更新/内部 JAR 下载全报 high。
+- `policy_skip_rules` 移除「恶意文件传输」：它 `severity=high ≥ min_severity=medium`，**永远不生效**（死配置）；顺带把该规则改为只报上传方向（`file_is_orig`），不再把软件更新/内部 JAR 下载全报 high。
 
 **内置规则内容（代码里 82 条内置、启用 81 条：`ndr/` 与 `agent/` 两份逐字一致；库里另有 1 条已退役保留行，见文末「扫描规则改扇出」）**
 
 - **P0**：`WebShell上传` 判据从「请求路径以 .php 结尾」改为「multipart + body 里真有 `filename="x.php"`」（原来 `POST /login.php→302` 报 critical、真上传却漏报）；`Log4Shell` 的 `ognl|spel` 加词边界（`/spellcheck` 曾报 critical）并补 `req_headers`/`resp_headers`（CVE-2021-44228 头向量漏报）；`命令注入` 允许分隔符后直接跟命令（`;id`/`|id`/`&&id` 曾全漏）；`大面积目标探测` 去掉恒真条件 `src_ip exists`（实为无条件按源计数）；`cookie`/`weird` 类死规则经上游修复复活。
 - **P1**：新增方向/连接状态限定（横向移动、异常外联、外传、弱 TLS、敏感端口）；账号类 count 规则 key 加 `dst_ip`、抬高阈值（密码喷洒 5→8/5 分钟、登录爆破 15→30/10 分钟、撞库 3→5/30 分钟）并修 normalizer 的 `sshd` 误判；`DNS-TXT隧道` 改为「同源多个不同 TXT 名字」（原 key 含 query，语义相反）；`横向移动管理端口`/`内网慢速横向`/`服务枚举` 补方向与失败连接限定、阈值收敛；`多路径探测`/`暴力路径枚举`/`服务端错误突变` 补状态码过滤与白名单。
-- **新增两条补漏规则**：「内置-Bearer令牌高频使用」（把原 `auth_scheme in [bearer,jwt]` 的逐条误报改成 ≥60 次/10 分钟的频率规则）、「内置-单目标多端口深扫」（补「单目标多端口」漏报）。
+- **新增两条补漏规则**：「Bearer令牌高频使用」（把原 `auth_scheme in [bearer,jwt]` 的逐条误报改成 ≥60 次/10 分钟的频率规则）、「单目标多端口深扫」（补「单目标多端口」漏报）。
 
 
 **门禁（2026-10-04，仓库根）**：`.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py` `All checks passed!`；`.venv/bin/pyright ...` `0 errors, 0 warnings`；`pytest tests/py --stack=ndr -q` **417 passed, 1 skipped**；`--stack=agent -q` **287 passed, 131 skipped**；`sh tests/zeek/run.sh` 全 `PASS`（`FAILS=0`）；两侧 `npx tsc --noEmit` 无输出。
@@ -1026,7 +1026,7 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 「采集」页加「按 TLS 解析的端口」输入；「行为分析」页徽标改为
 「客户端侧跳 保留/丢弃、源站侧跳 保留/去重、中继内部 保留/丢弃、链续跳去重」。
 
-**验收修正（实测推翻了原计划里的一条预期，如实记录）**：原以为 `内置-协议异常` 的 75-78 条/5 分钟
+**验收修正（实测推翻了原计划里的一条预期，如实记录）**：原以为 `协议异常` 的 75-78 条/5 分钟
 摘要全部来自 WAF 前跳的假 weird；实测那批（`src=199.214` → `dst=199.203`）在用户把 199.214/215 加入清单后
 已经是 `hop=relay_internal` **被丢弃**，当前 75-78 条摘要来自**约 88 个不同内网主机**的真实/抓包类 weird
 （WAF 只占其中 1 个分组）。所以端口配置的收益是**数据卫生**（约 4,167 条/5 分钟 ≈ 120 万条/天的垃圾文档）
@@ -1051,7 +1051,7 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 `possible_split_routing` 13,795 / `data_before_established` 5,604 / `truncated_tcp_payload` 2,053 /
 `SYN_inside_connection` 1,447 / `window_recision` 1,416 / `data_after_reset` 935 /
 `inappropriate_FIN` 879 —— 它们的含义是**采集在丢东西（丢包 = 漏检）**，不是攻击信号。
-但归一化把它们和真正的协议异常一起标成 `protocol_anomaly`，被「内置-协议异常」一刀切命中 →
+但归一化把它们和真正的协议异常一起标成 `protocol_anomaly`，被「协议异常」一刀切命中 →
 一个 5 分钟窗口产出 **75~84 条摘要**（约占全部摘要的一半），把真该看的挤到限流丢弃。
 
 **网卡侧实测（先量再定，这一项决定「治标还是治本」）**：抓包口 `ens192` 是 vmxnet3 / 10G，
@@ -1068,17 +1068,17 @@ DNS 服务器头上）。**为什么不做时间窗配对/合并**：两跳是�
 3. 总览页新增第 8 盏灯「**采集质量（采集类协议异常）**」：近 15 分钟条数 + 最常见异常名，
    阈值 `ST_CAPTURE_ANOMALY_WARN_15M` / `_CRIT_15M`（默认 5000 / 20000）；
    读不到统计只影响它自己这盏灯（其余灯不受牵连）；
-4. 「内置-协议异常」**加同源频次门槛**（`mode=count` / `key=[src_ip]` / `min_count=5`）：
+4. 「协议异常」**加同源频次门槛**（`mode=count` / `key=[src_ip]` / `min_count=5`）：
    第一次只做了分类，实测摘要数没怎么降（52~68 条/5 分钟）—— 因为摘要按「源 IP × 规则」分组，
    残留的 ~52 个源每个只出 1~几条也各占一条额度。改成频次规则后单发怪象留在 ES（供回溯/MCP 查），
    只有同源 ≥5 次才告警。
 
 **验收（部署后实测，15 分钟窗口）**：weird 总数 9,776，其中 `capture_anomaly` **9,197（94%）**、
-`protocol_anomaly` 578（6%）；`内置-协议异常` 的每 5 分钟摘要从 52~68 **降到 11**（单规则降 ~80%），
+`protocol_anomaly` 578（6%）；`协议异常` 的每 5 分钟摘要从 52~68 **降到 11**（单规则降 ~80%），
 总摘要 119 → **87**；总览页第 8 盏灯「采集质量」常态为绿（近 15 分钟约 615 条，最常见
 `possible_split_routing`）；`capture_anomaly` 文档在 ES 里照旧可查（数据不丢）。
 
-**已处置（见文末「扫描规则改扇出」一节）**：`内置-扫描尝试连接` 曾是摘要第一大户 —— **66~71 条/5 分钟**
+**已处置（见文末「扫描规则改扇出」一节）**：`扫描尝试连接` 曾是摘要第一大户 —— **66~71 条/5 分钟**
 （约占全部摘要的 79%）。它与协议异常是同一个形态：`event_type=scan_attempt`（conn_state S0，只发
 SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占一条摘要」。同样按「扫描要有规模」加频次
 门槛（例如同源 ≥N 次 / ≥N 个不同目的端口）即可收敛，但这属于**改检测灵敏度**，需用户拍板。
@@ -1089,7 +1089,7 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 
 ### 2026-10 扫描规则改「扇出判据」：误报从 66~71 条/5 分钟降到 0
 
-**缘起**：用户问「内置-扫描尝试连接现在有什么问题，误报率」。实测把结论钉死了：
+**缘起**：用户问「扫描尝试连接现在有什么问题，误报率」。实测把结论钉死了：
 
 | 事实 | 数字 |
 |---|---|
@@ -1104,14 +1104,14 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 扇出。实测正常失败尝试的端口扇出 **≤3**，与扫描（≥8 个端口）天然可分。
 
 **改动**：
-1. **退役 `内置-扫描尝试连接`**（单个失败尝试不再告警）：名字从 `BUILTIN_RULES` 拿掉（当时代码 84 条内置；本页后续又删了「内置-端口扫描」「内置-明文凭证传输(HTTP登录)」，当前代码 82 条内置、启用 81 条），
+1. **删除 `扫描尝试连接`**（单个失败尝试不再告警；2026-10 用户口径：已停用的规则**直接删行**、不再留停用条目）：名字从 `BUILTIN_RULES` 拿掉并进 `DELETED_RULES`（启动时删库行）（当时代码 84 条内置；本页后续又删了「端口扫描」「明文凭证传输(HTTP登录)」，当前代码 82 条内置、启用 81 条），
    `builtin.RETIRED_RULES` 备案说明；播种流程新增 `_retire_builtin_rules()`（**幂等**）把库里那行
    置 `enabled=False` 并追加说明 —— **不删行**（规则页看得到「它为什么没了」，可一键启用回滚）。
    两侧（`ndr/` 与 `agent/`）都加：agent 若自建库播种，旧行同样会被停用。
-2. **新增 `内置-快速端口扫描`**：`mode=count, key=[src_ip], window=300, min_count=10,`
+2. **新增 `快速端口扫描`**：`mode=count, key=[src_ip], window=300, min_count=10,`
    `distinct=dst_port, min_distinct=8`，事件 = `conn` + `event_type in [scan_attempt, rejected_connection]`
-   （优先级 25 / medium）。补齐「窄端口扫描（8~29 个端口）」这个口子 —— 既有 `内置-高频扫描连接`
-   要求 30 分钟内 ≥30 次，扫 20 个端口打不中它；`内置-内网慢速服务枚举` 要求同目的 ≥25 个端口，
+   （优先级 25 / medium）。补齐「窄端口扫描（8~29 个端口）」这个口子 —— 既有 `高频扫描连接`
+   要求 30 分钟内 ≥30 次，扫 20 个端口打不中它；`内网慢速服务枚举` 要求同目的 ≥25 个端口，
    也打不中。
 3. **判据只用「未建立」的失败**：`RSTO`/`RSTR` 是握手建立后的 RST（正常业务断连，见 `conn_states` 表），
    **不计入**，否则立刻引入新一批误报。
@@ -1121,16 +1121,16 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 **分工（覆盖矩阵）**：
 | 形态 | 规则 |
 |---|---|
-| 快速窄端口扫描（8~29 个端口 / 5 分钟） | `内置-快速端口扫描`（新增） |
-| 中尺度端口扫描（≥8 个端口且 ≥30 次 / 30 分钟） | `内置-高频扫描连接`（既有） |
-| 慢速端口枚举（同源同目的 ≥25 个端口 / 6 小时） | `内置-内网慢速服务枚举`（既有） |
-| 主机扫描/横向（≥10 个内网目的 / 6 小时） | `内置-内网慢速横向`（既有） |
+| 快速窄端口扫描（8~29 个端口 / 5 分钟） | `快速端口扫描`（新增） |
+| 中尺度端口扫描（≥8 个端口且 ≥30 次 / 30 分钟） | `高频扫描连接`（既有） |
+| 慢速端口枚举（同源同目的 ≥25 个端口 / 6 小时） | `内网慢速服务枚举`（既有） |
+| 主机扫描/横向（≥10 个内网目的 / 6 小时） | `内网慢速横向`（既有） |
 
 **验收**：`pytest` 里用内存假 Redis 驱动 `FreqWindow`：同源 12 个不同端口 → 触发；固定 3 个端口
 × 300 次 → **不触发**；`REJ` 计入而 `RSTO/RSTR` 不计入；退役步骤幂等（两次跑结果一致）。
 实机部署后按当前流量预期：扫描类摘要 66~71 → **0**，总摘要 87~119 → 约 20~50；ES 里 S0/REJ 文档不变。
 
-**遗留（未做，已量化）**：`内置-端口扫描`（按 notice 的 `event_type=port_scan`，优先级 28）在本部署
+**遗留（未做，已量化）**：`端口扫描`（按 notice 的 `event_type=port_scan`，优先级 28）在本部署
 **是死规则** —— 采集面关掉了 Zeek 自带 notice（`shentong-policies.zeek`），该事件类型不会出现。
 保留它不影响摘要（永不触发）；是否清理与 `2026-10 规则评审`第 16 条（合并三条扫描规则）一起评估。
 
@@ -1140,7 +1140,7 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 方法：① 当天索引近 6h 的 log_type/event_type/**字段非空**画像；② 检测器 288 个 5 分钟采样（24h）的
 按规则摘要计数；③ 逐规则的字段/事件类型与实机产出交叉比对。查出四条问题，本轮先修两条。
 
-**1) 「内置-会话跨IP复用」（critical / priority 8）实测 100% 误报**（24h 337 条，**零真命中**）：
+**1) 「会话跨IP复用」（critical / priority 8）实测 100% 误报**（24h 337 条，**零真命中**）：
 
 | cookie 值（12 小时窗口） | 次数 | 不同 src_ip | 判定 |
 |---|---|---|---|
@@ -1158,26 +1158,26 @@ SYN 没回应）逐条命中，导致「每个有过一次 S0 连接的源各占
 **验收**：部署后逐窗口 `会话跨IP复用` = **0**（实测近 10 分钟无任何会话跨多个源 IP）；
 单测覆盖「真会话跨 2 个 IP → 命中」「`Path=/` / 空值模板跨 100 个 IP → 不命中」。
 
-**2) 「内置-明文凭证传输(HTTP登录)」按用户口径删除**：实测 2,848 条/12h 全是校园 App 的正常登录
+**2) 「明文凭证传输(HTTP登录)」按用户口径删除**：实测 2,848 条/12h 全是校园 App 的正常登录
 （`/PhoneApi/api/Account/Login` 1,797 条/579 个真实客户端、`/njwhd/login` 917/644，status=200），
 属「站点该上 HTTPS」的**配置事实**而非攻击事件。名字进 `builtin.DELETED_RULES`，播种幂等删行
-（与「内置-端口扫描」同机制）。部署后逐窗口 = **0**。
+（与「端口扫描」同机制）。部署后逐窗口 = **0**。
 
 
 **本轮未修（待定，已量化）**：
   而 `_entry_in_scope()` 只认 `src_ip`/`dst_ip` 落在监控网段 ⇒ 全部在规则之前被丢
   范围闸门没开 —— 两处口径不一致。
-- ~~**`cert_issuer` 字段恒空**（近 6h 0 条非空）⇒「内置-自签或异常证书」的 issuer 分支是死路径~~
+- ~~**`cert_issuer` 字段恒空**（近 6h 0 条非空）⇒「自签或异常证书」的 issuer 分支是死路径~~
   **已处置**：先删掉 issuer 死分支（判据只剩 `cert_self_signed`），随后按用户口径**整条删除**
   （自签证书不需要检测；本环境 `cert_self_signed == true` 文档数 = 0，属配置事实非攻击事件）。
-  两条 TLS 相关规则的分工因此收敛为：`内置-弱TLS版本`（协议版本维度，只算内网→外网，实测
-  `TLSv10` 242 条 / `TLSv11` 23 条）+ `内置-TLS异常`（Zeek TLS 解析异常名维度，实测只有
+  两条 TLS 相关规则的分工因此收敛为：`弱TLS版本`（协议版本维度，只算内网→外网，实测
+  `TLSv10` 242 条 / `TLSv11` 23 条）+ `TLS异常`（Zeek TLS 解析异常名维度，实测只有
   `SSL_excessive_alerts_in_record`）。
 - ~~**同一现象多份摘要**：Web 扫描类 24h 合计约 970 条（多路径探测 339 + 框架漏洞探测 299 +
   目录/路径爆破 211 + 未授权访问 99 + 暴力路径枚举 22）~~ **已按方案 A 处置（见下）**。
 
-**已处置（方案 A，2026-10）**：`内置-多路径探测(漏洞挖掘)` 的状态码由 `200/401/403/404` 收成
-**`401/403/404`**（只算「不同路径且失败」），并**删除 `内置-目录/路径爆破`**（进 `DELETED_RULES`）。
+**已处置（方案 A，2026-10）**：`多路径探测(漏洞挖掘)` 的状态码由 `200/401/403/404` 收成
+**`401/403/404`**（只算「不同路径且失败」），并**删除 `目录/路径爆破`**（进 `DELETED_RULES`）。
 依据（近 6h 实机数据，按源 IP 的路径扇出）：
 - 现口径（含 200）里「≥30 条且 ≥30 个不同路径」的源 **92** 个、「≥50 条且 ≥50 路径」**43** 个；
   把状态码收成 401/403/404 后分别只剩 **1** 个 ⇒ 200 是「正常浏览/爬虫」的形态，
@@ -1232,7 +1232,7 @@ file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、
   与 Zeek 共用同一个 Redis 采集队列 → 同一条归一化/入库/检测/摘要链路；
 - 归一化新增 `normalize_suricata`（两侧栈逐字一致）：`event_type=signature_hit`、
   `log_type=suricata`，签名名/SID/类别/severity 进独立字段，`raw` 丢掉整包十六进制与载荷 base64；
-- 新增 **`内置-签名命中(高危/中危/低危)`**（按 EVE `alert.severity` 1/2/3 分档），
+- 新增 **`签名命中(高危/中危/低危)`**（按 EVE `alert.severity` 1/2/3 分档），
   摘要样本带 `signature/signature_id/signature_category/community_id`；
 - **签名命中的两处例外**（都有实机理由）：不做中继去重 —— 本环境客户端侧是 TLS（无 SNI）、
   有内容的恰是源站侧那跳，套「哪一侧有内容」的去重会把该保留的告警丢掉；
@@ -1287,7 +1287,7 @@ file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、
 
 ### 2026-10 TLS 判据重做：删掉裸单条匹配，换成两条有攻击含义、阈值按实测定的规则
 
-**问题**：`内置-TLS异常` 是**裸单条匹配**（`event_type=tls_anomaly`，来一条报一条）。实测（7 天）：
+**问题**：`TLS异常` 是**裸单条匹配**（`event_type=tls_anomaly`，来一条报一条）。实测（7 天）：
 59 条 ≈ 8 条/天，**全部**来自 `weird.log`，目标固定在同一个对外 TLS 服务（7 天 2,400+ 次成功会话里
 约 7% 异常收尾），异常名是 `SSL_excessive_alerts_in_record` / `ssl_early_application_data`
 —— 它们说的是「客户端/中间盒与该服务握手不顺」，属运维/健康信号，不是攻击事件。
@@ -1296,8 +1296,8 @@ file.magic/filemd5/filesha1/filesha256`、`tls.sni/tls.version`、`dns.query`、
 
 | 规则 | 判据 | 阈值依据（线上实测，6 小时窗口采样） |
 | --- | --- | --- |
-| `内置-TLS弱版本协商` | 同源同目标协商出 SSLv3/TLSv1.0/TLSv1.1 ≥5 次/6 小时 | 弱版本共 20 条、集中在 1 对（领先 18 次 vs 其余 ≤1 次）→ 5 落在空白区 |
-| `内置-TLS握手失败风暴` | 同源同目标 `tls_established=false` ≥30 次/6 小时 | 168 条 / 31 对，领先的一对 105 次、其余 ≤10 次 → 30 落在空白区 |
+| `TLS弱版本协商` | 同源同目标协商出 SSLv3/TLSv1.0/TLSv1.1 ≥5 次/6 小时 | 弱版本共 20 条、集中在 1 对（领先 18 次 vs 其余 ≤1 次）→ 5 落在空白区 |
+| `TLS握手失败风暴` | 同源同目标 `tls_established=false` ≥30 次/6 小时 | 168 条 / 31 对，领先的一对 105 次、其余 ≤10 次 → 30 落在空白区 |
 
 - 新增归一化字段 `tls_established`（Zeek `ssl.log` 的 `established`）—— 规则靠它判「握手没建立」；
 - **不做**「版本回退（客户端 offer 版本高于协商结果）」：实测该判据 **0 条命中**（本环境没有降级特征），
@@ -1417,7 +1417,7 @@ vs 反向 `203 → 214` **614 次**（2600 倍）；`203 → 源站` 的请求�
   **没有任何规则看"利用特征"**。
 
 **改法**：
-1. 新增内置规则 `内置-内网漏洞利用探测`（high）：同源 **30 分钟**内 ≥10 个不同内网目的 **且** 请求带利用特征
+1. 新增内置规则 `内网漏洞利用探测`（high）：同源 **30 分钟**内 ≥10 个不同内网目的 **且** 请求带利用特征
    （`user_agent` 命中 Shellshock `() { :; };` / Log4Shell `${jndi:`，或 `uri_path` 命中
    nacos/solr/tomcat 管理页/actuator/druid/weblogic/struts/穿越）→ 两个维度都要满足，单次探测不报。
 2. **最近命中可见性**：检测器把每条摘要同时写进 Redis 环形列表（`shentong:detector:recent`，

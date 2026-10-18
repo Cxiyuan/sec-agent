@@ -275,7 +275,7 @@ HTTP/FTP **明文**传输的文件会被落到 `/extract/<fuid>`（fuid 就是 f
 | 5 | ✅ | 界面配 `10.1.2.0/24` 后启动命令变为 `zeek -C -i eth0 -f net 10.1.2.0/24 /usr/local/zeek/share/zeek/site/local.zeek`，`/config/interface.conf` 里 `monitored_nets` / `bpf_filter` / `local_nets` 三处一致，`packet_filter.log` 记 `{"filter":"net 10.1.2.0/24","init":true,"success":true}`。**首次下发即暴露一个入口脚本 bug**：`entrypoint.sh` 原来把过滤器写成位置参数（`zeek -C -i "$iface" "$bpf" …`），Zeek 当脚本名去加载 → `fatal error: can't find net 10.1.2.0/24` 无限重启；已改为 `-f "$bpf"`（未配网段时走 else 分支，此前没跑到过） |
 | 6 | ✅ | 无 notice.log（未加载 `policy/protocols/*`），符合预期 |
 | 7 | ✅ | ES 聚合：log_type = conn 3168 / dhcp 18 / dns 8 / ssl 8 / http 2；event_type = rejected_connection 3140 / dhcp_activity 18 / conn_established 17 / scan_attempt 11 / dns_query 8 / tls_session 8 / http_request 2 |
-| 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内置-内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |
+| 8 | ✅ | detector 统计日志：扫描 17335 / 命中 60 / 频率触发 1 / 摘要 7 / 投递 9（`shentong:freq:*` 里已有内网慢速横向、大面积目标探测、内网慢速服务枚举等键） |
 | 9 | ✅ 已支持（2026-10-02） | 本机探针（uid `Cy2rDP36QlAdi9ru79`）发 `X-Forwarded-For: 198.51.100.77, 203.0.113.9` → `http.log` 得 `proxied: ["X-FORWARDED-FOR -> 198.51.100.77, 203.0.113.9"]`，`id.orig_h` 仍是 TCP 对端；归一化后 `real_client_ip=198.51.100.77`、`src_ip` 不变；同一条还有 `resp_body` 与 `resp_body_len=80` |
 
 **批 2 实机复验（2026-10-02，镜像 `shentong-zeek` `244ec0300d17` → `213e76f6fc69`）**

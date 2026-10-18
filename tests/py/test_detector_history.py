@@ -138,13 +138,13 @@ def test_read_returns_empty_on_empty_queue(history: ModuleType, client: FakeRedi
 
 def test_extract_interval_rules_pops_keys(history: ModuleType) -> None:
     stats: Counter[str] = Counter()
-    history.mark_digest(stats, {"rule": "内置-A", "rule_severity": "high"})
-    history.mark_digest(stats, {"rule": "内置-A", "rule_severity": "low"})
-    history.mark_digest(stats, {"rule": "内置-B", "rule_severity": "high"})
+    history.mark_digest(stats, {"rule": "A", "rule_severity": "high"})
+    history.mark_digest(stats, {"rule": "A", "rule_severity": "low"})
+    history.mark_digest(stats, {"rule": "B", "rule_severity": "high"})
     stats["scanned"] = 999  # 无关键不能被带走
 
     by_rule = history.extract_interval_rules(stats)
-    assert by_rule == {"内置-A": 2, "内置-B": 1}
+    assert by_rule == {"A": 2, "B": 1}
     # 抽走之后计数器里不该再残留（否则下一次采样会变成累计值）
     assert history.extract_interval_rules(stats) == {}
     assert stats["scanned"] == 999

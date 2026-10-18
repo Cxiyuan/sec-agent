@@ -37,6 +37,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS window_count INTEGER NOT NULL DEFAULT 0",
+    # 规则改名（2026-10：去掉「」前缀，直接叫事件类型名）：幂等；
+    # RETIRED_RULES / DELETED_RULES 靠名字匹配库里已有行，所以老库要一起改名。
+    "UPDATE rules SET name = replace(name, '', '') WHERE name LIKE '%'",
     "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
@@ -59,7 +62,7 @@ _ASSET_SEMANTICS_KEY = "asset.semantics_version"
 _ASSET_SEMANTICS_VERSION = 5
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
-_CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
+_CONFIG_DRIVEN_RULES = {"JA3指纹命中"}
 
 #: 内置规则改名映射（旧名 → 新名）。
 #: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
@@ -71,7 +74,7 @@ def _delete_builtin_rules(db: Any) -> None:
     """删除已废弃的内置规则行（幂等，每次启动都跑）。
 
     与 `_retire_builtin_rules`（保留行、只置停用）的区别：这类规则**完全没有有效命中路径**
-    （例：`内置-端口扫描` 依赖 notice，而采集面已关掉 notice），保留只会让规则页看起来
+    （例：`端口扫描` 依赖 notice，而采集面已关掉 notice），保留只会让规则页看起来
     像在防这类事。删之前打一条 warning，把“删了什么、为什么”写进日志（可审计）。
     """
     for name, reason in DELETED_RULES.items():

@@ -256,11 +256,11 @@ def test_agent_get_rule_and_list_filters_forward_to_mcp(
 
     monkeypatch.setattr(tools.mcp_client, "call", fake_call)
     ctx = tools.ToolCtx()
-    _dispatch(tools, "get_rule", {"name": "内置-云元数据访问"}, ctx)
+    _dispatch(tools, "get_rule", {"name": "云元数据访问"}, ctx)
     _dispatch(tools, "list_filters", {}, ctx)
     _dispatch(tools, "file_content", {"fuid": "FxAbCdEfGh", "encoding": "text"}, ctx)
     assert seen == [
-        ("get_rule", {"name": "内置-云元数据访问"}),
+        ("get_rule", {"name": "云元数据访问"}),
         ("list_filters", {}),
         ("file_content", {"fuid": "FxAbCdEfGh", "encoding": "text"}),
     ]

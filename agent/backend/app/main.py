@@ -23,6 +23,9 @@ log = get_logger(__name__)
 
 # 幂等补列/补索引：保证已有库平滑升级（新列均有默认值，不破坏旧数据）
 _MIGRATIONS = (
+    # 规则改名（2026-10：去掉「」前缀，直接叫事件类型名）：幂等；
+    # 库里已有规则行必须一起改名，否则停用/删除逻辑按名字匹配不到。
+    "UPDATE rules SET name = replace(name, '', '') WHERE name LIKE '%'",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS is_external BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS allow_ip_share BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) NOT NULL DEFAULT ''",
@@ -48,7 +51,7 @@ _MIGRATIONS = (
 )
 
 # 依赖系统配置的规则：启用状态跟随配置（不保留用户手动开关）
-_CONFIG_DRIVEN_RULES = {"内置-JA3指纹命中"}
+_CONFIG_DRIVEN_RULES = {"JA3指纹命中"}
 
 #: 内置规则改名映射（旧名 → 新名）。
 #: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
@@ -60,7 +63,7 @@ def _delete_builtin_rules(db: Any) -> None:
     """删除已废弃的内置规则行（幂等，每次启动都跑）。
 
     与 `_retire_builtin_rules`（保留行、只置停用）的区别：这类规则**完全没有有效命中路径**
-    （例：`内置-端口扫描` 依赖 notice，而采集面已关掉 notice）。删之前打一条 warning，
+    （例：`端口扫描` 依赖 notice，而采集面已关掉 notice）。删之前打一条 warning，
     把“删了什么、为什么”写进日志（可审计）。
     """
     for name, reason in DELETED_RULES.items():

@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     # 误报治理（判据集中在 triage_policy，两侧一致）；名字必须与 app/rules/builtin.py 逐字一致
     policy_internal_routine_skip: bool = True
     # 只能放 severity < policy_internal_routine_min_severity 的规则。
-    # 2026-10 默认清空：原来放的「内置-扫描尝试连接」已退役（单次失败尝试不再告警 —— 实测
-    # 误报率≈100%，改由扇出型规则「内置-快速端口扫描/高频扫描连接/慢速服务枚举/慢速横向」判定）。
+    # 2026-10 默认清空：原来放的「扫描尝试连接」已退役（单次失败尝试不再告警 —— 实测
+    # 误报率≈100%，改由扇出型规则「快速端口扫描/高频扫描连接/慢速服务枚举/慢速横向」判定）。
     policy_skip_rules: list[str] = []
     policy_internal_routine_min_severity: str = "medium"
     policy_internal_routine_max_dst: int = 1
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     prefilter_penalty_common_port: float = 0.2
     evidence_bytes_out_strong: int = 10485760
     escalate_score_threshold: float = 0.4
-    # 可疑 JA3 指纹（逗号分隔）；为空时「内置-JA3指纹命中」规则自动禁用（两侧种子同一套规则）
+    # 可疑 JA3 指纹（逗号分隔）；为空时「JA3指纹命中」规则自动禁用（两侧种子同一套规则）
     ja3_blocklist: str = ""
 
     # ingestion 解析共享（两侧各持一份解析代码，字段名/截断必须一致）

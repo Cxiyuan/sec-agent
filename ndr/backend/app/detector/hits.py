@@ -222,7 +222,7 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
             item["source"] = sample["source"]
         # 签名引擎的告警在原始 EVE 里是嵌套的 alert 对象（signature/signature_id/category/
         # severity/metadata.threat_type）——不提上来，详情里就看不出「命中了哪条签名」
-        # （实测：只显示"内置-签名命中(高危)"，看不出是 Cobalt Strike JA3S 还是别的）。
+        # （实测：只显示"签名命中(高危)"，看不出是 Cobalt Strike JA3S 还是别的）。
         # 去重键：优先用能唯一标识「一次事件」的字段；都没有就退回内容本身
         key = "|".join(str(doc.get(k) or "") for k in _EVIDENCE_ID_FIELDS)
         if not key.strip("|"):
