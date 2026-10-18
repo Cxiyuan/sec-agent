@@ -56,42 +56,6 @@ _CONFIG_DRIVEN_RULES = {"JA3指纹命中"}
 _RENAMED_BUILTINS: dict[str, str] = {}
 
 
-#: 规则名的历史前缀（拆开拼，别写成连续字面量 —— 2026-10 那次"全局去前缀"的批量替换
-#: 把迁移 SQL 里的这个字面量一起改掉了，SQL 变成 `replace(name,'','') WHERE name LIKE '%'`，
-#: psycopg 又把裸 `%` 当占位符 → 后端启动直接崩。用 Python 改名 + 拼字面量，两头都躲开。）
-_LEGACY_RULE_PREFIX = "内置" + "-"
-
-
-def _migrate_rule_names() -> None:
-    """把库里规则名的历史前缀去掉（幂等，纯 ORM，不拼 SQL）。
-
-    为什么需要：`DELETED_RULES` / `RETIRED_RULES` 是按名字匹配库里已有行的 ——
-    代码里的规则名去掉前缀后，老库里的行还带着旧前缀，就变成"两套规则"。
-    新名字已存在（历史上手工建过同名）时，以新名字那行为准，删掉旧前缀那条。
-    """
-    try:
-        with SessionLocal() as db:
-            rows = db.scalars(
-                select(Rule).where(Rule.name.startswith(_LEGACY_RULE_PREFIX))
-            ).all()
-            if not rows:
-                return
-            renamed = 0
-            for row in rows:
-                new_name = row.name.replace(_LEGACY_RULE_PREFIX, "", 1).strip()
-                if not new_name:
-                    continue
-                existing = db.scalars(select(Rule).where(Rule.name == new_name)).first()
-                if existing is not None:
-                    db.delete(row)  # 新名字那行更权威（可能被人工改过条件/开关）
-                    continue
-                row.name = new_name
-                renamed += 1
-            db.commit()
-            log.info("规则名迁移：改名 %d 行，清理重复 %d 行", renamed, len(rows) - renamed)
-    except Exception as exc:  # noqa: BLE001 — 迁移失败不能挡住启动
-        log.warning("规则名迁移失败（不影响启动）：%s", exc)
-
 
 def _delete_builtin_rules(db: Any) -> None:
     """删除已废弃的内置规则行（幂等，每次启动都跑）。
@@ -129,12 +93,50 @@ def _retire_builtin_rules(db: Any) -> None:
     db.flush()
 
 
+#: 规则名的历史前缀（拆开拼，别写成连续字面量 —— 2026-10 那次"全局去前缀"的批量替换
+#: 把迁移 SQL 里的字面量一起改掉了，SQL 变成 `replace(name,'','') WHERE name LIKE '%'`，
+#: psycopg 又把裸 `%` 当占位符 → 后端启动直接崩。改 ORM + 拆字面量，两头都躲开。）
+_LEGACY_RULE_PREFIX = "内置" + "-"
+
+
+def _strip_legacy_prefix(db: Any) -> int:
+    """把库里还带着历史前缀的内置规则去掉前缀（幂等）——新名字已存在就删旧行。
+
+    为什么必须做：规则名唯一约束是按**新名字**建的，老库里的 `内置-X` 和种子写入的 `X`
+    是两行 → 规则页上每条规则都出现两份（2026-10 用户实机看到"规则重复"）。
+    `_RENAMED_BUILTINS` 那张表只覆盖历史上改过名的少数几条，**不覆盖"统一去前缀"这件事**，
+    所以这里按前缀整体扫一遍。用 ORM 的 `like()`（参数化）而不是拼 SQL —— 避开 `%` 占位符坑。
+    """
+    rows = db.execute(
+        select(Rule).where(Rule.name.like(_LEGACY_RULE_PREFIX + "%"))
+    ).scalars().all()
+    if not rows:
+        return 0
+    removed = renamed = 0
+    for row in rows:
+        new_name = row.name.replace(_LEGACY_RULE_PREFIX, "", 1).strip()
+        if not new_name:
+            continue
+        taken = db.execute(select(Rule).where(Rule.name == new_name)).scalar_one_or_none()
+        if taken is not None and taken is not row:
+            db.delete(row)  # 新名字那行更权威（可能被人工改过条件/开关）
+            removed += 1
+        else:
+            row.name = new_name
+            renamed += 1
+    db.flush()
+    log.info("规则名去前缀：改名 %d 条，删除重复 %d 条", renamed, removed)
+    return renamed + removed
+
+
 def _rename_builtin_rules(db: Any) -> None:
     """把旧名的内置规则**就地改名**（幂等，每次启动都跑）。
 
     就地改（而不是删旧建新）是为了保留用户在这条规则上做过的启用/停用与改动。
     新名已经存在时（例如重复播种过）旧行就是残留，删掉。
     """
+    # 先做"统一去历史前缀"（覆盖全部内置规则），再走下面那张历史改名表
+    _strip_legacy_prefix(db)
     for old, new in _RENAMED_BUILTINS.items():
         row = db.execute(select(Rule).where(Rule.name == old)).scalar_one_or_none()
         if row is None:

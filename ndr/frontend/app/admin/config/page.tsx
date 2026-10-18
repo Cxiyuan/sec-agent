@@ -12,8 +12,12 @@ import {
   CardTitle,
   EmptyState,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Stat,
   StatSkeleton,
+  Skeleton,
   Table,
   TableBody,
   TableCell,
@@ -104,100 +108,119 @@ export default function ConfigAuditPage() {
           )}
         </Section>
 
-        {/* 需要处理：有问题用语义色标出；没有问题也明确说「正常」，不要整块消失 */}
-        {loading && !data ? null : warnings.length ? (
-          <Card className="border-sev-medium-bd bg-sev-medium-bg">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sev-medium-fg">
-                需要处理
-                <Badge variant="medium" className="tabular-nums">
-                  {warnings.length} 项
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="list-disc space-y-1 pl-5 text-xs leading-relaxed text-sev-medium-fg">
-                {warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        ) : data && !data.error && !errs.has ? (
-          <Card className="border-sev-ok-bd bg-sev-ok-bg">
-            <CardContent className="flex flex-wrap items-center gap-2 p-3 text-xs text-sev-ok-fg">
-              <Badge variant="success">正常</Badge>
-              本轮检查没有需要处理的配置项。
-            </CardContent>
-          </Card>
-        ) : null}
+        {/* 配置项表在左、待处理清单在右：这一页的动作只有两个 —— 「逐项核对」和
+            「把需要处理的改掉」，拆成两列之后右边那列就是待办，左边那列是证据。 */}
+        <Section
+          title={`配置项（${items.length}）`}
+          description="按来源逐项列出当前生效值；右侧是这一轮需要处理的项。"
+        >
+          <SettingsGrid>
+            <SettingsMain>
+              <Card>
+                <CardContent className="pt-4">
+                  {loading && !data ? (
+                    <TableSkeleton rows={8} cols={5} />
+                  ) : items.length ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>项</TableHead>
+                          <TableHead className="w-36">来源</TableHead>
+                          <TableHead className="w-52">当前生效值</TableHead>
+                          <TableHead className="w-20">状态</TableHead>
+                          <TableHead>说明 / 提示</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {items.map((it) => (
+                          <TableRow key={it.key}>
+                            <TableCell className="font-medium text-foreground">{it.name}</TableCell>
+                            <TableCell className="text-muted-foreground">{it.source}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {it.value}
+                              {it.secret ? (
+                                <Badge variant="outline" className="ml-1">
+                                  已脱敏
+                                </Badge>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
+                              {it.warn ? (
+                                <Badge variant="medium">需处理</Badge>
+                              ) : (
+                                <Badge variant="success">正常</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {it.warn ? <span className="text-sev-medium-fg">{it.warn}</span> : null}
+                              {it.warn && it.note ? "；" : ""}
+                              {it.note || ""}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <EmptyState
+                      title={errs.isFailed(SRC.audit) || data?.error ? "配置项读取失败" : "没有配置项数据"}
+                      hint={
+                        errs.isFailed(SRC.audit)
+                          ? "见上方错误条：后端异常或网络不通，不能当成「没有配置」"
+                          : data?.error || "体检接口没有返回任何配置项"
+                      }
+                      tone={errs.isFailed(SRC.audit) || data?.error ? "danger" : "muted"}
+                      action={
+                        <Button size="sm" variant="outline" onClick={() => void load()}>
+                          重新读取
+                        </Button>
+                      }
+                    />
+                  )}
+                  {data?.note ? (
+                    <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.note}</p>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </SettingsMain>
 
-        <Section title={`配置项（${items.length}）`} description="按来源逐项列出当前生效值。">
-          <Card>
-            <CardContent className="pt-4">
+            <SettingsRail>
               {loading && !data ? (
-                <TableSkeleton rows={8} cols={5} />
-              ) : items.length ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>项</TableHead>
-                      <TableHead className="w-40">来源</TableHead>
-                      <TableHead className="w-56">当前生效值</TableHead>
-                      <TableHead className="w-20">状态</TableHead>
-                      <TableHead>说明 / 提示</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {items.map((it) => (
-                      <TableRow key={it.key}>
-                        <TableCell className="font-medium text-foreground">{it.name}</TableCell>
-                        <TableCell className="text-muted-foreground">{it.source}</TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {it.value}
-                          {it.secret ? (
-                            <Badge variant="outline" className="ml-1">
-                              已脱敏
-                            </Badge>
-                          ) : null}
-                        </TableCell>
-                        <TableCell>
-                          {it.warn ? (
-                            <Badge variant="medium">需处理</Badge>
-                          ) : (
-                            <Badge variant="success">正常</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {it.warn ? <span className="text-sev-medium-fg">{it.warn}</span> : null}
-                          {it.warn && it.note ? "；" : ""}
-                          {it.note || ""}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <EmptyState
-                  title={errs.isFailed(SRC.audit) || data?.error ? "配置项读取失败" : "没有配置项数据"}
-                  hint={
-                    errs.isFailed(SRC.audit)
-                      ? "见上方错误条：后端异常或网络不通，不能当成「没有配置」"
-                      : data?.error || "体检接口没有返回任何配置项"
-                  }
-                  tone={errs.isFailed(SRC.audit) || data?.error ? "danger" : "muted"}
-                  action={
-                    <Button size="sm" variant="outline" onClick={() => void load()}>
-                      重新读取
-                    </Button>
-                  }
-                />
-              )}
-              {data?.note ? (
-                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.note}</p>
+                <Card>
+                  <CardContent className="space-y-2 pt-4">
+                    <Skeleton className="h-3.5 w-20" />
+                    <Skeleton className="h-3 w-full" />
+                    <Skeleton className="h-3 w-4/5" />
+                  </CardContent>
+                </Card>
+              ) : warnings.length ? (
+                /* 需要处理：有问题用语义色标出；没有问题也明确说「正常」，不要整块消失 */
+                <Card className="border-sev-medium-bd bg-sev-medium-bg">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-sev-medium-fg">
+                      需要处理
+                      <Badge variant="medium" className="tabular-nums">
+                        {warnings.length} 项
+                      </Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-sev-medium-fg">
+                      {warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              ) : data && !data.error && !errs.has ? (
+                <Card className="border-sev-ok-bd bg-sev-ok-bg">
+                  <CardContent className="flex flex-wrap items-center gap-2 p-3 text-xs text-sev-ok-fg">
+                    <Badge variant="success">正常</Badge>
+                    本轮检查没有需要处理的配置项。
+                  </CardContent>
+                </Card>
               ) : null}
-            </CardContent>
-          </Card>
+            </SettingsRail>
+          </SettingsGrid>
         </Section>
       </div>
     </PageShell>

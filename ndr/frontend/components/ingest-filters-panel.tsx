@@ -12,6 +12,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   Table,
   TableBody,
@@ -73,7 +76,10 @@ const SOURCE_TEXT: Record<string, string> = {
 
 function SampleLine({ s }: { s: IngestFilterSample }) {
   return (
-    <p className="font-mono text-xs text-muted-foreground" title={s.ref ? `事件引用 ${s.ref}` : ""}>
+    <p
+      className="break-words font-mono text-xs text-muted-foreground"
+      title={s.ref ? `事件引用 ${s.ref}` : ""}
+    >
       [{formatDateTime(s.ts || s.at)}] {s.source_system} ·{" "}
       {s.event_type} · {s.src_ip}
       {s.src_port ? `:${s.src_port}` : ""} → {s.dst_ip}
@@ -315,169 +321,213 @@ export function IngestFiltersPanel() {
       >
         {hint && !msg && <p className="text-xs text-muted-foreground">{hint}</p>}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{editId ? "编辑过滤器" : "新建过滤器"}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="ingest-name" className="mb-1 block text-xs text-muted-foreground">
-                  名称 <span aria-hidden="true">*</span>
-                </label>
-                <Input
-                  id="ingest-name"
-                  value={name}
-                  aria-required="true"
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="如：挡掉内网漏洞扫描噪声"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="ingest-priority"
-                  className="mb-1 block text-xs text-muted-foreground"
-                >
-                  优先级（越小越先匹配）
-                </label>
-                <Input
-                  id="ingest-priority"
-                  className="tabular-nums"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="ingest-desc" className="mb-1 block text-xs text-muted-foreground">
-                  说明（可选）
-                </label>
-                <Input
-                  id="ingest-desc"
-                  value={desc}
-                  onChange={(e) => setDesc(e.target.value)}
-                  placeholder="为什么挡它（便于以后判断能不能删）"
-                />
-              </div>
-              <div className="flex items-end pb-2">
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4"
-                    checked={enabled}
-                    onChange={(e) => setEnabled(e.target.checked)}
-                  />
-                  启用
-                </label>
-              </div>
-            </div>
+        {/* 主列＝表单（唯一能改的）；侧栏＝被挡下的样例（只读）。已配置过滤器 5 列，
+            19rem 侧栏放不下，整幅排在 grid 之后，避免把表单区推走。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardHeader>
+                <CardTitle>{editId ? "编辑过滤器" : "新建过滤器"}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="ingest-name" className="mb-1 block text-xs text-muted-foreground">
+                      名称 <span aria-hidden="true">*</span>
+                    </label>
+                    <Input
+                      id="ingest-name"
+                      value={name}
+                      aria-required="true"
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="如：挡掉内网漏洞扫描噪声"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="ingest-priority"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      优先级（越小越先匹配）
+                    </label>
+                    <Input
+                      id="ingest-priority"
+                      className="tabular-nums"
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ingest-desc" className="mb-1 block text-xs text-muted-foreground">
+                      说明（可选）
+                    </label>
+                    <Input
+                      id="ingest-desc"
+                      value={desc}
+                      onChange={(e) => setDesc(e.target.value)}
+                      placeholder="为什么挡它（便于以后判断能不能删）"
+                    />
+                  </div>
+                  <div className="flex items-end pb-2">
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={enabled}
+                        onChange={(e) => setEnabled(e.target.checked)}
+                      />
+                      启用
+                    </label>
+                  </div>
+                </div>
 
-            {examples.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-muted-foreground">现成示例：</span>
-                {examples.map((ex) => (
-                  <Button
-                    key={ex.name}
-                    size="sm"
-                    variant="outline"
-                    title={ex.description || ""}
-                    onClick={() => applyExample(ex)}
-                  >
-                    {ex.name}
+                {examples.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">现成示例：</span>
+                    {examples.map((ex) => (
+                      <Button
+                        key={ex.name}
+                        size="sm"
+                        variant="outline"
+                        title={ex.description || ""}
+                        onClick={() => applyExample(ex)}
+                      >
+                        {ex.name}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+
+                {nested && (
+                  <p className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
+                    该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
+                  </p>
+                )}
+
+                <ConditionEditor
+                  fields={fields}
+                  conds={conds}
+                  logic={logic}
+                  onLogic={setLogic}
+                  onChange={setCond}
+                  onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+                  onAdd={() => setConds((cs) => [...cs, { field: "src_ip", op: "eq", value: "" }])}
+                />
+
+                {notice}
+
+                <div className="flex flex-wrap items-end gap-2">
+                  <Button size="sm" onClick={save}>
+                    {editId ? "保存修改" : "添加"}
                   </Button>
-                ))}
-              </div>
-            )}
-
-            {nested && (
-              <p className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
-                该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
-              </p>
-            )}
-
-            <ConditionEditor
-              fields={fields}
-              conds={conds}
-              logic={logic}
-              onLogic={setLogic}
-              onChange={setCond}
-              onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-              onAdd={() => setConds((cs) => [...cs, { field: "src_ip", op: "eq", value: "" }])}
-            />
-
-            {notice}
-
-            <div className="flex flex-wrap items-end gap-2">
-              <Button size="sm" onClick={save}>
-                {editId ? "保存修改" : "添加"}
-              </Button>
-              <Button size="sm" variant="outline" onClick={dryRun} disabled={dryBusy}>
-                {dryBusy ? "试运行中…" : "试运行（不保存）"}
-              </Button>
-              <div className="flex items-end gap-2">
-                <div>
-                  <label
-                    htmlFor="ingest-hours"
-                    className="mb-1 block text-xs text-muted-foreground"
-                  >
-                    回看小时
-                  </label>
-                  <Input
-                    id="ingest-hours"
-                    className="w-20 tabular-nums"
-                    value={hours}
-                    onChange={(e) => setHours(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="ingest-limit"
-                    className="mb-1 block text-xs text-muted-foreground"
-                  >
-                    最多取样
-                  </label>
-                  <Input
-                    id="ingest-limit"
-                    className="w-24 tabular-nums"
-                    value={limit}
-                    onChange={(e) => setLimit(e.target.value)}
-                  />
-                </div>
-              </div>
-              {editId && (
-                <Button size="sm" variant="outline" onClick={reset}>
-                  取消编辑
-                </Button>
-              )}
-            </div>
-
-            {dry && (
-              <div className="space-y-2 rounded-xs bg-surface-1 p-3">
-                <p className="text-sm">
-                  试运行结果：取样自{" "}
-                  <b>{SOURCE_TEXT[String(dry.source || "none")] || String(dry.source || "-")}</b>
-                  {typeof dry.scanned === "number" && (
-                    <>
-                      ，共看了 <b className="tabular-nums">{dry.scanned}</b> 条，命中{" "}
-                      <b className="tabular-nums">{dry.matched ?? 0}</b> 条
-                      {dry.ratio !== undefined && (
-                        <span className="tabular-nums">
-                          （{(Number(dry.ratio) * 100).toFixed(1)}%）
-                        </span>
-                      )}
-                    </>
+                  <Button size="sm" variant="outline" onClick={dryRun} disabled={dryBusy}>
+                    {dryBusy ? "试运行中…" : "试运行（不保存）"}
+                  </Button>
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label
+                        htmlFor="ingest-hours"
+                        className="mb-1 block text-xs text-muted-foreground"
+                      >
+                        回看小时
+                      </label>
+                      <Input
+                        id="ingest-hours"
+                        className="w-20 tabular-nums"
+                        value={hours}
+                        onChange={(e) => setHours(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="ingest-limit"
+                        className="mb-1 block text-xs text-muted-foreground"
+                      >
+                        最多取样
+                      </label>
+                      <Input
+                        id="ingest-limit"
+                        className="w-24 tabular-nums"
+                        value={limit}
+                        onChange={(e) => setLimit(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  {editId && (
+                    <Button size="sm" variant="outline" onClick={reset}>
+                      取消编辑
+                    </Button>
                   )}
-                </p>
-                {dry.hint && <p className="text-xs text-muted-foreground">{dry.hint}</p>}
-                {dry.errors?.length ? (
-                  <p className="text-xs text-sev-critical-fg">{dry.errors.join("；")}</p>
-                ) : null}
-                {(dry.samples || []).map((s, i) => (
-                  <SampleLine key={i} s={s} />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                </div>
+
+                {dry && (
+                  <div className="space-y-2 rounded-xs bg-surface-1 p-3">
+                    <p className="text-sm">
+                      试运行结果：取样自{" "}
+                      <b>{SOURCE_TEXT[String(dry.source || "none")] || String(dry.source || "-")}</b>
+                      {typeof dry.scanned === "number" && (
+                        <>
+                          ，共看了 <b className="tabular-nums">{dry.scanned}</b> 条，命中{" "}
+                          <b className="tabular-nums">{dry.matched ?? 0}</b> 条
+                          {dry.ratio !== undefined && (
+                            <span className="tabular-nums">
+                              （{(Number(dry.ratio) * 100).toFixed(1)}%）
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </p>
+                    {dry.hint && <p className="text-xs text-muted-foreground">{dry.hint}</p>}
+                    {dry.errors?.length ? (
+                      <p className="text-xs text-sev-critical-fg">{dry.errors.join("；")}</p>
+                    ) : null}
+                    {(dry.samples || []).map((s, i) => (
+                      <SampleLine key={i} s={s} />
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </SettingsMain>
+
+          <SettingsRail>
+            <Card>
+              <CardHeader>
+                <CardTitle>最近被挡下的事件（每条例最多留 3 条）</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {loading ? (
+                  <Skeleton className="h-12 w-full" />
+                ) : items.some((f) => f.samples?.length) ? (
+                  <>
+                    {items
+                      .filter((f) => f.samples?.length)
+                      .map((f) => (
+                        <div key={f.id} className="space-y-1">
+                          <p className="text-xs text-muted-foreground">{f.name}</p>
+                          {f.samples.map((s, i) => (
+                            <SampleLine key={i} s={s} />
+                          ))}
+                        </div>
+                      ))}
+                    {lastHitAt && (
+                      <p className="text-xs text-muted-foreground">
+                        最近命中：{formatDateTime(lastHitAt)}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
+                    title={emptyOrFailed(errs, SRC.list, "还没有被挡下的事件")}
+                    hint="过滤器命中后会在这里留一条样例，便于确认它挡的是不是想挡的东西。"
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
@@ -562,42 +612,6 @@ export function IngestFiltersPanel() {
                   )}
                 </TableBody>
               </Table>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>最近被挡下的事件（每条例最多留 3 条）</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {loading ? (
-              <Skeleton className="h-12 w-full" />
-            ) : items.some((f) => f.samples?.length) ? (
-              <>
-                {items
-                  .filter((f) => f.samples?.length)
-                  .map((f) => (
-                    <div key={f.id} className="space-y-1">
-                      <p className="text-xs text-muted-foreground">{f.name}</p>
-                      {f.samples.map((s, i) => (
-                        <SampleLine key={i} s={s} />
-                      ))}
-                    </div>
-                  ))}
-                {lastHitAt && (
-                  <p className="text-xs text-muted-foreground">
-                    最近命中：{formatDateTime(lastHitAt)}
-                  </p>
-                )}
-              </>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
-                title={emptyOrFailed(errs, SRC.list, "还没有被挡下的事件")}
-                hint="过滤器命中后会在这里留一条样例，便于确认它挡的是不是想挡的东西。"
-              />
             )}
           </CardContent>
         </Card>

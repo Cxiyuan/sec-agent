@@ -18,6 +18,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   Stat,
   Table,
@@ -130,7 +133,7 @@ export function EsPanel() {
   function connectionBody() {
     if (loading) {
       return (
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
@@ -152,7 +155,7 @@ export function EsPanel() {
       );
     }
     return (
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
         <div>
           <p className="text-xs text-muted-foreground">地址</p>
           <p className="mt-1 truncate font-mono text-xs text-foreground" title={cfg.url || "-"}>
@@ -271,81 +274,93 @@ export function EsPanel() {
           </>
         }
       >
-        <Card>
-          <CardHeader>
-            <CardTitle>连接（部署环境固定）</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {connectionBody()}
-          </CardContent>
-        </Card>
+        {/* 这一页能改的只有「索引与保留」，放主列；连接是部署环境固定的事实，放右侧。
+            集群状态带一张 4 列索引表，19rem 的侧栏装不下，按整幅排在 Grid 之后。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardHeader>
+                <CardTitle>索引与保留</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="es-events-index"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      索引模式（两类采集统一落这一族）
+                    </label>
+                    <Input
+                      id="es-events-index"
+                      value={eventsIndex}
+                      disabled={!cfg}
+                      onChange={(e) => setEventsIndex(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="es-retention"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      保留天数（≥{cfg?.retention_min_days ?? 7}）
+                    </label>
+                    <Input
+                      id="es-retention"
+                      type="number"
+                      className="tabular-nums"
+                      value={retention}
+                      disabled={!cfg}
+                      onChange={(e) => setRetention(e.target.value)}
+                      min={cfg?.retention_min_days ?? 7}
+                    />
+                  </div>
+                </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>索引与保留</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="es-events-index" className="mb-1 block text-xs text-muted-foreground">
-                  索引模式（两类采集统一落这一族）
-                </label>
-                <Input
-                  id="es-events-index"
-                  value={eventsIndex}
-                  disabled={!cfg}
-                  onChange={(e) => setEventsIndex(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="es-retention" className="mb-1 block text-xs text-muted-foreground">
-                  保留天数（≥{cfg?.retention_min_days ?? 7}）
-                </label>
-                <Input
-                  id="es-retention"
-                  type="number"
-                  className="tabular-nums"
-                  value={retention}
-                  disabled={!cfg}
-                  onChange={(e) => setRetention(e.target.value)}
-                  min={cfg?.retention_min_days ?? 7}
-                />
-              </div>
-            </div>
-
-            {msg && (
-              <p
-                role={msgKind === "err" ? "alert" : "status"}
-                className={cn(
-                  "rounded-xs border px-3 py-2 text-xs",
-                  msgKind === "err"
-                    ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
-                    : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
+                {msg && (
+                  <p
+                    role={msgKind === "err" ? "alert" : "status"}
+                    className={cn(
+                      "rounded-xs border px-3 py-2 text-xs",
+                      msgKind === "err"
+                        ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
+                        : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
+                    )}
+                  >
+                    {msg}
+                  </p>
                 )}
-              >
-                {msg}
-              </p>
-            )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              {/* 配置没读到就禁止保存：空表单点保存会把索引模式/保留期覆盖掉 */}
-              <Button size="sm" onClick={save} disabled={busy || !cfg}>
-                保存索引模式与保留期
-              </Button>
-              <Button size="sm" variant="outline" onClick={applyRetention} disabled={busy}>
-                下发保留策略（ILM）
-              </Button>
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
-                刷新状态
-              </Button>
-              {!cfg && !loading && (
-                <span className="self-center text-xs text-sev-critical-fg">
-                  配置未读到，已禁用保存（避免空表单覆盖现有配置）
-                </span>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* 配置没读到就禁止保存：空表单点保存会把索引模式/保留期覆盖掉 */}
+                  <Button size="sm" onClick={save} disabled={busy || !cfg}>
+                    保存索引模式与保留期
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={applyRetention} disabled={busy}>
+                    下发保留策略（ILM）
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
+                    刷新状态
+                  </Button>
+                  {!cfg && !loading && (
+                    <span className="self-center text-xs text-sev-critical-fg">
+                      配置未读到，已禁用保存（避免空表单覆盖现有配置）
+                    </span>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </SettingsMain>
+
+          <SettingsRail>
+            <Card>
+              <CardHeader>
+                <CardTitle>连接（部署环境固定）</CardTitle>
+              </CardHeader>
+              <CardContent>{connectionBody()}</CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">

@@ -11,6 +11,7 @@ export * from "./components/ui/drawer";
 export * from "./components/ui/input";
 export * from "./components/ui/table";
 export * from "./components/ui/section";
+export * from "./components/ui/settings-grid";
 export * from "./components/ui/stat";
 export * from "./components/ui/empty-state";
 export * from "./components/ui/skeleton";

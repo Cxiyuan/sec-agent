@@ -45,6 +45,9 @@ export interface NavItem {
   /** 侧边栏的匹配前缀（不填就用 href）：同一组子页共用一个侧边栏时用它，
    *  例如可视化流量的三个视角 `/traffic/outbound|lateral|egress` 共用一份侧边栏。 */
   sidebarMatch?: string;
+  /** 侧边栏里的分组小标题（相邻同组只显示一次）。子页多到 8 个时必须分组：
+   *  平铺成一条的话，找「配置体检」要逐条读过去。 */
+  group?: string;
 }
 
 export interface NavSection extends NavItem {
@@ -52,6 +55,16 @@ export interface NavSection extends NavItem {
   key: string;
   /** 悬停弹出的二级菜单（有它的分区，鼠标停留即展开） */
   dropdown?: NavItem[];
+  /**
+   * 分区在路径上的归属前缀（不填就用 href）。
+   *
+   * 为什么需要它：分区的 `href` 只是「点这个一级菜单去哪个子页」，不是归属范围。
+   * 配置管理的 href 是 `/config/collect`，如果拿它当归属判断，那么
+   * `/config/rules`、`/config/storage` 这些**兄弟页都不属于配置管理** ——
+   * 侧边栏整块消失、正文从 ml-60 弹回 ml-0，页头的一级菜单也不再高亮，
+   * 看起来像被踢出了这个分区。给一个 `/config` 前缀，8 个子页才都归得回来。
+   */
+  match?: string;
 }
 
 const TRAFFIC_ITEMS: NavItem[] = [
@@ -89,14 +102,14 @@ const ASSET_ITEMS: NavItem[] = [
 ];
 
 const CONFIG_ITEMS: NavItem[] = [
-  { href: "/config/collect", label: "采集接入", desc: "Zeek / 签名引擎 / 归一化链路", icon: Radio },
-  { href: "/config/networks", label: "监控网段", desc: "抓包与判定范围", icon: Network },
-  { href: "/config/rules", label: "检测规则", desc: "内置与自定义规则", icon: SlidersHorizontal },
-  { href: "/config/filters", label: "过滤规则", desc: "排除过滤器与入库过滤", icon: Filter },
-  { href: "/config/storage", label: "数据存储", desc: "ES 索引、保留期与磁盘", icon: Database },
-  { href: "/config/health", label: "配置体检", desc: "逐项核对运行参数", icon: Settings },
-  { href: "/config/agent", label: "智能体对接", desc: "摘要推送与 MCP", icon: BarChart3 },
-  { href: "/config/account", label: "账户", desc: "登录口令与会话", icon: UserRound },
+  { href: "/config/collect", label: "采集接入", desc: "抓包网卡与监听参数", icon: Radio, group: "接入与范围" },
+  { href: "/config/networks", label: "监控网段", desc: "抓哪些网段 · 中继节点", icon: Network, group: "接入与范围" },
+  { href: "/config/rules", label: "检测规则", desc: "内置与自定义规则", icon: SlidersHorizontal, group: "检测与过滤" },
+  { href: "/config/filters", label: "过滤规则", desc: "降噪过滤与排除", icon: Filter, group: "检测与过滤" },
+  { href: "/config/storage", label: "数据存储", desc: "Elasticsearch 与入库管道", icon: Database, group: "存储与对接" },
+  { href: "/config/agent", label: "智能体对接", desc: "MCP 取数与摘要推送", icon: BarChart3, group: "存储与对接" },
+  { href: "/config/health", label: "配置体检", desc: "逐项核对当前生效值", icon: Settings, group: "诊断与账号" },
+  { href: "/config/account", label: "账户", desc: "登录口令与会话", icon: UserRound, group: "诊断与账号" },
 ];
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -132,6 +145,8 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "资产中心",
     desc: "资产发现 · 分组 · 扫描 · 管理",
     icon: Boxes,
+    // 四个子页都以 /assets 归属（理由见 NavSection.match）
+    match: "/assets",
     sidebar: ASSET_ITEMS,
   },
   {
@@ -147,6 +162,8 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "配置管理",
     desc: "采集 / 网段 / 规则 / 存储 / 对接",
     icon: Settings,
+    // 8 个二级页共用一个常驻侧边栏（理由见 NavSection.match）
+    match: "/config",
     sidebar: CONFIG_ITEMS,
   },
 ];
@@ -163,10 +180,15 @@ function inPath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
+/** 分区的归属前缀：`match` 优先，其次 href */
+function sectionRoot(section: NavSection): string {
+  return section.match ?? section.href;
+}
+
 /** 当前路径属于哪个一级分区（找不到返回 null） */
 export function sectionOf(pathname: string): NavSection | null {
   for (const section of NAV_SECTIONS) {
-    if (inPath(pathname, section.href)) return section;
+    if (inPath(pathname, sectionRoot(section))) return section;
     for (const item of section.dropdown ?? []) {
       if (inPath(pathname, item.href)) return section;
     }
@@ -179,7 +201,7 @@ export function sectionOf(pathname: string): NavSection | null {
 /** 当前页面自己的侧边栏（没有就返回空数组 = 不显示侧边栏） */
 export function sidebarOf(pathname: string): NavItem[] {
   for (const section of NAV_SECTIONS) {
-    if (section.sidebar && inPath(pathname, section.sidebarMatch ?? section.href))
+    if (section.sidebar && inPath(pathname, section.match ?? section.sidebarMatch ?? section.href))
       return section.sidebar;
     for (const item of section.dropdown ?? []) {
       if (item.sidebar && inPath(pathname, item.sidebarMatch ?? item.href)) return item.sidebar;
@@ -188,8 +210,13 @@ export function sidebarOf(pathname: string): NavItem[] {
   return [];
 }
 
+/** 侧边栏属于哪个分区（侧边栏顶部要写「配置管理」这类分区名）；没有侧边栏返回 null */
+export function sidebarSectionOf(pathname: string): NavSection | null {
+  return sidebarOf(pathname).length ? sectionOf(pathname) : null;
+}
+
 /** 一级菜单是否高亮：分区本身命中，或它下拉里的某项命中 */
 export function sectionActive(pathname: string, section: NavSection): boolean {
-  if (inPath(pathname, section.href)) return true;
+  if (inPath(pathname, sectionRoot(section))) return true;
   return (section.dropdown ?? []).some((item) => inPath(pathname, item.href));
 }

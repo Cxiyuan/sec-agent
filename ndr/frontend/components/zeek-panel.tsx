@@ -12,6 +12,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   cn,
   formatDateTime,
@@ -48,6 +51,9 @@ function parseNets(text: string): string[] {
  * - `section="networks"`（监控网段页）：只显示网段与附加 BPF 条件；
  * - `section="iface"`（采集接入页）：只显示监听网卡。
  * 两者都读取同一份状态、保存时把没显示的那部分原样回传，因此不会互相覆盖。
+ *
+ * 2026-10 排版：表单卡与保存条走主列，「当前生效」是只读事实走右侧侧栏。
+ * 保存条必须跟在主列表单下面 —— 放到侧栏底下会让人以为在保存右边那份状态。
  */
 export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "networks" }) {
   const [status, setStatus] = React.useState<ZeekStatus | null>(null);
@@ -145,50 +151,151 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
           </>
         }
       >
-        {showIface && (
-          <Card>
-            <CardHeader>
-              <CardTitle>抓包口</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {loading ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Skeleton className="h-14 w-full" />
-                  {section === "all" && <Skeleton className="h-14 w-full" />}
-                </div>
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="zeek-iface" className="mb-1 block text-xs text-muted-foreground">
-                      监听网卡（{status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）
-                    </label>
-                    {status && status.detected.length > 0 ? (
-                      <select
-                        id="zeek-iface"
-                        value={iface}
-                        onChange={(e) => setIface(e.target.value)}
-                        className={SELECT_CLS}
-                      >
-                        {status.detected.map((i) => (
-                          <option key={i.name} value={i.name}>
-                            {i.name}（{i.state}
-                            {i.mtu ? `, MTU ${i.mtu}` : ""}）
-                          </option>
-                        ))}
-                        {!status.detected.some((i) => i.name === iface) && (
-                          <option value={iface}>{iface}</option>
+        <SettingsGrid>
+          <SettingsMain>
+            {showIface && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>抓包口</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {loading ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Skeleton className="h-14 w-full" />
+                      {section === "all" && <Skeleton className="h-14 w-full" />}
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label
+                          htmlFor="zeek-iface"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          监听网卡（{status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）
+                        </label>
+                        {status && status.detected.length > 0 ? (
+                          <select
+                            id="zeek-iface"
+                            value={iface}
+                            onChange={(e) => setIface(e.target.value)}
+                            className={SELECT_CLS}
+                          >
+                            {status.detected.map((i) => (
+                              <option key={i.name} value={i.name}>
+                                {i.name}（{i.state}
+                                {i.mtu ? `, MTU ${i.mtu}` : ""}）
+                              </option>
+                            ))}
+                            {!status.detected.some((i) => i.name === iface) && (
+                              <option value={iface}>{iface}</option>
+                            )}
+                          </select>
+                        ) : (
+                          <Input
+                            id="zeek-iface"
+                            value={iface}
+                            onChange={(e) => setIface(e.target.value)}
+                            placeholder="eth0（未探测到清单，可手填）"
+                          />
                         )}
-                      </select>
-                    ) : (
-                      <Input
-                        id="zeek-iface"
-                        value={iface}
-                        onChange={(e) => setIface(e.target.value)}
-                        placeholder="eth0（未探测到清单，可手填）"
+                      </div>
+                      {section === "all" && (
+                        <div>
+                          <label
+                            htmlFor="zeek-bpf-extra"
+                            className="mb-1 block text-xs text-muted-foreground"
+                          >
+                            附加 BPF 条件（可选，如 not port 22）
+                          </label>
+                          <Input
+                            id="zeek-bpf-extra"
+                            value={bpfExtra}
+                            onChange={(e) => setBpfExtra(e.target.value)}
+                            placeholder="留空表示附加条件为空"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {showNets && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>抓包范围</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {loading ? (
+                    <Skeleton className="h-28 w-full" />
+                  ) : (
+                    <div>
+                      <label
+                        htmlFor="zeek-networks"
+                        className="mb-1 block text-xs text-muted-foreground"
+                      >
+                        监控网段 <span aria-hidden="true">*</span>
+                        （一行一条，支持 CIDR 与单个 IP；也可用逗号分隔）
+                      </label>
+                      <textarea
+                        id="zeek-networks"
+                        value={netsText}
+                        aria-required="true"
+                        onChange={(e) => setNetsText(e.target.value)}
+                        className={TEXTAREA_CLS}
+                        placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
                       />
-                    )}
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        已识别 <span className="tabular-nums">{nets.length}</span> 条；BPF 过滤器与
+                        Site::local_nets 由这份清单自动生成（源或目的落在其中即抓取）。不填则无法保存
+                        —— 未配置时前端会强制进首次向导。
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="zeek-body-kb"
+                        className="mb-1 block text-xs text-muted-foreground"
+                      >
+                        请求正文上限（KB，1~1024）
+                      </label>
+                      <Input
+                        id="zeek-body-kb"
+                        className="tabular-nums"
+                        disabled={loading}
+                        value={bodyKb}
+                        onChange={(e) => setBodyKb(e.target.value)}
+                        placeholder="16"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="zeek-resp-kb"
+                        className="mb-1 block text-xs text-muted-foreground"
+                      >
+                        响应正文上限（KB，1~1024）
+                      </label>
+                      <Input
+                        id="zeek-resp-kb"
+                        className="tabular-nums"
+                        disabled={loading}
+                        value={respKb}
+                        onChange={(e) => setRespKb(e.target.value)}
+                        placeholder="64"
+                      />
+                    </div>
                   </div>
-                  {section === "all" && (
+                  <p className="text-xs text-muted-foreground">
+                    采集器侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
+                    <span className="font-mono">resp_body_len</span> /{" "}
+                    <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
+                    约 10 秒内重载采集器。
+                  </p>
+
+                  {section === "networks" && (
                     <div>
                       <label
                         htmlFor="zeek-bpf-extra"
@@ -204,219 +311,139 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                       />
                     </div>
                   )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
-        {showNets && (
-          <Card>
-            <CardHeader>
-              <CardTitle>抓包范围</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {loading ? (
-                <Skeleton className="h-28 w-full" />
-              ) : (
-                <div>
-                  <label
-                    htmlFor="zeek-networks"
-                    className="mb-1 block text-xs text-muted-foreground"
-                  >
-                    监控网段 <span aria-hidden="true">*</span>
-                    （一行一条，支持 CIDR 与单个 IP；也可用逗号分隔）
-                  </label>
-                  <textarea
-                    id="zeek-networks"
-                    value={netsText}
-                    aria-required="true"
-                    onChange={(e) => setNetsText(e.target.value)}
-                    className={TEXTAREA_CLS}
-                    placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    已识别 <span className="tabular-nums">{nets.length}</span> 条；BPF 过滤器与
-                    Site::local_nets 由这份清单自动生成（源或目的落在其中即抓取）。不填则无法保存
-                    —— 未配置时前端会强制进首次向导。
+                  <div>
+                    <label
+                      htmlFor="zeek-tls-ports"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      按 TLS 解析的端口（可选，如 8000, 8008）
+                    </label>
+                    <Input
+                      id="zeek-tls-ports"
+                      className="tabular-nums"
+                      disabled={loading}
+                      value={tlsPorts}
+                      onChange={(e) => setTlsPorts(e.target.value)}
+                      placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      列在这里的端口**不再按 HTTP 解析**。采集器默认把 8000/8008 当 HTTP，
+                      如果这两个端口实际跑的是 TLS，它会把 TLS 字节当 HTTP 文本行读，刷出大量假协议异常
+                      （实测过 15 分钟一万多条）。**明文 HTTP 端口不要填进来**（例如本环境 8013 就是真 HTTP）。
+                    </p>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    这份网卡与网段配置**同时**用于网络采集器与签名引擎（Suricata）：签名引擎的 HOME_NET
+                    = 监控网段，抓包口 = 监听网卡，因此两者看到的范围始终一致。
+                    {status?.suricata
+                      ? ` 签名引擎：${status.suricata.alive ? "运行中" : "未运行"}，已加载签名 ${status.suricata.rule_count ?? 0} 条`
+                      : " 签名引擎：未部署（没有收到它的状态上报）。"}
                   </p>
-                </div>
-              )}
+                </CardContent>
+              </Card>
+            )}
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label htmlFor="zeek-body-kb" className="mb-1 block text-xs text-muted-foreground">
-                    请求正文上限（KB，1~1024）
-                  </label>
-                  <Input
-                    id="zeek-body-kb"
-                    className="tabular-nums"
-                    disabled={loading}
-                    value={bodyKb}
-                    onChange={(e) => setBodyKb(e.target.value)}
-                    placeholder="16"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="zeek-resp-kb" className="mb-1 block text-xs text-muted-foreground">
-                    响应正文上限（KB，1~1024）
-                  </label>
-                  <Input
-                    id="zeek-resp-kb"
-                    className="tabular-nums"
-                    disabled={loading}
-                    value={respKb}
-                    onChange={(e) => setRespKb(e.target.value)}
-                    placeholder="64"
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                采集器侧按这两个值截正文再落库（默认 16 KB / 64 KB）；完整字节数仍记在{" "}
-                <span className="font-mono">resp_body_len</span> /{" "}
-                <span className="font-mono">request_body_len</span>，不受截断影响。改完保存，看门狗会在
-                约 10 秒内重载采集器。
+            {msg && (
+              <p
+                role={msgKind === "err" ? "alert" : "status"}
+                className={cn(
+                  "rounded-xs border px-3 py-2 text-xs",
+                  msgKind === "err"
+                    ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
+                    : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
+                )}
+              >
+                {msg}
               </p>
+            )}
 
-              {section === "networks" && (
-                <div>
-                  <label
-                    htmlFor="zeek-bpf-extra"
-                    className="mb-1 block text-xs text-muted-foreground"
-                  >
-                    附加 BPF 条件（可选，如 not port 22）
-                  </label>
-                  <Input
-                    id="zeek-bpf-extra"
-                    value={bpfExtra}
-                    onChange={(e) => setBpfExtra(e.target.value)}
-                    placeholder="留空表示附加条件为空"
-                  />
-                </div>
-              )}
-
-              <div>
-                <label htmlFor="zeek-tls-ports" className="mb-1 block text-xs text-muted-foreground">
-                  按 TLS 解析的端口（可选，如 8000, 8008）
-                </label>
-                <Input
-                  id="zeek-tls-ports"
-                  className="tabular-nums"
-                  disabled={loading}
-                  value={tlsPorts}
-                  onChange={(e) => setTlsPorts(e.target.value)}
-                  placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  列在这里的端口**不再按 HTTP 解析**。采集器默认把 8000/8008 当 HTTP，
-                  如果这两个端口实际跑的是 TLS，它会把 TLS 字节当 HTTP 文本行读，刷出大量假协议异常
-                  （实测过 15 分钟一万多条）。**明文 HTTP 端口不要填进来**（例如本环境 8013 就是真 HTTP）。
-                </p>
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                这份网卡与网段配置**同时**用于网络采集器与签名引擎（Suricata）：签名引擎的 HOME_NET
-                = 监控网段，抓包口 = 监听网卡，因此两者看到的范围始终一致。
-                {status?.suricata
-                  ? ` 签名引擎：${status.suricata.alive ? "运行中" : "未运行"}，已加载签名 ${status.suricata.rule_count ?? 0} 条`
-                  : " 签名引擎：未部署（没有收到它的状态上报）。"}
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle>当前生效</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
-              {status ? (
-                <>
-                  <Badge variant="info">轮转 {status.rotation_hours}h</Badge>
-                  <Badge variant="medium">本地保留 {status.retention_days_local} 天</Badge>
-                  <Badge variant="info">
-                    正文上限 {Math.round(status.body_max_bytes / 1024)} /{" "}
-                    {Math.round(status.resp_body_max_bytes / 1024)} KB
-                  </Badge>
-                </>
-              ) : null}
+              {/* 状态没读到就禁止保存：空表单点保存会把现有网段/网卡覆盖掉 */}
+              <Button size="sm" onClick={save} disabled={busy || !status}>
+                {busy ? "下发中…" : "保存并下发"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void load()}>
+                刷新状态
+              </Button>
+              {!status && !loading && (
+                <span className="text-xs text-sev-critical-fg">
+                  状态未读到，已禁用保存（避免空表单覆盖现有配置）
+                </span>
+              )}
+              {status && (
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  最近重载：{status.last_reload ? formatDateTime(status.last_reload) : "—"}
+                </span>
+              )}
             </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {loading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : status ? (
-              <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                <p>
-                  网卡 <span className="font-mono">{status.interface}</span>
-                  {status.bpf_filter ? (
+          </SettingsMain>
+
+          {/* 只读的「当前生效」整卡进侧栏：读不到时那张 EmptyState 与「重新读取」按钮也是这张卡的一部分，
+              不拆出来 —— 在侧栏里「这一块是现状、不是输入」才一眼看得出来。 */}
+          <SettingsRail>
+            <Card>
+              {/* 19rem 放不下「标题 + 三个徽标」并排，标题单独一行、徽标在下面折行 */}
+              <CardHeader className="flex flex-col items-start gap-1.5 space-y-0">
+                <CardTitle>当前生效</CardTitle>
+                <div className="flex flex-wrap items-center gap-2">
+                  {status ? (
                     <>
-                      {" · BPF "}
-                      <span className="font-mono">{status.bpf_filter}</span>
+                      <Badge variant="info">轮转 {status.rotation_hours}h</Badge>
+                      <Badge variant="medium">本地保留 {status.retention_days_local} 天</Badge>
+                      <Badge variant="info">
+                        正文上限 {Math.round(status.body_max_bytes / 1024)} /{" "}
+                        {Math.round(status.resp_body_max_bytes / 1024)} KB
+                      </Badge>
                     </>
-                  ) : (
-                    " · 无 BPF 过滤（抓全部）"
-                  )}
-                </p>
-                <p>
-                  本地网段：
-                  <span className="font-mono">
-                    {status.local_nets || "（空，用采集器默认判定）"}
-                  </span>
-                </p>
-                <p className="font-mono text-muted-foreground">{status.config_path}</p>
-              </div>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.status) ? "danger" : "muted"}
-                title={
-                  errs.isFailed(SRC.status)
-                    ? "读取失败（见上方错误条）"
-                    : "状态未读到，当前生效值列不出来"
-                }
-                action={
-                  <Button size="sm" variant="outline" onClick={() => void load()}>
-                    重新读取
-                  </Button>
-                }
-              />
-            )}
-          </CardContent>
-        </Card>
-
-        {msg && (
-          <p
-            role={msgKind === "err" ? "alert" : "status"}
-            className={cn(
-              "rounded-xs border px-3 py-2 text-xs",
-              msgKind === "err"
-                ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
-                : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
-            )}
-          >
-            {msg}
-          </p>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* 状态没读到就禁止保存：空表单点保存会把现有网段/网卡覆盖掉 */}
-          <Button size="sm" onClick={save} disabled={busy || !status}>
-            {busy ? "下发中…" : "保存并下发"}
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void load()}>
-            刷新状态
-          </Button>
-          {!status && !loading && (
-            <span className="text-xs text-sev-critical-fg">
-              状态未读到，已禁用保存（避免空表单覆盖现有配置）
-            </span>
-          )}
-          {status && (
-            <span className="text-xs tabular-nums text-muted-foreground">
-              最近重载：{status.last_reload ? formatDateTime(status.last_reload) : "—"}
-            </span>
-          )}
-        </div>
+                  ) : null}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {loading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : status ? (
+                  <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p>
+                      网卡 <span className="font-mono">{status.interface}</span>
+                      {status.bpf_filter ? (
+                        <>
+                          {" · BPF "}
+                          <span className="font-mono">{status.bpf_filter}</span>
+                        </>
+                      ) : (
+                        " · 无 BPF 过滤（抓全部）"
+                      )}
+                    </p>
+                    <p>
+                      本地网段：
+                      <span className="font-mono">
+                        {status.local_nets || "（空，用采集器默认判定）"}
+                      </span>
+                    </p>
+                    <p className="break-all font-mono text-muted-foreground">{status.config_path}</p>
+                  </div>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.status) ? "danger" : "muted"}
+                    title={
+                      errs.isFailed(SRC.status)
+                        ? "读取失败（见上方错误条）"
+                        : "状态未读到，当前生效值列不出来"
+                    }
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        重新读取
+                      </Button>
+                    }
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
       </Section>
     </div>
   );

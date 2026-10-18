@@ -19,6 +19,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   Stat,
   cn,
@@ -189,287 +192,295 @@ export function AgentPushPanel() {
           </>
         }
       >
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle>当前配置</CardTitle>
-            {cfg ? (
-              <Badge variant={cfg.active ? "low" : "medium"}>
-                {cfg.active ? "推送已启用" : "未启用（走旧队列）"}
-              </Badge>
-            ) : null}
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-9 w-full" />
-            ) : cfg ? (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                <span className="font-mono">{cfg.url || "(未填地址)"}</span>
-                <span className="text-muted-foreground">
-                  令牌 {cfg.token_set ? `已设置（${cfg.token_masked}）` : "未设置"}
-                </span>
-                {data?.env.url && (
-                  <span className="text-muted-foreground">环境默认 {data.env.url}</span>
-                )}
-              </div>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到推送配置"}
-                action={
-                  <Button size="sm" variant="outline" onClick={() => void load()}>
-                    重新读取
-                  </Button>
-                }
-              />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>推送设置</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading ? (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Skeleton className="h-14 w-full" />
-                <Skeleton className="h-14 w-full" />
-                <Skeleton className="h-14 w-full" />
-                <Skeleton className="h-14 w-full" />
-              </div>
-            ) : (
-              <>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label
-                      htmlFor="push-url"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      推送地址
-                    </label>
-                    <Input
-                      id="push-url"
-                      value={url}
-                      placeholder="http://agent:8000/api/push/digests"
-                      onChange={(e) => setUrl(e.target.value)}
-                    />
+        {/* 能改的只有「推送设置」，放主列；当前配置与送达积压都是只读事实，放右侧。
+            侧栏只有 19rem，指标格压成 2 列，4 列会把标签挤成竖排。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardHeader>
+                <CardTitle>推送设置</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {loading ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
                   </div>
-                  <div>
-                    <label
-                      htmlFor="push-token"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      令牌（与智能体 ST_PUSH_TOKEN 一致；留空 = 不改动已保存的令牌）
-                    </label>
-                    <Input
-                      id="push-token"
-                      value={token}
-                      type="password"
-                      disabled={clearToken}
-                      placeholder={
-                        clearToken
-                          ? "保存后令牌被清空"
-                          : cfg?.token_set
-                            ? "留空 = 保持不变"
-                            : "填一个长随机串"
-                      }
-                      onChange={(e) => setToken(e.target.value)}
-                    />
-                    {/* 后端约定：null = 不改动、"" = 清空。光靠输入框留空没法表达「清空」，所以给个显式开关 */}
-                    {cfg?.token_set && (
-                      <label className="mt-1 flex items-center gap-2 text-xs">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={clearToken}
-                          onChange={(e) => setClearToken(e.target.checked)}
+                ) : (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label
+                          htmlFor="push-url"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          推送地址
+                        </label>
+                        <Input
+                          id="push-url"
+                          value={url}
+                          placeholder="http://agent:8000/api/push/digests"
+                          onChange={(e) => setUrl(e.target.value)}
                         />
-                        <span className="text-sev-critical-fg">
-                          清除已保存的令牌（保存后生效）
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="push-token"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          令牌（与智能体 ST_PUSH_TOKEN 一致；留空 = 不改动已保存的令牌）
+                        </label>
+                        <Input
+                          id="push-token"
+                          value={token}
+                          type="password"
+                          disabled={clearToken}
+                          placeholder={
+                            clearToken
+                              ? "保存后令牌被清空"
+                              : cfg?.token_set
+                                ? "留空 = 保持不变"
+                                : "填一个长随机串"
+                          }
+                          onChange={(e) => setToken(e.target.value)}
+                        />
+                        {/* 后端约定：null = 不改动、"" = 清空。光靠输入框留空没法表达「清空」，所以给个显式开关 */}
+                        {cfg?.token_set && (
+                          <label className="mt-1 flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4"
+                              checked={clearToken}
+                              onChange={(e) => setClearToken(e.target.checked)}
+                            />
+                            <span className="text-sev-critical-fg">
+                              清除已保存的令牌（保存后生效）
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="push-timeout"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          超时（秒）
+                        </label>
+                        <Input
+                          id="push-timeout"
+                          className="tabular-nums"
+                          value={String(timeout)}
+                          onChange={(e) => setTimeoutSeconds(Number(e.target.value) || 10)}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="push-max"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          单次最多推多少条摘要
+                        </label>
+                        <Input
+                          id="push-max"
+                          className="tabular-nums"
+                          value={String(maxPerPush)}
+                          onChange={(e) => setMaxPerPush(Number(e.target.value) || 200)}
+                        />
+                      </div>
+                    </div>
+
+                    <label className="flex items-start gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4"
+                        checked={enabled}
+                        onChange={(e) => setEnabled(e.target.checked)}
+                      />
+                      <span>
+                        启用推送（关掉后摘要只会写进旧队列 shentong:events:dispatch；
+                        已升级的智能体没有 consumer 进程，不再消费它）
+                      </span>
+                    </label>
+
+                    {msg && (
+                      <p
+                        role={msgKind === "err" ? "alert" : "status"}
+                        className={cn(
+                          "rounded-xs border px-3 py-2 text-xs",
+                          msgKind === "err"
+                            ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
+                            : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
+                        )}
+                      >
+                        {msg}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* 配置没读到就禁止保存：空表单点保存会把地址/开关覆盖掉 */}
+                      <Button size="sm" disabled={busy || !data} onClick={save}>
+                        保存
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={busy || !url} onClick={test}>
+                        测试连接
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={busy} onClick={retry}>
+                        立即重发
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
+                        刷新
+                      </Button>
+                      {!data && !loading && (
+                        <span className="self-center text-xs text-sev-critical-fg">
+                          配置未读到，已禁用保存（避免空表单覆盖现有配置）
                         </span>
-                      </label>
+                      )}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </SettingsMain>
+
+          <SettingsRail>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+                <CardTitle>当前配置</CardTitle>
+                {cfg ? (
+                  <Badge variant={cfg.active ? "low" : "medium"}>
+                    {cfg.active ? "推送已启用" : "未启用（走旧队列）"}
+                  </Badge>
+                ) : null}
+              </CardHeader>
+              <CardContent>
+                {loading ? (
+                  <Skeleton className="h-9 w-full" />
+                ) : cfg ? (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <span className="break-all font-mono">{cfg.url || "(未填地址)"}</span>
+                    <span className="text-muted-foreground">
+                      令牌 {cfg.token_set ? `已设置（${cfg.token_masked}）` : "未设置"}
+                    </span>
+                    {data?.env.url && (
+                      <span className="text-muted-foreground">环境默认 {data.env.url}</span>
                     )}
                   </div>
-                  <div>
-                    <label
-                      htmlFor="push-timeout"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      超时（秒）
-                    </label>
-                    <Input
-                      id="push-timeout"
-                      className="tabular-nums"
-                      value={String(timeout)}
-                      onChange={(e) => setTimeoutSeconds(Number(e.target.value) || 10)}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="push-max"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      单次最多推多少条摘要
-                    </label>
-                    <Input
-                      id="push-max"
-                      className="tabular-nums"
-                      value={String(maxPerPush)}
-                      onChange={(e) => setMaxPerPush(Number(e.target.value) || 200)}
-                    />
-                  </div>
-                </div>
-
-                <label className="flex items-start gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4"
-                    checked={enabled}
-                    onChange={(e) => setEnabled(e.target.checked)}
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到推送配置"}
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        重新读取
+                      </Button>
+                    }
                   />
-                  <span>
-                    启用推送（关掉后摘要只会写进旧队列 shentong:events:dispatch；
-                    已升级的智能体没有 consumer 进程，不再消费它）
-                  </span>
-                </label>
+                )}
+              </CardContent>
+            </Card>
 
-                {msg && (
-                  <p
-                    role={msgKind === "err" ? "alert" : "status"}
-                    className={cn(
-                      "rounded-xs border px-3 py-2 text-xs",
-                      msgKind === "err"
-                        ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
-                        : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
-                    )}
-                  >
-                    {msg}
-                  </p>
+            <Card>
+              <CardHeader>
+                <CardTitle>送达与积压</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {loading ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Skeleton className="h-14 w-full" />
+                      <Skeleton className="h-14 w-full" />
+                      <Skeleton className="h-14 w-full" />
+                      <Skeleton className="h-14 w-full" />
+                    </div>
+                    <Skeleton className="h-8 w-full" />
+                  </>
+                ) : st ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Stat label="已送达" value={st.sent} hint="收到 2xx 的批数" />
+                      <Stat
+                        label="失败待重发"
+                        value={backlog(st)}
+                        tone={backlog(st) ? "critical" : "default"}
+                        hint="真积压 = 队列 + 处理中"
+                      />
+                      <Stat label="重发成功" value={st.retried} />
+                      <Stat
+                        label="重发失败"
+                        value={st.retry_failed}
+                        tone={st.retry_failed ? "critical" : "default"}
+                      />
+                    </div>
+
+                    {/* 真积压 = 待重发批数（queue_depth + processing_depth）；st.queued 是累计入队数，只增不减 */}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
+                      <span
+                        className="text-muted-foreground"
+                        title="累计值（自 Redis 计数以来落过重发队列的批数），不是当前积压"
+                      >
+                        累计失败入队 <span className="tabular-nums">{st.queued}</span>
+                      </span>
+                      <span className="text-muted-foreground">
+                        待重发批数 <span className="tabular-nums">{st.queue_depth}</span>
+                      </span>
+                      <span className="text-muted-foreground">
+                        重发处理中 <span className="tabular-nums">{st.processing_depth}</span>
+                      </span>
+                      {typeof st.retry_lost === "number" && st.retry_lost > 0 && (
+                        <span
+                          className="text-sev-critical-fg"
+                          title="连试多次仍失败、已判死丢弃的批数（不会再自动重发）"
+                        >
+                          判死丢弃 <span className="tabular-nums">{st.retry_lost}</span>
+                        </span>
+                      )}
+                      {typeof st.retry_dropped === "number" && st.retry_dropped > 0 && (
+                        <span className="text-sev-critical-fg" title="重试队列写入失败、当场丢掉的条数">
+                          队列写失败丢弃 <span className="tabular-nums">{st.retry_dropped}</span>
+                        </span>
+                      )}
+                      {typeof st.undelivered === "number" && st.undelivered > 0 && (
+                        <span className="text-sev-critical-fg" title="投递失败且没能进重试队列的条数（真丢）">
+                          未送达 <span className="tabular-nums">{st.undelivered}</span>
+                        </span>
+                      )}
+                      {typeof st.spool_batches === "number" && st.spool_batches > 0 && (
+                        <span
+                          className="text-sev-medium-fg"
+                          title="超龄摘要已从队列挪到磁盘缓存（不再占 Redis 内存），智能体恢复后自动按序补推、推成功即删"
+                        >
+                          磁盘缓存 <span className="tabular-nums">{st.spool_batches}</span> 批（
+                          {fmtBytes(st.spool_bytes ?? 0)}）
+                          {(st.spool_oldest_age ?? 0) > 0
+                            ? `，最久 ${fmtAge(st.spool_oldest_age ?? 0)}`
+                            : ""}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-xs tabular-nums text-muted-foreground">
+                      最近成功 {st.last_success_at || "—"}；最近失败 {st.last_error_at || "—"}
+                      {st.last_error ? `（${st.last_error}）` : ""}
+                      {st.error ? ` —— 状态不可读：${st.error}` : ""}
+                    </p>
+                  </>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到送达状态"}
+                    hint="计数来自 /api/agent-push；读不到时这里不做任何推断。"
+                  />
                 )}
 
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* 配置没读到就禁止保存：空表单点保存会把地址/开关覆盖掉 */}
-                  <Button size="sm" disabled={busy || !data} onClick={save}>
-                    保存
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={busy || !url} onClick={test}>
-                    测试连接
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={retry}>
-                    立即重发
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
-                    刷新
-                  </Button>
-                  {!data && !loading && (
-                    <span className="self-center text-xs text-sev-critical-fg">
-                      配置未读到，已禁用保存（避免空表单覆盖现有配置）
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>送达与积压</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading ? (
-              <>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                </div>
-                <Skeleton className="h-8 w-full" />
-              </>
-            ) : st ? (
-              <>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <Stat label="已送达" value={st.sent} hint="收到 2xx 的批数" />
-                  <Stat
-                    label="失败待重发"
-                    value={backlog(st)}
-                    tone={backlog(st) ? "critical" : "default"}
-                    hint="真积压 = 队列 + 处理中"
-                  />
-                  <Stat label="重发成功" value={st.retried} />
-                  <Stat
-                    label="重发失败"
-                    value={st.retry_failed}
-                    tone={st.retry_failed ? "critical" : "default"}
-                  />
-                </div>
-
-                {/* 真积压 = 待重发批数（queue_depth + processing_depth）；st.queued 是累计入队数，只增不减 */}
-                <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
-                  <span
-                    className="text-muted-foreground"
-                    title="累计值（自 Redis 计数以来落过重发队列的批数），不是当前积压"
-                  >
-                    累计失败入队 <span className="tabular-nums">{st.queued}</span>
-                  </span>
-                  <span className="text-muted-foreground">
-                    待重发批数 <span className="tabular-nums">{st.queue_depth}</span>
-                  </span>
-                  <span className="text-muted-foreground">
-                    重发处理中 <span className="tabular-nums">{st.processing_depth}</span>
-                  </span>
-                  {typeof st.retry_lost === "number" && st.retry_lost > 0 && (
-                    <span
-                      className="text-sev-critical-fg"
-                      title="连试多次仍失败、已判死丢弃的批数（不会再自动重发）"
-                    >
-                      判死丢弃 <span className="tabular-nums">{st.retry_lost}</span>
-                    </span>
-                  )}
-                  {typeof st.retry_dropped === "number" && st.retry_dropped > 0 && (
-                    <span className="text-sev-critical-fg" title="重试队列写入失败、当场丢掉的条数">
-                      队列写失败丢弃 <span className="tabular-nums">{st.retry_dropped}</span>
-                    </span>
-                  )}
-                  {typeof st.undelivered === "number" && st.undelivered > 0 && (
-                    <span className="text-sev-critical-fg" title="投递失败且没能进重试队列的条数（真丢）">
-                      未送达 <span className="tabular-nums">{st.undelivered}</span>
-                    </span>
-                  )}
-                  {typeof st.spool_batches === "number" && st.spool_batches > 0 && (
-                    <span
-                      className="text-sev-medium-fg"
-                      title="超龄摘要已从队列挪到磁盘缓存（不再占 Redis 内存），智能体恢复后自动按序补推、推成功即删"
-                    >
-                      磁盘缓存 <span className="tabular-nums">{st.spool_batches}</span> 批（
-                      {fmtBytes(st.spool_bytes ?? 0)}）
-                      {(st.spool_oldest_age ?? 0) > 0
-                        ? `，最久 ${fmtAge(st.spool_oldest_age ?? 0)}`
-                        : ""}
-                    </span>
-                  )}
-                </div>
-
-                <p className="text-xs tabular-nums text-muted-foreground">
-                  最近成功 {st.last_success_at || "—"}；最近失败 {st.last_error_at || "—"}
-                  {st.last_error ? `（${st.last_error}）` : ""}
-                  {st.error ? ` —— 状态不可读：${st.error}` : ""}
-                </p>
-              </>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到送达状态"}
-                hint="计数来自 /api/agent-push；读不到时这里不做任何推断。"
-              />
-            )}
-
-            {data?.hint && <p className="text-xs text-muted-foreground">{data.hint}</p>}
-          </CardContent>
-        </Card>
+                {data?.hint && <p className="text-xs text-muted-foreground">{data.hint}</p>}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
       </Section>
     </div>
   );

@@ -12,6 +12,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   Stat,
   cn,
@@ -205,278 +208,296 @@ export function LogstashPanel() {
           </>
         }
       >
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle>运行状态</CardTitle>
-            <div className="flex flex-wrap items-center gap-2">
-              {data ? (
-                <>
-                  <Badge variant={ls?.alive ? "success" : "critical"}>
-                    {ls?.alive ? "运行中" : "不可达"}
-                  </Badge>
-                </>
-              ) : null}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading ? (
-              <>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                  <Skeleton className="h-14 w-full" />
-                </div>
-                <Skeleton className="h-16 w-full" />
-              </>
-            ) : data ? (
-              <>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <Stat size="sm" label="入队" value={ls?.events_in ?? "-"} />
-                  <Stat size="sm" label="出队" value={ls?.events_out ?? "-"} />
-                  <Stat
-                    size="sm"
-                    label="待归一化积压"
-                    value={data.queue_depth ?? "-"}
-                    tone={(data.queue_depth ?? 0) > 0 ? "medium" : "default"}
-                  />
-                  <Stat
-                    size="sm"
-                    label="重载"
-                    value={`${ls?.reloads_successes ?? "-"} / ${ls?.reloads_failures ?? "-"}`}
-                    hint="成功 / 失败"
-                    tone={ls?.reloads_failures ? "critical" : "default"}
-                  />
-                </div>
+        {/* 能改的只有「常用参数」表单，放主列；运行状态是只读指标，放右侧侧栏。
+            侧栏只有 19rem，指标格压成 2 列，4 列会把标签挤成竖排。
+            管道全文是代码块，需要整幅宽度，放成 Grid 的兄弟节点。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardHeader>
+                <CardTitle>常用参数</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {loading ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : params ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-xs text-muted-foreground">Elasticsearch 输出（历史归档）</p>
+                        <p className="text-xs text-muted-foreground">
+                          归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-muted-foreground">ES 地址（由部署环境固定）</p>
+                        <p className="flex h-9 items-center truncate rounded-sm border border-border-subtle bg-surface-1 px-3 font-mono text-xs">
+                          {params.es_host}
+                        </p>
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="ls-events-index"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          索引名（两类采集统一落这一族，支持 %&#123;...&#125; 占位）
+                        </label>
+                        <Input
+                          id="ls-events-index"
+                          value={params.events_index}
+                          onChange={(e) => set("events_index", e.target.value)}
+                        />
+                      </div>
+                    </div>
 
-                <div className="space-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
-                  <p className="text-muted-foreground">
-                    最近下发：{data.updated_at ? formatDateTime(data.updated_at) : "—"}
-                    {" · "}
-                    <span className="font-mono">{data.config_path}</span>
-                  </p>
-                  <p className="text-muted-foreground">
-                    采集接入：{data.http.hint}（当前端口{" "}
-                    <span className="tabular-nums">{data.http.port}</span>）
-                  </p>
-                  {ls && !ls.alive && ls.error && (
-                    <p className="text-sev-critical-fg">状态读取失败：{ls.error}</p>
-                  )}
-                  {rate && (
-                    <p className="text-muted-foreground">
-                      五段速率（10 分钟）：扫描{" "}
-                      <span className="tabular-nums">{rate.scanned_per_sec ?? "-"}</span>/秒 · 命中{" "}
-                      <span className="tabular-nums">{rate.hits_per_min ?? "-"}</span>/分 · 摘要{" "}
-                      <span className="tabular-nums">{rate.digests_per_min ?? "-"}</span>/分 · 投递{" "}
-                      <span className="tabular-nums">{rate.delivered_per_min ?? "-"}</span>/分 · 分析{" "}
-                      <span className="tabular-nums">{rate.analyzed_per_min ?? "-"}</span>/分 · 模型容量{" "}
-                      <span className="tabular-nums">{rate.agent_capacity_per_min ?? "-"}</span>/分
-                      {(rate.limit_saturated ?? 0) > 0 && (
-                        <span className="text-sev-medium-fg">
-                          {" · "}额度饱和{" "}
-                          <span className="tabular-nums">{rate.limit_saturated}</span> 次
-                        </span>
-                      )}
-                      {(rate.raw_trimmed_total ?? 0) > 0 && (
-                        <span className="text-sev-medium-fg">
-                          {" · "}已裁剪{" "}
-                          <span className="tabular-nums">{rate.raw_trimmed_total}</span> 条（扫描跟不上入队）
-                        </span>
-                      )}
-                    </p>
-                  )}
-                  {det && (
-                    <p className="text-muted-foreground">
-                      旁路检测器：本分钟投递{" "}
-                      <span className="tabular-nums">{det.delivered_this_minute ?? "-"}</span>/
-                      <span className="tabular-nums">{det.rate_limit_per_minute}</span>
-                      {" · 待检测 "}
-                      <span className="tabular-nums">{det.queue_raw ?? "-"}</span>
-                      {" · 待分析 "}
-                      <span className="tabular-nums">{det.queue_digest ?? "-"}</span>
-                      {Object.keys(det.dropped).length > 0 && (
-                        <>
-                          {" · "}
-                          <span className="text-sev-medium-fg">
-                            已丢弃（未进分析）：
-                            {Object.entries(det.dropped)
-                              .map(([k, v]) => `${k} ${v}`)
-                              .join(" / ")}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                  )}
-                  {det && (det.dedup || det.task_failed || det.leader || det.policy) && (
-                    <p className="text-muted-foreground">
-                      判重：{det.dedup?.enabled ? "NDR 侧闸门开" : (det.dedup?.note ?? "已下放到智能体")}
-                      {(det.dedup?.skipped_total ?? 0) > 0 && (
-                        <>
-                          {" · 退役前已省重复分析 "}
-                          <span className="tabular-nums">{det.dedup?.skipped_total ?? 0}</span>
-                          {" 条"}
-                        </>
-                      )}
-                      {(det.task_failed?.failed_total ?? 0) > 0 && (
-                        <>
-                          {" · "}
-                          <span className="text-sev-medium-fg">
-                            分析失败{" "}
-                            <span className="tabular-nums">{det.task_failed?.failed_total}</span> 条（在途超时后会重投）
-                          </span>
-                        </>
-                      )}
-                      {(det.policy?.internal_routine ?? 0) > 0 && (
-                        <>
-                          {" · "}
-                          <span className="text-muted-foreground">
-                            策略跳过{" "}
-                            <span className="tabular-nums">{det.policy?.internal_routine}</span> 条（内网常规流量：已落库、不跑模型）
-                          </span>
-                        </>
-                      )}
-                      {det.redis_warn && (
-                        <>
-                          {" · "}
-                          <span className="text-sev-critical-fg">
-                            ⚠ Redis 内存已达 {det.redis?.perc ?? 0}%（吃满后会拒绝写命令，整条分析链会卡死）
-                          </span>
-                        </>
-                      )}
-                      {(det.handled_skipped ?? 0) > 0 && (
-                        <>
-                          {" · "}
-                          <span className="text-sev-medium-fg">
-                            登记丢弃{" "}
-                            <span className="tabular-nums">{det.handled_skipped}</span> 条（会重复分析）
-                          </span>
-                        </>
-                      )}
-                      {det.leader?.holder ? ` · 主实例 ${det.leader.holder}` : ""}
-                    </p>
-                  )}
-                  {!data.params_applied && (
-                    <p className="text-muted-foreground">
-                      {data.params_stored ? (
-                        <>
-                          当前管道为<b>自定义内容</b>（非参数生成）；用下方表单保存会覆盖它。
-                        </>
-                      ) : (
-                        <>
-                          当前管道与<b>默认模板不一致</b>（可能手工改过，或部署升级后模板已变）；
-                          下面保存参数会按模板重写。
-                        </>
-                      )}
-                    </p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到管道状态"}
-                action={
-                  <Button size="sm" variant="outline" onClick={() => void load()}>
-                    重新读取
-                  </Button>
-                }
-              />
-            )}
-          </CardContent>
-        </Card>
+                    {noticeFor("params")}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>常用参数</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading ? (
-              <Skeleton className="h-24 w-full" />
-            ) : params ? (
-              <>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <p className="mb-1 text-xs text-muted-foreground">Elasticsearch 输出（历史归档）</p>
-                    <p className="text-xs text-muted-foreground">
-                      归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
-                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          setConfirm({
+                            title: "保存参数并下发？",
+                            body: "保存参数会用生成的管道覆盖「全文编辑」的内容。",
+                            confirmLabel: "覆盖并下发",
+                            onConfirm: () => {
+                              setConfirm(null);
+                              void saveParams();
+                            },
+                          })
+                        }
+                      >
+                        保存参数并下发
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={doPreview} disabled={busy}>
+                        预览生成的管道
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
+                        刷新状态
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          setConfirm({
+                            title: "回滚到上一版管道？",
+                            body: "当前编辑框里的内容会被上一版覆盖（未保存的改动会丢失）。",
+                            confirmLabel: "回滚",
+                            onConfirm: () => {
+                              setConfirm(null);
+                              void rollback();
+                            },
+                          })
+                        }
+                      >
+                        回滚上一版
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到参数"}
+                    hint="参数来自 /api/logstash；读不到时不显示表单，避免空值覆盖现有配置。"
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsMain>
+
+          <SettingsRail>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+                <CardTitle>运行状态</CardTitle>
+                <div className="flex flex-wrap items-center gap-2">
+                  {data ? (
+                    <>
+                      <Badge variant={ls?.alive ? "success" : "critical"}>
+                        {ls?.alive ? "运行中" : "不可达"}
+                      </Badge>
+                    </>
+                  ) : null}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {loading ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
                   </div>
-                  <div>
-                    <p className="mb-1 text-xs text-muted-foreground">ES 地址（由部署环境固定）</p>
-                    <p className="flex h-9 items-center truncate rounded-sm border border-border-subtle bg-surface-1 px-3 font-mono text-xs">
-                      {params.es_host}
-                    </p>
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="ls-events-index"
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      索引名（两类采集统一落这一族，支持 %&#123;...&#125; 占位）
-                    </label>
-                    <Input
-                      id="ls-events-index"
-                      value={params.events_index}
-                      onChange={(e) => set("events_index", e.target.value)}
+                ) : data ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Stat size="sm" label="入队" value={ls?.events_in ?? "-"} />
+                    <Stat size="sm" label="出队" value={ls?.events_out ?? "-"} />
+                    <Stat
+                      size="sm"
+                      label="待归一化积压"
+                      value={data.queue_depth ?? "-"}
+                      tone={(data.queue_depth ?? 0) > 0 ? "medium" : "default"}
+                    />
+                    <Stat
+                      size="sm"
+                      label="重载"
+                      value={`${ls?.reloads_successes ?? "-"} / ${ls?.reloads_failures ?? "-"}`}
+                      hint="成功 / 失败"
+                      tone={ls?.reloads_failures ? "critical" : "default"}
                     />
                   </div>
-                </div>
-
-                {noticeFor("params")}
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      setConfirm({
-                        title: "保存参数并下发？",
-                        body: "保存参数会用生成的管道覆盖「全文编辑」的内容。",
-                        confirmLabel: "覆盖并下发",
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void saveParams();
-                        },
-                      })
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到管道状态"}
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        重新读取
+                      </Button>
                     }
-                  >
-                    保存参数并下发
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={doPreview} disabled={busy}>
-                    预览生成的管道
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
-                    刷新状态
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      setConfirm({
-                        title: "回滚到上一版管道？",
-                        body: "当前编辑框里的内容会被上一版覆盖（未保存的改动会丢失）。",
-                        confirmLabel: "回滚",
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void rollback();
-                        },
-                      })
-                    }
-                  >
-                    回滚上一版
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <EmptyState
-                size="compact"
-                tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到参数"}
-                hint="参数来自 /api/logstash；读不到时不显示表单，避免空值覆盖现有配置。"
-              />
-            )}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
+
+        {/* 运行明细：数字之外的长句（五段速率、判重口径、Redis 告警）单独通栏放。
+            塞进 19rem 侧栏会变成一条又高又窄的文字墙 —— 告警句和正常口径一样长，
+            挤在窄栏里就分不出哪条要处理。 */}
+        <Card>
+          <CardHeader>
+            <CardTitle>运行明细</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : data ? (
+            <div className="space-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
+              <p className="text-muted-foreground">
+                最近下发：{data.updated_at ? formatDateTime(data.updated_at) : "—"}
+                {" · "}
+                <span className="font-mono">{data.config_path}</span>
+              </p>
+              <p className="text-muted-foreground">
+                采集接入：{data.http.hint}（当前端口{" "}
+                <span className="tabular-nums">{data.http.port}</span>）
+              </p>
+              {ls && !ls.alive && ls.error && (
+                <p className="text-sev-critical-fg">状态读取失败：{ls.error}</p>
+              )}
+              {rate && (
+                <p className="text-muted-foreground">
+                  五段速率（10 分钟）：扫描{" "}
+                  <span className="tabular-nums">{rate.scanned_per_sec ?? "-"}</span>/秒 · 命中{" "}
+                  <span className="tabular-nums">{rate.hits_per_min ?? "-"}</span>/分 · 摘要{" "}
+                  <span className="tabular-nums">{rate.digests_per_min ?? "-"}</span>/分 · 投递{" "}
+                  <span className="tabular-nums">{rate.delivered_per_min ?? "-"}</span>/分 · 分析{" "}
+                  <span className="tabular-nums">{rate.analyzed_per_min ?? "-"}</span>/分 · 模型容量{" "}
+                  <span className="tabular-nums">{rate.agent_capacity_per_min ?? "-"}</span>/分
+                  {(rate.limit_saturated ?? 0) > 0 && (
+                    <span className="text-sev-medium-fg">
+                      {" · "}额度饱和{" "}
+                      <span className="tabular-nums">{rate.limit_saturated}</span> 次
+                    </span>
+                  )}
+                  {(rate.raw_trimmed_total ?? 0) > 0 && (
+                    <span className="text-sev-medium-fg">
+                      {" · "}已裁剪{" "}
+                      <span className="tabular-nums">{rate.raw_trimmed_total}</span> 条（扫描跟不上入队）
+                    </span>
+                  )}
+                </p>
+              )}
+              {det && (
+                <p className="text-muted-foreground">
+                  旁路检测器：本分钟投递{" "}
+                  <span className="tabular-nums">{det.delivered_this_minute ?? "-"}</span>/
+                  <span className="tabular-nums">{det.rate_limit_per_minute}</span>
+                  {" · 待检测 "}
+                  <span className="tabular-nums">{det.queue_raw ?? "-"}</span>
+                  {" · 待分析 "}
+                  <span className="tabular-nums">{det.queue_digest ?? "-"}</span>
+                  {Object.keys(det.dropped).length > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-sev-medium-fg">
+                        已丢弃（未进分析）：
+                        {Object.entries(det.dropped)
+                          .map(([k, v]) => `${k} ${v}`)
+                          .join(" / ")}
+                      </span>
+                    </>
+                  )}
+                </p>
+              )}
+              {det && (det.dedup || det.task_failed || det.leader || det.policy) && (
+                <p className="text-muted-foreground">
+                  判重：{det.dedup?.enabled ? "NDR 侧闸门开" : (det.dedup?.note ?? "已下放到智能体")}
+                  {(det.dedup?.skipped_total ?? 0) > 0 && (
+                    <>
+                      {" · 退役前已省重复分析 "}
+                      <span className="tabular-nums">{det.dedup?.skipped_total ?? 0}</span>
+                      {" 条"}
+                    </>
+                  )}
+                  {(det.task_failed?.failed_total ?? 0) > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-sev-medium-fg">
+                        分析失败{" "}
+                        <span className="tabular-nums">{det.task_failed?.failed_total}</span> 条（在途超时后会重投）
+                      </span>
+                    </>
+                  )}
+                  {(det.policy?.internal_routine ?? 0) > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-muted-foreground">
+                        策略跳过{" "}
+                        <span className="tabular-nums">{det.policy?.internal_routine}</span> 条（内网常规流量：已落库、不跑模型）
+                      </span>
+                    </>
+                  )}
+                  {det.redis_warn && (
+                    <>
+                      {" · "}
+                      <span className="text-sev-critical-fg">
+                        ⚠ Redis 内存已达 {det.redis?.perc ?? 0}%（吃满后会拒绝写命令，整条分析链会卡死）
+                      </span>
+                    </>
+                  )}
+                  {(det.handled_skipped ?? 0) > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-sev-medium-fg">
+                        登记丢弃{" "}
+                        <span className="tabular-nums">{det.handled_skipped}</span> 条（会重复分析）
+                      </span>
+                    </>
+                  )}
+                  {det.leader?.holder ? ` · 主实例 ${det.leader.holder}` : ""}
+                </p>
+              )}
+              {!data.params_applied && (
+                <p className="text-muted-foreground">
+                  {data.params_stored ? (
+                    <>
+                      当前管道为<b>自定义内容</b>（非参数生成）；用表单保存会覆盖它。
+                    </>
+                  ) : (
+                    <>
+                      当前管道与<b>默认模板不一致</b>（可能手工改过，或部署升级后模板已变）；
+                      保存参数会按模板重写。
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
+            ) : null}
           </CardContent>
         </Card>
 

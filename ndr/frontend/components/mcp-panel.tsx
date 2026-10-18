@@ -16,10 +16,15 @@ import {
   Button,
   Card,
   CardContent,
+  CardHeader,
+  CardTitle,
   Dialog,
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
   Table,
   TableBody,
@@ -272,15 +277,48 @@ export function McpPanel() {
           title="MCP 接入（智能体取数入口）"
           description="智能体分析事件时的查询、调查、写回结论都走这个服务；令牌在这里生成、轮换与吊销。"
         >
+          {/* 骨架与加载完的结构同形：主列表单、侧栏服务状态、下面四张整幅表，避免出数时跳版 */}
+          <SettingsGrid>
+            <SettingsMain>
+              <Card>
+                <CardHeader>
+                  <CardTitle>签发新令牌</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Skeleton className="h-9" />
+                    <Skeleton className="h-9" />
+                  </div>
+                  <Skeleton className="h-8 w-28" />
+                </CardContent>
+              </Card>
+            </SettingsMain>
+
+            <SettingsRail>
+              <Card>
+                <CardHeader>
+                  <CardTitle>服务状态</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Skeleton className="h-5 w-20" />
+                  <Skeleton className="h-3 w-full" />
+                  <Skeleton className="h-3 w-2/3" />
+                </CardContent>
+              </Card>
+            </SettingsRail>
+          </SettingsGrid>
+
           <Card>
-            <CardContent className="space-y-3 pt-4">
-              <Skeleton className="h-9 w-full" />
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Skeleton className="h-9" />
-                <Skeleton className="h-9" />
-                <Skeleton className="h-9" />
-              </div>
-              <TableSkeleton rows={4} cols={5} />
+            <CardContent className="space-y-2">
+              <Skeleton className="h-3 w-24" />
+              <TableSkeleton rows={3} cols={7} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="space-y-2">
+              <Skeleton className="h-3 w-20" />
+              <TableSkeleton rows={4} cols={6} />
             </CardContent>
           </Card>
         </Section>
@@ -301,100 +339,137 @@ export function McpPanel() {
           </>
         }
       >
-        <Card>
-          <CardContent className="space-y-3 pt-4">
-            {msg ? (
-              <p className="text-13 text-muted-foreground" aria-live="polite">
-                {msg}
-              </p>
-            ) : null}
-
-            {status ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
-                <Badge variant={status.service.reachable ? "success" : "critical"}>
-                  {status.service.reachable ? "服务在线" : "服务不可达"}
-                </Badge>
-                <span className="font-mono">{status.service.url}</span>
-                <span className="text-muted-foreground">工具 {status.tools.count} 个</span>
-                <span className="text-muted-foreground">
-                  令牌 {status.tokens.enabled}/{status.tokens.total} 启用
-                  {status.tokens.expired ? `（${status.tokens.expired} 个已过期）` : ""}
-                </span>
-                <span className="text-muted-foreground">
-                  调用留存 {status.calls.kept}（失败 {status.calls.errors}）
-                </span>
-                <span className="text-muted-foreground">结论 {status.conclusions.total} 条</span>
-                {status.service.error && (
-                  <span className="text-muted-foreground">（探测失败：{status.service.error}）</span>
-                )}
-              </div>
-            ) : null}
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label
-                  htmlFor="mcp-token-name"
-                  className="mb-1 block text-xs text-muted-foreground"
-                >
-                  新令牌名称（例如「智能体-生产」）
-                </label>
-                <Input
-                  id="mcp-token-name"
-                  ref={nameRef}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="留空也行，只是界面里不好认"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="mcp-token-days"
-                  className="mb-1 block text-xs text-muted-foreground"
-                >
-                  有效期（天，留空 = 永不过期）
-                </label>
-                <Input
-                  id="mcp-token-days"
-                  value={expiresDays}
-                  onChange={(e) => setExpiresDays(e.target.value)}
-                  placeholder="例如 90；1~3650"
-                  inputMode="numeric"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={createToken} disabled={busy}>
-                生成令牌
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => load()} disabled={busy}>
-                刷新
-              </Button>
-              <Button size="sm" variant="destructive" onClick={clearCalls} disabled={busy}>
-                清空调用记录
-              </Button>
-            </div>
-
-            {fresh && (
-              <div className="space-y-2 rounded-md border border-primary/40 bg-surface-1 p-3 text-xs">
-                <p className="font-medium text-foreground">新令牌明文（只显示这一次）</p>
-                <p className="break-all font-mono text-foreground">{fresh}</p>
+        {/* 能改的只有「签发新令牌」这一张表单，放主列；服务状态只读，放右侧。
+            已签发令牌（7 列）、最近调用（6 列）、写回结论（5 列）、工具清单 —— 四张都在
+            Grid 之外整幅竖排：它们并排后每张不足 3 列宽，挤在主列里会触发横向滚动。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardHeader>
+                <CardTitle>签发新令牌</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {msg ? (
+                  <p className="text-13 text-muted-foreground" aria-live="polite">
+                    {msg}
+                  </p>
+                ) : null}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="mcp-token-name"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      新令牌名称（例如「智能体-生产」）
+                    </label>
+                    <Input
+                      id="mcp-token-name"
+                      ref={nameRef}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="留空也行，只是界面里不好认"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="mcp-token-days"
+                      className="mb-1 block text-xs text-muted-foreground"
+                    >
+                      有效期（天，留空 = 永不过期）
+                    </label>
+                    <Input
+                      id="mcp-token-days"
+                      value={expiresDays}
+                      onChange={(e) => setExpiresDays(e.target.value)}
+                      placeholder="例如 90；1~3650"
+                      inputMode="numeric"
+                    />
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={copyFresh}>
-                    复制
+                  <Button size="sm" onClick={createToken} disabled={busy}>
+                    生成令牌
                   </Button>
-                  <Button size="sm" variant="secondary" onClick={() => setFresh("")}>
-                    我已保存，隐藏
+                  <Button size="sm" variant="outline" onClick={() => load()} disabled={busy}>
+                    刷新
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={clearCalls} disabled={busy}>
+                    清空调用记录
                   </Button>
                 </div>
-                <p className="text-muted-foreground">
-                  填进智能体配置：地址{" "}
-                  <span className="font-mono">{status?.service.url ?? ""}</span>， 请求头{" "}
-                  <span className="font-mono">Authorization: Bearer &lt;令牌&gt;</span>。
-                </p>
-              </div>
-            )}
+                {fresh && (
+                  <div className="space-y-2 rounded-md border border-primary/40 bg-surface-1 p-3 text-xs">
+                    <p className="font-medium text-foreground">新令牌明文（只显示这一次）</p>
+                    <p className="break-all font-mono text-foreground">{fresh}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={copyFresh}>
+                        复制
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => setFresh("")}>
+                        我已保存，隐藏
+                      </Button>
+                    </div>
+                    <p className="text-muted-foreground">
+                      填进智能体配置：地址{" "}
+                      <span className="font-mono">{status?.service.url ?? ""}</span>， 请求头{" "}
+                      <span className="font-mono">Authorization: Bearer &lt;令牌&gt;</span>。
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </SettingsMain>
 
+          <SettingsRail>
+            <Card>
+              <CardHeader>
+                <CardTitle>服务状态</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {status ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
+                    <Badge variant={status.service.reachable ? "success" : "critical"}>
+                      {status.service.reachable ? "服务在线" : "服务不可达"}
+                    </Badge>
+                    <span className="break-all font-mono">{status.service.url}</span>
+                    <span className="text-muted-foreground">工具 {status.tools.count} 个</span>
+                    <span className="text-muted-foreground">
+                      令牌 {status.tokens.enabled}/{status.tokens.total} 启用
+                      {status.tokens.expired ? `（${status.tokens.expired} 个已过期）` : ""}
+                    </span>
+                    <span className="text-muted-foreground">
+                      调用留存 {status.calls.kept}（失败 {status.calls.errors}）
+                    </span>
+                    <span className="text-muted-foreground">结论 {status.conclusions.total} 条</span>
+                    {status.service.error && (
+                      <span className="text-muted-foreground">（探测失败：{status.service.error}）</span>
+                    )}
+                  </div>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.status) ? "danger" : "muted"}
+                    title={emptyOrFailed(errs, SRC.status, "还没有读到服务状态")}
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        重新读取
+                      </Button>
+                    }
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
+
+        {/* 已签发令牌：7 列表格（名称/前缀/调用次数/最近使用/到期/状态/操作）整幅排。
+            它留在主列会让「操作」那一列的三个按钮在 758px 里挤成两行并触发横向滚动，
+            而这是本页最常用的表 —— 轮换与吊销都在这里按。 */}
+        <Card>
+          <CardHeader>
+            <CardTitle>已签发令牌</CardTitle>
+          </CardHeader>
+          <CardContent>
             <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
               <p className="text-xs text-muted-foreground">
                 令牌列表（只显示前缀与用量）；过期令牌的调用会被直接拒绝，请先轮换或改到期时间
@@ -581,7 +656,11 @@ export function McpPanel() {
                 </Table>
               )}
             </div>
+          </CardContent>
+        </Card>
 
+        <Card>
+          <CardContent className="space-y-2">
             <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
               <p className="text-xs text-muted-foreground">
                 最近调用（新的在前；记录放 Redis，重启即清，只作运维可见性）
@@ -644,7 +723,11 @@ export function McpPanel() {
                 </Table>
               )}
             </div>
+          </CardContent>
+        </Card>
 
+        <Card>
+          <CardContent className="space-y-2">
             <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
               <p className="text-xs text-muted-foreground">
                 智能体写回的结论（判重仍由智能体侧负责，这里只是镜像，过期自动清理）
@@ -697,7 +780,11 @@ export function McpPanel() {
                 </Table>
               )}
             </div>
+          </CardContent>
+        </Card>
 
+        <Card>
+          <CardContent className="space-y-2">
             <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-muted-foreground">
@@ -742,6 +829,7 @@ export function McpPanel() {
             </div>
           </CardContent>
         </Card>
+
       </Section>
 
       <Dialog

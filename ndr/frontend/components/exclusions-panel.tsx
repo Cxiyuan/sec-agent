@@ -6,9 +6,15 @@ import {
   Button,
   Card,
   CardContent,
+  CardHeader,
+  CardTitle,
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
+  Skeleton,
   Table,
   TableBody,
   TableCell,
@@ -203,81 +209,128 @@ export function ExclusionsPanel() {
           </>
         }
       >
-        <Card>
-          <CardContent className="space-y-2 pt-4">
-            {msg && <p className="text-sm text-primary">{msg}</p>}
+        {/* 主列＝新建/编辑表单（唯一能改的）；侧栏＝最近被排除的样例（只读）。
+            已配置规则 5 列，19rem 侧栏放不下，整幅排在 grid 之后。 */}
+        <SettingsGrid>
+          <SettingsMain>
+            <Card>
+              <CardContent className="space-y-2 pt-4">
+                {msg && <p className="text-sm text-primary">{msg}</p>}
 
-            <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-                <div className="sm:col-span-2">
-                  <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>
-                  <Input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="如：排除内网健康检查噪声"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">
-                    优先级（越小越先）
-                  </label>
-                  <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
-                </div>
-                <div className="flex items-end gap-2">
-                  <label className="flex items-center gap-1 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={(e) => setEnabled(e.target.checked)}
+                <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>
+                      <Input
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="如：排除内网健康检查噪声"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-muted-foreground">
+                        优先级（越小越先）
+                      </label>
+                      <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <label className="flex items-center gap-1 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(e) => setEnabled(e.target.checked)}
+                        />
+                        启用
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">说明（可选）</label>
+                    <Input
+                      value={desc}
+                      onChange={(e) => setDesc(e.target.value)}
+                      placeholder="为什么排除它（便于以后判断能不能删）"
                     />
-                    启用
-                  </label>
+                  </div>
+
+                  {nested && (
+                    <p className="text-xs text-sev-critical-fg">
+                      该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
+                    </p>
+                  )}
+
+                  <ConditionEditor
+                    fields={fields}
+                    conds={conds}
+                    logic={logic}
+                    onLogic={setLogic}
+                    onChange={setCond}
+                    onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+                    onAdd={() => setConds((cs) => [...cs, { field: "hit_rule", op: "eq", value: "" }])}
+                  />
+
+                  {/* 同一工具条内按钮统一 sm（原来主操作是默认尺寸，比旁边的次要按钮高一档） */}
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" onClick={save}>
+                      {editId ? "保存修改" : "添加"}
+                    </Button>
+                    {editId && (
+                      <Button size="sm" variant="outline" onClick={reset}>
+                        取消编辑
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">说明（可选）</label>
-                <Input
-                  value={desc}
-                  onChange={(e) => setDesc(e.target.value)}
-                  placeholder="为什么排除它（便于以后判断能不能删）"
-                />
-              </div>
+              </CardContent>
+            </Card>
+          </SettingsMain>
 
-              {nested && (
-                <p className="text-xs text-sev-critical-fg">
-                  该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
-                </p>
-              )}
-
-              <ConditionEditor
-                fields={fields}
-                conds={conds}
-                logic={logic}
-                onLogic={setLogic}
-                onChange={setCond}
-                onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-                onAdd={() => setConds((cs) => [...cs, { field: "hit_rule", op: "eq", value: "" }])}
-              />
-
-              {/* 同一工具条内按钮统一 sm（原来主操作是默认尺寸，比旁边的次要按钮高一档） */}
-              <div className="flex items-center gap-2">
-                <Button size="sm" onClick={save}>
-                  {editId ? "保存修改" : "添加"}
-                </Button>
-                {editId && (
-                  <Button size="sm" variant="outline" onClick={reset}>
-                    取消编辑
-                  </Button>
+          <SettingsRail>
+            <Card>
+              <CardHeader>
+                <CardTitle>最近被排除的样例</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {stats?.last_hit_at && (
+                  <p className="text-xs text-muted-foreground">
+                    最近命中：{formatDateTime(stats.last_hit_at)}
+                  </p>
                 )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </Section>
+                {firstLoad ? (
+                  <Skeleton className="h-12 w-full" />
+                ) : sampleEntries.length ? (
+                  sampleEntries.map(([fname, samples]) => (
+                    <div key={fname}>
+                      <p className="text-xs text-muted-foreground">{fname}</p>
+                      {samples.map((s, i) => (
+                        <p key={i} className="break-words font-mono text-xs text-muted-foreground">
+                          [{formatDateTime(s.at)}] {ruleText(s.rule)} · {s.src_ip} → {s.dst_ip} ·{" "}
+                          {s.event_type} · {String(s.summary || "").slice(0, 120)}
+                        </p>
+                      ))}
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.stats) ? "danger" : "muted"}
+                    title={emptyOrFailed(errs, SRC.stats, "还没有被排除的样例")}
+                    hint="规则命中后会在这里留一条样例，便于确认它排除的是不是想排除的东西。"
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </SettingsRail>
+        </SettingsGrid>
 
-      {/* 列表单独成区块：原来和编辑表单挤在同一个 Card 里，长列表会把表单顶出屏幕 */}
-      <Section title="已配置的排除规则" description="按优先级从小到大匹配；命中的事件标为「已排除」但仍保留在事件列表里。">
+        {/* 列表单独成区块：原来和编辑表单挤在同一个 Card 里，长列表会把表单顶出屏幕 */}
         <Card>
+          <CardHeader>
+            <CardTitle>已配置的排除规则</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              按优先级从小到大匹配；命中的事件标为「已排除」但仍保留在事件列表里。
+            </p>
+          </CardHeader>
           <CardContent className="p-0">
             {firstLoad ? (
               <TableSkeleton rows={4} cols={5} />
@@ -341,31 +394,6 @@ export function ExclusionsPanel() {
           </CardContent>
         </Card>
       </Section>
-
-      {sampleEntries.length > 0 && (
-        <Section
-          title="最近被排除的样例"
-          description={
-            stats?.last_hit_at ? `最近命中：${formatDateTime(stats.last_hit_at)}` : undefined
-          }
-        >
-          <Card>
-            <CardContent className="space-y-2 pt-4">
-              {sampleEntries.map(([fname, samples]) => (
-                <div key={fname}>
-                  <p className="text-xs text-muted-foreground">{fname}</p>
-                  {samples.map((s, i) => (
-                    <p key={i} className="font-mono text-xs text-muted-foreground">
-                      [{formatDateTime(s.at)}] {ruleText(s.rule)} · {s.src_ip} → {s.dst_ip} · {s.event_type} ·{" "}
-                      {String(s.summary || "").slice(0, 120)}
-                    </p>
-                  ))}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </Section>
-      )}
     </div>
   );
 }

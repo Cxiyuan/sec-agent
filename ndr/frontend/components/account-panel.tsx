@@ -18,6 +18,9 @@ import {
   EmptyState,
   Input,
   Section,
+  SettingsGrid,
+  SettingsMain,
+  SettingsRail,
   Skeleton,
 } from "@shentong/ui";
 import { emptyOrFailed, loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
@@ -33,6 +36,9 @@ const FACTORY_PASSWORD = "admin123";
  * 账号与口令：显示当前账号，并在仍使用出厂口令时红字警告 + 提供改密表单。
  *
  * 之前出厂口令 admin123 只能靠启动日志提醒，界面上一声不吭 —— 部署到现网后没人会注意。
+ *
+ * 2026-10 排版：改密表单是这一页唯一能操作的东西，放主列；「当前账号」是只读事实，
+ * 放右侧侧栏。原来两张卡竖排，改密表单被挤到第二屏，而这页进来就是为了改密。
  */
 export function AccountPanel() {
   const [me, setMe] = React.useState<AuthMe | null>(null);
@@ -117,143 +123,159 @@ export function AccountPanel() {
         }
       >
         {loading ? (
-          <Card>
-            <CardContent className="space-y-2 pt-4">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="h-6 w-48" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-2/3" />
-            </CardContent>
-          </Card>
+          <SettingsGrid>
+            <SettingsMain>
+              <Card>
+                <CardContent className="space-y-3 pt-4">
+                  <Skeleton className="h-3 w-24" />
+                  <Skeleton className="h-9 w-full" />
+                  <Skeleton className="h-9 w-2/3" />
+                  <Skeleton className="h-8 w-28" />
+                </CardContent>
+              </Card>
+            </SettingsMain>
+            <SettingsRail>
+              <Card>
+                <CardContent className="space-y-2 pt-4">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-7 w-40" />
+                </CardContent>
+              </Card>
+            </SettingsRail>
+          </SettingsGrid>
         ) : (
-          <>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-                <CardTitle>当前账号</CardTitle>
-                {me ? (
-                  <Badge variant={me.default_password_in_use ? "high" : "low"}>
-                    {me.default_password_in_use ? "仍在使用出厂口令" : "口令已修改"}
-                  </Badge>
-                ) : null}
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {me ? (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                    <span className="font-medium text-foreground">{me.username}</span>
-                    <Badge variant="outline">{me.role || "admin"}</Badge>
-                  </div>
-                ) : (
-                  <EmptyState
-                    size="compact"
-                    tone={errs.isFailed(SRC.me) ? "danger" : "muted"}
-                    title={emptyOrFailed(errs, SRC.me, "还没有读到账号信息")}
-                    hint="下面照样可以改密（改密本身会校验原口令）。"
-                  />
-                )}
-                {me?.default_password_in_use && (
-                  <p
-                    role="alert"
-                    className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
-                  >
-                    仍在使用出厂口令 admin123，请立即修改 —— 只要知道部署地址就能登录，
-                    日志、配置、推送令牌都归它管。
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+          <SettingsGrid>
+            <SettingsMain>
+              <Card>
+                <CardHeader>
+                  <CardTitle>修改口令</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={submit} className="space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label
+                          htmlFor="account-old-pwd"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          原密码 <span aria-hidden="true">*</span>
+                        </label>
+                        <Input
+                          id="account-old-pwd"
+                          type="password"
+                          autoComplete="current-password"
+                          aria-required="true"
+                          value={oldPwd}
+                          onChange={(e) => setOldPwd(e.target.value)}
+                          placeholder="当前口令"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="account-new-pwd"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          新密码（至少 {min} 个字符） <span aria-hidden="true">*</span>
+                        </label>
+                        <Input
+                          id="account-new-pwd"
+                          type="password"
+                          autoComplete="new-password"
+                          aria-required="true"
+                          value={newPwd}
+                          onChange={(e) => setNewPwd(e.target.value)}
+                          placeholder={`至少 ${min} 位，别再用 admin123`}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="account-confirm-pwd"
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          再输一遍新密码 <span aria-hidden="true">*</span>
+                        </label>
+                        <Input
+                          id="account-confirm-pwd"
+                          type="password"
+                          autoComplete="new-password"
+                          aria-required="true"
+                          value={confirmPwd}
+                          onChange={(e) => setConfirmPwd(e.target.value)}
+                          placeholder="两次要一致"
+                        />
+                      </div>
+                    </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>修改口令</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={submit} className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div>
-                      <label
-                        htmlFor="account-old-pwd"
-                        className="mb-1 block text-xs text-muted-foreground"
+                    {/* 结果提示固定在操作区上方：成功/失败都用一行提示条，不再是一串彩色小字 */}
+                    {msg && (
+                      <p
+                        role="status"
+                        className="rounded-xs border border-sev-ok-bd bg-sev-ok-bg px-3 py-2 text-xs text-sev-ok-fg"
                       >
-                        原密码 <span aria-hidden="true">*</span>
-                      </label>
-                      <Input
-                        id="account-old-pwd"
-                        type="password"
-                        autoComplete="current-password"
-                        aria-required="true"
-                        value={oldPwd}
-                        onChange={(e) => setOldPwd(e.target.value)}
-                        placeholder="当前口令"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="account-new-pwd"
-                        className="mb-1 block text-xs text-muted-foreground"
+                        {msg}
+                      </p>
+                    )}
+                    {err && (
+                      <p
+                        role="alert"
+                        className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
                       >
-                        新密码（至少 {min} 个字符） <span aria-hidden="true">*</span>
-                      </label>
-                      <Input
-                        id="account-new-pwd"
-                        type="password"
-                        autoComplete="new-password"
-                        aria-required="true"
-                        value={newPwd}
-                        onChange={(e) => setNewPwd(e.target.value)}
-                        placeholder={`至少 ${min} 位，别再用 admin123`}
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="account-confirm-pwd"
-                        className="mb-1 block text-xs text-muted-foreground"
-                      >
-                        再输一遍新密码 <span aria-hidden="true">*</span>
-                      </label>
-                      <Input
-                        id="account-confirm-pwd"
-                        type="password"
-                        autoComplete="new-password"
-                        aria-required="true"
-                        value={confirmPwd}
-                        onChange={(e) => setConfirmPwd(e.target.value)}
-                        placeholder="两次要一致"
-                      />
-                    </div>
-                  </div>
+                        {err}
+                      </p>
+                    )}
 
-                  {/* 结果提示固定在操作区上方：成功/失败都用一行提示条，不再是一串彩色小字 */}
-                  {msg && (
-                    <p
-                      role="status"
-                      className="rounded-xs border border-sev-ok-bd bg-sev-ok-bg px-3 py-2 text-xs text-sev-ok-fg"
-                    >
-                      {msg}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="submit" size="sm" disabled={busy || !oldPwd || !newPwd}>
+                        {busy ? "提交中…" : "修改口令"}
+                      </Button>
+                    </div>
+                    {note && <p className="text-xs text-muted-foreground">{note}</p>}
+                    <p className="text-xs text-muted-foreground">
+                      改完这一次就要用新口令登录；当前浏览器里已签发的令牌仍然有效到它自己过期
+                      （无状态 JWT，服务端不做吊销），要立刻全部失效需要更换 ST_JWT_SECRET 并重启后端。
                     </p>
+                  </form>
+                </CardContent>
+              </Card>
+            </SettingsMain>
+
+            <SettingsRail>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+                  <CardTitle>当前账号</CardTitle>
+                  {me ? (
+                    <Badge variant={me.default_password_in_use ? "high" : "low"}>
+                      {me.default_password_in_use ? "仍在使用出厂口令" : "口令已修改"}
+                    </Badge>
+                  ) : null}
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {me ? (
+                    <div className="flex flex-wrap items-center gap-2 rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                      <span className="font-medium text-foreground">{me.username}</span>
+                      <Badge variant="outline">{me.role || "admin"}</Badge>
+                    </div>
+                  ) : (
+                    <EmptyState
+                      size="compact"
+                      tone={errs.isFailed(SRC.me) ? "danger" : "muted"}
+                      title={emptyOrFailed(errs, SRC.me, "还没有读到账号信息")}
+                      hint="左边照样可以改密（改密本身会校验原口令）。"
+                    />
                   )}
-                  {err && (
+                  {me?.default_password_in_use && (
                     <p
                       role="alert"
                       className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
                     >
-                      {err}
+                      仍在使用出厂口令 admin123，请立即修改 —— 只要知道部署地址就能登录，
+                      日志、配置、推送令牌都归它管。
                     </p>
                   )}
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button type="submit" size="sm" disabled={busy || !oldPwd || !newPwd}>
-                      {busy ? "提交中…" : "修改口令"}
-                    </Button>
-                  </div>
-                  {note && <p className="text-xs text-muted-foreground">{note}</p>}
-                  <p className="text-xs text-muted-foreground">
-                    改完这一次就要用新口令登录；当前浏览器里已签发的令牌仍然有效到它自己过期
-                    （无状态 JWT，服务端不做吊销），要立刻全部失效需要更换 ST_JWT_SECRET 并重启后端。
-                  </p>
-                </form>
-              </CardContent>
-            </Card>
-          </>
+                </CardContent>
+              </Card>
+            </SettingsRail>
+          </SettingsGrid>
         )}
       </Section>
     </div>
