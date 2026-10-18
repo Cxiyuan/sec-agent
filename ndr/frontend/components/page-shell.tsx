@@ -41,9 +41,12 @@ export function PageShell({
       <Nav />
       <main
         className={cn(
-          "pb-4 pt-[4.25rem] transition-[margin] duration-150",
+          // 顶部偏移 4.25rem = 页头 h-14（3.5rem）+ 0.75rem 呼吸；改页头高度时一起改。
+          // 左右留白在窄屏收到 16px：1366 宽的笔记本上挂着 240px 侧栏时，24px 内边距
+          // 会明显吃掉表格列宽。
+          "pb-6 pt-[4.25rem] transition-[margin] duration-150",
           hasSidebar ? "ml-60" : "ml-0",
-          fluid ? "px-3" : "px-6",
+          fluid ? "px-3" : "px-4 md:px-6",
           fill && "flex h-screen flex-col overflow-hidden",
         )}
       >
@@ -54,7 +57,7 @@ export function PageShell({
         {desc ? <p className="sr-only">{desc}</p> : null}
         <div
           className={cn(
-            fill ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-4",
+            fill ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-6",
             !fluid && "mx-auto w-full max-w-[1500px]",
           )}
         >

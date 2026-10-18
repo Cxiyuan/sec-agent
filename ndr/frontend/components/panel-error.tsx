@@ -90,11 +90,16 @@ export async function loadInto<T>(
   }
 }
 
-/** 统一的失败提示条：列出挂掉的接口，并说清「现在看到的可能不是最新状态」。 */
+/** 统一的失败提示条：列出挂掉的接口，并说清「现在看到的可能不是最新状态」。
+ *  配色用严重度三件套（与徽章、空态同一套），不要用 destructive 透明度叠色 ——
+ *  半透明红叠在 canvas 上会脏，且在暗色端不可控。 */
 export function PanelError({ errors }: { errors: PanelErrors }) {
   if (!errors.has) return null;
   return (
-    <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+    <p
+      role="alert"
+      className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
+    >
       {errors.message} —— 页面显示的可能不是最新状态（后端异常或网络不通，不是「没有数据」）。
     </p>
   );

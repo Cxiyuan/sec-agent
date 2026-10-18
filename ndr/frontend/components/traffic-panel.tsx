@@ -6,21 +6,25 @@ import {
   Button,
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
   Chart,
+  ChartSkeleton,
+  Drawer,
+  EmptyState,
+  Section,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
   apiFetch,
+  chartTokens,
   formatDateTime,
 } from "@shentong/ui";
 import type { EChartsOption } from "echarts";
 import { formatBytes } from "@/components/status-charts";
-import { ArrowLeftRight, X } from "lucide-react";
+import { ArrowLeftRight } from "lucide-react";
 
 import { PanelError, usePanelErrors } from "@/components/panel-error";
 import { useAliases } from "@/lib/aliases";
@@ -108,7 +112,7 @@ function UpDownBar({ out, inb }: { out: number; inb: number }) {
   const outPct = Math.round((out / total) * 100);
   return (
     <div className="min-w-[110px]">
-      <div className="flex h-2 overflow-hidden rounded-full bg-muted">
+      <div className="flex h-2 overflow-hidden rounded-full bg-surface-1">
         <span className="bg-primary" style={{ width: `${outPct}%` }} title={`上行 ${formatBytes(out)}`} />
         <span className="bg-sev-ok-fg" style={{ width: `${100 - outPct}%` }} title={`下行 ${formatBytes(inb)}`} />
       </div>
@@ -188,6 +192,8 @@ export function TrafficPanel({ view }: { view: View }) {
   // - 线路可读：鼠标移到线路上提示**上行/下行各多少**。
   const graphOption = React.useMemo<EChartsOption>(() => {
     if (!peers) return {};
+    // 颜色从 chartTokens() 取（原来是 5 个硬编码 hex）：图表蓝必须等于 UI 蓝，切暗色要跟着变
+    const t = chartTokens();
     const center = peers.center;
     const peersOnly = peers.nodes.filter((n) => n.ip !== center);
     const rings = peersOnly.length > 12 ? [230, 360] : [260];
@@ -206,8 +212,8 @@ export function TrafficPanel({ view }: { view: View }) {
         symbol: SERVER_ICON,
         symbolSize: [56, 56],
         symbolOffset: [0, 0],
-        itemStyle: { color: "#1d4ed8" },
-        label: { show: true, position: "bottom", fontSize: 11, fontWeight: "bold", color: "#0f172a" },
+        itemStyle: { color: t.series[0] },
+        label: { show: true, position: "bottom", fontSize: 11, fontWeight: "bold", color: t.fg },
         category: "中心",
       },
     ];
@@ -225,8 +231,8 @@ export function TrafficPanel({ view }: { view: View }) {
         y: Math.sin(angle) * radius,
         symbol: SERVER_ICON,
         symbolSize: [26 + weight * 14, 26 + weight * 14],
-        itemStyle: { color: node.internal ? "#0ea5e9" : "#94a3b8" },
-        label: { show: true, position: "bottom", fontSize: 9, color: "#334155" },
+        itemStyle: { color: node.internal ? t.series[1] : t.axis },
+        label: { show: true, position: "bottom", fontSize: 9, color: t.axis },
         category: node.internal ? "网段内" : "网段外",
       });
     });
@@ -239,7 +245,7 @@ export function TrafficPanel({ view }: { view: View }) {
       bytesIn: (e as { bytes_in?: number }).bytes_in ?? 0,
       lineStyle: {
         width: Math.max(1, Math.min(7, Math.log10(1 + e.bytes) / 1.6)),
-        color: "#94a3b8",
+        color: t.track,
         opacity: 0.55,
         curveness: 0.06,
       },
@@ -288,22 +294,24 @@ export function TrafficPanel({ view }: { view: View }) {
     <div className="space-y-4">
       <PanelError errors={errs} />
 
-      <Card>
-        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 pb-2">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ArrowLeftRight className="h-4 w-4 text-primary" />
+      {/* L1 区块：视图名 + 口径说明交给 Section，时间范围/条数/刷新放 extra。
+          三个视图共用这一套工具条，切换视图时控件位置不跳（原来标题和控件挤在卡片头部）。 */}
+      <Section
+        title={
+          <span className="flex items-center gap-2">
+            <ArrowLeftRight className="h-4 w-4 text-primary" aria-hidden="true" />
             {meta.title}
-            <span className="text-xs font-normal text-muted-foreground">
-              {meta.subject} ←→ {meta.peer}
-            </span>
-          </CardTitle>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <label>
+          </span>
+        }
+        description={`${meta.subject} ←→ ${meta.peer}`}
+        extra={
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs text-muted-foreground">
               时间范围
               <select
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
-                className="ml-1 h-8 rounded-md border bg-card px-2 text-sm text-foreground"
+                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
               >
                 <option value={15}>15 分钟</option>
                 <option value={60}>1 小时</option>
@@ -314,12 +322,12 @@ export function TrafficPanel({ view }: { view: View }) {
                 <option value={43200}>最近 30 天</option>
               </select>
             </label>
-            <label>
+            <label className="text-xs text-muted-foreground">
               条数
               <select
                 value={limit}
                 onChange={(e) => setLimit(Number(e.target.value))}
-                className="ml-1 h-8 rounded-md border bg-card px-2 text-sm text-foreground"
+                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
               >
                 {[50, 100, 200, 300].map((n) => (
                   <option key={n} value={n}>
@@ -332,158 +340,154 @@ export function TrafficPanel({ view }: { view: View }) {
               {loading ? "统计中…" : "刷新"}
             </Button>
           </div>
-        </CardHeader>
-        <CardContent className="space-y-2 p-0">
-          {data?.error ? (
-            <p className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              {data.error}
-            </p>
-          ) : null}
-          {data?.warning ? (
-            <p className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              {data.warning}
-            </p>
-          ) : null}
-          {data?.note ? (
-            <p className="mx-4 mt-3 rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
-              {data.note}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="whitespace-nowrap">主机名（IP）</TableHead>
-                  <TableHead className="whitespace-nowrap">总流量</TableHead>
-                  <TableHead className="whitespace-nowrap">上/下行</TableHead>
-                  {view === "lateral" ? null : (
-                    <TableHead className="whitespace-nowrap">
-                      {view === "outbound" ? "访问地域 TOP5" : "外连地域 TOP5"}
-                    </TableHead>
-                  )}
-                  {view === "outbound" ? null : (
-                    <TableHead className="whitespace-nowrap">不同对端 IP</TableHead>
-                  )}
-                  <TableHead className="whitespace-nowrap">应用 TOP10</TableHead>
-                  <TableHead className="whitespace-nowrap">
-                    {view === "outbound" ? "被访问端口 TOP10" : "对端端口 TOP10"}
-                  </TableHead>
-                  <TableHead className="whitespace-nowrap">最新活跃</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((row) => (
-                  <TableRow key={row.ip}>
-                    <TableCell className="whitespace-nowrap">
-                      {/* 主机名(IP) 整块可点：点开右侧抽屉看连接拓扑（2026-10 用户要求，
-                          不再单独给一列「拓扑」按钮） */}
-                      <button
-                        type="button"
-                        title="点击查看该 IP 的连接拓扑"
-                        onClick={() => void openPeers(row.ip)}
-                        className="cursor-pointer text-left text-primary underline-offset-2 hover:underline"
-                      >
-                        <span className="font-medium">{row.hostname || row.ip}</span>
-                        {row.hostname ? (
-                          <span className="ml-1 font-mono text-xs text-primary/80">({row.ip})</span>
-                        ) : null}
-                      </button>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs">
-                      {formatBytes(row.bytes_total)}
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        {row.conns} 条
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <UpDownBar out={row.bytes_out} inb={row.bytes_in} />
-                    </TableCell>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-2 p-0 pt-3">
+            {/* 告警条用严重度三件套（原来的 destructive 透明度叠色在暗色端不可控） */}
+            {data?.error ? (
+              <p className="mx-4 rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
+                {data.error}
+              </p>
+            ) : null}
+            {data?.warning ? (
+              <p className="mx-4 rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
+                {data.warning}
+              </p>
+            ) : null}
+            {data?.note ? (
+              <p className="mx-4 rounded-xs border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
+                {data.note}
+              </p>
+            ) : null}
+
+            {!data && !errs.has ? (
+              /* 首次加载：画表格骨架，不要把「正在统计」显示成「没有流量」 */
+              <TableSkeleton rows={8} cols={6} />
+            ) : rows.length === 0 ? (
+              <EmptyState
+                title={errs.isFailed(SRC.ips) ? "读取失败（见上方错误条）" : "该时间段内没有匹配的流量"}
+                hint={
+                  errs.isFailed(SRC.ips)
+                    ? "点「刷新」重试；后端异常或网络不通时页面上的数字可能不是最新状态"
+                    : "换一个时间范围，或把「条数」调大再试"
+                }
+                tone={errs.isFailed(SRC.ips) ? "danger" : "muted"}
+              />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="whitespace-nowrap">主机名（IP）</TableHead>
+                    <TableHead className="whitespace-nowrap">总流量</TableHead>
+                    <TableHead className="whitespace-nowrap">上/下行</TableHead>
                     {view === "lateral" ? null : (
-                      <TableCell className="max-w-[200px]">
-                        {/* 对外业务：客户端的访问地域；外连：**目的 IP** 的地域（用户 2026-10 要求） */}
-                        <div className="flex flex-wrap gap-1">
-                          {(row.regions.length ? row.regions : [{ region: "未知", count: 0 }])
-                            .slice(0, 5)
-                            .map((r) => (
-                              <span
-                                key={r.region}
-                                className="rounded-xs bg-surface-1 px-1.5 py-0.5 text-xs text-muted-foreground"
-                                title={
-                                  view === "egress"
-                                    ? "按对端目的 IP 统计的地域出现次数"
-                                    : "按客户端 IP 统计的地域出现次数"
-                                }
-                              >
-                                {r.region}
-                                {r.count ? `（${r.count}）` : ""}
-                              </span>
-                            ))}
-                        </div>
-                      </TableCell>
+                      <TableHead className="whitespace-nowrap">
+                        {view === "outbound" ? "访问地域 TOP5" : "外连地域 TOP5"}
+                      </TableHead>
                     )}
                     {view === "outbound" ? null : (
-                      <TableCell className="whitespace-nowrap text-xs">
-                        <Badge variant="secondary">{row.peers}</Badge>
-                      </TableCell>
+                      <TableHead className="whitespace-nowrap">不同对端 IP</TableHead>
                     )}
-                    <TableCell className="max-w-[260px]">
-                      <PortChips ports={row.ports} />
-                    </TableCell>
-                    <TableCell className="max-w-[260px]">
-                      <PortChips ports={row.ports} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                      {formatDateTime(row.last_seen)}
-                    </TableCell>
+                    <TableHead className="whitespace-nowrap">应用 TOP10</TableHead>
+                    <TableHead className="whitespace-nowrap">
+                      {view === "outbound" ? "被访问端口 TOP10" : "对端端口 TOP10"}
+                    </TableHead>
+                    <TableHead className="whitespace-nowrap">最新活跃</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-          {rows.length === 0 ? (
-            <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-              {loading ? "统计中…" : errs.has ? "读取失败（见上方错误条）" : "该时间段内没有匹配的流量"}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row) => (
+                    <TableRow key={row.ip}>
+                      <TableCell className="whitespace-nowrap">
+                        {/* 主机名(IP) 整块可点：点开右侧抽屉看连接拓扑（2026-10 用户要求，
+                            不再单独给一列「拓扑」按钮） */}
+                        <button
+                          type="button"
+                          title="点击查看该 IP 的连接拓扑"
+                          onClick={() => void openPeers(row.ip)}
+                          className="cursor-pointer text-left text-primary underline-offset-2 hover:underline"
+                        >
+                          <span className="font-medium">{row.hostname || row.ip}</span>
+                          {row.hostname ? (
+                            <span className="ml-1 font-mono text-xs text-primary/80">({row.ip})</span>
+                          ) : null}
+                        </button>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap tabular-nums">
+                        {formatBytes(row.bytes_total)}
+                        <span className="ml-1 text-xs text-muted-foreground">{row.conns} 条</span>
+                      </TableCell>
+                      <TableCell>
+                        <UpDownBar out={row.bytes_out} inb={row.bytes_in} />
+                      </TableCell>
+                      {view === "lateral" ? null : (
+                        <TableCell className="max-w-[200px]">
+                          {/* 对外业务：客户端的访问地域；外连：**目的 IP** 的地域（用户 2026-10 要求） */}
+                          <div className="flex flex-wrap gap-1">
+                            {(row.regions.length ? row.regions : [{ region: "未知", count: 0 }])
+                              .slice(0, 5)
+                              .map((r) => (
+                                <span
+                                  key={r.region}
+                                  className="rounded-xs bg-surface-1 px-1.5 py-0.5 text-xs text-muted-foreground"
+                                  title={
+                                    view === "egress"
+                                      ? "按对端目的 IP 统计的地域出现次数"
+                                      : "按客户端 IP 统计的地域出现次数"
+                                  }
+                                >
+                                  {r.region}
+                                  {r.count ? `（${r.count}）` : ""}
+                                </span>
+                              ))}
+                          </div>
+                        </TableCell>
+                      )}
+                      {view === "outbound" ? null : (
+                        <TableCell className="whitespace-nowrap tabular-nums">
+                          <Badge variant="secondary">{row.peers}</Badge>
+                        </TableCell>
+                      )}
+                      <TableCell className="max-w-[260px]">
+                        <PortChips ports={row.ports} />
+                      </TableCell>
+                      <TableCell className="max-w-[260px]">
+                        <PortChips ports={row.ports} />
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                        {formatDateTime(row.last_seen)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </Section>
 
-      {/* 右侧抽屉：某个 IP 与对端的拓扑 */}
-      {peers ? (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <button
-            type="button"
-            aria-label="关闭"
-            className="flex-1 bg-black/40"
-            onClick={() => setPeers(null)}
-          />
-          <aside className="flex h-full w-[720px] max-w-[94vw] flex-col border-l border-border bg-card shadow-3">
-            <div className="flex items-center justify-between border-b px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">
-                  {meta.title} · 连接拓扑
-                </p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {peers.center} · 最近 {minutes} 分钟 · {peers.nodes.length - 1} 个对端
-                </p>
-              </div>
-              <Button size="sm" variant="ghost" onClick={() => setPeers(null)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="min-h-0 flex-1 p-2">
-              {peersLoading ? (
-                <p className="p-4 text-xs text-muted-foreground">加载中…</p>
-              ) : peers.error ? (
-                <p className="p-4 text-xs text-destructive">{peers.error}</p>
-              ) : (
-                <Chart option={graphOption} height="100%" />
-              )}
-            </div>
-            <div className="max-h-40 overflow-auto border-t px-4 py-2 text-xs text-muted-foreground">
+      {/* 右侧抽屉：某个 IP 与对端的拓扑。换共享 Drawer 后焦点陷阱/Esc/锁滚动都齐了；
+          图例放 footer，抽屉正文只放图，滚动条不会和图抢位置。 */}
+      <Drawer
+        open={!!peers}
+        onClose={() => setPeers(null)}
+        widthClass="w-[720px]"
+        title={
+          /* 标题节点用 span：Drawer 把 title 放进 <h2>，块级元素套在标题里不合语法 */
+          <span className="flex min-w-0 flex-col">
+            <span className="text-sm font-medium">{meta.title} · 连接拓扑</span>
+            <span className="truncate font-mono text-xs font-normal text-muted-foreground">
+              {peers?.center} · 最近 {minutes} 分钟 · {(peers?.nodes.length ?? 1) - 1} 个对端
+            </span>
+          </span>
+        }
+        footer={
+          peers ? (
+            <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
               <p className="mb-1">
-                中心：<span className="font-mono text-foreground">{peers.center}</span> ·
-                深蓝 = 中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量 · 悬停线路看上下行
+                中心：<span className="font-mono text-foreground">{peers.center}</span> · 深蓝 =
+                中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量 · 悬停线路看上下行
               </p>
               <div className="flex flex-wrap gap-2">
                 {peers.edges.slice(0, 20).map((e) => (
@@ -493,9 +497,17 @@ export function TrafficPanel({ view }: { view: View }) {
                 ))}
               </div>
             </div>
-          </aside>
-        </div>
-      ) : null}
+          ) : null
+        }
+      >
+        {peersLoading ? (
+          <ChartSkeleton height={360} />
+        ) : peers?.error ? (
+          <EmptyState title="拓扑读取失败" hint={peers.error} tone="danger" />
+        ) : (
+          <Chart option={graphOption} height={420} />
+        )}
+      </Drawer>
     </div>
   );
 }

@@ -48,13 +48,13 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 px-4">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-6 px-4">
       <div className="flex items-center gap-3">
         <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <Shield className="h-5 w-5" />
         </span>
         <div>
-          <p className="text-base font-medium leading-5 text-foreground">深瞳 · 安全分析智能体</p>
+          <h1 className="text-base font-medium leading-5 text-foreground">深瞳 · 安全分析智能体</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">账号会话画像与威胁研判</p>
         </div>
       </div>
@@ -103,6 +103,6 @@ export default function LoginPage() {
       </Card>
 
       <p className="text-xs text-muted-foreground">内网部署 · 访问与操作均记入审计日志</p>
-    </div>
+    </main>
   );
 }

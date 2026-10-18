@@ -2,24 +2,26 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
-import { Badge } from "@shentong/ui";
-import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
-import { Input } from "@shentong/ui";
 import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  EmptyState,
+  Input,
+  Section,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
 } from "@shentong/ui";
 import { ApiError, apiFetch, errorText, type SkillItem, type SkillTool } from "@/lib/api";
 
-const INPUT_CLS =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
 const TEXTAREA_CLS =
-  "w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono";
+  "w-full rounded-sm border border-input bg-surface-2 px-3 py-2 text-sm font-mono";
 
 // 常见事件类型提示（可自由输入其它）
 const EVENT_TYPE_HINTS = [
@@ -43,7 +45,8 @@ const EVENT_TYPE_HINTS = [
 ];
 
 export default function SkillsPage() {
-  const [items, setItems] = React.useState<SkillItem[]>([]);
+  // null = 首屏未读（骨架）；[] = 读到空（空态）
+  const [items, setItems] = React.useState<SkillItem[] | null>(null);
   const [tools, setTools] = React.useState<SkillTool[]>([]);
   const [msg, setMsg] = React.useState("");
 
@@ -65,7 +68,10 @@ export default function SkillsPage() {
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    load().catch((e) => {
+      setItems((x) => x ?? []);
+      setMsg(e instanceof Error ? e.message : "技能列表读取失败");
+    });
   }, []);
 
   function resetForm() {
@@ -161,194 +167,226 @@ export default function SkillsPage() {
   }
 
   const showingForm = isNew || editing !== null;
+  const list = items ?? [];
 
   return (
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-xl font-medium">
-            技能库{" "}
-            <span className="text-sm text-muted-foreground">
-              （安全事件分析 SOP + 脚本工具，按事件类型路由）
-            </span>
-          </h1>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => load()}>
-              刷新
-            </Button>
-            <Button onClick={openNew}>新建技能</Button>
-          </div>
-        </div>
-        {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
+        <h1 className="sr-only">技能库</h1>
+        <div className="space-y-4">
+          <Section
+            title="技能库"
+            description="安全事件分析 SOP + 脚本工具，按事件类型路由"
+            extra={
+              <>
+                <Button size="sm" variant="outline" onClick={() => load()}>
+                  刷新
+                </Button>
+                <Button size="sm" onClick={openNew}>
+                  新建技能
+                </Button>
+              </>
+            }
+          >
+            {msg && <p className="text-xs text-primary">{msg}</p>}
+          </Section>
 
-        {showingForm && (
-          <Card className="mb-4">
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-sm">{isNew ? "新建技能" : `编辑技能：${name}`}</CardTitle>
-              <Button size="sm" variant="outline" onClick={closeForm}>
-                取消
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">技能名 *</label>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} className={INPUT_CLS} />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">优先级（越小越先）</label>
-                  <Input value={priority} onChange={(e) => setPriority(e.target.value)} className={INPUT_CLS} />
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">描述</label>
-                <Input value={description} onChange={(e) => setDescription(e.target.value)} className={INPUT_CLS} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  事件类型 *（逗号分隔，命中即路由到本技能）
-                </label>
-                <Input
-                  value={eventTypes}
-                  onChange={(e) => setEventTypes(e.target.value)}
-                  className={INPUT_CLS}
-                  list="event-type-hints"
-                  placeholder="如 brute_force, port_scan"
-                />
-                <datalist id="event-type-hints">
-                  {EVENT_TYPE_HINTS.map((t) => (
-                    <option key={t} value={t} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  关联脚本工具（确定性执行，结果注入分析）
-                </label>
-                <div className="grid grid-cols-2 gap-2 rounded-md border p-3 md:grid-cols-3">
-                  {tools.map((t) => {
-                    const checked = selTools.includes(t.name);
-                    return (
-                      <label key={t.name} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) =>
-                            setSelTools(
-                              e.target.checked
-                                ? [...selTools, t.name]
-                                : selTools.filter((x) => x !== t.name)
-                            )
-                          }
-                        />
-                        <span>
-                          <span className="font-mono text-xs">{t.name}</span>
-                          <span className="block text-xs text-muted-foreground">
-                            [{t.category}] {t.description}
-                          </span>
-                        </span>
+          {showingForm && (
+            <Section
+              title={isNew ? "新建技能" : `编辑技能：${name}`}
+              extra={
+                <Button size="sm" variant="outline" onClick={closeForm}>
+                  取消
+                </Button>
+              }
+            >
+              <Card>
+                <CardContent className="space-y-3 pt-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="skill-name" className="mb-1 block text-xs text-muted-foreground">
+                        技能名 *
                       </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  SOP 正文 *（事件背景 / 判断要点 / 取证步骤 / 常见误报 / 处置建议）
-                </label>
-                <textarea
-                  value={sop}
-                  onChange={(e) => setSop(e.target.value)}
-                  rows={10}
-                  className={TEXTAREA_CLS}
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-                启用
-              </label>
-              <div className="flex justify-end">
-                <Button onClick={save}>保存</Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">技能列表（共 {items.length} 个）</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>技能</TableHead>
-                  <TableHead>事件类型</TableHead>
-                  <TableHead>工具</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {items.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="max-w-[280px]">
-                      <div className="font-medium">{s.name}</div>
-                      <div className="truncate text-xs text-muted-foreground" title={s.description}>
-                        {s.description}
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-[240px]">
-                      {(s.event_types || []).map((t) => (
-                        <Badge key={t} variant="secondary" className="mr-1">
-                          {t}
-                        </Badge>
+                      <Input id="skill-name" value={name} onChange={(e) => setName(e.target.value)} />
+                    </div>
+                    <div>
+                      <label htmlFor="skill-priority" className="mb-1 block text-xs text-muted-foreground">
+                        优先级（越小越先）
+                      </label>
+                      <Input
+                        id="skill-priority"
+                        value={priority}
+                        onChange={(e) => setPriority(e.target.value)}
+                        className="tabular-nums"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="skill-desc" className="mb-1 block text-xs text-muted-foreground">
+                      描述
+                    </label>
+                    <Input
+                      id="skill-desc"
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="skill-event-types" className="mb-1 block text-xs text-muted-foreground">
+                      事件类型 *（逗号分隔，命中即路由到本技能）
+                    </label>
+                    <Input
+                      id="skill-event-types"
+                      value={eventTypes}
+                      onChange={(e) => setEventTypes(e.target.value)}
+                      list="event-type-hints"
+                      placeholder="如 brute_force, port_scan"
+                    />
+                    <datalist id="event-type-hints">
+                      {EVENT_TYPE_HINTS.map((t) => (
+                        <option key={t} value={t} />
                       ))}
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate font-mono text-xs">
-                      {(s.tools || []).join(", ") || "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={s.source === "builtin" ? "info" : "outline"}>
-                        {s.source === "builtin" ? "内置" : "自定义"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        variant={s.enabled ? "secondary" : "outline"}
-                        onClick={() => toggle(s)}
-                      >
-                        {s.enabled ? "启用" : "停用"}
+                    </datalist>
+                  </div>
+                  <div>
+                    <span className="mb-1 block text-xs text-muted-foreground">
+                      关联脚本工具（确定性执行，结果注入分析）
+                    </span>
+                    <div className="grid grid-cols-1 gap-2 rounded-xs border border-border-subtle bg-surface-1 p-3 sm:grid-cols-2 md:grid-cols-3">
+                      {tools.map((t) => {
+                        const checked = selTools.includes(t.name);
+                        return (
+                          <label key={t.name} className="flex items-start gap-2 text-13">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setSelTools(
+                                  e.target.checked
+                                    ? [...selTools, t.name]
+                                    : selTools.filter((x) => x !== t.name)
+                                )
+                              }
+                            />
+                            <span>
+                              <span className="font-mono text-xs">{t.name}</span>
+                              <span className="block text-xs text-muted-foreground">
+                                [{t.category}] {t.description}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="skill-sop" className="mb-1 block text-xs text-muted-foreground">
+                      SOP 正文 *（事件背景 / 判断要点 / 取证步骤 / 常见误报 / 处置建议）
+                    </label>
+                    <textarea
+                      id="skill-sop"
+                      value={sop}
+                      onChange={(e) => setSop(e.target.value)}
+                      rows={10}
+                      className={TEXTAREA_CLS}
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-13">
+                    <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+                    启用
+                  </label>
+                  <div className="flex justify-end">
+                    <Button size="sm" onClick={save}>
+                      保存
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </Section>
+          )}
+
+          <Section title={`技能列表（共 ${list.length} 个）`}>
+            <Card>
+              <CardContent className="p-0">
+                {items === null ? (
+                  <TableSkeleton rows={6} cols={6} />
+                ) : list.length === 0 ? (
+                  <EmptyState
+                    title="暂无技能"
+                    hint="新建一个技能，或等待内置技能同步完成"
+                    action={
+                      <Button size="sm" onClick={openNew}>
+                        新建技能
                       </Button>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button size="sm" variant="outline" onClick={() => openEdit(s)}>
-                          编辑
-                        </Button>
-                        {s.source !== "builtin" && (
-                          <Button size="sm" variant="destructive" onClick={() => remove(s)}>
-                            删除
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {items.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                      暂无技能
-                    </TableCell>
-                  </TableRow>
+                    }
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>技能</TableHead>
+                        <TableHead>事件类型</TableHead>
+                        <TableHead>工具</TableHead>
+                        <TableHead>来源</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead>操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {list.map((s) => (
+                        <TableRow key={s.id}>
+                          <TableCell className="max-w-[280px]">
+                            <div className="font-medium">{s.name}</div>
+                            <div className="truncate text-xs text-muted-foreground" title={s.description}>
+                              {s.description}
+                            </div>
+                          </TableCell>
+                          <TableCell className="max-w-[240px]">
+                            {(s.event_types || []).map((t) => (
+                              <Badge key={t} variant="secondary" className="mr-1">
+                                {t}
+                              </Badge>
+                            ))}
+                          </TableCell>
+                          <TableCell className="max-w-[200px] truncate font-mono text-xs">
+                            {(s.tools || []).join(", ") || "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={s.source === "builtin" ? "info" : "outline"}>
+                              {s.source === "builtin" ? "内置" : "自定义"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => toggle(s)}
+                            >
+                              {s.enabled ? "启用" : "停用"}
+                            </Button>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="outline" onClick={() => openEdit(s)}>
+                                编辑
+                              </Button>
+                              {s.source !== "builtin" && (
+                                <Button size="sm" variant="destructive" onClick={() => remove(s)}>
+                                  删除
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          </Section>
+        </div>
       </main>
     </div>
   );

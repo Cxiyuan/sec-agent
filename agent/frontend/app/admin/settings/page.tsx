@@ -4,7 +4,14 @@ import * as React from "react";
 import { Nav } from "@/components/nav";
 import { EdgePanel } from "@/components/edge-panel";
 import { CloudPanel } from "@/components/cloud-panel";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@shentong/ui";
+import {
+  Button,
+  Card,
+  CardContent,
+  Input,
+  Section,
+  Skeleton,
+} from "@shentong/ui";
 import { apiFetch } from "@/lib/api";
 
 interface Field {
@@ -118,11 +125,12 @@ const GROUPS: { name: string; fields: Field[] }[] = [
 ];
 
 const SELECT_CLS =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
+  "h-9 w-full rounded-sm border border-input bg-surface-2 px-3 text-sm";
 
 export default function SettingsPage() {
   const [values, setValues] = React.useState<Record<string, unknown>>({});
   const [saved, setSaved] = React.useState<Record<string, unknown>>({});
+  const [loaded, setLoaded] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -132,7 +140,8 @@ export default function SettingsPage() {
         setValues(d.items);
         setSaved(d.items);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoaded(true));
   }, []);
 
   function set(key: string, v: unknown) {
@@ -201,6 +210,7 @@ export default function SettingsPage() {
           step="any"
           value={v === undefined || v === null ? "" : String(v)}
           onChange={(e) => set(f.key, e.target.value)}
+          className="tabular-nums"
         />
       );
     }
@@ -217,38 +227,60 @@ export default function SettingsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-xl font-medium">系统配置</h1>
-          <Button onClick={save} disabled={busy}>
-            {busy ? "保存中…" : "保存"}
-          </Button>
-        </div>
-        {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
-
         <div className="space-y-4">
-          <CloudPanel />
-          <EdgePanel />
-          {GROUPS.map((g) => (
-            <Card key={g.name}>
-              <CardHeader>
-                <CardTitle className="text-sm">{g.name}</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {g.fields.map((f) => (
-                  <div key={f.key}>
-                    <label
-                      htmlFor={f.key}
-                      className="mb-1 block text-xs text-muted-foreground"
-                    >
-                      {f.label}
-                    </label>
-                    {renderField(f)}
-                    {f.hint && <p className="mt-1 text-xs text-muted-foreground">{f.hint}</p>}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          ))}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-xl font-medium">系统配置</h1>
+            <Button size="sm" onClick={save} disabled={busy}>
+              {busy ? "保存中…" : "保存"}
+            </Button>
+          </div>
+          {msg && <p className="text-xs text-primary">{msg}</p>}
+
+          <Section title="云端模型（日常分析 / 深度分析 / 向量）">
+            <CloudPanel />
+          </Section>
+
+          <Section title="边缘模型（本地 llama-server）">
+            <EdgePanel />
+          </Section>
+
+          {!loaded &&
+            Array.from({ length: 2 }).map((_, i) => (
+              <Section key={i} title="读取配置…">
+                <Card>
+                  <CardContent className="grid grid-cols-1 gap-3 pt-4 sm:grid-cols-3">
+                    {Array.from({ length: 6 }).map((_, j) => (
+                      <div key={j} className="space-y-2">
+                        <Skeleton className="h-3 w-1/2" />
+                        <Skeleton className="h-9 w-full" />
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </Section>
+            ))}
+
+          {loaded &&
+            GROUPS.map((g) => (
+              <Section key={g.name} title={g.name}>
+                <Card>
+                  <CardContent className="grid grid-cols-1 gap-3 pt-4 sm:grid-cols-3">
+                    {g.fields.map((f) => (
+                      <div key={f.key}>
+                        <label
+                          htmlFor={f.key}
+                          className="mb-1 block text-xs text-muted-foreground"
+                        >
+                          {f.label}
+                        </label>
+                        {renderField(f)}
+                        {f.hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{f.hint}</p>}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </Section>
+            ))}
         </div>
       </main>
     </div>

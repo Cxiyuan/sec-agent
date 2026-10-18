@@ -37,12 +37,13 @@ export function Nav() {
   const router = useRouter();
 
   return (
-    <aside className="fixed left-0 top-0 flex h-screen w-56 flex-col border-r bg-card">
-      <div className="flex items-center gap-2 border-b p-4">
-        <Shield className="h-6 w-6 text-primary" />
-        <span className="text-base font-medium">深瞳</span>
+    <aside className="fixed left-0 top-0 flex h-screen w-56 flex-col border-r border-border bg-card">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Shield className="h-5 w-5 text-primary" />
+        <span className="text-base font-medium text-foreground">深瞳</span>
       </div>
-      <nav className="flex-1 space-y-1 overflow-auto p-3">
+
+      <nav className="flex-1 space-y-0.5 overflow-auto p-3">
         {items.map((it) => {
           const active =
             pathname === it.href ||
@@ -51,24 +52,32 @@ export function Nav() {
             <Link
               key={it.href}
               href={it.href}
+              aria-current={active ? "page" : undefined}
               className={cn(
-                "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-                // 选中态用"淡主色底 + 主色字"，与 NDR 侧边栏同一套：整块实心主色填充
-                // 在暗色主题下是一大块高亮蓝，会把旁边的告警色全压掉。
+                // 选中态与 NDR 侧边栏同一套：淡主色底 + 左侧 2px 竖条。
+                // 竖条常驻（未选中时透明），切换时文字不会横向跳动。
+                "flex items-center gap-2 rounded-sm border-l-2 px-3 py-2 text-sm transition-colors",
                 active
-                  ? "bg-primary/10 font-medium text-primary"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "border-primary bg-primary/10 font-medium text-primary"
+                  : "border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               )}
             >
-              <it.icon className="h-4 w-4" />
-              {it.label}
+              <it.icon
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  active ? "text-primary" : "text-muted-foreground/70",
+                )}
+              />
+              <span className="truncate">{it.label}</span>
             </Link>
           );
         })}
       </nav>
-      <div className="border-t p-3">
+
+      <div className="border-t border-border-subtle p-3">
         <Button
           variant="ghost"
+          size="sm"
           className="w-full justify-start"
           onClick={() => {
             clearToken();

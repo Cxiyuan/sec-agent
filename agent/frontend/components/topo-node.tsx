@@ -114,8 +114,10 @@ export function TopoNodeView({ data, selected }: NodeProps<TopoFlowNode>) {
   return (
     <div
       className={[
-        "min-w-[150px] rounded-md border border-border bg-card px-3 py-2 shadow-1",
-        selected ? "border-primary ring-1 ring-primary" : "border-border",
+        // 节点卡与卡片同一套材质语言：1px 描边 + 极浅投影；
+        // 左侧 4px 色条表示设备类型（类型色来自节点类型配置，不是语义色）。
+        "min-w-[160px] rounded-sm border bg-card px-3 py-2 shadow-1",
+        selected ? "border-primary ring-1 ring-primary/40" : "border-border",
       ].join(" ")}
       style={{ borderLeft: `4px solid ${color}` }}
     >
@@ -125,8 +127,10 @@ export function TopoNodeView({ data, selected }: NodeProps<TopoFlowNode>) {
       <Handle id="l" type="source" position={Position.Left} style={handleStyle} />
 
       <div className="flex items-center gap-2">
-        <Icon size={18} color={color} />
-        <span className="text-sm font-medium">{data.label || "未命名设备"}</span>
+        <Icon size={16} color={color} />
+        <span className="truncate text-13 font-medium text-foreground">
+          {data.label || "未命名设备"}
+        </span>
       </div>
       {data.zone ? (
         <div className="mt-0.5 text-xs text-muted-foreground">区域：{data.zone}</div>

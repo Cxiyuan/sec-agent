@@ -149,7 +149,7 @@ export function TopBar() {
                 href={section.href}
                 title={section.desc}
                 className={cn(
-                  "flex items-center gap-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                  "flex items-center gap-1 rounded-sm px-3 py-1.5 text-sm transition-colors",
                   active
                     ? "bg-primary/10 font-medium text-primary"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -167,7 +167,7 @@ export function TopBar() {
                       <Link
                         key={item.href}
                         href={item.href}
-                        className="flex items-start gap-2 rounded-md px-3 py-2 hover:bg-accent"
+                        className="flex items-start gap-2 rounded-sm px-3 py-2 hover:bg-accent"
                       >
                         {item.icon ? <item.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" /> : null}
                         <span className="min-w-0">
@@ -193,7 +193,7 @@ export function TopBar() {
             aria-label={notices.length ? `告警 ${notices.length} 条` : "告警"}
             title={notices.length ? "有需要处理的事项" : "暂无告警"}
             onClick={() => setOpen((v) => !v)}
-            className="relative rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className="relative rounded-sm p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <Bell className="h-5 w-5" />
             {notices.length > 0 && (
@@ -213,8 +213,8 @@ export function TopBar() {
                   href={n.href}
                   onClick={() => setOpen(false)}
                   className={
-                    "block rounded-md px-2 py-2 text-xs hover:bg-accent " +
-                    (n.danger ? "text-destructive" : "text-muted-foreground")
+                    "block rounded-sm px-2 py-2 text-13 hover:bg-accent " +
+                    (n.danger ? "text-sev-critical-fg" : "text-muted-foreground")
                   }
                 >
                   {n.text}
@@ -230,7 +230,7 @@ export function TopBar() {
 
         <button
           type="button"
-          className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-primary"
+          className="rounded-sm px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={() => {
             clearToken();
             router.push("/login");

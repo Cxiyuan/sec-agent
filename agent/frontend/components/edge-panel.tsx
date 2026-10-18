@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
+import { Card, CardContent } from "@shentong/ui";
 import { Input } from "@shentong/ui";
+import { Skeleton } from "@shentong/ui";
 import { apiFetch } from "@/lib/api";
 
 interface EdgeInfo {
@@ -16,6 +17,7 @@ interface EdgeInfo {
 
 export function EdgePanel() {
   const [info, setInfo] = React.useState<EdgeInfo | null>(null);
+  const [loading, setLoading] = React.useState(true);
   const [ip, setIp] = React.useState("");
   const [testMsg, setTestMsg] = React.useState("");
   const [saveMsg, setSaveMsg] = React.useState("");
@@ -27,7 +29,8 @@ export function EdgePanel() {
         setInfo(d);
         setIp(d.ip);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   async function test() {
@@ -61,38 +64,41 @@ export function EdgePanel() {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">边缘模型（本地 llama-server）</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 pt-4">
+        {loading && <Skeleton className="h-3 w-64" />}
         {info && (
-          <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+          <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-3">
             <span>模型：{info.model_label}（固化）</span>
-            <span>端口：{info.port}</span>
+            <span className="tabular-nums">端口：{info.port}</span>
             <span>认证：{info.api_key_set ? "已启用" : "未启用"}</span>
           </div>
         )}
-        <div className="flex items-end gap-2">
-          <div className="flex-1">
-            <label className="mb-1 block text-xs text-muted-foreground">边缘模型 IP</label>
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[260px] flex-1">
+            <label htmlFor="edge-ip" className="mb-1 block text-xs text-muted-foreground">
+              边缘模型 IP
+            </label>
             <Input
+              id="edge-ip"
               value={ip}
               onChange={(e) => setIp(e.target.value)}
               placeholder="如 10.0.0.5（本机部署就填 127.0.0.1）"
             />
           </div>
-          <Button variant="outline" onClick={test} disabled={testing}>
+          <Button size="sm" variant="outline" onClick={test} disabled={testing}>
             {testing ? "测试中…" : "测试连接"}
           </Button>
-          <Button onClick={save}>保存</Button>
+          <Button size="sm" onClick={save}>
+            保存
+          </Button>
         </div>
         {info && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs font-mono text-muted-foreground">
             base_url：{info.base_url}（自动拼接 http://IP:{info.port}/v1）
           </p>
         )}
-        {testMsg && <p className="text-sm text-primary">{testMsg}</p>}
-        {saveMsg && <p className="text-sm text-primary">{saveMsg}</p>}
+        {testMsg && <p className="text-xs text-primary">{testMsg}</p>}
+        {saveMsg && <p className="text-xs text-primary">{saveMsg}</p>}
       </CardContent>
     </Card>
   );

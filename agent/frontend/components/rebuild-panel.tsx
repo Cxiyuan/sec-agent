@@ -3,7 +3,8 @@
 import * as React from "react";
 import { Badge } from "@shentong/ui";
 import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
+import { Card, CardContent } from "@shentong/ui";
+import { Section } from "@shentong/ui";
 import { apiFetch, type RebuildDryRun, type RebuildRun } from "@/lib/api";
 import { formatDateTime, statusText } from "@shentong/ui";
 
@@ -85,18 +86,17 @@ export function RebuildPanel() {
   }
 
   return (
-    <Card className="mb-4">
-      <CardHeader>
-        <CardTitle className="text-sm">
-          存量重建（按新规则重算归并）
-          <span className="ml-2 text-xs font-normal text-muted-foreground">
-            先 dry-run 核对，再执行；执行后可用批次号回滚
-          </span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" disabled={busy !== ""} onClick={() => runDry().catch(() => {})}>
+    <Section
+      title="存量重建（按新规则重算归并）"
+      description="先 dry-run 核对，再执行；执行后可用批次号回滚"
+      extra={
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy !== ""}
+            onClick={() => runDry().catch(() => {})}
+          >
             {busy === "dry" ? "计算中…" : "① Dry-run（只算不写）"}
           </Button>
           <Button size="sm" disabled={busy !== "" || !dry} onClick={() => apply().catch(() => {})}>
@@ -105,11 +105,13 @@ export function RebuildPanel() {
           <Button size="sm" variant="ghost" onClick={() => loadRuns().catch(() => {})}>
             刷新批次
           </Button>
-        </div>
-
-        {dry && (
-          <div className="rounded-md border p-3">
-            <div className="flex flex-wrap gap-3 text-xs">
+        </>
+      }
+    >
+      {dry && (
+        <Card>
+          <CardContent className="space-y-3 pt-4">
+            <div className="flex flex-wrap gap-3 text-xs tabular-nums">
               <span>事件组 {dry.groups}</span>
               <span>
                 案件：旧 {dry.old_cases} → 新 <b>{dry.new_cases}</b>
@@ -123,8 +125,8 @@ export function RebuildPanel() {
               <span className="text-muted-foreground">脏域名键案件（旧）：{dry.junk_keys_before}</span>
             </div>
 
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xs bg-surface-1 p-2">
                 <p className="mb-1 text-xs text-muted-foreground">旧案件（成员组最多 10 个）</p>
                 <div className="space-y-1 text-xs">
                   {dry.sample_old.map((o) => (
@@ -136,7 +138,7 @@ export function RebuildPanel() {
                   ))}
                 </div>
               </div>
-              <div>
+              <div className="rounded-xs bg-surface-1 p-2">
                 <p className="mb-1 text-xs text-muted-foreground">新案件（成员组最多 15 个）</p>
                 <div className="space-y-1 text-xs">
                   {dry.sample_new.map((p) => (
@@ -156,39 +158,39 @@ export function RebuildPanel() {
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          </CardContent>
+        </Card>
+      )}
 
-        {runs.length > 0 && (
-          <div className="rounded-md border p-3">
-            <p className="mb-1 text-xs text-muted-foreground">最近批次</p>
-            <div className="space-y-1 text-xs">
-              {runs.map((r) => (
-                <div key={r.id} className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono">{r.id.slice(0, 8)}</span>
-                  <Badge variant={r.status === "finished" ? "outline" : "high"}>{statusText(r.status)}</Badge>
-                  {r.dry_run ? <span className="text-muted-foreground">dry-run</span> : null}
-                  <span className="text-muted-foreground">
-                    {r.started_at ? formatDateTime(r.started_at) : "-"}
-                  </span>
-                  {!r.dry_run && r.status === "finished" && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy !== ""}
-                      onClick={() => rollback(r.id).catch(() => {})}
-                    >
-                      回滚
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+      {runs.length > 0 && (
+        <Card>
+          <CardContent className="space-y-1 pt-4">
+            <p className="text-xs text-muted-foreground">最近批次</p>
+            {runs.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-mono">{r.id.slice(0, 8)}</span>
+                <Badge variant={r.status === "finished" ? "outline" : "high"}>{statusText(r.status)}</Badge>
+                {r.dry_run ? <span className="text-muted-foreground">dry-run</span> : null}
+                <span className="text-muted-foreground">
+                  {r.started_at ? formatDateTime(r.started_at) : "-"}
+                </span>
+                {!r.dry_run && r.status === "finished" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy !== ""}
+                    onClick={() => rollback(r.id).catch(() => {})}
+                  >
+                    回滚
+                  </Button>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
-        {msg && <p className="text-xs text-primary">{msg}</p>}
-      </CardContent>
-    </Card>
+      {msg && <p className="text-xs text-primary">{msg}</p>}
+    </Section>
   );
 }

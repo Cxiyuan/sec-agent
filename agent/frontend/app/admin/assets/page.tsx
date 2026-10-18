@@ -2,11 +2,24 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
-import { Badge } from "@shentong/ui";
-import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
-import { Input } from "@shentong/ui";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  Dialog,
+  EmptyState,
+  Input,
+  Section,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableSkeleton,
+  severityVariant,
+} from "@shentong/ui";
 import {
   ApiError,
   apiFetch,
@@ -52,7 +65,7 @@ interface ConflictState {
   pending: FormState;
 }
 
-const SELECT_CLS = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
+const SELECT_CLS = "h-9 w-full rounded-sm border border-input bg-surface-2 px-3 text-sm";
 
 function statusVariant(s: string): "low" | "high" | "info" {
   if (s === "indexed") return "low";
@@ -65,7 +78,8 @@ function briefText(a: AssetBrief): string {
 }
 
 export default function AssetsPage() {
-  const [assets, setAssets] = React.useState<AssetItem[]>([]);
+  // null = 首屏未读（骨架）；[] = 读到空（空态）
+  const [assets, setAssets] = React.useState<AssetItem[] | null>(null);
   const [q, setQ] = React.useState("");
   const [form, setForm] = React.useState<FormState>(EMPTY_FORM);
   const [editingId, setEditingId] = React.useState<string | null>(null);
@@ -90,7 +104,10 @@ export default function AssetsPage() {
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    load().catch((e) => {
+      setAssets((a) => a ?? []);
+      setMsg(e instanceof Error ? e.message : "资产列表读取失败");
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -272,394 +289,478 @@ export default function AssetsPage() {
   }
 
   const hasNonLan = (preview?.non_lan.length ?? 0) > 0;
+  const list = assets ?? [];
 
   return (
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-xl font-medium">资产管理</h1>
-        {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
+        <h1 className="sr-only">资产管理</h1>
+        <div className="space-y-4">
+          {msg && <p className="text-xs text-primary">{msg}</p>}
 
-        {/* 新增 / 编辑 */}
-        <Card className="mb-4">
-          <CardHeader>
-            <CardTitle className="text-sm">{editingId ? "编辑资产" : "新增资产"}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">主 IP / 网段 *</label>
-                <Input
-                  value={form.ip}
-                  onChange={(e) => set("ip", e.target.value)}
-                  placeholder="192.168.1.10 或 192.168.1.0/24"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">额外 IP（逗号分隔）</label>
-                <Input value={form.extra_ips} onChange={(e) => set("extra_ips", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">资产名</label>
-                <Input value={form.asset_name} onChange={(e) => set("asset_name", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">主机名</label>
-                <Input value={form.hostname} onChange={(e) => set("hostname", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">业务系统</label>
-                <Input
-                  value={form.business_system}
-                  onChange={(e) => set("business_system", e.target.value)}
-                  placeholder="订单系统"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">负责人</label>
-                <Input value={form.owner} onChange={(e) => set("owner", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">重要级别</label>
-                <select
-                  value={form.importance}
-                  onChange={(e) => set("importance", e.target.value)}
-                  className={SELECT_CLS}
-                >
-                  {IMPORTANCE.map((i) => (
-                    <option key={i.value} value={i.value}>
-                      {i.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">资产类型</label>
-                <Input
-                  value={form.asset_type}
-                  onChange={(e) => set("asset_type", e.target.value)}
-                  placeholder="服务器/数据库"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">网络区域</label>
-                <Input
-                  value={form.network_zone}
-                  onChange={(e) => set("network_zone", e.target.value)}
-                  placeholder="生产网/DMZ"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">操作系统</label>
-                <Input value={form.os} onChange={(e) => set("os", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">开放服务</label>
-                <Input
-                  value={form.services}
-                  onChange={(e) => set("services", e.target.value)}
-                  placeholder="3306,6379"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">机房位置</label>
-                <Input value={form.location} onChange={(e) => set("location", e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">标签（逗号分隔）</label>
-                <Input value={form.tags} onChange={(e) => set("tags", e.target.value)} />
-              </div>
-              <div className="col-span-3">
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  业务描述（参与向量化，与资产名/业务系统至少填一个）
-                </label>
-                <Input
-                  value={form.description}
-                  onChange={(e) => set("description", e.target.value)}
-                  placeholder="承载订单交易主库，对外提供 3306 服务"
-                />
-              </div>
-            </div>
+          {/* 新增 / 编辑 */}
+          <Section title={editingId ? "编辑资产" : "新增资产"}>
+            <Card>
+              <CardContent className="space-y-3 pt-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <div>
+                    <label htmlFor="asset-ip" className="mb-1 block text-xs text-muted-foreground">
+                      主 IP / 网段 *
+                    </label>
+                    <Input
+                      id="asset-ip"
+                      value={form.ip}
+                      onChange={(e) => set("ip", e.target.value)}
+                      placeholder="192.168.1.10 或 192.168.1.0/24"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-extra-ips" className="mb-1 block text-xs text-muted-foreground">
+                      额外 IP（逗号分隔）
+                    </label>
+                    <Input
+                      id="asset-extra-ips"
+                      value={form.extra_ips}
+                      onChange={(e) => set("extra_ips", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-name" className="mb-1 block text-xs text-muted-foreground">
+                      资产名
+                    </label>
+                    <Input
+                      id="asset-name"
+                      value={form.asset_name}
+                      onChange={(e) => set("asset_name", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-hostname" className="mb-1 block text-xs text-muted-foreground">
+                      主机名
+                    </label>
+                    <Input
+                      id="asset-hostname"
+                      value={form.hostname}
+                      onChange={(e) => set("hostname", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-biz" className="mb-1 block text-xs text-muted-foreground">
+                      业务系统
+                    </label>
+                    <Input
+                      id="asset-biz"
+                      value={form.business_system}
+                      onChange={(e) => set("business_system", e.target.value)}
+                      placeholder="订单系统"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-owner" className="mb-1 block text-xs text-muted-foreground">
+                      负责人
+                    </label>
+                    <Input
+                      id="asset-owner"
+                      value={form.owner}
+                      onChange={(e) => set("owner", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-importance" className="mb-1 block text-xs text-muted-foreground">
+                      重要级别
+                    </label>
+                    <select
+                      id="asset-importance"
+                      value={form.importance}
+                      onChange={(e) => set("importance", e.target.value)}
+                      className={SELECT_CLS}
+                    >
+                      {IMPORTANCE.map((i) => (
+                        <option key={i.value} value={i.value}>
+                          {i.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="asset-type" className="mb-1 block text-xs text-muted-foreground">
+                      资产类型
+                    </label>
+                    <Input
+                      id="asset-type"
+                      value={form.asset_type}
+                      onChange={(e) => set("asset_type", e.target.value)}
+                      placeholder="服务器/数据库"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-zone" className="mb-1 block text-xs text-muted-foreground">
+                      网络区域
+                    </label>
+                    <Input
+                      id="asset-zone"
+                      value={form.network_zone}
+                      onChange={(e) => set("network_zone", e.target.value)}
+                      placeholder="生产网/DMZ"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-os" className="mb-1 block text-xs text-muted-foreground">
+                      操作系统
+                    </label>
+                    <Input id="asset-os" value={form.os} onChange={(e) => set("os", e.target.value)} />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-services" className="mb-1 block text-xs text-muted-foreground">
+                      开放服务
+                    </label>
+                    <Input
+                      id="asset-services"
+                      value={form.services}
+                      onChange={(e) => set("services", e.target.value)}
+                      placeholder="3306,6379"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-location" className="mb-1 block text-xs text-muted-foreground">
+                      机房位置
+                    </label>
+                    <Input
+                      id="asset-location"
+                      value={form.location}
+                      onChange={(e) => set("location", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="asset-tags" className="mb-1 block text-xs text-muted-foreground">
+                      标签（逗号分隔）
+                    </label>
+                    <Input
+                      id="asset-tags"
+                      value={form.tags}
+                      onChange={(e) => set("tags", e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-3">
+                    <label htmlFor="asset-desc" className="mb-1 block text-xs text-muted-foreground">
+                      业务描述（参与向量化，与资产名/业务系统至少填一个）
+                    </label>
+                    <Input
+                      id="asset-desc"
+                      value={form.description}
+                      onChange={(e) => set("description", e.target.value)}
+                      placeholder="承载订单交易主库，对外提供 3306 服务"
+                    />
+                  </div>
+                </div>
 
-            <div className="flex flex-wrap items-center gap-4 rounded-md border p-3">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.is_external}
-                  onChange={(e) => set("is_external", e.target.checked)}
-                />
-                外部资产记录（IP 不在局域网网段时必须开启）
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.allow_ip_share}
-                  onChange={(e) => set("allow_ip_share", e.target.checked)}
-                />
-                允许该 IP 归属多个资产
-              </label>
-            </div>
+                <div className="flex flex-wrap items-center gap-4 rounded-xs border border-border-subtle bg-surface-1 p-3">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={form.is_external}
+                      onChange={(e) => set("is_external", e.target.checked)}
+                    />
+                    外部资产记录（IP 不在局域网网段时必须开启）
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={form.allow_ip_share}
+                      onChange={(e) => set("allow_ip_share", e.target.checked)}
+                    />
+                    允许该 IP 归属多个资产
+                  </label>
+                </div>
 
-            {fieldErrors.length > 0 && (
-              <ul className="space-y-1 rounded-md border border-destructive/50 p-3 text-sm text-destructive">
-                {fieldErrors.map((e, i) => (
-                  <li key={i}>
-                    {e.field}：{e.msg}
-                    {e.msg.includes("外部资产") && !form.is_external && (
-                      <button
-                        className="ml-2 text-primary underline"
-                        onClick={() => set("is_external", true)}
-                      >
-                        开启外部资产记录
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <div className="flex gap-2">
-              <Button onClick={submit}>{editingId ? "保存修改" : "新增"}</Button>
-              {editingId && (
-                <Button variant="outline" onClick={resetForm}>
-                  取消
-                </Button>
-              )}
-              <Button variant="secondary" onClick={() => fileRef.current?.click()}>
-                导入 CSV
-              </Button>
-              <Button variant="outline" onClick={downloadTemplate}>
-                下载模板
-              </Button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onPickFile(f);
-                  e.target.value = "";
-                }}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* CSV 预览与确认 */}
-        {preview && (
-          <Card className="mb-4 border-primary/40">
-            <CardHeader>
-              <CardTitle className="text-sm">
-                导入预览（共 {preview.total_rows} 行 · 新增 {preview.new_count}）
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              {preview.errors.length > 0 ? (
-                <div className="rounded-md border border-destructive/50 p-3">
-                  <p className="mb-1 font-medium text-destructive">
-                    发现 {preview.errors.length} 处错误，整批不会导入（修正后重试）
-                    {preview.truncated && "（错误过多，仅显示前 1000 条）"}
-                  </p>
-                  <ul className="max-h-40 space-y-0.5 overflow-auto font-mono text-xs text-destructive">
-                    {preview.errors.slice(0, 50).map((e, i) => (
+                {fieldErrors.length > 0 && (
+                  <ul className="space-y-1 rounded-xs border border-sev-critical-bd bg-sev-critical-bg p-3 text-xs text-sev-critical-fg">
+                    {fieldErrors.map((e, i) => (
                       <li key={i}>
-                        第{e.row}行 {e.ip ? `[${e.ip}] ` : ""}
-                        {e.msg}
+                        {e.field}：{e.msg}
+                        {e.msg.includes("外部资产") && !form.is_external && (
+                          <button
+                            className="ml-2 underline"
+                            onClick={() => set("is_external", true)}
+                          >
+                            开启外部资产记录
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>
-                </div>
-              ) : (
-                <p className="text-primary">校验通过，可确认导入。</p>
-              )}
+                )}
 
-              {hasNonLan && (
-                <label className="flex items-center gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={submit}>
+                    {editingId ? "保存修改" : "新增"}
+                  </Button>
+                  {editingId && (
+                    <Button size="sm" variant="outline" onClick={resetForm}>
+                      取消
+                    </Button>
+                  )}
+                  <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                    导入 CSV
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={downloadTemplate}>
+                    下载模板
+                  </Button>
                   <input
-                    type="checkbox"
-                    checked={allowExternal}
-                    onChange={async (e) => {
-                      setAllowExternal(e.target.checked);
-                      if (importFile) await runPreview(importFile, e.target.checked);
+                    ref={fileRef}
+                    type="file"
+                    accept=".csv"
+                    aria-label="选择要导入的资产 CSV"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) onPickFile(f);
+                      e.target.value = "";
                     }}
                   />
-                  允许外部资产（{preview.non_lan.length} 行 IP 不在局域网，勾选后按外部资产记录）
-                </label>
-              )}
-
-              {preview.duplicates.length > 0 && (
-                <div className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="font-medium">主 IP 已存在（{preview.duplicates.length} 项）</span>
-                    <Button size="sm" variant="outline" onClick={() => setOverwrite(preview.duplicates.map((d) => d.ip))}>
-                      全部覆盖
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => setOverwrite([])}>
-                      全部不覆盖
-                    </Button>
-                  </div>
-                  <div className="max-h-48 space-y-1 overflow-auto">
-                    {preview.duplicates.map((d) => (
-                      <label key={d.ip} className="flex items-center gap-2 font-mono text-xs">
-                        <input
-                          type="checkbox"
-                          checked={overwrite.includes(d.ip)}
-                          onChange={(e) =>
-                            setOverwrite((prev) =>
-                              e.target.checked ? [...prev, d.ip] : prev.filter((x) => x !== d.ip)
-                            )
-                          }
-                        />
-                        第{d.row}行 {d.ip} —— 已有：{briefText(d.existing)}
-                      </label>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    未勾选的行将被跳过，已有记录保持原值。
-                  </p>
-                </div>
-              )}
-
-              {preview.ip_conflicts.length > 0 && (
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={allowShare}
-                    onChange={(e) => setAllowShare(e.target.checked)}
-                  />
-                  允许 IP 归属多个资产（{preview.ip_conflicts.length} 项冲突）
-                </label>
-              )}
-
-              <div className="flex gap-2">
-                <Button onClick={commitImport} disabled={!preview.ok || importing}>
-                  {importing ? "导入中…" : "确认导入"}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setPreview(null);
-                    setImportFile(null);
-                  }}
-                >
-                  取消
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 冲突弹窗 */}
-        {conflict && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-            <Card className="w-[520px]">
-              <CardHeader>
-                <CardTitle className="text-base">
-                  {conflict.kind === "duplicate_ip" ? "IP 已存在" : "IP 归属冲突"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <p>{conflict.body.detail}</p>
-                {conflict.body.existing && (
-                  <div className="rounded-md border p-2 font-mono text-xs">
-                    {briefText(conflict.body.existing)}
-                  </div>
-                )}
-                {conflict.body.holders?.length ? (
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">占用方：</p>
-                    {conflict.body.holders.map((h, i) => (
-                      <div key={i} className="rounded-md border p-2 font-mono text-xs">
-                        {briefText(h)}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                <p className="text-muted-foreground">{conflict.body.hint}</p>
-                <div className="flex gap-2">
-                  <Button onClick={() => resolveConflict("overwrite")}>
-                    {conflict.kind === "duplicate_ip" ? "覆盖已有资产" : "允许 IP 共享并保存"}
-                  </Button>
-                  <Button variant="outline" onClick={() => resolveConflict("cancel")}>
-                    取消
-                  </Button>
                 </div>
               </CardContent>
             </Card>
-          </div>
-        )}
+          </Section>
 
-        {/* 列表 */}
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-sm">资产列表（{assets.length}）</CardTitle>
-            <div className="flex gap-2">
-              <Input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && load()}
-                placeholder="搜索 IP/资产名/业务系统/负责人"
-                className="w-72"
-              />
-              <Button variant="outline" onClick={() => load()}>
-                搜索
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>IP / 网段</TableHead>
-                  <TableHead>资产名</TableHead>
-                  <TableHead>业务系统</TableHead>
-                  <TableHead>重要级别</TableHead>
-                  <TableHead>标记</TableHead>
-                  <TableHead>向量状态</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {assets.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="font-mono">{a.ip}</TableCell>
-                    <TableCell>{a.asset_name || a.hostname || "-"}</TableCell>
-                    <TableCell>{a.business_system || "-"}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{a.importance}</Badge>
-                    </TableCell>
-                    <TableCell className="space-x-1">
-                      {a.is_external && <Badge variant="medium">外部</Badge>}
-                      {a.allow_ip_share && <Badge variant="info">共享</Badge>}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={statusVariant(a.embedding_status)}>{a.embedding_status}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => edit(a)}>
-                        编辑
+          {/* CSV 预览与确认 */}
+          {preview && (
+            <Section
+              title="导入预览"
+              description={`共 ${preview.total_rows} 行 · 新增 ${preview.new_count}`}
+            >
+              <Card>
+                <CardContent className="space-y-3 pt-4 text-13">
+                  {preview.errors.length > 0 ? (
+                    <div className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg p-3">
+                      <p className="mb-1 text-xs font-medium text-sev-critical-fg">
+                        发现 {preview.errors.length} 处错误，整批不会导入（修正后重试）
+                        {preview.truncated && "（错误过多，仅显示前 1000 条）"}
+                      </p>
+                      <ul className="max-h-40 space-y-0.5 overflow-auto font-mono text-xs text-sev-critical-fg">
+                        {preview.errors.slice(0, 50).map((e, i) => (
+                          <li key={i}>
+                            第{e.row}行 {e.ip ? `[${e.ip}] ` : ""}
+                            {e.msg}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-sev-ok-fg">校验通过，可确认导入。</p>
+                  )}
+
+                  {hasNonLan && (
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={allowExternal}
+                        onChange={async (e) => {
+                          setAllowExternal(e.target.checked);
+                          if (importFile) await runPreview(importFile, e.target.checked);
+                        }}
+                      />
+                      允许外部资产（{preview.non_lan.length} 行 IP 不在局域网，勾选后按外部资产记录）
+                    </label>
+                  )}
+
+                  {preview.duplicates.length > 0 && (
+                    <div className="rounded-xs border border-border-subtle p-3">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium">
+                          主 IP 已存在（{preview.duplicates.length} 项）
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setOverwrite(preview.duplicates.map((d) => d.ip))}
+                        >
+                          全部覆盖
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setOverwrite([])}>
+                          全部不覆盖
+                        </Button>
+                      </div>
+                      <div className="max-h-48 space-y-1 overflow-auto">
+                        {preview.duplicates.map((d) => (
+                          <label key={d.ip} className="flex items-center gap-2 font-mono text-xs">
+                            <input
+                              type="checkbox"
+                              checked={overwrite.includes(d.ip)}
+                              onChange={(e) =>
+                                setOverwrite((prev) =>
+                                  e.target.checked ? [...prev, d.ip] : prev.filter((x) => x !== d.ip)
+                                )
+                              }
+                            />
+                            第{d.row}行 {d.ip} —— 已有：{briefText(d.existing)}
+                          </label>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        未勾选的行将被跳过，已有记录保持原值。
+                      </p>
+                    </div>
+                  )}
+
+                  {preview.ip_conflicts.length > 0 && (
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={allowShare}
+                        onChange={(e) => setAllowShare(e.target.checked)}
+                      />
+                      允许 IP 归属多个资产（{preview.ip_conflicts.length} 项冲突）
+                    </label>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={commitImport} disabled={!preview.ok || importing}>
+                      {importing ? "导入中…" : "确认导入"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setPreview(null);
+                        setImportFile(null);
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </Section>
+          )}
+
+          {/* 列表 */}
+          <Section
+            title={`资产列表（${list.length}）`}
+            extra={
+              <>
+                <Input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && load()}
+                  placeholder="搜索 IP/资产名/业务系统/负责人"
+                  aria-label="搜索资产"
+                  className="h-8 w-72"
+                />
+                <Button size="sm" variant="outline" onClick={() => load()}>
+                  搜索
+                </Button>
+              </>
+            }
+          >
+            <Card>
+              <CardContent className="p-0">
+                {assets === null ? (
+                  <TableSkeleton rows={8} cols={7} />
+                ) : list.length === 0 ? (
+                  <EmptyState
+                    title="暂无资产"
+                    hint="新增单条资产或导入 CSV；资产信息会用于定级与影响面判断"
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                        导入 CSV
                       </Button>
-                      <Button size="sm" variant="outline" className="ml-2" onClick={() => reindex(a)}>
-                        重算
-                      </Button>
-                      <Button size="sm" variant="destructive" className="ml-2" onClick={() => del(a)}>
-                        删除
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {assets.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
-                      暂无资产，请新增或导入 CSV
-                    </TableCell>
-                  </TableRow>
+                    }
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>IP / 网段</TableHead>
+                        <TableHead>资产名</TableHead>
+                        <TableHead>业务系统</TableHead>
+                        <TableHead>重要级别</TableHead>
+                        <TableHead>标记</TableHead>
+                        <TableHead>向量状态</TableHead>
+                        <TableHead>操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {list.map((a) => (
+                        <TableRow key={a.id}>
+                          <TableCell className="font-mono">{a.ip}</TableCell>
+                          <TableCell>{a.asset_name || a.hostname || "-"}</TableCell>
+                          <TableCell>{a.business_system || "-"}</TableCell>
+                          <TableCell>
+                            <Badge variant={severityVariant(a.importance)}>{a.importance}</Badge>
+                          </TableCell>
+                          <TableCell className="space-x-1">
+                            {a.is_external && <Badge variant="medium">外部</Badge>}
+                            {a.allow_ip_share && <Badge variant="info">共享</Badge>}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={statusVariant(a.embedding_status)}>
+                              {a.embedding_status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Button size="sm" variant="outline" onClick={() => edit(a)}>
+                              编辑
+                            </Button>
+                            <Button size="sm" variant="outline" className="ml-2" onClick={() => reindex(a)}>
+                              重算
+                            </Button>
+                            <Button size="sm" variant="destructive" className="ml-2" onClick={() => del(a)}>
+                              删除
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          </Section>
+        </div>
+
+        {/* 冲突弹窗：用共享 Dialog（遮罩点击 / Esc / 焦点陷阱） */}
+        <Dialog
+          open={conflict !== null}
+          onClose={() => resolveConflict("cancel")}
+          title={conflict?.kind === "duplicate_ip" ? "IP 已存在" : "IP 归属冲突"}
+          widthClass="w-[520px]"
+          footer={
+            conflict ? (
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => resolveConflict("overwrite")}>
+                  {conflict.kind === "duplicate_ip" ? "覆盖已有资产" : "允许 IP 共享并保存"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => resolveConflict("cancel")}>
+                  取消
+                </Button>
+              </div>
+            ) : null
+          }
+        >
+          {conflict && (
+            <div className="space-y-3 text-13">
+              <p>{conflict.body.detail}</p>
+              {conflict.body.existing && (
+                <div className="rounded-xs border border-border-subtle bg-surface-1 p-2 font-mono text-xs">
+                  {briefText(conflict.body.existing)}
+                </div>
+              )}
+              {conflict.body.holders?.length ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">占用方：</p>
+                  {conflict.body.holders.map((h, i) => (
+                    <div key={i} className="rounded-xs border border-border-subtle bg-surface-1 p-2 font-mono text-xs">
+                      {briefText(h)}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <p className="text-xs text-muted-foreground">{conflict.body.hint}</p>
+            </div>
+          )}
+        </Dialog>
       </main>
     </div>
   );

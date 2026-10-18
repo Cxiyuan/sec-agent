@@ -16,6 +16,12 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Section,
+  Stat,
+  EmptyState,
+  ChartSkeleton,
+  StatSkeleton,
+  Skeleton,
   formatDateTime,
   severityText,
   severityVariant,
@@ -107,6 +113,8 @@ const LIGHT_TEXT: Record<ComponentState, string> = {
   unknown: "未知",
 };
 
+/** 指标格：统一走共享 `Stat`（全站同一个实现，见 packages/ui）。
+ *  `danger` 是这一页沿用下来的旧写法，这里映射到严重度语义色，避免改 30 处调用点。 */
 function Kpi({
   label,
   value,
@@ -118,15 +126,7 @@ function Kpi({
   hint?: React.ReactNode;
   danger?: boolean;
 }) {
-  return (
-    <div className="rounded-xs bg-surface-1 px-3 py-2">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`mt-1 text-28 font-medium ${danger ? "text-sev-critical-fg" : "text-foreground"}`}>
-        {value}
-      </p>
-      {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
+  return <Stat label={label} value={value} hint={hint} tone={danger ? "critical" : "default"} />;
 }
 
 /** 「事件内容」里字段名的中文名（用户要求：显示出来的字段一律中文）。
@@ -247,36 +247,12 @@ function severityBadge(sev: string): React.ReactElement {
   return <Badge variant={severityVariant(key)}>{severityText(key)}</Badge>;
 }
 
-/** 页内区块：`scroll-mt-20` 让锚点跳转不被固定页头（h-14）挡住标题。 */
-function Section({
-  id,
-  title,
-  extra,
-  children,
-  className,
-}: {
-  id: string;
-  title: string;
-  extra?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section id={id} className={`scroll-mt-20 space-y-3 ${className ?? ""}`}>
-      {/* 区块标题是这一页真正的结构锚点：原来只有 14px 灰字，比 KPI 数字（20px 粗体）
-          还弱，读者的眼睛找不到"这一屏分几块"。提到 16px 正文色 + 底线，层级才立得住。 */}
-      <h2 className="flex flex-wrap items-center gap-2 border-b border-border pb-2 text-base font-medium text-foreground">
-        {title}
-        {extra}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
 /** 图表卡片：**统一的高度只有三档**（176 微图 / 224 默认 / 288 主图）。
  *  原来 180/200/220/280/300 五档并存，同一行两张图底部对不齐，整页看起来像
- *  随手拼的。三档配合栅格（ChartCard 内部不再自己算边距），行行等高。 */
+ *  随手拼的。三档配合栅格（ChartCard 内部不再自己算边距），行行等高。
+ *
+ *  注：页内区块（`Section`）已抽到共享库 —— 全站 20 多个面板以前各写各的区块
+ *  标题，同一个产品里"这一屏分几块"的视觉锚点每页都不一样。 */
 function ChartCard({
   title,
   extra,
@@ -297,14 +273,14 @@ function ChartCard({
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+        <CardTitle className="flex flex-wrap items-center gap-2">
           {title}
           {extra}
         </CardTitle>
       </CardHeader>
       <CardContent>
         {empty ? (
-          <p className="py-10 text-center text-xs text-muted-foreground">{empty}</p>
+          <EmptyState size="compact" title={empty} />
         ) : (
           <Chart option={option} height={height} />
         )}
@@ -511,6 +487,58 @@ export function StatusPanel() {
 
   const noTraffic = emptyOrFailed(errs, SRC.overview, "暂无数据（ES 读取失败，或该窗口内没有 conn 日志）");
 
+  /**
+   * 首次加载：十几个接口一个都还没回来、也没有失败。这时**不能**按「暂无数据」渲染 ——
+   * 运维看到 18 个空图 + 一排 "—"，会以为采集链路断了。画骨架，等数据到了再换成真图。
+   * （这一页强制 5 秒轮询，所以只有第一次会命中；后续刷新保持旧数据不闪。）
+   */
+  const firstLoad =
+    !metrics &&
+    !health &&
+    !history &&
+    !overview &&
+    !stats &&
+    !esStatus &&
+    !logstash &&
+    !traffic &&
+    !errs.has;
+
+  if (firstLoad) {
+    return (
+      <div className="space-y-6" aria-busy="true">
+        <Section id="overview" title="态势总览">
+          <StatSkeleton count={4} />
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+            <Card>
+              <CardContent className="pt-3">
+                <ChartSkeleton height={176} />
+              </CardContent>
+            </Card>
+            <Card className="xl:col-span-2">
+              <CardContent className="grid grid-cols-2 gap-2 pt-3 sm:grid-cols-4">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12" />
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        </Section>
+        <Section id="threats" title="威胁事件">
+          <StatSkeleton count={4} />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Card key={i}>
+                <CardContent className="pt-4">
+                  <ChartSkeleton height={288} />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </Section>
+      </div>
+    );
+  }
+
   return (
     /* L0 页面容器：这里**不再包一层 Card**。原来外层 Card 只是给整页加了一圈描边，
        结果每个区块又各自是 Card —— 三层描边叠在一起，桌面像被切成一块块贴纸。
@@ -554,7 +582,7 @@ export function StatusPanel() {
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">服务器资源</CardTitle>
+                <CardTitle>服务器资源</CardTitle>
               </CardHeader>
               <CardContent>
                 <Chart option={charts.resource} height={176} />
@@ -564,7 +592,7 @@ export function StatusPanel() {
 
             <Card className="xl:col-span-2">
               <CardHeader className="pb-2">
-                <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                <CardTitle className="flex flex-wrap items-center gap-2">
                   服务与组件
                   {errs.isFailed(SRC.health) ? <Badge variant="high">读取失败</Badge> : null}
                 </CardTitle>
@@ -617,7 +645,7 @@ export function StatusPanel() {
               为什么不再用 Redis 流水：事件要能被长期引用与关联分析（用户 2026-10 要求）。 */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+              <CardTitle className="flex flex-wrap items-center gap-2">
                 命中事件（最近）
                 {hits?.total ? (
                   <span className="text-xs font-normal text-muted-foreground">
@@ -645,13 +673,13 @@ export function StatusPanel() {
                   <TableBody>
                     {hits.items.map((row) => (
                       <TableRow key={row.id}>
-                        <TableCell className="whitespace-nowrap text-xs">
+                        <TableCell className="whitespace-nowrap">
                           {formatDateTime(row.last_seen || row.created_at)}
                         </TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">
                           <span title={row.id}>{row.id.slice(0, 8)}</span>
                         </TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell>
                           {row.rule || "—"}
                           {row.ignored ? (
                             <Badge variant="outline" className="ml-1">
@@ -665,7 +693,7 @@ export function StatusPanel() {
                           ) : null}
                         </TableCell>
                         <TableCell>{severityBadge(row.severity)}</TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell>
                           {/* 真实请求方优先：中继链路上 src_ip 是代理/WAF 自己 */}
                           <span title={row.client_source === "xff" ? "来自可信代理头（XFF/X-Real-IP）" : "直连对端"}>
                             {row.client || row.src_ip || "—"}
@@ -679,10 +707,10 @@ export function StatusPanel() {
                             </span>
                           ) : null}
                         </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
+                        <TableCell className="text-right tabular-nums">
                           {row.count}
                         </TableCell>
-                        <TableCell className="max-w-[20rem] text-xs text-muted-foreground">
+                        <TableCell className="max-w-[20rem] text-muted-foreground">
                           {row.dst_pairs?.length
                             ? row.dst_pairs.slice(0, 3).join("、") +
                               (row.dst_pairs.length > 3 ? ` 等 ${row.dst_pairs.length} 个` : "")
@@ -924,7 +952,7 @@ export function StatusPanel() {
                 视觉上像两张缩略图。现在一张卡两个表盘，读的是同一件事（额度用了多少）。 */}
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">容量占用</CardTitle>
+                <CardTitle>容量占用</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-2">
@@ -989,7 +1017,7 @@ export function StatusPanel() {
               改成定义列表：左标签右值，多列对齐，扫读时能按标签找。 */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+              <CardTitle className="flex flex-wrap items-center gap-2">
                 运行信息
                 <Badge variant={stats?.enabled ? "success" : "outline"}>
                   {stats?.enabled ? "检测开启" : "检测关闭"}

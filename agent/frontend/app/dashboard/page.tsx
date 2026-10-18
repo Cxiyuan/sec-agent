@@ -2,12 +2,46 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
-import { Chart } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
-import { Badge, severityVariant } from "@shentong/ui";
+import {
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chart,
+  ChartSkeleton,
+  EmptyState,
+  Section,
+  Skeleton,
+  Stat,
+  StatSkeleton,
+  chartTokens,
+  formatDateTime,
+  severityText,
+  severityVariant,
+} from "@shentong/ui";
 import { apiFetch, type EventGroupItem, type PersistentItem } from "@/lib/api";
-import { chartTokens, formatDateTime, severityText } from "@shentong/ui";
 import type { EChartsOption } from "echarts";
+
+/** 图表卡：标题 14px + 固定三档高度，与 NDR 总览页的读法一致。 */
+function ChartCard({
+  title,
+  height = 224,
+  children,
+}: {
+  title: string;
+  height?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent style={{ minHeight: height }}>{children}</CardContent>
+    </Card>
+  );
+}
 
 export default function DashboardPage() {
   const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
@@ -113,83 +147,154 @@ export default function DashboardPage() {
     .filter((g) => g.attack_chain?.stages?.length)
     .slice(0, 5);
 
+  const noGroups = !loading && groups.length === 0;
+
   return (
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
         <h1 className="mb-4 text-xl font-medium">驾驶舱</h1>
-        {loading ? (
-          <p className="text-muted-foreground">加载中…</p>
-        ) : (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">事件组总数</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums">{groups.length}</CardContent></Card>
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">高危及以上</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums text-sev-critical-fg">{severityCount.critical + severityCount.high}</CardContent></Card>
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">待确认</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums text-sev-medium-fg">{groups.filter((g) => g.status === "pending_confirmation").length}</CardContent></Card>
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">涉及源 IP</CardTitle></CardHeader><CardContent className="text-28 font-medium tabular-nums">{Object.keys(srcCount).length}</CardContent></Card>
-            </div>
 
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">定级分布</CardTitle></CardHeader><CardContent><Chart option={pieOption} height={224} /></CardContent></Card>
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">TOP 源 IP</CardTitle></CardHeader><CardContent><Chart option={topIpOption} height={224} /></CardContent></Card>
-              <Card><CardHeader className="pb-2"><CardTitle className="text-sm">初筛得分</CardTitle></CardHeader><CardContent><Chart option={scoreOption} height={224} /></CardContent></Card>
-            </div>
+        <div className="space-y-4">
+          <Section title="态势总览" description="最近 200 个事件组的定级、来源与初筛得分">
+            <div className="space-y-3">
+              {loading ? (
+                <StatSkeleton count={4} />
+              ) : (
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Stat label="事件组总数" value={groups.length} hint="最近 200 个事件组" />
+                  <Stat
+                    label="高危及以上"
+                    value={severityCount.critical + severityCount.high}
+                    tone="critical"
+                  />
+                  <Stat
+                    label="待确认"
+                    value={groups.filter((g) => g.status === "pending_confirmation").length}
+                    tone="medium"
+                  />
+                  <Stat label="涉及源 IP" value={Object.keys(srcCount).length} />
+                </div>
+              )}
 
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                <ChartCard title="定级分布">
+                  {loading ? (
+                    <ChartSkeleton height={224} />
+                  ) : noGroups ? (
+                    <EmptyState size="compact" title="暂无事件组" hint="检测器产出后这里会显示定级分布" />
+                  ) : (
+                    <Chart option={pieOption} height={224} />
+                  )}
+                </ChartCard>
+                <ChartCard title="TOP 源 IP">
+                  {loading ? (
+                    <ChartSkeleton height={224} />
+                  ) : noGroups ? (
+                    <EmptyState size="compact" title="暂无事件组" hint="没有可用于统计的来源地址" />
+                  ) : (
+                    <Chart option={topIpOption} height={224} />
+                  )}
+                </ChartCard>
+                <ChartCard title="初筛得分">
+                  {loading ? (
+                    <ChartSkeleton height={224} />
+                  ) : noGroups ? (
+                    <EmptyState size="compact" title="暂无事件组" hint="没有可用于绘制的初筛得分" />
+                  ) : (
+                    <Chart option={scoreOption} height={224} />
+                  )}
+                </ChartCard>
+              </div>
+            </div>
+          </Section>
+
+          <Section title="持续性威胁" description="同一来源反复出现时进入这里">
             <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">持续性威胁（反复出现的 IP）</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {persistent.slice(0, 8).map((p) => (
-                  <div key={p.ip} className="flex items-center justify-between text-sm">
-                    <span className="font-mono">{p.ip}</span>
-                    <span className="text-muted-foreground">
-                      {p.count} 次
-                      {p.last_seen ? ` · 最近 ${formatDateTime(p.last_seen)}` : ""}
-                    </span>
-                  </div>
-                ))}
-                {persistent.length === 0 && (
-                  <p className="text-sm text-muted-foreground">暂无反复出现的 IP</p>
+              <CardContent className="space-y-2 pt-4">
+                {loading ? (
+                  <>
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="flex items-center justify-between">
+                        <Skeleton className="h-3 w-40" />
+                        <Skeleton className="h-3 w-28" />
+                      </div>
+                    ))}
+                  </>
+                ) : persistent.length === 0 ? (
+                  <EmptyState
+                    size="compact"
+                    title="暂无反复出现的 IP"
+                    hint="同一来源在多轮检测中重复出现后会在这里列出"
+                  />
+                ) : (
+                  persistent.slice(0, 8).map((p) => (
+                    <div key={p.ip} className="flex items-center justify-between text-13">
+                      <span className="font-mono">{p.ip}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {p.count} 次
+                        {p.last_seen ? ` · 最近 ${formatDateTime(p.last_seen)}` : ""}
+                      </span>
+                    </div>
+                  ))
                 )}
               </CardContent>
             </Card>
+          </Section>
 
+          <Section title="账号 / 会话基线">
             <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">账号 / 会话基线</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <p className="text-sm text-muted-foreground">
-                  基线（数值 2σ + 账号/会话画像）已在 NDR 侧计算，异常打到摘要标签上。
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  查看维度与异常排行请到 NDR 管理后台的「运行状态」页。
-                </p>
+              <CardContent className="space-y-2 pt-4 text-13 text-muted-foreground">
+                <p>基线（数值 2σ + 账号/会话画像）已在 NDR 侧计算，异常打到摘要标签上。</p>
+                <p>查看维度与异常排行请到 NDR 管理后台的「运行状态」页。</p>
               </CardContent>
             </Card>
+          </Section>
 
+          <Section title="攻击链概览" description="已有阶段结论的事件组（最多 5 组）">
             <Card>
-              <CardHeader><CardTitle className="text-sm">攻击链概览</CardTitle></CardHeader>
-              <CardContent className="space-y-3">
-                {highGroups.length === 0 && <p className="text-muted-foreground">暂无攻击链</p>}
-                {highGroups.map((g) => (
-                  <div key={g.id} className="rounded-md border p-3">
-                    <div className="mb-2 flex items-center gap-2">
-                      <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
-                      <span className="text-sm font-medium">{g.src_ips?.join(", ")} → {g.dst_ips?.join(", ")}</span>
+              <CardContent className="space-y-3 pt-4">
+                {loading ? (
+                  <>
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="space-y-2 rounded-xs bg-surface-1 p-3">
+                        <Skeleton className="h-3 w-1/3" />
+                        <Skeleton className="h-3 w-2/3" />
+                      </div>
+                    ))}
+                  </>
+                ) : highGroups.length === 0 ? (
+                  <EmptyState
+                    size="compact"
+                    title="暂无攻击链"
+                    hint="深度分析产出阶段结论后会在这里汇总"
+                  />
+                ) : (
+                  highGroups.map((g) => (
+                    <div key={g.id} className="rounded-xs bg-surface-1 p-3">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
+                        <span className="text-13 font-medium">
+                          {g.src_ips?.join(", ")} → {g.dst_ips?.join(", ")}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(g.attack_chain?.stages || []).map((s: any, i: number) => (
+                          <span
+                            key={i}
+                            className="rounded-xs border border-border-subtle bg-card px-2 py-0.5 text-xs"
+                          >
+                            {s.stage}
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {(g.attack_chain?.stages || []).map((s: any, i: number) => (
-                        <span key={i} className="rounded bg-secondary px-2 py-1 text-xs">{s.stage}</span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </CardContent>
             </Card>
-          </div>
-        )}
+          </Section>
+        </div>
       </main>
     </div>
   );

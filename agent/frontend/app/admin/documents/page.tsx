@@ -2,10 +2,23 @@
 
 import * as React from "react";
 import { Nav } from "@/components/nav";
-import { Badge } from "@shentong/ui";
-import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  EmptyState,
+  Section,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableSkeleton,
+  formatDateTime,
+  statusText,
+} from "@shentong/ui";
 import {
   ApiError,
   apiFetch,
@@ -13,7 +26,6 @@ import {
   errorText,
   type DocumentItem,
 } from "@/lib/api";
-import { formatDateTime, statusText } from "@shentong/ui";
 
 function statusVariant(s: string): "low" | "high" | "info" {
   if (s === "indexed") return "low";
@@ -28,7 +40,8 @@ function fmtSize(n: number): string {
 }
 
 export default function DocumentsPage() {
-  const [docs, setDocs] = React.useState<DocumentItem[]>([]);
+  // null = 首屏未读（骨架）；[] = 读到空（空态）
+  const [docs, setDocs] = React.useState<DocumentItem[] | null>(null);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -39,7 +52,10 @@ export default function DocumentsPage() {
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    load().catch((e) => {
+      setDocs((x) => x ?? []);
+      setMsg(e instanceof Error ? e.message : "文档列表读取失败");
+    });
   }, []);
 
   async function upload(file: File) {
@@ -78,85 +94,102 @@ export default function DocumentsPage() {
     load();
   }
 
+  const list = docs ?? [];
+
   return (
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <h1 className="mb-4 text-xl font-medium">知识文档</h1>
-        {msg && <p className="mb-3 text-sm text-primary">{msg}</p>}
+        <h1 className="sr-only">知识文档</h1>
+        <div className="space-y-4">
+          {msg && <p className="text-xs text-primary">{msg}</p>}
 
-        <Card className="mb-4">
-          <CardHeader>
-            <CardTitle className="text-sm">上传文档</CardTitle>
-          </CardHeader>
-          <CardContent className="flex items-center gap-3">
-            <Button disabled={busy} onClick={() => fileRef.current?.click()}>
-              {busy ? "上传中…" : "选择文件上传"}
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              支持 txt / md / pdf / docx / xlsx，单文件 ≤ 20MB；按内容去重，改名重复上传会被拒
-            </span>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".txt,.md,.markdown,.log,.csv,.pdf,.docx,.xlsx"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) upload(f);
-                e.target.value = "";
-              }}
-            />
-          </CardContent>
-        </Card>
+          <Section title="上传文档">
+            <Card>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-4">
+                <Button size="sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+                  {busy ? "上传中…" : "选择文件上传"}
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  支持 txt / md / pdf / docx / xlsx，单文件 ≤ 20MB；按内容去重，改名重复上传会被拒
+                </span>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".txt,.md,.markdown,.log,.csv,.pdf,.docx,.xlsx"
+                  aria-label="选择要上传的文档"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) upload(f);
+                    e.target.value = "";
+                  }}
+                />
+              </CardContent>
+            </Card>
+          </Section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">文档列表（{docs.length}）</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>标题</TableHead>
-                  <TableHead>文件名</TableHead>
-                  <TableHead>大小</TableHead>
-                  <TableHead>向量状态</TableHead>
-                  <TableHead>上传时间</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {docs.map((d) => (
-                  <TableRow key={d.id}>
-                    <TableCell>{d.title}</TableCell>
-                    <TableCell className="text-muted-foreground">{d.filename}</TableCell>
-                    <TableCell>{fmtSize(d.size)}</TableCell>
-                    <TableCell>
-                      <Badge variant={statusVariant(d.status)}>{statusText(d.status)}</Badge>
-                    </TableCell>
-                    <TableCell>{formatDateTime(d.uploaded_at)}</TableCell>
-                    <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => reindex(d)}>
-                        重算
+          <Section title={`文档列表（${list.length}）`}>
+            <Card>
+              <CardContent className="p-0">
+                {docs === null ? (
+                  <TableSkeleton rows={6} cols={6} />
+                ) : list.length === 0 ? (
+                  <EmptyState
+                    title="暂无文档"
+                    hint="上传 SOP、预案或资产说明后，分析时会作为知识依据被检索"
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                        选择文件上传
                       </Button>
-                      <Button size="sm" variant="destructive" className="ml-2" onClick={() => del(d)}>
-                        删除
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {docs.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                      暂无文档
-                    </TableCell>
-                  </TableRow>
+                    }
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>标题</TableHead>
+                        <TableHead>文件名</TableHead>
+                        <TableHead>大小</TableHead>
+                        <TableHead>向量状态</TableHead>
+                        <TableHead>上传时间</TableHead>
+                        <TableHead>操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {list.map((d) => (
+                        <TableRow key={d.id}>
+                          <TableCell>{d.title}</TableCell>
+                          <TableCell className="text-muted-foreground">{d.filename}</TableCell>
+                          <TableCell className="tabular-nums">{fmtSize(d.size)}</TableCell>
+                          <TableCell>
+                            <Badge variant={statusVariant(d.status)}>{statusText(d.status)}</Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs tabular-nums">
+                            {formatDateTime(d.uploaded_at)}
+                          </TableCell>
+                          <TableCell>
+                            <Button size="sm" variant="outline" onClick={() => reindex(d)}>
+                              重算
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="ml-2"
+                              onClick={() => del(d)}
+                            >
+                              删除
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          </Section>
+        </div>
       </main>
     </div>
   );

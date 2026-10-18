@@ -23,7 +23,7 @@ import {
   type TopoFlowNode,
   type TopoNodePayload,
 } from "@/components/topo-node";
-import { Badge } from "@shentong/ui";
+import { Badge, EmptyState, Skeleton } from "@shentong/ui";
 import { Button } from "@shentong/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
 import { Input } from "@shentong/ui";
@@ -50,7 +50,8 @@ function uid(prefix: string): string {
   return `${prefix}_${rnd}`;
 }
 
-const SELECT_CLS = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm";
+const SELECT_CLS =
+  "h-9 w-full rounded-sm border border-input bg-surface-2 px-3 text-sm";
 
 function TopologyInner() {
   const [tops, setTops] = React.useState<TopologyItem[]>([]);
@@ -63,6 +64,8 @@ function TopologyInner() {
   const [sel, setSel] = React.useState<{ kind: "node" | "edge"; id: string } | null>(null);
   const [dirty, setDirty] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  // 首屏：三份基础数据（拓扑列表 / 节点类型 / 资产）到齐前画骨架
+  const [loading, setLoading] = React.useState(true);
 
   const [name, setName] = React.useState("");
   const [desc, setDesc] = React.useState("");
@@ -92,7 +95,9 @@ function TopologyInner() {
   }
 
   React.useEffect(() => {
-    Promise.all([loadTops(), loadTypes(), loadAssets()]).catch(() => {});
+    Promise.all([loadTops(), loadTypes(), loadAssets()])
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const typeMap = React.useMemo(
@@ -379,37 +384,39 @@ function TopologyInner() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-4">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-xl font-medium">
             网络拓扑{current ? ` · ${name}` : ""}
-            {dirty && <span className="ml-2 text-sm text-sev-medium-fg">未保存</span>}
+            {dirty && <span className="ml-2 text-xs text-sev-medium-fg">未保存</span>}
           </h1>
-          <div className="flex gap-2">
-            <Button onClick={saveTopology} disabled={!current}>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={saveTopology} disabled={!current}>
               保存
             </Button>
-            <Button variant="outline" onClick={reindexTopology} disabled={!current}>
+            <Button size="sm" variant="outline" onClick={reindexTopology} disabled={!current}>
               重算向量
             </Button>
-            <Button variant="outline" onClick={deleteSelected} disabled={!sel}>
+            <Button size="sm" variant="outline" onClick={deleteSelected} disabled={!sel}>
               删除选中
             </Button>
           </div>
         </div>
-        {msg && <p className="mb-2 text-sm text-primary">{msg}</p>}
+        {msg && <p className="text-xs text-primary">{msg}</p>}
 
         <div className="grid grid-cols-[260px_1fr_300px] gap-3">
           {/* 左栏 */}
           <div className="space-y-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">拓扑图（{tops.length}）</CardTitle>
+                <CardTitle>拓扑图（{tops.length}）</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="拓扑名称"
+                  aria-label="拓扑名称"
                 />
                 <div className="flex gap-2">
                   <Button size="sm" onClick={createTopology}>
@@ -420,19 +427,27 @@ function TopologyInner() {
                   </Button>
                 </div>
                 <div className="max-h-56 space-y-1 overflow-auto">
-                  {tops.map((t) => (
+                  {loading &&
+                    Array.from({ length: 4 }).map((_, i) => (
+                      <Skeleton key={i} className="h-10 w-full" />
+                    ))}
+                  {!loading &&
+                    tops.map((t) => (
                     <div
                       key={t.id}
                       className={[
-                        "cursor-pointer rounded-md border px-2 py-1.5 text-xs",
-                        current?.id === t.id ? "border-primary" : "border-border",
+                        "cursor-pointer rounded-sm border px-2 py-1.5 text-xs transition-colors",
+                        current?.id === t.id
+                          ? "border-primary bg-primary/10"
+                          : "border-border-subtle hover:bg-accent",
                       ].join(" ")}
                       onClick={() => openTopology(t.id)}
                     >
                       <div className="flex items-center justify-between gap-1">
                         <span className="truncate font-medium">{t.name}</span>
                         <button
-                          className="text-destructive"
+                          className="text-sev-critical-fg"
+                          aria-label={`删除拓扑 ${t.name}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             deleteTopology(t.id);
@@ -442,7 +457,7 @@ function TopologyInner() {
                         </button>
                       </div>
                       <div className="mt-0.5 flex items-center gap-1 text-muted-foreground">
-                        <span>
+                        <span className="tabular-nums">
                           {t.node_count} 节点 / {t.edge_count} 连线
                         </span>
                         <Badge
@@ -454,6 +469,7 @@ function TopologyInner() {
                         </Badge>
                         <button
                           className="underline"
+                          aria-label={`${t.enabled ? "停用" : "启用"}拓扑 ${t.name}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleEnabled(t);
@@ -464,8 +480,12 @@ function TopologyInner() {
                       </div>
                     </div>
                   ))}
-                  {tops.length === 0 && (
-                    <p className="text-xs text-muted-foreground">暂无拓扑，先新建一张</p>
+                  {!loading && tops.length === 0 && (
+                    <EmptyState
+                      size="compact"
+                      title="暂无拓扑"
+                      hint="先新建一张，或从下方资产批量生成节点"
+                    />
                   )}
                 </div>
               </CardContent>
@@ -473,40 +493,55 @@ function TopologyInner() {
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">节点类型（拖到画布）</CardTitle>
+                <CardTitle>节点类型（拖到画布）</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="grid grid-cols-2 gap-1">
-                  {types.map((t) => {
-                    const Icon = resolveIcon(t.icon);
-                    return (
-                      <div
-                        key={t.key}
-                        draggable
-                        onDragStart={(e) =>
-                          e.dataTransfer.setData("application/topology-type", t.key)
-                        }
-                        className="flex cursor-grab items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs hover:bg-accent"
-                        title={t.name}
-                      >
-                        <Icon size={14} color={t.color} />
-                        <span className="truncate">{t.name}</span>
-                      </div>
-                    );
-                  })}
+                  {loading &&
+                    Array.from({ length: 6 }).map((_, i) => (
+                      <Skeleton key={i} className="h-7 w-full" />
+                    ))}
+                  {!loading &&
+                    types.map((t) => {
+                      const Icon = resolveIcon(t.icon);
+                      return (
+                        <div
+                          key={t.key}
+                          draggable
+                          onDragStart={(e) =>
+                            e.dataTransfer.setData("application/topology-type", t.key)
+                          }
+                          className="flex cursor-grab items-center gap-1.5 rounded-sm border border-border-subtle px-2 py-1.5 text-xs hover:bg-accent"
+                          title={t.name}
+                        >
+                          <Icon size={14} color={t.color} />
+                          <span className="truncate">{t.name}</span>
+                        </div>
+                      );
+                    })}
+                  {!loading && types.length === 0 && (
+                    <EmptyState
+                      className="col-span-2"
+                      size="compact"
+                      title="暂无节点类型"
+                      hint="在下方新增一个自定义类型"
+                    />
+                  )}
                 </div>
-                <div className="space-y-1 border-t pt-2">
+                <div className="space-y-1 border-t border-border-subtle pt-2">
                   <Input
                     value={newType.name}
                     onChange={(e) => setNewType({ ...newType, name: e.target.value })}
                     placeholder="自定义类型名称"
+                    aria-label="自定义节点类型名称"
                     className="h-8 text-xs"
                   />
                   <div className="flex gap-1">
                     <select
                       value={newType.icon}
                       onChange={(e) => setNewType({ ...newType, icon: e.target.value })}
-                      className="h-8 flex-1 rounded-md border border-input bg-transparent px-2 text-xs"
+                      aria-label="节点类型图标"
+                      className="h-8 flex-1 rounded-sm border border-input bg-surface-2 px-2 text-xs"
                     >
                       {iconCandidates.map((n) => (
                         <option key={n} value={n}>
@@ -518,10 +553,11 @@ function TopologyInner() {
                       type="color"
                       value={newType.color}
                       onChange={(e) => setNewType({ ...newType, color: e.target.value })}
-                      className="h-8 w-10 rounded-sm border border-input bg-transparent"
+                      aria-label="节点类型颜色"
+                      className="h-8 w-10 rounded-sm border border-input bg-surface-2"
                     />
                   </div>
-                  <Button size="sm" variant="secondary" className="w-full" onClick={createNodeType}>
+                  <Button size="sm" variant="outline" className="w-full" onClick={createNodeType}>
                     新增类型
                   </Button>
                 </div>
@@ -530,37 +566,46 @@ function TopologyInner() {
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">从资产批量生成节点</CardTitle>
+                <CardTitle>从资产批量生成节点</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 <Input
                   value={assetFilter}
                   onChange={(e) => setAssetFilter(e.target.value)}
                   placeholder="搜索资产"
+                  aria-label="搜索要生成节点的资产"
                   className="h-8 text-xs"
                 />
                 <div className="max-h-40 space-y-0.5 overflow-auto">
-                  {filteredAssets.slice(0, 100).map((a) => (
-                    <label key={a.id} className="flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={genPicked.includes(a.id)}
-                        onChange={(e) =>
-                          setGenPicked((p) =>
-                            e.target.checked ? [...p, a.id] : p.filter((x) => x !== a.id)
-                          )
-                        }
-                      />
-                      <span className="font-mono">{a.ip}</span>
-                      <span className="truncate text-muted-foreground">
-                        {a.asset_name || a.hostname || ""}
-                      </span>
-                    </label>
-                  ))}
+                  {loading &&
+                    Array.from({ length: 5 }).map((_, i) => (
+                      <Skeleton key={i} className="h-5 w-full" />
+                    ))}
+                  {!loading &&
+                    filteredAssets.slice(0, 100).map((a) => (
+                      <label key={a.id} className="flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={genPicked.includes(a.id)}
+                          onChange={(e) =>
+                            setGenPicked((p) =>
+                              e.target.checked ? [...p, a.id] : p.filter((x) => x !== a.id)
+                            )
+                          }
+                        />
+                        <span className="font-mono">{a.ip}</span>
+                        <span className="truncate text-muted-foreground">
+                          {a.asset_name || a.hostname || ""}
+                        </span>
+                      </label>
+                    ))}
+                  {!loading && filteredAssets.length === 0 && (
+                    <EmptyState size="compact" title="没有匹配的资产" hint="换个关键词，或先去资产页新增" />
+                  )}
                 </div>
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant="outline"
                   className="w-full"
                   disabled={genPicked.length === 0}
                   onClick={generateFromAssets}
@@ -574,7 +619,7 @@ function TopologyInner() {
           {/* 画布 */}
           <div
             ref={wrapRef}
-            className="h-[720px] rounded-lg border bg-background"
+            className="h-[720px] rounded-md border border-border bg-background"
             onDrop={onDrop}
             onDragOver={(e) => e.preventDefault()}
           >
@@ -607,10 +652,12 @@ function TopologyInner() {
           <div className="space-y-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">属性</CardTitle>
+                <CardTitle>属性</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-xs">
-                {!sel && <p className="text-muted-foreground">选中节点或连线后编辑</p>}
+                {!sel && (
+                  <EmptyState size="compact" title="未选中对象" hint="选中节点或连线后在这里编辑属性" />
+                )}
 
                 {selNode && (
                   <>
@@ -618,12 +665,14 @@ function TopologyInner() {
                     <Input
                       value={selNode.data.label}
                       onChange={(e) => patchSelectedNode({ label: e.target.value })}
+                      aria-label="设备名"
                       className="h-8 text-xs"
                     />
                     <label className="block text-muted-foreground">类型</label>
                     <select
                       value={selNode.data.node_type}
                       onChange={(e) => patchSelectedNode({ node_type: e.target.value })}
+                      aria-label="节点类型"
                       className={`${SELECT_CLS} h-8 text-xs`}
                     >
                       {types.map((t) => (
@@ -636,6 +685,7 @@ function TopologyInner() {
                     <Input
                       value={selNode.data.zone}
                       onChange={(e) => patchSelectedNode({ zone: e.target.value })}
+                      aria-label="网络区域"
                       className="h-8 text-xs"
                       placeholder="生产网 / DMZ / 办公网"
                     />
@@ -643,10 +693,12 @@ function TopologyInner() {
                     <Input
                       value={selNode.data.note}
                       onChange={(e) => patchSelectedNode({ note: e.target.value })}
+                      aria-label="备注"
                       className="h-8 text-xs"
                     />
                     <label className="block text-muted-foreground">
-                      关联资产（可多选，当前 {selNode.data.asset_ids.length} 个）
+                      关联资产（可多选，当前{" "}
+                      <span className="tabular-nums">{selNode.data.asset_ids.length}</span> 个）
                     </label>
                     <div className="max-h-48 space-y-0.5 overflow-auto rounded-xs bg-surface-1 p-1">
                       {filteredAssets.slice(0, 200).map((a) => (
@@ -668,6 +720,9 @@ function TopologyInner() {
                           </span>
                         </label>
                       ))}
+                      {filteredAssets.length === 0 && (
+                        <EmptyState size="compact" title="没有匹配的资产" />
+                      )}
                     </div>
                   </>
                 )}
@@ -678,6 +733,7 @@ function TopologyInner() {
                     <Input
                       value={String(selEdge.label ?? "")}
                       onChange={(e) => patchSelectedEdge({ label: e.target.value })}
+                      aria-label="连线标签"
                       className="h-8 text-xs"
                       placeholder="10.100.0.0/24"
                     />
@@ -689,7 +745,7 @@ function TopologyInner() {
             {current && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">拓扑设置</CardTitle>
+                  <CardTitle>拓扑设置</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-xs">
                   <label className="flex items-center gap-2">
@@ -703,17 +759,20 @@ function TopologyInner() {
                     />
                     参与 RAG 检索
                   </label>
-                  <label className="block text-muted-foreground">说明</label>
+                  <label className="block text-muted-foreground" htmlFor="topo-desc">
+                    说明
+                  </label>
                   <textarea
+                    id="topo-desc"
                     value={desc}
                     onChange={(e) => {
                       setDesc(e.target.value);
                       setDirty(true);
                     }}
-                    className="h-20 w-full rounded-md border border-input bg-transparent p-2 text-xs"
+                    className="h-20 w-full rounded-sm border border-input bg-surface-2 p-2 text-xs"
                     placeholder="拓扑说明（会一起进入知识库）"
                   />
-                  <p className="text-muted-foreground">
+                  <p className="tabular-nums text-muted-foreground">
                     状态：{statusText(current.status)}
                     {current.indexed_at ? ` · 最近向量化 ${formatDateTime(current.indexed_at)}` : ""}
                   </p>
@@ -724,6 +783,7 @@ function TopologyInner() {
               </Card>
             )}
           </div>
+        </div>
         </div>
       </main>
     </div>

@@ -6,14 +6,15 @@ import {
   Button,
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
+  EmptyState,
+  Section,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
   ApiError,
   apiFetch,
   errorText,
@@ -35,6 +36,9 @@ import { useAliases } from "@/lib/aliases";
  * 存 PG、只读 PG（没有 env 兜底）：**没配 = 系统认定网络里没有中继** —— 不认代理头、
  * 不做去重。故意单独一个卡片与保存按钮：改清单**不会**触发 Zeek 重载（不打断抓包）。
  * 角色由检测器按实际流量自动推算后回写，这里只读展示。
+ *
+ * 版式（2026-10 统一到设计体系）：标题与口径说明走 `Section`（L1），编辑区与清单走
+ * `Card`（L2）；表格正文 13px 由 `Table` 内置，只有地址列保留 `font-mono text-xs`。
  */
 
 const SRC = { relay: "中继节点清单" } as const;
@@ -173,183 +177,237 @@ export function RelayNodesPanel() {
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-          中继节点清单（反向代理 / WAF / 内网 DNS 转发器）
-          <span className="text-xs font-normal text-muted-foreground">
+    <div className="space-y-4">
+      <PanelError errors={errs} />
+
+      <Section
+        title="中继节点清单（反向代理 / WAF / 内网 DNS 转发器）"
+        description={
+          <>
             一行一个 IP 或 CIDR（也支持逗号分隔、<span className="font-mono">#</span> 注释）。
-            改它**不会**触发网络采集器重载。
-          </span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <PanelError errors={errs} />
-
-        {data && !data.configured ? (
-          <p className="rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
-            未配置中继清单：当前**不信任任何代理头**（`real_client_ip` 恒为空），
-            也**不做中继去重** —— 经过代理/DNS 转发的同一次访问会在检测与计数里出现两次，
-            且告警会归因到代理/DNS 服务器上。填入地址后立即生效。
-          </p>
-        ) : null}
-
-        <textarea
-          className="min-h-[120px] w-full rounded-md border bg-transparent p-2 font-mono text-xs"
-          spellCheck={false}
-          placeholder={"10.1.2.10\n10.1.2.20\n10.0.0.53   # 内网 DNS 转发器"}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy || !dirty} onClick={() => void save()}>
-            保存清单{dirty ? "（有改动）" : ""}
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>
-            重新读取
-          </Button>
+            改它<b>不会</b>触发网络采集器重载。
+          </>
+        }
+        extra={
           <Badge variant={data?.configured ? "success" : "medium"}>
             {data?.configured ? `已配置 ${data?.count ?? 0} 项` : "未配置"}
           </Badge>
-          {msg ? <span className="text-xs text-muted-foreground">{msg}</span> : null}
-        </div>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-3 pt-4">
+            {data && !data.configured ? (
+              <p className="rounded-md border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
+                未配置中继清单：当前<b>不信任任何代理头</b>（
+                <span className="font-mono">real_client_ip</span> 恒为空），也<b>不做中继去重</b> ——
+                经过代理/DNS 转发的同一次访问会在检测与计数里出现两次，
+                且告警会归因到代理/DNS 服务器上。填入地址后立即生效。
+              </p>
+            ) : null}
 
-        <div>
-          <p className="mb-1 text-xs text-muted-foreground">
-            角色与两侧内容由检测器按实际流量自动统计并回写（
-            {data?.detected_at ? `推算时间 ${formatDateTime(data.detected_at)}` : "只读"}）。
-            <b>内容</b>指该侧带 Host/URI/请求体的明文日志条数（http/dns 这类）；
-            <b>TLS 加密流不算内容</b>。角色/侧向默认按实测证据判定，两种情形需要人工指定：
-            两边都无明文内容的中继（只有握手）判不出角色；只在 conn 层出现的中继也一样。
-          </p>
-          {nodes.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>地址</TableHead>
-                  <TableHead>链路层级</TableHead>
-                  <TableHead>推算角色</TableHead>
-                  <TableHead>角色指定</TableHead>
-                  <TableHead>客户端侧内容</TableHead>
-                  <TableHead>源站侧内容</TableHead>
-                  <TableHead>当前保留</TableHead>
-                  <TableHead>保留哪一侧</TableHead>
-                  <TableHead>证据（本轮/累计）</TableHead>
-                  <TableHead>最后看到流量</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {nodes
-                  .slice()
-                  .sort((x, y) => (levels[x] ?? 99) - (levels[y] ?? 99))
-                  .map((ip) => {
-                  const info = data?.roles?.[ip] || {};
-                  const isNet = ip.includes("/");
-                  const parent = parentOf(ip);
-                  const hits = info.hits_total || {};
-                  return (
-                    <TableRow key={ip}>
-                      <TableCell className="font-mono text-xs">
-                        {displayName(ip)}
-                        {displayName(ip) !== ip ? (
-                          <span className="ml-1 text-muted-foreground">{ip}</span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        <span className="font-mono">L{levels[ip] ?? "?"}</span>
-                        <span className="ml-2 text-muted-foreground">
-                          {parent ? `上一跳 ${parent}` : "最上游（清单内没有它的上级）"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{roleText(info.roles)}</Badge>
-                        {info.role_source === "manual" ? (
-                          <span className="ml-1 text-xs text-muted-foreground">（手动）</span>
-                        ) : null}
-                        {info.role_reason ? (
-                          <div className="text-xs text-muted-foreground">{info.role_reason}</div>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        {isNet ? (
-                          <span className="text-xs text-muted-foreground">网段条目按每条 IP 自动判</span>
-                        ) : (
-                          <select
-                            className="h-8 rounded-md border bg-transparent px-2 text-xs"
-                            value={roleOverrides[ip] || "auto"}
-                            onChange={(e) =>
-                              setRoleOverrides((prev) => ({ ...prev, [ip]: e.target.value }))
-                            }
-                          >
-                            <option value="auto">自动（按证据）</option>
-                            <option value="proxy">反向代理 / WAF</option>
-                            <option value="dns">DNS 转发</option>
-                            <option value="both">两者都是</option>
-                          </select>
-                        )}
-                      </TableCell>
-                      <TableCell>{info.front_content ?? 0}</TableCell>
-                      <TableCell>{info.back_content ?? 0}</TableCell>
-                      <TableCell className="text-xs">
-                        {info.side ? sideText(info.side) : "未判定"}
-                        {info.side_source === "manual" ? "（手动）" : ""}
-                        {info.side_source === "kept" ? "（沿用上次）" : ""}
-                        {info.side_reason ? (
-                          <div className="text-muted-foreground">{info.side_reason}</div>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        {isNet ? (
-                          <span className="text-xs text-muted-foreground">网段条目按每条 IP 自动判</span>
-                        ) : (
-                          <select
-                            className="h-8 rounded-md border bg-transparent px-2 text-xs"
-                            value={sides[ip] || "auto"}
-                            onChange={(e) =>
-                              setSides((prev) => ({ ...prev, [ip]: e.target.value }))
-                            }
-                          >
-                            <option value="auto">自动（按实测内容）</option>
-                            <option value="front">保留客户端侧</option>
-                            <option value="back">保留源站侧</option>
-                          </select>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {info.proxy ?? 0} / {hits.proxy ?? 0} ・ {info.dns ?? 0} / {hits.dns ?? 0}
-                      </TableCell>
-                      <TableCell className="text-xs">{ago(info.last_seen)}</TableCell>
+            {/* 清单是裸文本（一行一个地址），textarea 保留等宽字体：地址按列对得齐才好核对 */}
+            <textarea
+              aria-label="中继节点清单（一行一个 IP 或 CIDR）"
+              className="min-h-[120px] w-full rounded-md border border-border bg-surface-2 p-2 font-mono text-xs"
+              spellCheck={false}
+              placeholder={"10.1.2.10\n10.1.2.20\n10.0.0.53   # 内网 DNS 转发器"}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={busy || !dirty} onClick={() => void save()}>
+                保存清单{dirty ? "（有改动）" : ""}
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
+                重新读取
+              </Button>
+              {msg ? <span className="text-xs text-muted-foreground">{msg}</span> : null}
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                角色与两侧内容由检测器按实际流量自动统计并回写（
+                {data?.detected_at ? `推算时间 ${formatDateTime(data.detected_at)}` : "只读"}）。
+                <b>内容</b>指该侧带 Host/URI/请求体的明文日志条数（http/dns 这类）；
+                <b>TLS 加密流不算内容</b>。角色/侧向默认按实测证据判定，两种情形需要人工指定：
+                两边都无明文内容的中继（只有握手）判不出角色；只在 conn 层出现的中继也一样。
+              </p>
+              {/* 首屏：还没读到、也没失败 → 骨架；「正在读」不写成「还没有流量做判定」 */}
+              {data === null && !errs.has ? (
+                <TableSkeleton rows={5} cols={6} />
+              ) : nodes.length ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>地址</TableHead>
+                      <TableHead>链路层级</TableHead>
+                      <TableHead>推算角色</TableHead>
+                      <TableHead>角色指定</TableHead>
+                      <TableHead className="text-right">客户端侧内容</TableHead>
+                      <TableHead className="text-right">源站侧内容</TableHead>
+                      <TableHead>当前保留</TableHead>
+                      <TableHead>保留哪一侧</TableHead>
+                      <TableHead>证据（本轮/累计）</TableHead>
+                      <TableHead>最后看到流量</TableHead>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {data?.configured ? "还没有足够流量做判定（下一个回写周期后出现）" : "配置清单后由系统自动判定"}
-            </p>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={busy || !labelDirty} onClick={() => void saveLabels()}>
-              保存角色/侧向标注{labelDirty ? "（有改动）" : ""}
-            </Button>
-            {topo.min_evidence ? (
-              <span className="text-xs text-muted-foreground">
-                链路关系门槛：每类证据 ≥{topo.min_evidence} 次才算已确认
-                {topo.pruned ? `（已剔除 ${topo.pruned} 条不在清单内的边）` : ""}
-              </span>
-            ) : null}
-            {(topo.cycle_broken || []).length ? (
-              <span className="text-xs text-sev-medium-fg">
-                链路关系检出环路，已打断最弱边：
-                {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}
-              </span>
-            ) : null}
-            {sideMsg ? <span className="text-xs text-muted-foreground">{sideMsg}</span> : null}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+                  </TableHeader>
+                  <TableBody>
+                    {nodes
+                      .slice()
+                      .sort((x, y) => (levels[x] ?? 99) - (levels[y] ?? 99))
+                      .map((ip) => {
+                        const info = data?.roles?.[ip] || {};
+                        const isNet = ip.includes("/");
+                        const parent = parentOf(ip);
+                        const hits = info.hits_total || {};
+                        return (
+                          <TableRow key={ip}>
+                            <TableCell className="font-mono text-xs">
+                              {displayName(ip)}
+                              {displayName(ip) !== ip ? (
+                                <span className="ml-1 text-muted-foreground">{ip}</span>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
+                              <span className="font-mono tabular-nums">L{levels[ip] ?? "?"}</span>
+                              <span className="ml-2 text-muted-foreground">
+                                {parent ? `上一跳 ${parent}` : "最上游（清单内没有它的上级）"}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={info.roles?.length ? "outline" : "medium"}>
+                                {roleText(info.roles)}
+                              </Badge>
+                              {info.role_source === "manual" ? (
+                                <span className="ml-1 text-xs text-muted-foreground">（手动）</span>
+                              ) : null}
+                              {info.role_reason ? (
+                                <div className="text-xs text-muted-foreground">
+                                  {info.role_reason}
+                                </div>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
+                              {isNet ? (
+                                <span className="text-xs text-muted-foreground">
+                                  网段条目按每条 IP 自动判
+                                </span>
+                              ) : (
+                                <select
+                                  aria-label={`${ip} 的角色指定`}
+                                  className="h-8 rounded-md border border-border bg-surface-2 px-2 text-xs"
+                                  value={roleOverrides[ip] || "auto"}
+                                  onChange={(e) =>
+                                    setRoleOverrides((prev) => ({ ...prev, [ip]: e.target.value }))
+                                  }
+                                >
+                                  <option value="auto">自动（按证据）</option>
+                                  <option value="proxy">反向代理 / WAF</option>
+                                  <option value="dns">DNS 转发</option>
+                                  <option value="both">两者都是</option>
+                                </select>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {info.front_content ?? 0}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {info.back_content ?? 0}
+                            </TableCell>
+                            <TableCell>
+                              <span className={info.side ? undefined : "text-muted-foreground"}>
+                                {info.side ? sideText(info.side) : "未判定"}
+                              </span>
+                              {info.side_source === "manual" ? "（手动）" : ""}
+                              {info.side_source === "kept" ? "（沿用上次）" : ""}
+                              {info.side_reason ? (
+                                <div className="text-xs text-muted-foreground">
+                                  {info.side_reason}
+                                </div>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
+                              {isNet ? (
+                                <span className="text-xs text-muted-foreground">
+                                  网段条目按每条 IP 自动判
+                                </span>
+                              ) : (
+                                <select
+                                  aria-label={`${ip} 保留哪一侧`}
+                                  className="h-8 rounded-md border border-border bg-surface-2 px-2 text-xs"
+                                  value={sides[ip] || "auto"}
+                                  onChange={(e) =>
+                                    setSides((prev) => ({ ...prev, [ip]: e.target.value }))
+                                  }
+                                >
+                                  <option value="auto">自动（按实测内容）</option>
+                                  <option value="front">保留客户端侧</option>
+                                  <option value="back">保留源站侧</option>
+                                </select>
+                              )}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap tabular-nums">
+                              {info.proxy ?? 0} / {hits.proxy ?? 0} ・ {info.dns ?? 0} /{" "}
+                              {hits.dns ?? 0}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap tabular-nums">
+                              {ago(info.last_seen)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <EmptyState
+                  size="compact"
+                  title={
+                    errs.isFailed(SRC.relay)
+                      ? "清单读取失败（见上方错误条）"
+                      : data?.configured
+                        ? "还没有足够流量做判定"
+                        : "配置清单后由系统自动判定"
+                  }
+                  hint={
+                    errs.isFailed(SRC.relay)
+                      ? "后端异常或网络不通，不是「网络里没有中继」"
+                      : data?.configured
+                        ? "下一个回写周期后出现"
+                        : "在上面的文本框里填入地址（一行一个 IP 或 CIDR），保存后立即生效"
+                  }
+                  tone={errs.isFailed(SRC.relay) ? "danger" : "muted"}
+                  action={
+                    errs.isFailed(SRC.relay) ? (
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        重新读取
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" disabled={busy || !labelDirty} onClick={() => void saveLabels()}>
+                  保存角色/侧向标注{labelDirty ? "（有改动）" : ""}
+                </Button>
+                {topo.min_evidence ? (
+                  <span className="text-xs text-muted-foreground">
+                    链路关系门槛：每类证据 ≥{topo.min_evidence} 次才算已确认
+                    {topo.pruned ? `（已剔除 ${topo.pruned} 条不在清单内的边）` : ""}
+                  </span>
+                ) : null}
+                {(topo.cycle_broken || []).length ? (
+                  <span className="text-xs text-sev-medium-fg">
+                    链路关系检出环路，已打断最弱边：
+                    {(topo.cycle_broken || []).map((e) => e.join("→")).join("；")}
+                  </span>
+                ) : null}
+                {sideMsg ? <span className="text-xs text-muted-foreground">{sideMsg}</span> : null}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </Section>
+    </div>
   );
 }

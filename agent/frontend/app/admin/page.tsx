@@ -3,16 +3,34 @@
 import * as React from "react";
 import Link from "next/link";
 import { Nav } from "@/components/nav";
-import { Badge, severityVariant } from "@shentong/ui";
-import { Button } from "@shentong/ui";
-import { Card, CardContent } from "@shentong/ui";
-import { Drawer } from "@shentong/ui";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  Drawer,
+  EmptyState,
+  Section,
+  Skeleton,
+  Stat,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableSkeleton,
+  directionText,
+  formatDateTime,
+  severityText,
+  severityVariant,
+  statusText,
+} from "@shentong/ui";
 import { apiFetch, type EventGroupItem, type GroupDetail, type EvidenceChain } from "@/lib/api";
-import { directionText, formatDateTime, severityText, statusText } from "@shentong/ui";
 
 export default function AdminEventsPage() {
-  const [groups, setGroups] = React.useState<EventGroupItem[]>([]);
+  // null = 首屏还没读到（画骨架）；[] = 读到了但没有数据（画空态）
+  const [groups, setGroups] = React.useState<EventGroupItem[] | null>(null);
   const [selected, setSelected] = React.useState<EventGroupItem | null>(null);
   const [detail, setDetail] = React.useState<GroupDetail | null>(null);
   const [detailError, setDetailError] = React.useState("");
@@ -39,7 +57,7 @@ export default function AdminEventsPage() {
   }
 
   React.useEffect(() => {
-    load().catch(() => {});
+    load().catch(() => setGroups((g) => g ?? []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showExcluded]);
 
@@ -105,9 +123,10 @@ export default function AdminEventsPage() {
 
   // 折叠行：同主源 → 一行；代表行取该源最新的一组
   const rows = React.useMemo(() => {
-    if (!foldSameSrc) return groups.map((g) => ({ key: g.id, row: g, siblings: [g] }));
+    const list = groups ?? [];
+    if (!foldSameSrc) return list.map((g) => ({ key: g.id, row: g, siblings: [g] }));
     const bySrc = new Map<string, EventGroupItem[]>();
-    for (const g of groups) {
+    for (const g of list) {
       const src = (g.src_ips || [])[0] || "(无源 IP)";
       const bucket = bySrc.get(src);
       if (bucket) bucket.push(g);
@@ -125,159 +144,186 @@ export default function AdminEventsPage() {
     <div className="min-h-screen">
       <Nav />
       <main className="ml-56 p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-xl font-medium">事件列表</h1>
-          <div className="flex items-center gap-4">
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={picked.length === 0}
-              onClick={() => removePicked().catch(() => {})}
-            >
-              删除选中（{picked.length}）
-            </Button>
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={foldSameSrc}
-                onChange={(e) => setFoldSameSrc(e.target.checked)}
-              />
-              按同源折叠重复组
-            </label>
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={showExcluded}
-                onChange={(e) => setShowExcluded(e.target.checked)}
-              />
-              显示已排除的事件（被排除过滤命中，不跑模型）
-            </label>
-          </div>
-        </div>
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8">
-                    <input
-                      type="checkbox"
-                      checked={groups.length > 0 && picked.length === groups.length}
-                      onChange={(e) => setPicked(e.target.checked ? groups.map((x) => x.id) : [])}
-                    />
-                  </TableHead>
-                  <TableHead>编号</TableHead>
-                  <TableHead>级别</TableHead>
-                  <TableHead>源 IP</TableHead>
-                  <TableHead>目标 IP</TableHead>
-                  <TableHead>事件数</TableHead>
-                  <TableHead>得分</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>时间（北京时间）</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map(({ key, row: g, siblings }) => (
-                  <TableRow
-                    key={key}
-                    className="cursor-pointer"
-                    onClick={() => openDetail(g, siblings)}
-                    title="点击查看详情"
-                  >
-                    <TableCell className="w-8">
-                      <input
-                        type="checkbox"
-                        checked={siblings.every((s) => picked.includes(s.id))}
-                        onChange={(e) =>
-                          setPicked((prev) => {
-                            const ids = siblings.map((s) => s.id);
-                            return e.target.checked
-                              ? [...new Set([...prev, ...ids])]
-                              : prev.filter((x) => !ids.includes(x));
-                          })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{g.display_id}</TableCell>
-                    <TableCell>
-                      <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[140px] truncate">
-                      {g.src_ips?.join(", ")}
-                      {siblings.length > 1 && (
-                        <Badge variant="outline" className="ml-2">
-                          同源 {siblings.length} 组
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="max-w-[140px] truncate">{g.dst_ips?.join(", ")}</TableCell>
-                    <TableCell>
-                      {siblings.length > 1
-                        ? siblings.reduce((n, x) => n + (x.event_count || 0), 0)
-                        : g.event_count}
-                      {(g.aggregate?.hits ?? 0) > 0 && (
-                        <span className="text-xs text-muted-foreground">
-                          {" / 聚合 "}
-                          {g.aggregate?.hits}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>{g.triage_score?.toFixed(2)}</TableCell>
-                    <TableCell>
-                      {g.excluded ? <Badge variant="outline">已排除</Badge> : statusText(g.status)}
-                    </TableCell>
-                    <TableCell>{formatDateTime(g.window_start)}</TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openDetail(g, siblings);
-                        }}
-                      >
-                        详情
+        <h1 className="sr-only">事件列表</h1>
+        <div className="space-y-4">
+          <Section
+            title="事件列表"
+            description="点击任意行查看详情与证据链；默认按同源折叠重复组"
+            extra={
+              <>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={picked.length === 0}
+                  onClick={() => removePicked().catch(() => {})}
+                >
+                  删除选中（{picked.length}）
+                </Button>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={foldSameSrc}
+                    onChange={(e) => setFoldSameSrc(e.target.checked)}
+                  />
+                  按同源折叠重复组
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={showExcluded}
+                    onChange={(e) => setShowExcluded(e.target.checked)}
+                  />
+                  显示已排除的事件（被排除过滤命中，不跑模型）
+                </label>
+              </>
+            }
+          >
+            <Card>
+              <CardContent className="p-0">
+                {groups === null ? (
+                  <TableSkeleton rows={10} cols={8} />
+                ) : groups.length === 0 ? (
+                  <EmptyState
+                    title="暂无事件组"
+                    hint="检测器产出事件组后会出现在这里；也可以放宽左侧时间范围或打开「显示已排除」"
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => load().catch(() => {})}>
+                        重新读取
                       </Button>
-                      {g.status === "pending_confirmation" && !g.excluded && (
-                        <>
-                          <Button
-                            size="sm"
-                            className="ml-2"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              confirm(g, "confirm");
-                            }}
-                          >
-                            确认
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="ml-2"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              confirm(g, "dismiss");
-                            }}
-                          >
-                            忽略
-                          </Button>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+                    }
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-8">
+                          <input
+                            type="checkbox"
+                            aria-label="全选事件组"
+                            checked={groups.length > 0 && picked.length === groups.length}
+                            onChange={(e) =>
+                              setPicked(e.target.checked ? groups.map((x) => x.id) : [])
+                            }
+                          />
+                        </TableHead>
+                        <TableHead>编号</TableHead>
+                        <TableHead>级别</TableHead>
+                        <TableHead>源 IP</TableHead>
+                        <TableHead>目标 IP</TableHead>
+                        <TableHead>事件数</TableHead>
+                        <TableHead>得分</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead>时间（北京时间）</TableHead>
+                        <TableHead>操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {rows.map(({ key, row: g, siblings }) => (
+                        <TableRow
+                          key={key}
+                          className="cursor-pointer"
+                          onClick={() => openDetail(g, siblings)}
+                          title="点击查看详情"
+                        >
+                          <TableCell className="w-8">
+                            <input
+                              type="checkbox"
+                              aria-label={`选择事件组 ${g.display_id}`}
+                              checked={siblings.every((s) => picked.includes(s.id))}
+                              onChange={(e) =>
+                                setPicked((prev) => {
+                                  const ids = siblings.map((s) => s.id);
+                                  return e.target.checked
+                                    ? [...new Set([...prev, ...ids])]
+                                    : prev.filter((x) => !ids.includes(x));
+                                })
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">{g.display_id}</TableCell>
+                          <TableCell>
+                            <Badge variant={severityVariant(g.severity)}>{severityText(g.severity)}</Badge>
+                          </TableCell>
+                          <TableCell className="max-w-[140px] truncate">
+                            {g.src_ips?.join(", ")}
+                            {siblings.length > 1 && (
+                              <Badge variant="outline" className="ml-2">
+                                同源 {siblings.length} 组
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="max-w-[140px] truncate">{g.dst_ips?.join(", ")}</TableCell>
+                          <TableCell className="tabular-nums">
+                            {siblings.length > 1
+                              ? siblings.reduce((n, x) => n + (x.event_count || 0), 0)
+                              : g.event_count}
+                            {(g.aggregate?.hits ?? 0) > 0 && (
+                              <span className="text-xs text-muted-foreground">
+                                {" / 聚合 "}
+                                {g.aggregate?.hits}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="tabular-nums">{g.triage_score?.toFixed(2)}</TableCell>
+                          <TableCell>
+                            {g.excluded ? <Badge variant="outline">已排除</Badge> : statusText(g.status)}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs tabular-nums">
+                            {formatDateTime(g.window_start)}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openDetail(g, siblings);
+                              }}
+                            >
+                              详情
+                            </Button>
+                            {g.status === "pending_confirmation" && !g.excluded && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  className="ml-2"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    confirm(g, "confirm");
+                                  }}
+                                >
+                                  确认
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="ml-2"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    confirm(g, "dismiss");
+                                  }}
+                                >
+                                  忽略
+                                </Button>
+                              </>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </Section>
+        </div>
 
         <Drawer
           open={selected !== null}
           onClose={closeDetail}
           title={
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">事件组详情</span>
+              <span className="font-medium">事件组详情</span>
               {selected?.display_id && (
                 <span className="font-mono text-xs text-muted-foreground">{selected.display_id}</span>
               )}
@@ -289,7 +335,7 @@ export default function AdminEventsPage() {
               {selected && (
                 <span className="text-xs text-muted-foreground">
                   {selected.excluded ? "已排除" : statusText(selected.status)} · 得分{" "}
-                  {selected.triage_score?.toFixed(2)}
+                  <span className="tabular-nums">{selected.triage_score?.toFixed(2)}</span>
                 </span>
               )}
               {selected?.direction && (
@@ -310,33 +356,53 @@ export default function AdminEventsPage() {
             ) : null
           }
         >
-          {loadingDetail && <p className="text-sm text-muted-foreground">加载中…</p>}
-          {detailError && <p className="text-sm text-destructive">加载失败：{detailError}</p>}
+          {loadingDetail && (
+            <div className="space-y-3" aria-busy="true">
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-4 w-1/4" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          )}
+          {detailError && (
+            <EmptyState tone="danger" size="compact" title="详情读取失败" hint={detailError} />
+          )}
           {selected && !detail && !loadingDetail && !detailError && (
-            <p className="text-sm text-muted-foreground">无详情数据</p>
+            <EmptyState size="compact" title="无详情数据" hint="该事件组可能刚被删除，返回列表刷新后再试" />
           )}
 
           {selected && detail && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  窗口：<span className="text-xs">{formatDateTime(detail.window_start)}</span>
+              <Section title="基础信息" description="检测窗口、规模与归组指纹">
+                <div className="grid grid-cols-2 gap-3">
+                  <Stat
+                    size="sm"
+                    label="检测窗口"
+                    value={
+                      <span className="font-mono text-13">{formatDateTime(detail.window_start)}</span>
+                    }
+                  />
+                  <Stat
+                    size="sm"
+                    label="事件数"
+                    value={
+                      <span className="tabular-nums">
+                        {detail.event_count}
+                        {(detail.aggregate?.hits ?? 0) > 0 ? ` / 聚合 ${detail.aggregate?.hits}` : ""}
+                      </span>
+                    }
+                  />
                 </div>
-                <div>
-                  事件数：{detail.event_count}
-                  {(detail.aggregate?.hits ?? 0) > 0 && ` / 聚合 ${detail.aggregate?.hits}`}
-                </div>
-                <div className="col-span-2 font-mono text-xs text-muted-foreground">
+                <p className="font-mono text-xs text-muted-foreground">
                   {selected.display_id} · 指纹 {selected.fingerprint}
-                </div>
-              </div>
+                </p>
+              </Section>
 
               {/* 误报治理：为什么被跳过、为什么被降级 —— 必须能解释清楚（不允许静默降噪）。
                   方向、跳过理由、定级约束理由都在后端落库，这里只负责展示。 */}
               {(selected.direction || selected.exclude_reason || selected.severity_cap_reason) && (
-                <div className="rounded-md border border-dashed p-3">
-                  <h3 className="mb-2 text-sm font-medium">处理依据</h3>
-                  <div className="space-y-1 text-xs">
+                <Section title="处理依据" description="跳过与降级都会在这里写明原因">
+                  <div className="space-y-1 rounded-xs border border-border-subtle bg-surface-1 p-2 text-xs">
                     {selected.direction && (
                       <p className="text-muted-foreground">
                         流量方向：{directionText(selected.direction)}（外网按是否公网地址判定，与具体网段无关）
@@ -349,22 +415,18 @@ export default function AdminEventsPage() {
                       <p className="text-sev-medium-fg">定级被约束：{selected.severity_cap_reason}</p>
                     )}
                   </div>
-                </div>
+                </Section>
               )}
 
               {/* 案件视角：本组所属案件 + 案件叙事副本。
                   案件结论不再覆盖本组攻击链（以前会，等于让调查结果给自己作证）。 */}
               {(selected.case_id || selected.case_context) && (
-                <div className="rounded-md border p-3">
-                  <h3 className="mb-2 text-sm font-medium">
-                    案件视角
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      {selected.case_id
-                        ? `属于案件 AC-${selected.case_id.slice(0, 8).toUpperCase()}`
-                        : "无案件指针"}
-                      {selected.case_context?.superseded ? " · 该副本已因重建退场" : ""}
-                    </span>
-                  </h3>
+                <Section
+                  title="案件视角"
+                  description={`${selected.case_id
+                    ? `属于案件 AC-${selected.case_id.slice(0, 8).toUpperCase()}`
+                    : "无案件指针"}${selected.case_context?.superseded ? " · 该副本已因重建退场" : ""}`}
+                >
                   {selected.case_context ? (
                     <div className="space-y-1 text-xs">
                       {selected.case_context.severity && (
@@ -383,50 +445,43 @@ export default function AdminEventsPage() {
                         </p>
                       )}
                       {selected.case_context.rounds ? (
-                        <p>调查轮次：{selected.case_context.rounds}</p>
+                        <p className="tabular-nums">调查轮次：{selected.case_context.rounds}</p>
                       ) : null}
                     </div>
                   ) : (
-                    <p className="text-xs text-muted-foreground">暂无案件视角副本</p>
+                    <EmptyState size="compact" title="暂无案件视角副本" />
                   )}
-                </div>
+                </Section>
               )}
 
               {/* 同源重复组：展示层折叠了它们，这里给出全貌（归组指纹未动） */}
               {foldSiblings.length > 1 && (
-                <div className="rounded-md border p-3">
-                  <h3 className="mb-2 text-sm font-medium">
-                    同一来源的其它事件组（{foldSiblings.length - 1}）
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      列表按同源折叠，归组指纹未变；这里只展示最新那组
-                    </span>
-                  </h3>
+                <Section
+                  title={`同一来源的其它事件组（${foldSiblings.length - 1}）`}
+                  description="列表按同源折叠，归组指纹未变；这里只展示最新那组"
+                >
                   <div className="space-y-1 text-xs">
                     {foldSiblings.slice(1, 9).map((s) => (
                       <div key={s.id} className="flex flex-wrap items-center gap-2">
                         <Badge variant={severityVariant(s.severity)}>{severityText(s.severity)}</Badge>
                         <span className="font-mono">{(s.dst_ips || []).slice(0, 3).join(", ")}</span>
-                        <span className="text-muted-foreground">{s.event_count} 条</span>
+                        <span className="tabular-nums text-muted-foreground">{s.event_count} 条</span>
                         <span className="text-muted-foreground">{statusText(s.status)}</span>
                         <span className="text-muted-foreground">{formatDateTime(s.window_start)}</span>
                       </div>
                     ))}
                   </div>
-                </div>
+                </Section>
               )}
 
               {/* 关键 IP：事件组是按 IP 集合归并的，一个组可能涉及十几个 IP ——
                   详情只突出**真正有问题的**（外网来源置顶、按命中排序），其余折叠。 */}
               {detail.key_ips && (
-                <div className="rounded-md border p-3">
-                  <h3 className="mb-2 font-medium">
-                    关键 IP
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      本组共涉及 {detail.key_ips.total_src} 个源 IP / {detail.key_ips.total_dst}{" "}
-                      个目标 IP，下面只列命中的
-                    </span>
-                  </h3>
-                  <div className="space-y-2 text-xs">
+                <Section
+                  title="关键 IP"
+                  description={`本组共涉及 ${detail.key_ips.total_src} 个源 IP / ${detail.key_ips.total_dst} 个目标 IP，下面只列命中的`}
+                >
+                  <div className="space-y-3 text-xs">
                     <div>
                       <p className="mb-1 text-muted-foreground">
                         疑似来源（{detail.key_ips.actors.length}）
@@ -438,7 +493,7 @@ export default function AdminEventsPage() {
                         <div key={a.ip} className="mb-1 flex flex-wrap items-center gap-2">
                           {a.external && <Badge variant="high">外网</Badge>}
                           <span className="font-mono">{a.ip}</span>
-                          <span className="text-muted-foreground">命中 {a.hits} 次</span>
+                          <span className="tabular-nums text-muted-foreground">命中 {a.hits} 次</span>
                           <span className="text-muted-foreground">
                             {(a.rules || []).slice(0, 2).join("、")}
                           </span>
@@ -450,10 +505,13 @@ export default function AdminEventsPage() {
                       <p className="mb-1 text-muted-foreground">
                         被打目标（{detail.key_ips.targets.length}）
                       </p>
+                      {detail.key_ips.targets.length === 0 && (
+                        <p className="text-muted-foreground">（无命中目标）</p>
+                      )}
                       {detail.key_ips.targets.map((t) => (
                         <div key={t.ip} className="mb-1 flex flex-wrap items-center gap-2">
                           <span className="font-mono">{t.ip}</span>
-                          <span className="text-muted-foreground">命中 {t.hits} 次</span>
+                          <span className="tabular-nums text-muted-foreground">命中 {t.hits} 次</span>
                           {(t.ports || []).length > 0 && (
                             <span className="text-muted-foreground">
                               端口 {(t.ports || []).slice(0, 8).join(",")}
@@ -477,13 +535,12 @@ export default function AdminEventsPage() {
                       </details>
                     )}
                   </div>
-                </div>
+                </Section>
               )}
 
               {detail.aggregate && (detail.aggregate.hits ?? 0) > 0 && (
-                <div>
-                  <h3 className="mb-1 font-medium">聚合规模（实时检测）</h3>
-                  <p className="text-sm">
+                <Section title="聚合规模（实时检测）">
+                  <p className="text-13 tabular-nums">
                     共命中 <b>{detail.aggregate.hits}</b> 次 · 目标{" "}
                     {detail.aggregate.dst_ips?.length ?? 0} 个 · 端口{" "}
                     {detail.aggregate.dst_ports?.length ?? 0} 个
@@ -505,16 +562,15 @@ export default function AdminEventsPage() {
                       端口：{(detail.aggregate.dst_ports || []).join(", ")}
                     </p>
                   )}
-                </div>
+                </Section>
               )}
 
               {detail.business_context &&
                 ((detail.business_context.assets?.length ?? 0) > 0 ||
                   (detail.business_context.knowledge?.length ?? 0) > 0) && (
-                  <div>
-                    <h3 className="mb-1 font-medium">资产与业务背景</h3>
+                  <Section title="资产与业务背景">
                     {(detail.business_context.assets || []).map((a, i) => (
-                      <p key={i} className="text-sm">
+                      <p key={i} className="text-13">
                         <span className="font-mono">{a.ip}</span> · {a.asset_name || a.hostname || "-"} ·{" "}
                         {a.business_system || "-"} · 重要级别 {severityText(a.importance)} · 负责人{" "}
                         {a.owner || "-"}
@@ -525,25 +581,24 @@ export default function AdminEventsPage() {
                         {String(k.content || "").slice(0, 200)}
                       </p>
                     ))}
-                  </div>
+                  </Section>
                 )}
 
               {(detail.lookback || detail.memory_hits || detail.profile_hits) && (
-                <div>
-                  <h3 className="mb-1 font-medium">历史比对</h3>
+                <Section title="历史比对">
                   {detail.lookback && (
-                    <p className="text-sm">
+                    <p className="text-13 tabular-nums">
                       回溯 {detail.lookback.hours} 小时（{detail.lookback.reason || "-"}）：命中历史事件{" "}
                       {detail.lookback.event_count} 条 / 拉取 {detail.lookback.log_count} 条
                     </p>
                   )}
                   {detail.lookback?.summary && (
-                    <pre className="mt-1 whitespace-pre-wrap rounded-md border p-2 text-xs text-muted-foreground">
+                    <pre className="mt-1 whitespace-pre-wrap rounded-xs border border-border-subtle bg-surface-1 p-2 text-xs text-muted-foreground">
                       {detail.lookback.summary}
                     </pre>
                   )}
                   {detail.memory_hits?.persistence && detail.memory_hits.persistence.count > 0 && (
-                    <p className="mt-1 text-sm">
+                    <p className="mt-1 text-13 tabular-nums">
                       {detail.memory_hits.persistence.persistent ? "⚠️ 持续性/反复出现：" : "偶发："}
                       最近 {detail.memory_hits.persistence.window_days} 天内出现{" "}
                       {detail.memory_hits.persistence.count} 次
@@ -555,27 +610,27 @@ export default function AdminEventsPage() {
                     </p>
                   ))}
                   {(detail.profile_hits?.entities || []).length > 0 && (
-                    <div className="mt-1">
-                      <p className="text-sm font-medium">账号 / 会话画像异常</p>
+                    <div className="mt-1 space-y-1">
+                      <p className="text-13 font-medium">账号 / 会话画像异常</p>
                       {(detail.profile_hits?.entities || []).map((e, i) => (
                         <p key={i} className="text-xs text-muted-foreground">
                           <span className="font-mono">
                             [{e.kind === "account" ? "账号" : "会话"}] {e.display}
                           </span>
-                          风险 {e.risk}：{(e.reasons || []).join("；")}
+                          <span className="tabular-nums"> 风险 {e.risk}</span>：
+                          {(e.reasons || []).join("；")}
                         </p>
                       ))}
                     </div>
                   )}
-                </div>
+                </Section>
               )}
 
-              <div>
-                <h3 className="mb-1 font-medium">攻击链</h3>
+              <Section title="攻击链">
                 {(detail.attack_chain?.stages || []).map((s, i) => (
-                  <div key={i} className="mb-2 rounded-md border p-2">
-                    <p className="font-medium">{s.stage}</p>
-                    <p className="text-sm text-muted-foreground">{s.description}</p>
+                  <div key={i} className="mb-2 rounded-xs border border-border-subtle bg-surface-1 p-2">
+                    <p className="text-13 font-medium">{s.stage}</p>
+                    <p className="text-13 text-muted-foreground">{s.description}</p>
                     {s.evidence?.map((e, j) => (
                       <p key={j} className="ml-3 font-mono text-xs text-muted-foreground">
                         {e.type} | {e.src} → {e.dst} | {e.summary}
@@ -584,25 +639,33 @@ export default function AdminEventsPage() {
                   </div>
                 ))}
                 {!detail.attack_chain?.stages?.length && (
-                  <p className="text-sm text-muted-foreground">尚无攻击链（未升级或深度分析未完成）</p>
+                  <EmptyState
+                    size="compact"
+                    title="尚无攻击链"
+                    hint="未升级或深度分析未完成时没有阶段结论"
+                  />
                 )}
-              </div>
+              </Section>
 
-              <div>
-                <h3 className="mb-1 font-medium">
-                  证据链
-                  {evidence && (
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      共 {evidence.counts.total} 条（组内日志 {evidence.counts.events} · 调查引用{" "}
-                      {evidence.counts.investigation_refs}）
-                      {evidence.counts.stages > 0 && ` · 覆盖 ${evidence.counts.stages} 个阶段`}
-                      {evidence.counts.linked > 0 && ` · ${evidence.counts.linked} 条已链到阶段`}
-                    </span>
-                  )}
-                </h3>
-                {loadingEvidence && <p className="text-sm text-muted-foreground">证据加载中…</p>}
+              <Section
+                title="证据链"
+                description={
+                  evidence
+                    ? `共 ${evidence.counts.total} 条（组内日志 ${evidence.counts.events} · 调查引用 ${evidence.counts.investigation_refs}）${
+                        evidence.counts.stages > 0 ? ` · 覆盖 ${evidence.counts.stages} 个阶段` : ""
+                      }${evidence.counts.linked > 0 ? ` · ${evidence.counts.linked} 条已链到阶段` : ""}`
+                    : undefined
+                }
+              >
+                {loadingEvidence && (
+                  <div className="space-y-2" aria-busy="true">
+                    <Skeleton className="h-3 w-2/3" />
+                    <Skeleton className="h-3 w-1/2" />
+                    <Skeleton className="h-3 w-3/5" />
+                  </div>
+                )}
                 {evidenceError && (
-                  <p className="text-sm text-destructive">证据链加载失败：{evidenceError}</p>
+                  <EmptyState tone="danger" size="compact" title="证据链读取失败" hint={evidenceError} />
                 )}
                 {evidence?.investigation.case_id && (
                   <p className="text-xs text-muted-foreground">
@@ -654,7 +717,7 @@ export default function AdminEventsPage() {
                         {it.stages?.length ? (
                           <span className="ml-1 text-primary">［{it.stages.join("·")}］</span>
                         ) : null}
-                        {it.error ? <span className="ml-1 text-destructive">（{it.error}）</span> : null}
+                        {it.error ? <span className="ml-1 text-sev-critical-fg">（{it.error}）</span> : null}
                       </summary>
                       <div className="mt-1 space-y-1">
                         {it.note && <p className="text-xs text-sev-medium-fg">{it.note}</p>}
@@ -664,22 +727,21 @@ export default function AdminEventsPage() {
                           {it.source_system ? ` · 来源 ${it.source_system}` : ""}
                           {it.protocol ? ` · ${it.protocol}` : ""}
                         </p>
-                        <pre className="max-h-56 overflow-auto rounded bg-muted p-2 text-xs">
+                        <pre className="max-h-56 overflow-auto rounded-xs border border-border-subtle bg-card p-2 text-xs">
                           {JSON.stringify(it.raw ?? {}, null, 2)}
                         </pre>
                       </div>
                     </details>
                   ))}
                   {evidence && !evidence.items.length && (
-                    <p className="text-sm text-muted-foreground">无证据</p>
+                    <EmptyState size="compact" title="无证据" hint="该组还没有可引用的原始记录" />
                   )}
                 </div>
-              </div>
+              </Section>
 
               {detail.attack_chain?.case_id && (
-                <div>
-                  <h3 className="mb-1 font-medium">自主取证调查</h3>
-                  <p className="text-sm">
+                <Section title="自主取证调查">
+                  <p className="text-13">
                     该事件组已归入攻击者案件 ——{" "}
                     <Link
                       className="text-primary hover:underline"
@@ -702,33 +764,31 @@ export default function AdminEventsPage() {
                       未解缺口 {(detail.attack_chain.gaps || []).length} 处（案件页可下追问指令）
                     </p>
                   )}
-                </div>
+                </Section>
               )}
 
-              <div>
-                <h3 className="mb-1 font-medium">处置建议</h3>
+              <Section title="处置建议">
                 {(detail.response_suggestions || []).map((s, i) => (
-                  <p key={i} className="text-sm">
+                  <p key={i} className="text-13">
                     [{s.category}] {s.action}: {s.detail}
                   </p>
                 ))}
                 {!detail.response_suggestions?.length && (
-                  <p className="text-sm text-muted-foreground">无处置建议</p>
+                  <EmptyState size="compact" title="无处置建议" hint="深度分析未产出建议时为空" />
                 )}
-              </div>
+              </Section>
 
-              <div>
-                <h3 className="mb-1 font-medium">
-                  关联事件（共 {detail.events?.length ?? 0} 条，显示前 50）
-                </h3>
+              <Section
+                title={`关联事件（共 ${detail.events?.length ?? 0} 条，显示前 50）`}
+              >
                 {(detail.events || []).slice(0, 50).map((e) => (
-                  <p key={e.id} className="font-mono text-xs text-muted-foreground">
+                  <p key={e.id} className="font-mono text-xs tabular-nums text-muted-foreground">
                     {formatDateTime(e.ts)} | {e.event_type} | {e.src_ip} → {e.dst_ip}
                     {e.hit_rule ? ` | ${e.hit_rule}` : ""}
                     {e.excluded ? " | 已排除" : ""}
                   </p>
                 ))}
-              </div>
+              </Section>
             </div>
           )}
         </Drawer>

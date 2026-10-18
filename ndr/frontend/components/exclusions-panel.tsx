@@ -1,12 +1,23 @@
 "use client";
 
 import * as React from "react";
-import { Badge } from "@shentong/ui";
-import { Button } from "@shentong/ui";
-import { Card, CardContent, CardHeader, CardTitle } from "@shentong/ui";
-import { Input } from "@shentong/ui";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shentong/ui";
-import { formatDateTime } from "@shentong/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  EmptyState,
+  Input,
+  Section,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableSkeleton,
+  formatDateTime,
+} from "@shentong/ui";
 import {
   ConditionEditor,
   EMPTY_COND,
@@ -173,155 +184,187 @@ export function ExclusionsPanel() {
   }
 
   const sampleEntries = Object.entries(stats?.samples || {});
+  // 首次加载：列表与统计都还没回来、也没有失败 —— 画骨架，先闪一句「暂无」会被当成配置丢了
+  const firstLoad = !stats && !errs.has;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">排除过滤（命中仍记事件，但不跑模型）</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          被排除的事件<b>仍会进事件列表</b>（状态“已排除”，默认折叠）、可回溯，但跳过边缘研判、深度分析、定级、处置、
-          报告与记忆写入。条件可引用日志字段与命中规则元数据（hit_rule / rule_source / rule_severity）。
-          配置最多 30 秒生效；读配置失败时按“不排除”处理（宁可多分析，不漏报）。
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {msg && <p className="text-sm text-primary">{msg}</p>}
-        <PanelError errors={errs} />
+    <div className="space-y-4">
+      <PanelError errors={errs} />
 
-        <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
-          <div className="grid grid-cols-4 gap-3">
-            <div className="col-span-2">
-              <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="如：排除内网健康检查噪声"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">
-                优先级（越小越先）
-              </label>
-              <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
-            </div>
-            <div className="flex items-end gap-2">
-              <label className="flex items-center gap-1 text-sm">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => setEnabled(e.target.checked)}
-                />
-                启用
-              </label>
-            </div>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">说明（可选）</label>
-            <Input
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              placeholder="为什么排除它（便于以后判断能不能删）"
-            />
-          </div>
+      {/* L1 区块标题交给 Section：原来标题写在 CardTitle 里，和真正的卡片标题混成一层 */}
+      <Section
+        title="排除过滤（命中仍记事件，但不跑模型）"
+        description={
+          <>
+            被排除的事件<b>仍会进事件列表</b>（状态“已排除”，默认折叠）、可回溯，但跳过边缘研判、深度分析、定级、处置、
+            报告与记忆写入。条件可引用日志字段与命中规则元数据（hit_rule / rule_source / rule_severity）。
+            配置最多 30 秒生效；读配置失败时按“不排除”处理（宁可多分析，不漏报）。
+          </>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            {msg && <p className="text-sm text-primary">{msg}</p>}
 
-          {nested && (
-            <p className="text-xs text-destructive">
-              该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
-            </p>
-          )}
-
-          <ConditionEditor
-            fields={fields}
-            conds={conds}
-            logic={logic}
-            onLogic={setLogic}
-            onChange={setCond}
-            onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-            onAdd={() => setConds((cs) => [...cs, { field: "hit_rule", op: "eq", value: "" }])}
-          />
-
-          <div className="flex items-center gap-2">
-            <Button onClick={save}>{editId ? "保存修改" : "添加"}</Button>
-            {editId && (
-              <Button variant="outline" onClick={reset}>
-                取消编辑
-              </Button>
-            )}
-          </div>
-        </div>
-
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead>条件</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>已排除</TableHead>
-              <TableHead>操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.map((f) => (
-              <TableRow key={f.id}>
-                <TableCell className="max-w-[200px] truncate" title={f.description || f.name}>
-                  {f.name}
-                  <span className="ml-2 text-xs text-muted-foreground">#{f.priority}</span>
-                </TableCell>
-                <TableCell className="max-w-[380px] truncate font-mono text-xs" title={condSummary(f.conditions)}>
-                  {condSummary(f.conditions)}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={f.enabled ? "default" : "outline"}>
-                    {f.enabled ? "启用" : "禁用"}
-                  </Badge>
-                </TableCell>
-                {/* 统计没读到就显示 “—”，不要用 0 冒充「一条没命中」 */}
-                <TableCell>{stats ? (stats.counts?.[f.name] ?? 0) : "—"}</TableCell>
-                <TableCell className="space-x-2">
-                  <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
-                    编辑
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => toggle(f)}>
-                    {f.enabled ? "禁用" : "启用"}
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => remove(f)}>
-                    删除
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-            {!items.length && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                  {emptyOrFailed(errs, SRC.list, "暂无排除过滤")}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-
-        {sampleEntries.length > 0 && (
-          <div>
-            <h3 className="mb-1 text-sm font-medium">最近被排除的样例</h3>
-            {sampleEntries.map(([fname, samples]) => (
-              <div key={fname} className="mb-1">
-                <p className="text-xs text-muted-foreground">{fname}</p>
-                {samples.map((s, i) => (
-                  <p key={i} className="font-mono text-xs text-muted-foreground">
-                    [{formatDateTime(s.at)}] {s.rule} · {s.src_ip} →{" "}
-                    {s.dst_ip} · {s.event_type} · {String(s.summary || "").slice(0, 120)}
-                  </p>
-                ))}
+            <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs text-muted-foreground">名称 *</label>
+                  <Input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="如：排除内网健康检查噪声"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">
+                    优先级（越小越先）
+                  </label>
+                  <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
+                </div>
+                <div className="flex items-end gap-2">
+                  <label className="flex items-center gap-1 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => setEnabled(e.target.checked)}
+                    />
+                    启用
+                  </label>
+                </div>
               </div>
-            ))}
-            {stats?.last_hit_at && (
-              <p className="text-xs text-muted-foreground">
-                最近命中：{formatDateTime(stats.last_hit_at)}
-              </p>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">说明（可选）</label>
+                <Input
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  placeholder="为什么排除它（便于以后判断能不能删）"
+                />
+              </div>
+
+              {nested && (
+                <p className="text-xs text-sev-critical-fg">
+                  该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
+                </p>
+              )}
+
+              <ConditionEditor
+                fields={fields}
+                conds={conds}
+                logic={logic}
+                onLogic={setLogic}
+                onChange={setCond}
+                onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+                onAdd={() => setConds((cs) => [...cs, { field: "hit_rule", op: "eq", value: "" }])}
+              />
+
+              {/* 同一工具条内按钮统一 sm（原来主操作是默认尺寸，比旁边的次要按钮高一档） */}
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={save}>
+                  {editId ? "保存修改" : "添加"}
+                </Button>
+                {editId && (
+                  <Button size="sm" variant="outline" onClick={reset}>
+                    取消编辑
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </Section>
+
+      {/* 列表单独成区块：原来和编辑表单挤在同一个 Card 里，长列表会把表单顶出屏幕 */}
+      <Section title="已配置的排除规则" description="按优先级从小到大匹配；命中的事件标为「已排除」但仍保留在事件列表里。">
+        <Card>
+          <CardContent className="p-0">
+            {firstLoad ? (
+              <TableSkeleton rows={4} cols={5} />
+            ) : items.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>名称</TableHead>
+                    <TableHead>条件</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>已排除</TableHead>
+                    <TableHead>操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((f) => (
+                    <TableRow key={f.id}>
+                      <TableCell className="max-w-[200px] truncate" title={f.description || f.name}>
+                        {f.name}
+                        <span className="ml-2 text-xs tabular-nums text-muted-foreground">
+                          #{f.priority}
+                        </span>
+                      </TableCell>
+                      <TableCell
+                        className="max-w-[380px] truncate font-mono"
+                        title={condSummary(f.conditions)}
+                      >
+                        {condSummary(f.conditions)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={f.enabled ? "default" : "outline"}>
+                          {f.enabled ? "启用" : "禁用"}
+                        </Badge>
+                      </TableCell>
+                      {/* 统计没读到就显示 “—”，不要用 0 冒充「一条没命中」 */}
+                      <TableCell className="tabular-nums">
+                        {stats ? (stats.counts?.[f.name] ?? 0) : "—"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap space-x-2">
+                        <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
+                          编辑
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => toggle(f)}>
+                          {f.enabled ? "禁用" : "启用"}
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => remove(f)}>
+                          删除
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                title={emptyOrFailed(errs, SRC.list, "暂无排除过滤")}
+                hint="被排除的事件仍会记进事件列表；没有规则时所有事件都会走完整分析"
+                tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
+              />
             )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      </Section>
+
+      {sampleEntries.length > 0 && (
+        <Section
+          title="最近被排除的样例"
+          description={
+            stats?.last_hit_at ? `最近命中：${formatDateTime(stats.last_hit_at)}` : undefined
+          }
+        >
+          <Card>
+            <CardContent className="space-y-2 pt-4">
+              {sampleEntries.map(([fname, samples]) => (
+                <div key={fname}>
+                  <p className="text-xs text-muted-foreground">{fname}</p>
+                  {samples.map((s, i) => (
+                    <p key={i} className="font-mono text-xs text-muted-foreground">
+                      [{formatDateTime(s.at)}] {s.rule} · {s.src_ip} → {s.dst_ip} · {s.event_type} ·{" "}
+                      {String(s.summary || "").slice(0, 120)}
+                    </p>
+                  ))}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </Section>
+      )}
+    </div>
   );
 }

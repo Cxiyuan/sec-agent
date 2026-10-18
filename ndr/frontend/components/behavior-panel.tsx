@@ -6,16 +6,20 @@ import {
   Button,
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
   Drawer,
+  EmptyState,
   Input,
+  Section,
+  Skeleton,
+  Stat,
+  StatSkeleton,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
   ApiError,
   apiFetch,
   errorText,
@@ -138,7 +142,14 @@ function StateBadge({ judging, hint }: { judging: boolean; hint?: string }) {
 function HourBars({ hist }: { hist: Record<string, number> | undefined }) {
   const values = Object.values(hist || {}).map((v) => Number(v) || 0);
   const max = Math.max(1, ...values);
-  const shades = ["bg-muted", "bg-primary/30", "bg-primary/50", "bg-primary/70", "bg-primary"];
+  // 0 次的格子用最浅的描边色当"空槽"（原来是 bg-muted，和展开行的底色撞在一起看不出格子）
+  const shades = [
+    "bg-border-subtle",
+    "bg-primary/30",
+    "bg-primary/50",
+    "bg-primary/70",
+    "bg-primary",
+  ];
   return (
     <div className="flex flex-wrap gap-[3px]">
       {Array.from({ length: 24 }, (_, hour) => {
@@ -167,7 +178,7 @@ function Pager({
 }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+    <div className="flex items-center gap-2 text-xs tabular-nums text-muted-foreground">
       <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => onPage(page - 1)}>
         上一页
       </Button>
@@ -203,7 +214,7 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
       ) : (
         <p className="text-muted-foreground">本轮没有异常理由（风险分已归零）。</p>
       )}
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2">
         <p>
           <span className="text-muted-foreground">来源 IP：</span>
           <span className="font-mono">{ipLabels(row.src_ips, 5) || "-"}</span>
@@ -429,7 +440,8 @@ export function BehaviorPanel() {
     <div className="space-y-4">
       <PanelError errors={errs} />
 
-      {/* 工具条：配置在右侧抽屉里改 */}
+      {/* 工具条：配置在右侧抽屉里改。主操作 default、次要 outline，统一 sm（原来主按钮比旁边的
+          outline 高一档，一行里两个高度） */}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => setConfigOpen(true)}>
           分析配置{dirtyItems.length ? `（${dirtyItems.length} 项未保存）` : ""}
@@ -447,464 +459,522 @@ export function BehaviorPanel() {
       </div>
 
       {/* ---------- 1. 学习进度与检测器心跳 ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">学习进度与检测器心跳</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <div>
-              <p className="text-xs text-muted-foreground">维度总数</p>
-              <p className="text-28 font-medium tabular-nums">{stats?.total_keys ?? "-"}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">观测中（只学习）</p>
-              <p className="text-28 font-medium tabular-nums text-sev-medium-fg">{stats?.learning_keys ?? "-"}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">生效中（可判偏离）</p>
-              <p className="text-28 font-medium tabular-nums text-sev-ok-fg">{stats?.warmed_keys ?? "-"}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">
-                观测期（{stats?.observe_days ?? "-"} 天）后
-              </p>
-              <p className="text-sm font-medium">
-                {stats?.next_warm_at
-                  ? `${formatDateTime(stats.next_warm_at)} 起有维度转入判断`
-                  : "暂无数据"}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <Badge variant={overview?.detector?.alive ? "default" : "outline"}>
-              {overview?.detector?.alive ? "检测器在落库" : "检测器未在跑"}
-            </Badge>
-            <Badge variant="outline">已观测 {overview?.detector?.observed ?? 0} 次</Badge>
-            <Badge variant="outline">落库 {overview?.detector?.flushes ?? 0} 轮</Badge>
-            <Badge variant="outline">
-              上轮落库维度 {overview?.detector?.numeric_keys_last_round ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              上轮异常 {overview?.detector?.anomalies_last_round ?? 0} / 累计{" "}
-              {overview?.detector?.anomalies_total ?? 0}
-            </Badge>
-            <Badge variant={overview?.enabled ? "default" : "outline"}>
-              数值基线{overview?.enabled ? "开" : "关"}
-            </Badge>
-            <Badge variant={overview?.profile_enabled ? "default" : "outline"}>
-              画像{overview?.profile_enabled ? "开" : "关"}
-            </Badge>
-            {/* 中继去重计数：四个数都要看得见（不静默丢数据） */}
-            <Badge variant="outline">
-              客户端侧跳 保留 {overview?.detector?.relay_front ?? 0} / 丢弃{" "}
-              {overview?.detector?.relay_front_dropped ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              源站侧跳 保留 {overview?.detector?.relay_back_kept ?? 0} / 去重{" "}
-              {overview?.detector?.relay_back_dropped ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              中继内部 保留 {overview?.detector?.relay_internal_kept ?? 0} / 丢弃{" "}
-              {overview?.detector?.relay_internal_dropped ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              链续跳去重 {overview?.detector?.relay_chain_continuation_dropped ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              被访问方资产 本轮 {overview?.detector?.assets_last_round ?? 0} / 累计{" "}
-              {overview?.detector?.assets_observed ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              被访问连接 本轮 {overview?.detector?.asset_uids_last_round ?? 0} / 累计{" "}
-              {overview?.detector?.asset_uids_total ?? 0}
-            </Badge>
-            <Badge variant="outline">
-              未进基线 {overview?.detector?.asset_uids_dropped ?? 0}
-            </Badge>
-          </div>
-          <div>
-            <p className="mb-1 text-xs text-muted-foreground">
-              当前风险 TOP（只列账号；阈值 {overview?.risk_threshold ?? "-"}，判定时间在{" "}
-              {overview?.anomalies?.ttl_minutes ?? 0} 分钟内才算「当前」）
-            </p>
-            {overview?.anomalies?.items?.length ? (
-              <ul className="space-y-1 text-xs">
-                {overview.anomalies.items.map((item, i) => (
-                  <li key={item.id || i} className="flex flex-wrap items-center gap-2">
-                    <Badge variant="critical">风险 {(item.risk_score ?? 0).toFixed(2)}</Badge>
-                    <span className="font-medium">{item.entity_display || item.entity_key}</span>
-                    <span className="font-mono text-muted-foreground">
-                      {ipLabels(item.dst_ips, 2)}
-                    </span>
-                    <span className="text-muted-foreground">判定 {formatDateTime(item.risk_at)}</span>
-                    <span className="text-muted-foreground">
-                      {(item.anomalies || []).slice(0, 2).join("；")}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+      <Section
+        title="学习进度与检测器心跳"
+        description="观测期还剩多久、检测器有没有在落库、当前风险 TOP。"
+      >
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            {!overview && !errs.has ? (
+              /* 首次加载：指标格 + 徽章行先占位。直接渲染会比一排 0，看着像基线没建起来 */
+              <>
+                <StatSkeleton count={4} />
+                <Skeleton className="h-8 w-full" />
+              </>
             ) : (
-              <p className="text-xs text-muted-foreground">{overview?.note || "暂无过阈值画像"}</p>
+              <>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Stat label="维度总数" value={stats?.total_keys ?? "-"} />
+                  <Stat
+                    label="观测中（只学习）"
+                    tone="medium"
+                    value={stats?.learning_keys ?? "-"}
+                  />
+                  <Stat
+                    label="生效中（可判偏离）"
+                    tone="ok"
+                    value={stats?.warmed_keys ?? "-"}
+                  />
+                  {/* 第 4 格不是一个"数"而是一句时间预期：值放时间，口径放 hint，字号降一档 */}
+                  <Stat
+                    label={`观测期（${stats?.observe_days ?? "-"} 天）后`}
+                    size="sm"
+                    value={stats?.next_warm_at ? formatDateTime(stats.next_warm_at) : "—"}
+                    hint={stats?.next_warm_at ? "起有维度转入判断" : "暂无数据"}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <Badge variant={overview?.detector?.alive ? "default" : "outline"}>
+                    {overview?.detector?.alive ? "检测器在落库" : "检测器未在跑"}
+                  </Badge>
+                  <Badge variant="outline">已观测 {overview?.detector?.observed ?? 0} 次</Badge>
+                  <Badge variant="outline">落库 {overview?.detector?.flushes ?? 0} 轮</Badge>
+                  <Badge variant="outline">
+                    上轮落库维度 {overview?.detector?.numeric_keys_last_round ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    上轮异常 {overview?.detector?.anomalies_last_round ?? 0} / 累计{" "}
+                    {overview?.detector?.anomalies_total ?? 0}
+                  </Badge>
+                  <Badge variant={overview?.enabled ? "default" : "outline"}>
+                    数值基线{overview?.enabled ? "开" : "关"}
+                  </Badge>
+                  <Badge variant={overview?.profile_enabled ? "default" : "outline"}>
+                    画像{overview?.profile_enabled ? "开" : "关"}
+                  </Badge>
+                  {/* 中继去重计数：四个数都要看得见（不静默丢数据） */}
+                  <Badge variant="outline">
+                    客户端侧跳 保留 {overview?.detector?.relay_front ?? 0} / 丢弃{" "}
+                    {overview?.detector?.relay_front_dropped ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    源站侧跳 保留 {overview?.detector?.relay_back_kept ?? 0} / 去重{" "}
+                    {overview?.detector?.relay_back_dropped ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    中继内部 保留 {overview?.detector?.relay_internal_kept ?? 0} / 丢弃{" "}
+                    {overview?.detector?.relay_internal_dropped ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    链续跳去重 {overview?.detector?.relay_chain_continuation_dropped ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    被访问方资产 本轮 {overview?.detector?.assets_last_round ?? 0} / 累计{" "}
+                    {overview?.detector?.assets_observed ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    被访问连接 本轮 {overview?.detector?.asset_uids_last_round ?? 0} / 累计{" "}
+                    {overview?.detector?.asset_uids_total ?? 0}
+                  </Badge>
+                  <Badge variant="outline">
+                    未进基线 {overview?.detector?.asset_uids_dropped ?? 0}
+                  </Badge>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs text-muted-foreground">
+                    当前风险 TOP（只列账号；阈值 {overview?.risk_threshold ?? "-"}，判定时间在{" "}
+                    {overview?.anomalies?.ttl_minutes ?? 0} 分钟内才算「当前」）
+                  </p>
+                  {overview?.anomalies?.items?.length ? (
+                    <ul className="space-y-1 text-xs">
+                      {overview.anomalies.items.map((item, i) => (
+                        <li key={item.id || i} className="flex flex-wrap items-center gap-2">
+                          <Badge variant="critical">风险 {(item.risk_score ?? 0).toFixed(2)}</Badge>
+                          <span className="font-medium">{item.entity_display || item.entity_key}</span>
+                          <span className="font-mono text-muted-foreground">
+                            {ipLabels(item.dst_ips, 2)}
+                          </span>
+                          <span className="text-muted-foreground">
+                            判定 {formatDateTime(item.risk_at)}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {(item.anomalies || []).slice(0, 2).join("；")}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    /* 空态：这里可能是「真的没有过阈值画像」，也可能是总览没读到 —— 分开说 */
+                    <EmptyState
+                      size="compact"
+                      tone={errs.isFailed(SRC.overview) ? "danger" : "muted"}
+                      title={
+                        overview?.note ||
+                        emptyOrFailed(errs, SRC.overview, "暂无过阈值画像")
+                      }
+                    />
+                  )}
+                </div>
+              </>
             )}
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </Section>
 
       {/* ---------- 2. 数值基线 IP 列表（生效中 / 观测中） ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            数值基线 IP 列表
-            <span className="text-xs font-normal text-muted-foreground">
-              一行一个 IP，维度用标签列（**悬停标签**看均值/标准差/观测次数）；
-              <span className="text-sev-ok-fg">生效中</span>=已过观测期参与 2σ 判定，
-              <span className="text-sev-medium-fg">观测中</span>=还在学习
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="h-9 w-52"
-              placeholder="按 IP 或 key 搜（支持片段）"
-              value={nq}
-              onChange={(e) => {
-                setNq(e.target.value);
-                setNpage(0);
-              }}
-            />
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={nfeature}
-              onChange={(e) => {
-                setNfeature(e.target.value);
-                setNpage(0);
-              }}
-            >
-              <option value="">全部维度</option>
-              {Object.entries(FEATURE_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={nsort}
-              onChange={(e) => {
-                setNsort(e.target.value);
-                setNpage(0);
-              }}
-            >
-              <option value="count">按观测次数</option>
-              <option value="updated">按最近更新</option>
-              <option value="key">按 key</option>
-            </select>
-            <span className="text-xs text-muted-foreground">
-              共 {numeric?.total ?? 0} 个 IP · {numeric?.total_keys ?? 0} 个维度
-            </span>
-          </div>
-          {numeric?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>IP</TableHead>
-                  <TableHead>维度（悬停看均值/标准差）</TableHead>
-                  <TableHead>首次观测</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {numeric.items.map((group) => (
-                  <TableRow key={group.ip}>
-                    <TableCell className="font-mono text-xs">{ipLabel(group.ip)}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        {group.features.map((f) => (
-                          <Badge
-                            key={f.feature}
-                            variant={f.warmed ? "success" : "medium"}
-                            title={featureTip(f, numeric.observe_days)}
-                            className="cursor-help"
-                          >
-                            {featureLabel(f.feature)}
-                          </Badge>
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-xs">{formatDateTime(group.first_seen)}</TableCell>
-                  </TableRow>
+      <Section
+        title="数值基线 IP 列表"
+        description={
+          <>
+            一行一个 IP，维度用标签列（悬停标签看均值/标准差/观测次数）；
+            <span className="text-sev-ok-fg">生效中</span>=已过观测期参与 2σ 判定，
+            <span className="text-sev-medium-fg">观测中</span>=还在学习
+          </>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-9 w-52"
+                aria-label="按 IP 或 key 搜索"
+                placeholder="按 IP 或 key 搜（支持片段）"
+                value={nq}
+                onChange={(e) => {
+                  setNq(e.target.value);
+                  setNpage(0);
+                }}
+              />
+              <select
+                aria-label="按维度筛选"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                value={nfeature}
+                onChange={(e) => {
+                  setNfeature(e.target.value);
+                  setNpage(0);
+                }}
+              >
+                <option value="">全部维度</option>
+                {Object.entries(FEATURE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
                 ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {emptyOrFailed(errs, SRC.numeric, "没有符合条件的维度")}
-            </p>
-          )}
-          <Pager total={numeric?.total ?? 0} page={npage} onPage={setNpage} />
-        </CardContent>
-      </Card>
+              </select>
+              <select
+                aria-label="排序方式"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                value={nsort}
+                onChange={(e) => {
+                  setNsort(e.target.value);
+                  setNpage(0);
+                }}
+              >
+                <option value="count">按观测次数</option>
+                <option value="updated">按最近更新</option>
+                <option value="key">按 key</option>
+              </select>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                共 {numeric?.total ?? 0} 个 IP · {numeric?.total_keys ?? 0} 个维度
+              </span>
+            </div>
+            {!numeric && !errs.has ? (
+              <TableSkeleton rows={6} cols={3} />
+            ) : numeric?.items?.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>IP</TableHead>
+                    <TableHead>维度（悬停看均值/标准差）</TableHead>
+                    <TableHead>首次观测</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {numeric.items.map((group) => (
+                    <TableRow key={group.ip}>
+                      <TableCell className="font-mono text-xs">{ipLabel(group.ip)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {group.features.map((f) => (
+                            <Badge
+                              key={f.feature}
+                              variant={f.warmed ? "success" : "medium"}
+                              title={featureTip(f, numeric.observe_days)}
+                              className="cursor-help"
+                            >
+                              {featureLabel(f.feature)}
+                            </Badge>
+                          ))}
+                        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                        {formatDateTime(group.first_seen)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                title={emptyOrFailed(errs, SRC.numeric, "没有符合条件的维度")}
+                hint="放宽搜索条件或换一个维度筛选；观测期内的维度会先在这里学习"
+                tone={errs.isFailed(SRC.numeric) ? "danger" : "muted"}
+              />
+            )}
+            <Pager total={numeric?.total ?? 0} page={npage} onPage={setNpage} />
+          </CardContent>
+        </Card>
+      </Section>
 
       {/* ---------- 3. 画像列表（生效中 / 观测中） ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            账号 / 会话画像列表
-            <span className="text-xs font-normal text-muted-foreground">
-              <span className="text-sev-ok-fg">生效中</span>=观测次数已达冷启动门槛（
-              {minWindows} 个窗口）参与打分，<span className="text-sev-medium-fg">观测中</span>=还在学习；
-              风险分按当前窗口算（本轮无理由即归零），点一行展开细节
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={kind}
-              onChange={(e) => {
-                setKind(e.target.value);
-                setPpage(0);
-              }}
-            >
-              <option value="account">只看账号</option>
-              <option value="session">只看会话</option>
-              <option value="">账号 + 会话</option>
-            </select>
-            <Input
-              className="h-9 w-40"
-              placeholder="搜账号名 / 会话哈希"
-              value={pq}
-              onChange={(e) => {
-                setPq(e.target.value);
-                setPpage(0);
-              }}
-            />
-            <select
-              className="h-9 rounded-md border bg-transparent px-2 text-sm"
-              value={minRisk}
-              onChange={(e) => {
-                setMinRisk(e.target.value);
-                setPpage(0);
-              }}
-            >
-              <option value="0">全部风险</option>
-              <option value="0.1">风险 &gt; 0</option>
-              <option value="0.3">风险 ≥ 0.3</option>
-              <option value="0.6">风险 ≥ 0.6（过阈值）</option>
-            </select>
-            <span className="text-xs text-muted-foreground">共 {profiles?.total ?? 0} 条</span>
-          </div>
-          {profiles?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>实体</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>风险</TableHead>
-                  <TableHead>判定时间</TableHead>
-                  <TableHead>最近出现</TableHead>
-                  <TableHead>观测</TableHead>
-                  <TableHead>服务端 IP</TableHead>
-                  <TableHead>认证失败/成功 · 错误</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {profiles.items.map((row, i) => {
-                  const rowKey = `${row.kind}|${row.entity_key || i}`;
-                  const open = expanded === rowKey;
-                  const risk = Number(row.risk_score || 0);
-                  const obs = Number(row.obs_count ?? 0);
-                  return (
-                    <React.Fragment key={rowKey}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() => setExpanded(open ? "" : rowKey)}
-                      >
-                        <TableCell className="font-medium">
-                          {open ? "▾ " : "▸ "}
-                          {row.entity_display || row.entity_key}
-                        </TableCell>
-                        <TableCell>{row.kind === "account" ? "账号" : "会话"}</TableCell>
-                        <TableCell>
-                          <StateBadge
-                            judging={(row.window_count ?? 0) >= minWindows}
-                            hint={
-                              (row.window_count ?? 0) >= minWindows
-                                ? "已过冷启动：参与风险打分"
-                                : `已观测 ${row.window_count ?? 0}/${minWindows} 个窗口，还没到冷启动门槛`
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {risk > 0 ? (
-                            <Badge
-                              variant={
-                                risk >= (overview?.risk_threshold ?? 0.6) ? "critical" : "secondary"
+      <Section
+        title="账号 / 会话画像列表"
+        description={
+          <>
+            <span className="text-sev-ok-fg">生效中</span>=观测次数已达冷启动门槛（{minWindows}{" "}
+            个窗口）参与打分，<span className="text-sev-medium-fg">观测中</span>=还在学习；
+            风险分按当前窗口算（本轮无理由即归零），点一行展开细节
+          </>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="画像类型"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                value={kind}
+                onChange={(e) => {
+                  setKind(e.target.value);
+                  setPpage(0);
+                }}
+              >
+                <option value="account">只看账号</option>
+                <option value="session">只看会话</option>
+                <option value="">账号 + 会话</option>
+              </select>
+              <Input
+                className="h-9 w-40"
+                aria-label="搜账号名 / 会话哈希"
+                placeholder="搜账号名 / 会话哈希"
+                value={pq}
+                onChange={(e) => {
+                  setPq(e.target.value);
+                  setPpage(0);
+                }}
+              />
+              <select
+                aria-label="最低风险"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                value={minRisk}
+                onChange={(e) => {
+                  setMinRisk(e.target.value);
+                  setPpage(0);
+                }}
+              >
+                <option value="0">全部风险</option>
+                <option value="0.1">风险 &gt; 0</option>
+                <option value="0.3">风险 ≥ 0.3</option>
+                <option value="0.6">风险 ≥ 0.6（过阈值）</option>
+              </select>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                共 {profiles?.total ?? 0} 条
+              </span>
+            </div>
+            {!profiles && !errs.has ? (
+              <TableSkeleton rows={6} cols={6} />
+            ) : profiles?.items?.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>实体</TableHead>
+                    <TableHead>类型</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>风险</TableHead>
+                    <TableHead>判定时间</TableHead>
+                    <TableHead>最近出现</TableHead>
+                    <TableHead>观测</TableHead>
+                    <TableHead>服务端 IP</TableHead>
+                    <TableHead>认证失败/成功 · 错误</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {profiles.items.map((row, i) => {
+                    const rowKey = `${row.kind}|${row.entity_key || i}`;
+                    const open = expanded === rowKey;
+                    const risk = Number(row.risk_score || 0);
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <TableRow
+                          className="cursor-pointer"
+                          onClick={() => setExpanded(open ? "" : rowKey)}
+                        >
+                          <TableCell className="font-medium">
+                            {open ? "▾ " : "▸ "}
+                            {row.entity_display || row.entity_key}
+                          </TableCell>
+                          <TableCell>{row.kind === "account" ? "账号" : "会话"}</TableCell>
+                          <TableCell>
+                            <StateBadge
+                              judging={(row.window_count ?? 0) >= minWindows}
+                              hint={
+                                (row.window_count ?? 0) >= minWindows
+                                  ? "已过冷启动：参与风险打分"
+                                  : `已观测 ${row.window_count ?? 0}/${minWindows} 个窗口，还没到冷启动门槛`
                               }
+                            />
+                          </TableCell>
+                          <TableCell>
+                            {risk > 0 ? (
+                              <Badge
+                                variant={
+                                  risk >= (overview?.risk_threshold ?? 0.6)
+                                    ? "critical"
+                                    : "secondary"
+                                }
+                                className="tabular-nums"
+                              >
+                                {risk.toFixed(2)}
+                              </Badge>
+                            ) : (
+                              <span className="tabular-nums text-muted-foreground">0</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                            {formatDateTime(row.risk_at)}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                            {formatDateTime(row.last_seen)}
+                          </TableCell>
+                          <TableCell className="tabular-nums">{row.obs_count ?? 0}</TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {ipLabels(row.dst_ips, 2) || "-"}
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            {row.fail_count ?? 0}/{row.success_count ?? 0} ·{" "}
+                            <span
+                              className={
+                                (row.error_count ?? 0) > 0
+                                  ? "text-sev-medium-fg"
+                                  : "text-muted-foreground"
+                              }
+                              title="错误响应（status ≥ 400 且非 401/403）：404 风暴这类探测痕迹"
                             >
-                              {risk.toFixed(2)}
-                            </Badge>
-                          ) : (
-                            <span className="text-muted-foreground">0</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-xs">{formatDateTime(row.risk_at)}</TableCell>
-                        <TableCell className="text-xs">{formatDateTime(row.last_seen)}</TableCell>
-                        <TableCell>{row.obs_count ?? 0}</TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {ipLabels(row.dst_ips, 2) || "-"}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {row.fail_count ?? 0}/{row.success_count ?? 0} ·{" "}
-                          <span
-                            className={
-                              (row.error_count ?? 0) > 0 ? "text-sev-medium-fg" : "text-muted-foreground"
-                            }
-                            title="错误响应（status ≥ 400 且非 401/403）：404 风暴这类探测痕迹"
-                          >
-                            {row.error_count ?? 0}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                      {open ? (
-                        <TableRow>
-                          <TableCell colSpan={9} className="bg-muted/30">
-                            <ProfileDetail row={row} />
+                              {row.error_count ?? 0}
+                            </span>
                           </TableCell>
                         </TableRow>
-                      ) : null}
-                    </React.Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {emptyOrFailed(errs, SRC.profiles, "没有符合条件的画像（观测期内的实体还没积累出画像）")}
-            </p>
-          )}
-          <Pager total={profiles?.total ?? 0} page={ppage} onPage={setPpage} />
-        </CardContent>
-      </Card>
+                        {open ? (
+                          <TableRow>
+                            {/* 展开行的底：L1 内联底（原来 bg-muted/30 是半透明叠色，暗色端发灰） */}
+                            <TableCell colSpan={9} className="bg-surface-1">
+                              <ProfileDetail row={row} />
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </React.Fragment>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                title={emptyOrFailed(
+                  errs,
+                  SRC.profiles,
+                  "没有符合条件的画像（观测期内的实体还没积累出画像）",
+                )}
+                hint="点开一轮检测后画像会陆续出现；也可以先把「最低风险」调回全部风险"
+                tone={errs.isFailed(SRC.profiles) ? "danger" : "muted"}
+              />
+            )}
+            <Pager total={profiles?.total ?? 0} page={ppage} onPage={setPpage} />
+          </CardContent>
+        </Card>
+      </Section>
 
       {/* ---------- 4. 被访问方（内网源站 / 内网 DNS） ---------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            被访问方（内网源站 / 内网 DNS）
-            <span className="text-xs font-normal text-muted-foreground">
-              按「**被访问方**」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动
-              —— 源 IP 那份基线看不出「服务器被打」。
-              <span className="text-sev-ok-fg">生效中</span>=已过观测期，
-              <span className="text-sev-medium-fg">观测中</span>=只学习。
-              口径：被访问次数 = **连接数**（同一连接只算一次），
-              请求数 = 应用层请求（http/dns）；身份优先站点域名（Host/SNI），否则{" "}
-              <span className="font-mono">IP:端口</span>；中继自身不计入（内网 DNS 的 53 端口除外）
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="h-9 w-52"
-              placeholder="按 hostname / IP:端口 搜"
-              value={aq}
-              onChange={(e) => {
-                setAq(e.target.value);
-                setApage(0);
-              }}
-            />
-            <span className="text-xs text-muted-foreground">
-              共 {assets?.total ?? 0} 个资产（内网 {assets?.by_scope?.internal ?? 0} / 外部{" "}
-              {assets?.by_scope?.external ?? 0}
-              {(assets?.by_scope?.unknown ?? 0) > 0
-                ? ` / 归属未定 ${assets?.by_scope?.unknown ?? 0}（早期数据，后台每小时自愈）`
-                : ""}
-              ）· 每个观测区间 {assets?.window_seconds ?? "-"} 秒
-            </span>
-            <div className="flex gap-1">
-              {(
-                [
-                  ["", `全部（${assets?.by_scope ? (assets.by_scope.internal ?? 0) + (assets.by_scope.external ?? 0) + (assets.by_scope.unknown ?? 0) : 0}）`],
-                  ["internal", `内网被访问方（${assets?.by_scope?.internal ?? 0}）`],
-                  ["external", `外部目标（${assets?.by_scope?.external ?? 0}）`],
-                ] as const
-              ).map(([value, label]) => (
-                <Button
-                  key={value}
-                  size="sm"
-                  variant={ascope === value ? "default" : "outline"}
-                  onClick={() => {
-                    setAscope(value);
-                    setApage(0);
-                  }}
-                >
-                  {label}
-                </Button>
-              ))}
-            </div>
-          </div>
-          {assets?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>资产</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>平均每区间被访问</TableHead>
-                  <TableHead>平均每区间请求</TableHead>
-                  <TableHead>不同客户端</TableHead>
-                  <TableHead>不同目标</TableHead>
-                  <TableHead>首见</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {assets.items.map((row) => (
-                  <TableRow key={row.asset}>
-                    <TableCell className="text-xs">{row.asset}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{row.role === "dns" ? "内网 DNS" : "站点"}</Badge>
-                      <Badge
-                        variant={row.scope === "external" ? "outline" : "default"}
-                        title={
-                          row.scope === "external"
-                            ? "公网目标（含公共 DNS 解析器）：只展示，异常判定不看它"
-                            : "内网被访问方：异常判定只看这一块"
-                        }
-                      >
-                        {row.scope === "external" ? "外部" : "内网"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <StateBadge
-                        judging={row.state === "ready"}
-                        hint={
-                          row.state === "ready"
-                            ? "已过观测期：参与 2σ 规模偏离判定"
-                            : `已攒 ${row.windows} 个观测区间，还在学习`
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>{row.visits_mean}</TableCell>
-                    <TableCell>{row.requests_mean}</TableCell>
-                    <TableCell>{row.clients_mean}</TableCell>
-                    <TableCell>{row.targets_mean}</TableCell>
-                    <TableCell className="text-xs">{formatDateTime(row.first_seen)}</TableCell>
-                  </TableRow>
+      <Section
+        title="被访问方（内网源站 / 内网 DNS）"
+        description={
+          <>
+            按「被访问方」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动 ——
+            源 IP 那份基线看不出「服务器被打」。
+            <span className="text-sev-ok-fg">生效中</span>=已过观测期，
+            <span className="text-sev-medium-fg">观测中</span>=只学习。 口径：被访问次数 =
+            连接数（同一连接只算一次）， 请求数 = 应用层请求（http/dns）；身份优先站点域名（Host/SNI），否则{" "}
+            <span className="font-mono">IP:端口</span>；中继自身不计入（内网 DNS 的 53 端口除外）
+          </>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-9 w-52"
+                aria-label="按 hostname 或 IP:端口 搜索"
+                placeholder="按 hostname / IP:端口 搜"
+                value={aq}
+                onChange={(e) => {
+                  setAq(e.target.value);
+                  setApage(0);
+                }}
+              />
+              <span className="text-xs tabular-nums text-muted-foreground">
+                共 {assets?.total ?? 0} 个资产（内网 {assets?.by_scope?.internal ?? 0} / 外部{" "}
+                {assets?.by_scope?.external ?? 0}
+                {(assets?.by_scope?.unknown ?? 0) > 0
+                  ? ` / 归属未定 ${assets?.by_scope?.unknown ?? 0}（早期数据，后台每小时自愈）`
+                  : ""}
+                ）· 每个观测区间 {assets?.window_seconds ?? "-"} 秒
+              </span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    ["", `全部（${assets?.by_scope ? (assets.by_scope.internal ?? 0) + (assets.by_scope.external ?? 0) + (assets.by_scope.unknown ?? 0) : 0}）`],
+                    ["internal", `内网被访问方（${assets?.by_scope?.internal ?? 0}）`],
+                    ["external", `外部目标（${assets?.by_scope?.external ?? 0}）`],
+                  ] as const
+                ).map(([value, label]) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    variant={ascope === value ? "default" : "outline"}
+                    onClick={() => {
+                      setAscope(value);
+                      setApage(0);
+                    }}
+                  >
+                    {label}
+                  </Button>
                 ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {emptyOrFailed(errs, SRC.assets, "还没有被访问方数据（观测期内的资产先学习）")}
-            </p>
-          )}
-          <Pager total={assets?.total ?? 0} page={apage} onPage={setApage} />
-        </CardContent>
-      </Card>
+              </div>
+            </div>
+            {!assets && !errs.has ? (
+              <TableSkeleton rows={6} cols={6} />
+            ) : assets?.items?.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>资产</TableHead>
+                    <TableHead>类型</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>平均每区间被访问</TableHead>
+                    <TableHead>平均每区间请求</TableHead>
+                    <TableHead>不同客户端</TableHead>
+                    <TableHead>不同目标</TableHead>
+                    <TableHead>首见</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {assets.items.map((row) => (
+                    <TableRow key={row.asset}>
+                      <TableCell className="font-mono text-xs">{row.asset}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{row.role === "dns" ? "内网 DNS" : "站点"}</Badge>
+                        <Badge
+                          variant={row.scope === "external" ? "outline" : "default"}
+                          title={
+                            row.scope === "external"
+                              ? "公网目标（含公共 DNS 解析器）：只展示，异常判定不看它"
+                              : "内网被访问方：异常判定只看这一块"
+                          }
+                        >
+                          {row.scope === "external" ? "外部" : "内网"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <StateBadge
+                          judging={row.state === "ready"}
+                          hint={
+                            row.state === "ready"
+                              ? "已过观测期：参与 2σ 规模偏离判定"
+                              : `已攒 ${row.windows} 个观测区间，还在学习`
+                          }
+                        />
+                      </TableCell>
+                      <TableCell className="tabular-nums">{row.visits_mean}</TableCell>
+                      <TableCell className="tabular-nums">{row.requests_mean}</TableCell>
+                      <TableCell className="tabular-nums">{row.clients_mean}</TableCell>
+                      <TableCell className="tabular-nums">{row.targets_mean}</TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                        {formatDateTime(row.first_seen)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                title={emptyOrFailed(errs, SRC.assets, "还没有被访问方数据（观测期内的资产先学习）")}
+                hint="被访问方基线按观测区间累积；刚部署时先看「观测中」，过观测期才参与判定"
+                tone={errs.isFailed(SRC.assets) ? "danger" : "muted"}
+              />
+            )}
+            <Pager total={assets?.total ?? 0} page={apage} onPage={setApage} />
+          </CardContent>
+        </Card>
+      </Section>
 
       {/* ---------- 分析配置（右侧抽屉） ---------- */}
       <Drawer
@@ -912,12 +982,13 @@ export function BehaviorPanel() {
         onClose={() => setConfigOpen(false)}
         widthClass="w-[720px]"
         title={
-          <div>
-            <p className="text-sm font-semibold">分析配置</p>
-            <p className="text-xs text-muted-foreground">
+          /* 标题节点用 span：Drawer 把 title 放进 <h2>，块级元素套在标题里不合语法 */
+          <span className="flex flex-col">
+            <span className="text-sm font-medium">分析配置</span>
+            <span className="text-xs font-normal text-muted-foreground">
               改完即时生效（后端 30 秒内刷新、检测器下一个窗口用新值），不需要重启容器
-            </p>
-          </div>
+            </span>
+          </span>
         }
         footer={
           <div className="flex flex-wrap items-center gap-2">
@@ -939,17 +1010,19 @@ export function BehaviorPanel() {
           </div>
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-3">
           {groups.map((group) => {
             const items = (config?.items ?? []).filter((item) => item.key.startsWith(group.prefix));
             if (!items.length) return null;
             return (
-              <div key={group.prefix} className="space-y-2">
-                <div>
-                  <p className="text-sm font-medium">{group.title}</p>
-                  <p className="text-xs text-muted-foreground">{group.hint}</p>
-                </div>
-                <div className="space-y-3">
+              /* 抽屉里的分组也是区块：标题/说明走 Section，divided={false} 因为抽屉自己已有分隔感 */
+              <Section
+                key={group.prefix}
+                title={group.title}
+                description={group.hint}
+                divided={false}
+              >
+                <div className="space-y-2">
                   {items.map((item) => {
                     const raw = draft[item.key];
                     const value = raw !== undefined ? raw : item.value;
@@ -973,6 +1046,7 @@ export function BehaviorPanel() {
                             <input
                               type="checkbox"
                               className="h-4 w-4"
+                              aria-label={item.label}
                               checked={Boolean(value)}
                               onChange={(e) => setDraft({ ...draft, [item.key]: e.target.checked })}
                             />
@@ -982,6 +1056,7 @@ export function BehaviorPanel() {
                               step={item.kind === "float" ? "0.05" : undefined}
                               min={item.low ?? undefined}
                               max={item.high ?? undefined}
+                              aria-label={item.label}
                               value={String(value)}
                               className={item.kind === "regex" ? "font-mono text-xs" : undefined}
                               onChange={(e) => setDraft({ ...draft, [item.key]: e.target.value })}
@@ -1003,7 +1078,7 @@ export function BehaviorPanel() {
                             </Button>
                           ) : null}
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
+                        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
                           {item.note}
                           {item.low !== null && item.high !== null
                             ? `（范围 ${item.low} ~ ${item.high}${item.unit}）`
@@ -1017,7 +1092,7 @@ export function BehaviorPanel() {
                     );
                   })}
                 </div>
-              </div>
+              </Section>
             );
           })}
         </div>

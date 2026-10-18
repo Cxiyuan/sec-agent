@@ -219,6 +219,19 @@ select option:hover {
   color: hsl(var(--accent-foreground));
 }
 
+/* 选中文本：用品牌淡色。默认的系统蓝与主色不在同一个色系，选中表格里的一串
+   IP 时会跳出一块"外来色"。 */
+::selection {
+  background-color: hsl(var(--brand-500) / 0.22);
+  color: inherit;
+}
+
+/* 锚点跳转：页头固定 h-14（3.5rem），跳到 #overview 之类的区块时标题会被压住，
+   这里统一留出偏移；Section 自身的 scroll-mt-20 是双保险。 */
+html {
+  scroll-padding-top: 4.25rem;
+}
+
 /* 滚动条：比内容更浅一档，不抢视觉重量 */
 ::-webkit-scrollbar {
   width: 10px;

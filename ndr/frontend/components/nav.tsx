@@ -42,7 +42,7 @@ export function SideNav() {
   if (items.length === 0) return null;
 
   return (
-    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-60 flex-col border-r bg-card">
+    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-60 flex-col border-r border-border bg-card">
       <nav className="flex-1 space-y-0.5 overflow-auto p-3">
         {items.map((it) => {
           const active = pathname === it.href || pathname.startsWith(it.href + "/");
@@ -51,11 +51,15 @@ export function SideNav() {
               key={it.href}
               href={it.href}
               title={it.desc}
+              aria-current={active ? "page" : undefined}
               className={cn(
-                "group flex items-start gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
+                // 选中态：淡主色底 + 左侧 2px 竖条。只靠底色的话，一屏 8 个条目里
+                // "现在在哪"要靠颜色深浅去猜；竖条是位置信号，扫一眼就知道。
+                // 竖条常驻（未选中时透明），切换时文字不会横向跳动。
+                "group flex items-start gap-2.5 rounded-sm border-l-2 px-3 py-2 text-sm transition-colors",
                 active
-                  ? "bg-primary/10 font-medium text-primary"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  ? "border-primary bg-primary/10 font-medium text-primary"
+                  : "border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               )}
             >
               {it.icon ? (
@@ -76,10 +80,10 @@ export function SideNav() {
         })}
       </nav>
       {me?.default_password_in_use && (
-        <div className="border-t p-3">
+        <div className="border-t border-border-subtle p-3">
           <Link
             href="/config/account"
-            className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-2 text-xs text-destructive hover:bg-destructive/10"
+            className="flex items-start gap-2 rounded-sm border border-sev-critical-bd bg-sev-critical-bg px-2 py-2 text-xs text-sev-critical-fg hover:brightness-[0.98]"
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>仍在使用出厂口令 —— 点这里去改</span>

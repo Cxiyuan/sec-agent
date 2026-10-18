@@ -10,12 +10,17 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  EmptyState,
+  Section,
+  Stat,
+  StatSkeleton,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableSkeleton,
   formatDateTime,
 } from "@shentong/ui";
 import type { ConfigAuditPayload } from "@/lib/api";
@@ -33,10 +38,13 @@ const SRC = { audit: "配置体检（/api/config/audit）" } as const;
 export default function ConfigAuditPage() {
   const errs = usePanelErrors();
   const [data, setData] = React.useState<ConfigAuditPayload | null>(null);
+  /** 首次加载：还没读到就先画骨架，别把「正在读」写成「没有配置项」 */
+  const [loading, setLoading] = React.useState(true);
 
   async function load() {
     errs.reset();
     await loadInto(errs, SRC.audit, "/api/config/audit", (d: ConfigAuditPayload) => setData(d));
+    setLoading(false);
   }
 
   React.useEffect(() => {
@@ -44,88 +52,154 @@ export default function ConfigAuditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const items = data?.items || [];
+  const warnings = data?.warnings || [];
+  /** 逐项里有提示的项（warnings 是整段结论，和逐项提示不是一回事，分开计数） */
+  const warned = items.filter((it) => !!it.warn).length;
+  const okCount = items.length - warned;
+
   return (
     <PageShell title="配置体检">
-      <div className="mb-3">
+      <div className="space-y-4">
         <PanelError errors={errs} />
-      </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => void load()}>
-          刷新
-        </Button>
-        {data?.checked_at ? (
-          <span className="text-xs text-muted-foreground">
-            检查于 {formatDateTime(data.checked_at)}
-          </span>
-        ) : null}
-        {data?.default_agent_host ? (
-          <Badge variant="outline">智能体地址常量：{data.default_agent_host}</Badge>
-        ) : null}
-      </div>
-
-      {data?.warnings?.length ? (
-        <Card className="mb-4 border-sev-medium-bd bg-sev-medium-bg">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-sev-medium-fg">需要处理（{data.warnings.length}）</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ul className="list-disc space-y-1 pl-5 text-xs">
-              {data.warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">配置项（{data?.items?.length ?? 0}）</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {data?.items?.length ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>项</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead>当前生效值</TableHead>
-                  <TableHead>说明 / 提示</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.items.map((it) => (
-                  <TableRow key={it.key}>
-                    <TableCell className="text-xs font-medium">{it.name}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{it.source}</TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {it.value}
-                      {it.secret ? (
-                        <Badge variant="outline" className="ml-1">
-                          已脱敏
-                        </Badge>
-                      ) : null}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {it.warn ? <span className="text-sev-medium-fg">{it.warn}</span> : null}
-                      {it.warn && it.note ? "；" : ""}
-                      <span className="text-muted-foreground">{it.note || ""}</span>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+        <Section
+          title="体检结果"
+          description="只读检查：每项显示当前生效值与来源；口令/令牌只报已配置与长度。"
+          extra={
+            <>
+              {data?.checked_at ? (
+                <span className="text-xs text-muted-foreground">
+                  检查于 {formatDateTime(data.checked_at)}
+                </span>
+              ) : null}
+              {data?.default_agent_host ? (
+                <Badge variant="outline">智能体地址常量：{data.default_agent_host}</Badge>
+              ) : null}
+              <Button size="sm" variant="outline" onClick={() => void load()}>
+                刷新
+              </Button>
+            </>
+          }
+        >
+          {loading && !data ? (
+            <StatSkeleton count={3} className="md:grid-cols-3" />
           ) : (
-            <p className="text-xs text-muted-foreground">
-              {data?.error ? `读取失败：${data.error}` : "正在读取…"}
-            </p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              <Stat label="配置项" value={items.length} size="md" hint="环境 / 数据库 / 编排 / 默认值" />
+              <Stat
+                label="需要处理"
+                value={warnings.length}
+                size="md"
+                tone={warnings.length ? "medium" : "ok"}
+                hint={warnings.length ? "见下方清单" : "没有待处理项"}
+              />
+              <Stat
+                label="逐项正常"
+                value={okCount}
+                size="md"
+                hint={`其余 ${warned} 项带提示`}
+              />
+            </div>
           )}
-          {data?.note ? (
-            <p className="mt-3 text-xs text-muted-foreground">{data.note}</p>
-          ) : null}
-        </CardContent>
-      </Card>
+        </Section>
+
+        {/* 需要处理：有问题用语义色标出；没有问题也明确说「正常」，不要整块消失 */}
+        {loading && !data ? null : warnings.length ? (
+          <Card className="border-sev-medium-bd bg-sev-medium-bg">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sev-medium-fg">
+                需要处理
+                <Badge variant="medium" className="tabular-nums">
+                  {warnings.length} 项
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="list-disc space-y-1 pl-5 text-xs leading-relaxed text-sev-medium-fg">
+                {warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        ) : data && !data.error && !errs.has ? (
+          <Card className="border-sev-ok-bd bg-sev-ok-bg">
+            <CardContent className="flex flex-wrap items-center gap-2 p-3 text-xs text-sev-ok-fg">
+              <Badge variant="success">正常</Badge>
+              本轮检查没有需要处理的配置项。
+            </CardContent>
+          </Card>
+        ) : null}
+
+        <Section title={`配置项（${items.length}）`} description="按来源逐项列出当前生效值。">
+          <Card>
+            <CardContent className="pt-4">
+              {loading && !data ? (
+                <TableSkeleton rows={8} cols={5} />
+              ) : items.length ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>项</TableHead>
+                      <TableHead className="w-40">来源</TableHead>
+                      <TableHead className="w-56">当前生效值</TableHead>
+                      <TableHead className="w-20">状态</TableHead>
+                      <TableHead>说明 / 提示</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {items.map((it) => (
+                      <TableRow key={it.key}>
+                        <TableCell className="font-medium text-foreground">{it.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{it.source}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {it.value}
+                          {it.secret ? (
+                            <Badge variant="outline" className="ml-1">
+                              已脱敏
+                            </Badge>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          {it.warn ? (
+                            <Badge variant="medium">需处理</Badge>
+                          ) : (
+                            <Badge variant="success">正常</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {it.warn ? <span className="text-sev-medium-fg">{it.warn}</span> : null}
+                          {it.warn && it.note ? "；" : ""}
+                          {it.note || ""}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <EmptyState
+                  title={errs.isFailed(SRC.audit) || data?.error ? "配置项读取失败" : "没有配置项数据"}
+                  hint={
+                    errs.isFailed(SRC.audit)
+                      ? "见上方错误条：后端异常或网络不通，不能当成「没有配置」"
+                      : data?.error || "体检接口没有返回任何配置项"
+                  }
+                  tone={errs.isFailed(SRC.audit) || data?.error ? "danger" : "muted"}
+                  action={
+                    <Button size="sm" variant="outline" onClick={() => void load()}>
+                      重新读取
+                    </Button>
+                  }
+                />
+              )}
+              {data?.note ? (
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.note}</p>
+              ) : null}
+            </CardContent>
+          </Card>
+        </Section>
+      </div>
     </PageShell>
   );
 }

@@ -53,45 +53,71 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-[640px]">
-        <CardHeader className="items-center">
-          <Shield className="mb-2 h-10 w-10 text-primary" />
-          <CardTitle>首次设置 · 监控网段</CardTitle>
-          <p className="mt-1 text-center text-xs text-muted-foreground">
-            网络采集器只抓取「源或目的 IP 落在这些网段内」的流量，检测器也只分析这些流量。
-            不配置则什么都抓不到、也什么都分析不了，因此此项为强制必填。
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div>
-            <label
-              htmlFor="setup-nets"
-              className="mb-1 block text-xs text-muted-foreground"
-            >
-              网段或 IP *（一行一条，支持 CIDR 与单个 IP，也可用逗号分隔）
-            </label>
-            <textarea
-              id="setup-nets"
-              value={netsText}
-              onChange={(e) => setNetsText(e.target.value)}
-              className="h-32 w-full rounded-md border border-input bg-transparent p-2 font-mono text-sm"
-              placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              已识别 {nets.length} 条；
-              {nets.length > 0 ? nets.slice(0, 6).join("、") + (nets.length > 6 ? " …" : "") : "尚未填写"}
-            </p>
-          </div>
-          {msg && <p className="text-sm text-destructive">{msg}</p>}
-          <Button className="w-full" onClick={submit} disabled={saving}>
-            {saving ? "保存中…" : "保存并开始分析"}
-          </Button>
-          <p className="text-center text-xs text-muted-foreground">
-            网络采集器的抓包范围与本地网段都由这份清单生成；保存后可在左侧「监控网段」页继续调整。
-          </p>
-        </CardContent>
-      </Card>
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-[640px] space-y-3">
+        <Card>
+          <CardHeader>
+            {/* 引导：序号 + 标题 + 说明 + 表单，一屏只做一件事 */}
+            <div className="flex items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm border border-border-subtle bg-surface-1 text-primary">
+                <Shield className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-xs tabular-nums text-muted-foreground">第 1 步 / 共 1 步 · 强制必填</p>
+                <CardTitle className="mt-0.5">监控网段</CardTitle>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  网络采集器只抓取「源或目的 IP 落在这些网段内」的流量，检测器也只分析这些流量。
+                  不配置则什么都抓不到、也什么都分析不了。
+                </p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div>
+              <label
+                htmlFor="setup-nets"
+                className="mb-1 block text-xs font-medium text-foreground"
+              >
+                网段或 IP <span className="text-sev-critical-fg">*</span>
+                <span className="ml-1 font-normal text-muted-foreground">
+                  （一行一条，支持 CIDR 与单个 IP，也可用逗号分隔）
+                </span>
+              </label>
+              <textarea
+                id="setup-nets"
+                value={netsText}
+                onChange={(e) => setNetsText(e.target.value)}
+                aria-describedby="setup-nets-hint"
+                className="h-32 w-full rounded-sm border border-border bg-surface-2 p-2 font-mono text-13 text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                placeholder={"192.168.0.0/16\n10.0.0.0/8\n172.16.1.5"}
+              />
+              <p
+                id="setup-nets-hint"
+                className="mt-1 text-xs tabular-nums text-muted-foreground"
+              >
+                已识别 {nets.length} 条；
+                {nets.length > 0
+                  ? nets.slice(0, 6).join("、") + (nets.length > 6 ? " …" : "")
+                  : "尚未填写"}
+              </p>
+            </div>
+            {msg && (
+              <p
+                role="alert"
+                className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-2 py-1.5 text-xs text-sev-critical-fg"
+              >
+                {msg}
+              </p>
+            )}
+            <Button className="w-full" onClick={submit} disabled={saving}>
+              {saving ? "保存中…" : "保存并开始分析"}
+            </Button>
+          </CardContent>
+        </Card>
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          网络采集器的抓包范围与本地网段都由这份清单生成；保存后可在左侧「监控网段」页继续调整。
+        </p>
+      </div>
     </div>
   );
 }
