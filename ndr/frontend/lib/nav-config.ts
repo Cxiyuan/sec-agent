@@ -185,12 +185,19 @@ function sectionRoot(section: NavSection): string {
   return section.match ?? section.href;
 }
 
+/** 子项的归属前缀：`sidebarMatch` 优先，其次 href（与 sidebarOf 的判定保持同一口径） */
+function itemRoot(item: NavItem): string {
+  return item.sidebarMatch ?? item.href;
+}
+
 /** 当前路径属于哪个一级分区（找不到返回 null） */
 export function sectionOf(pathname: string): NavSection | null {
   for (const section of NAV_SECTIONS) {
     if (inPath(pathname, sectionRoot(section))) return section;
+    // 下拉项也要按 sidebarMatch 判：可视化流量三个视角共用一份侧边栏，
+    // 只看 href 的话横向/外连两个视角会「不属于任何分区」，页头不高亮。
     for (const item of section.dropdown ?? []) {
-      if (inPath(pathname, item.href)) return section;
+      if (inPath(pathname, itemRoot(item))) return section;
     }
   }
   // 运营中心的附属页（攻击链还原）也是"运营中心"的语境，但不要侧边栏
@@ -201,10 +208,9 @@ export function sectionOf(pathname: string): NavSection | null {
 /** 当前页面自己的侧边栏（没有就返回空数组 = 不显示侧边栏） */
 export function sidebarOf(pathname: string): NavItem[] {
   for (const section of NAV_SECTIONS) {
-    if (section.sidebar && inPath(pathname, section.match ?? section.sidebarMatch ?? section.href))
-      return section.sidebar;
+    if (section.sidebar && inPath(pathname, sectionRoot(section))) return section.sidebar;
     for (const item of section.dropdown ?? []) {
-      if (item.sidebar && inPath(pathname, item.sidebarMatch ?? item.href)) return item.sidebar;
+      if (item.sidebar && inPath(pathname, itemRoot(item))) return item.sidebar;
     }
   }
   return [];
@@ -218,5 +224,5 @@ export function sidebarSectionOf(pathname: string): NavSection | null {
 /** 一级菜单是否高亮：分区本身命中，或它下拉里的某项命中 */
 export function sectionActive(pathname: string, section: NavSection): boolean {
   if (inPath(pathname, sectionRoot(section))) return true;
-  return (section.dropdown ?? []).some((item) => inPath(pathname, item.href));
+  return (section.dropdown ?? []).some((item) => inPath(pathname, itemRoot(item)));
 }
