@@ -58,6 +58,19 @@ export function severityText(severity?: string | null): string {
   return SEVERITY_LABEL[key] ?? String(severity);
 }
 
+/**
+ * 规则名 → 展示名。
+ *
+ * 早期版本的检测器会把来源写进规则名（`内置-高频扫描连接`），库里那批历史命中
+ * 记录因此带着这个前缀，而规则页读的是 `rules.name`（没有前缀）——同一条规则在
+ * 「命中事件」和「检测规则」两处显示成两个名字，运维对不上。
+ *
+ * 只做**展示层**剥离：`rule` 原值仍用于聚合键、忽略、加白名单等接口调用，不改数据。
+ */
+export function ruleText(rule?: string | null): string {
+  return String(rule || "").replace(/^内置-/, "");
+}
+
 /** 状态 → 中文（未知值原样返回） */
 export function statusText(status?: string | null): string {
   const key = String(status || "").toLowerCase();

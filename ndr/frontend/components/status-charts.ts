@@ -1,5 +1,5 @@
 import type { EChartsOption } from "echarts";
-import { chartTokens } from "@shentong/ui";
+import { chartTokens, ruleText } from "@shentong/ui";
 import { formatClock, formatHourSlot, formatShort } from "@shentong/ui";
 import type {
   AgentPushPayload,
@@ -361,7 +361,7 @@ export function ruleTopOption(items: DetectorHistoryPoint[], top = 15): EChartsO
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
     grid: GRID_HBAR,
     xAxis: valueAxis(),
-    yAxis: { ...AXIS, data: sorted.map(([name]) => name.replace(/^内置-/, "")), axisLabel: { width: 160, overflow: "truncate" } },
+    yAxis: { ...AXIS, data: sorted.map(([name]) => ruleText(name)), axisLabel: { width: 160, overflow: "truncate" } },
     series: [{ type: "bar", data: sorted.map(([, n]) => n), itemStyle: { color: t.series[0] }, barMaxWidth: 12 }],
   };
 }

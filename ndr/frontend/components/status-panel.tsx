@@ -23,6 +23,7 @@ import {
   StatSkeleton,
   Skeleton,
   formatDateTime,
+  ruleText,
   severityText,
   severityVariant,
   apiFetch,
@@ -680,7 +681,7 @@ export function StatusPanel() {
                           <span title={row.id}>{row.id.slice(0, 8)}</span>
                         </TableCell>
                         <TableCell>
-                          {row.rule || "—"}
+                          {ruleText(row.rule) || "—"}
                           {row.ignored ? (
                             <Badge variant="outline" className="ml-1">
                               已忽略
@@ -773,7 +774,10 @@ export function StatusPanel() {
                       </div>
                       <div>
                         <span className="text-muted-foreground">规则：</span>
-                        {hitDetail.rule}（{hitDetail.severity}）
+                        {ruleText(hitDetail.rule)}
+                        <span className="ml-1 text-muted-foreground">
+                          （{severityText(hitDetail.severity)}）
+                        </span>
                       </div>
                       <div>
                         <span className="text-muted-foreground">首次/最近：</span>

@@ -23,6 +23,7 @@ import {
   TableSkeleton,
   directionText,
   formatDateTime,
+  ruleText,
   severityText,
   severityVariant,
   statusText,
@@ -727,7 +728,7 @@ export default function AdminEventsPage() {
                         {" | "}
                         {it.event_type || it.kind}
                         {it.src ? ` | ${it.src} → ${it.dst}` : ""}
-                        {it.hit_rule ? ` | ${it.hit_rule}` : ""}
+                        {it.hit_rule ? ` | ${ruleText(it.hit_rule)}` : ""}
                         {it.edge_score !== null && it.edge_score !== undefined
                           ? ` | 分 ${it.edge_score}`
                           : ""}
@@ -801,7 +802,7 @@ export default function AdminEventsPage() {
                 {(detail.events || []).slice(0, 50).map((e) => (
                   <p key={e.id} className="font-mono text-xs tabular-nums text-muted-foreground">
                     {formatDateTime(e.ts)} | {e.event_type} | {e.src_ip} → {e.dst_ip}
-                    {e.hit_rule ? ` | ${e.hit_rule}` : ""}
+                    {e.hit_rule ? ` | ${ruleText(e.hit_rule)}` : ""}
                     {e.excluded ? " | 已排除" : ""}
                   </p>
                 ))}

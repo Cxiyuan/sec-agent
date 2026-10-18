@@ -17,6 +17,7 @@ import {
   TableRow,
   TableSkeleton,
   formatDateTime,
+  ruleText,
 } from "@shentong/ui";
 import {
   ConditionEditor,
@@ -355,7 +356,7 @@ export function ExclusionsPanel() {
                   <p className="text-xs text-muted-foreground">{fname}</p>
                   {samples.map((s, i) => (
                     <p key={i} className="font-mono text-xs text-muted-foreground">
-                      [{formatDateTime(s.at)}] {s.rule} · {s.src_ip} → {s.dst_ip} · {s.event_type} ·{" "}
+                      [{formatDateTime(s.at)}] {ruleText(s.rule)} · {s.src_ip} → {s.dst_ip} · {s.event_type} ·{" "}
                       {String(s.summary || "").slice(0, 120)}
                     </p>
                   ))}
