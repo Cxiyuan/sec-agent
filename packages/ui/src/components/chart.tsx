@@ -1,7 +1,10 @@
 "use client";
 
 import * as React from "react";
-import * as echarts from "echarts";
+// 注意：这里**不能** import "echarts"（全量入口，约 1MB）。按需装配表在 ../lib/echarts.ts，
+// 只注册了项目实际用到的 5 类图表 + 5 个组件；要加新图表类型去改那张表。
+import { init, registerTheme, type EChartsType } from "../lib/echarts";
+import type { EChartsOption } from "echarts";
 import { chartTokens } from "../lib/chart-tokens";
 
 /**
@@ -83,12 +86,12 @@ function ensureTheme(): string {
   if (themeDone && probe === cachedSignature) return THEME_NAME;
   cachedSignature = probe;
   themeDone = true;
-  echarts.registerTheme(THEME_NAME, buildTheme());
+  registerTheme(THEME_NAME, buildTheme());
   return THEME_NAME;
 }
 
 export interface ChartProps {
-  option: echarts.EChartsOption;
+  option: EChartsOption;
   className?: string;
   /** 数值 = 固定像素；字符串（如 "100%"）= 跟着容器走（外层用 flex 填满区域时用） */
   height?: number | string;
@@ -105,12 +108,12 @@ export interface ChartProps {
 
 export function Chart({ option, className, height = 300, onEvents, merge = false }: ChartProps) {
   const ref = React.useRef<HTMLDivElement>(null);
-  const chartRef = React.useRef<echarts.ECharts | null>(null);
+  const chartRef = React.useRef<EChartsType | null>(null);
   // 实例只建一次：轮询类页面每 5 秒就会给一份新 option，如果每次变化都 dispose+init，
   // 整页图表会跟着闪一下（且白付重建成本）。
   React.useEffect(() => {
     if (!ref.current) return;
-    const chart = echarts.init(ref.current, ensureTheme());
+    const chart = init(ref.current, ensureTheme());
     chartRef.current = chart;
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
