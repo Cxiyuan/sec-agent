@@ -1,0 +1,461 @@
+# ============================================================================
+# APT 流量检测规则包 · 分类 05 —— 框架与中间件探测
+# ----------------------------------------------------------------------------
+# 文件名称    : 05-框架与中间件探测.rules
+# 攻击类型    : 框架与中间件探测
+# ATT&CK     : TA0043 侦察 / T1190
+# 规则数量    : 46
+# SID 段     : 9105001 - 9105046
+#
+# 检测原理
+#   识别针对主流框架、中间件、运维平台的未授权端点与敏感文件探测。全部使用字面量匹配,性能开销极低。
+#
+# 误报与适配提示
+#   客户环境自身使用这些组件做运维时必然命中,须按资产清单加入抑制名单。
+# ============================================================================
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-01] 中间件探测 - Spring Boot Actuator 敏感端点访问"; \
+    flow:to_server,established; \
+    http.uri; content:"/actuator"; nocase; \
+    pcre:"/\/actuator\/(env|heap|heapdump|beans|mappings|configprops|gateway|threaddump|jolokia|loggers|shutdown|trace|httptrace|scheduledtasks|caches|quartz|sessions|refresh|restart|flyway|liquibase)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence High, severity High, created_at 2026_10_18; \
+    sid:9105001; rev:3;)
+alert http any any -> any any ( \
+    msg:"[中间件-02] 中间件探测 - Swagger / OpenAPI 接口文档"; \
+    flow:to_server,established; \
+    http.uri; content:"swagger"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105002; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-03] 中间件探测 - Swagger / OpenAPI 规范端点"; \
+    flow:to_server,established; \
+    http.uri; content:"api-docs"; nocase; \
+    pcre:"/\/(v1|v2|v3)\/api-docs/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105003; rev:3;)
+alert http any any -> any any ( \
+    msg:"[中间件-04] 中间件探测 - Swagger webjars 静态资源"; \
+    flow:to_server,established; \
+    http.uri; content:"webjars"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105004; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-05] 中间件探测 - Knife4j / smart-doc 接口文档"; \
+    flow:to_server,established; \
+    http.uri; content:"/doc.html"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105005; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-06] 中间件探测 - Knife4j 接口文档框架"; \
+    flow:to_server,established; \
+    http.uri; content:"knife4j"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105006; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-07] 中间件探测 - Nacos 服务发现与配置中心"; \
+    flow:to_server,established; \
+    http.uri; content:"nacos"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105007; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-08] 中间件探测 - Druid 数据库连接池监控平台"; \
+    flow:to_server,established; \
+    http.uri; content:"druid"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105008; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-09] 中间件探测 - Apache Solr 搜索平台"; \
+    flow:to_server,established; \
+    http.uri; content:"solr"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105009; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-10] 中间件探测 - Jenkins 持续集成控制台"; \
+    flow:to_server,established; \
+    http.uri; content:"jenkins"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105010; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-11] 中间件探测 - Tomcat 管理控制台"; \
+    flow:to_server,established; \
+    http.uri; content:"manager/html"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105011; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-12] 中间件探测 - Oracle WebLogic 中间件"; \
+    flow:to_server,established; \
+    http.uri; content:"weblogic"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105012; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-13] 中间件探测 - WebLogic WS-AT 组件(CVE-2017-10271)"; \
+    flow:to_server,established; \
+    http.uri; content:"wls-wsat"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105013; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-14] 中间件探测 - JBoss JMX 控制台"; \
+    flow:to_server,established; \
+    http.uri; content:"jmx-console"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105014; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-15] 中间件探测 - JBoss 应用服务器"; \
+    flow:to_server,established; \
+    http.uri; content:"jboss"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105015; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-16] 中间件探测 - 致远 OA Seeyon 协同办公系统"; \
+    flow:to_server,established; \
+    http.uri; content:"seeyon"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105016; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-17] 中间件探测 - 致远 OA ajax.do 端点"; \
+    flow:to_server,established; \
+    http.uri; content:"ajax.do"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105017; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-18] 中间件探测 - phpMyAdmin 数据库管理入口"; \
+    flow:to_server,established; \
+    http.uri; content:"phpmyadmin"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105018; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-19] 中间件探测 - Adminer 数据库管理工具"; \
+    flow:to_server,established; \
+    http.uri; content:"adminer"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105019; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-20] 中间件探测 - Zabbix 监控平台"; \
+    flow:to_server,established; \
+    http.uri; content:"zabbix"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105020; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-21] 中间件探测 - Grafana 可视化平台"; \
+    flow:to_server,established; \
+    http.uri; content:"grafana"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105021; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-22] 中间件探测 - Kibana 日志分析平台"; \
+    flow:to_server,established; \
+    http.uri; content:"kibana"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105022; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-23] 中间件探测 - Elasticsearch 搜索引擎"; \
+    flow:to_server,established; \
+    http.uri; content:"elasticsearch"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105023; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-24] 中间件探测 - 思迈特 SmartBI 商业智能平台"; \
+    flow:to_server,established; \
+    http.uri; content:"smartbi"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105024; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-25] 中间件探测 - XXL-JOB 分布式任务调度"; \
+    flow:to_server,established; \
+    http.uri; content:"xxl-job-admin"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105025; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-26] 中间件探测 - H2 数据库控制台"; \
+    flow:to_server,established; \
+    http.uri; content:"h2-console"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105026; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-27] 中间件探测 - Netflix Eureka 注册中心"; \
+    flow:to_server,established; \
+    http.uri; content:"eureka"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105027; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-28] 中间件探测 - Prometheus 监控平台"; \
+    flow:to_server,established; \
+    http.uri; content:"prometheus"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105028; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-29] 中间件探测 - F5 BIG-IP iControl REST RCE 端点"; \
+    flow:to_server,established; \
+    http.uri; content:"mgmt/tm/util/bash"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105029; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-30] 中间件探测 - 移动门户 / VPN 入口探测"; \
+    flow:to_server,established; \
+    http.uri; content:"mobile_portal"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105030; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-31] 中间件探测 - 帆软 FineReport 信息泄露端点"; \
+    flow:to_server,established; \
+    http.uri; content:"freport/decision"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105031; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-32] 中间件探测 - 帆软 ReportServer 端点"; \
+    flow:to_server,established; \
+    http.uri; content:"ReportServer"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105032; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-33] 中间件探测 - ASP.NET WebService 端点批量探测"; \
+    flow:to_server,established; \
+    http.uri; content:".asmx"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105033; rev:1;)
+
+# 提示: 若客户环境本身使用该组件做运维,需加入抑制名单
+alert http any any -> any any ( \
+    msg:"[中间件-34] 中间件探测 - WebLogic 控制台入口"; \
+    flow:to_server,established; \
+    http.uri; content:"/console/"; nocase; \
+    pcre:"/\/console\/(login\/LoginForm\.jsp|jndi|console\.portal|framework\/skins|css\/)|\/rconsole|\/console-help\.portal/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1190, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105034; rev:3;)
+alert http any any -> any any ( \
+    msg:"[中间件-35] 敏感文件探测 - Git 源码目录泄露探测"; \
+    flow:to_server,established; \
+    http.uri; content:".git/"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105035; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-36] 敏感文件探测 - SVN 源码目录泄露探测"; \
+    flow:to_server,established; \
+    http.uri; content:".svn/"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105036; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-37] 敏感文件探测 - 环境变量配置文件探测"; \
+    flow:to_server,established; \
+    http.uri; content:".env"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105037; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-38] 敏感文件探测 - AWS 凭据目录探测"; \
+    flow:to_server,established; \
+    http.uri; content:".aws/"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105038; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-39] 敏感文件探测 - IIS 配置文件探测"; \
+    flow:to_server,established; \
+    http.uri; content:"web.config"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105039; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-40] 敏感文件探测 - Apache 配置文件探测"; \
+    flow:to_server,established; \
+    http.uri; content:".htaccess"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105040; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-41] 敏感文件探测 - 备份文件探测 .bak"; \
+    flow:to_server,established; \
+    http.uri; content:".bak"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105041; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-42] 敏感文件探测 - 备份文件探测 .old"; \
+    flow:to_server,established; \
+    http.uri; content:".old"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105042; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-43] 敏感文件探测 - 数据库导出文件探测"; \
+    flow:to_server,established; \
+    http.uri; content:".sql"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105043; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-44] 敏感文件探测 - macOS 目录元数据探测"; \
+    flow:to_server,established; \
+    http.uri; content:".DS_Store"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Low, created_at 2026_10_18; \
+    sid:9105044; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-45] 敏感文件探测 - IDE 工程目录泄露探测"; \
+    flow:to_server,established; \
+    http.uri; content:".idea/"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9105045; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[中间件-46] 敏感文件探测 - 数据库转储文件探测"; \
+    flow:to_server,established; \
+    http.uri; content:"dump.sql"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9105046; rev:1;)

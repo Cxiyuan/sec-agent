@@ -1,164 +1,111 @@
 {
-  "source": "规则全集.rules",
-  "total": 11179,
+  "source": "开发者按攻击类型分好文件的规则包（2026-10）",
+  "total": 185,
   "categories": [
     {
-      "category": "10-web-attack",
-      "label": "Web 应用攻击",
-      "file": "10-web-attack.rules",
-      "rules": 6774,
-      "classtypes": {
-        "web-application-attack": 6003,
-        "xss-attack": 338,
-        "web-application-activity": 165,
-        "sql-injection": 104,
-        "file-read-attempt": 72,
-        "java-deserialization": 32,
-        "file-upload-attempt": 23,
-        "webshell-activity": 19,
-        "xxe-attack": 9,
-        "shellcode-detect": 7,
-        "rce-attempt": 2
-      }
+      "category": "01-recon-tools",
+      "label": "侦察与攻击工具指纹",
+      "file": "01-recon-tools.rules",
+      "rules": 29,
+      "classtypes": {}
     },
     {
-      "category": "20-exploit",
-      "label": "漏洞利用（exploit-kit）",
-      "file": "20-exploit.rules",
-      "rules": 2585,
-      "classtypes": {
-        "exploit-kit": 2573,
-        "CVE-exploit": 12
-      }
+      "category": "02-port-scan",
+      "label": "端口与主机扫描",
+      "file": "02-port-scan.rules",
+      "rules": 7,
+      "classtypes": {}
     },
     {
-      "category": "30-credential",
-      "label": "凭证窃取 / 未授权访问",
-      "file": "30-credential.rules",
-      "rules": 1566,
-      "classtypes": {
-        "credential-theft": 1545,
-        "unauthorized-access": 21
-      }
+      "category": "03-web-exploit",
+      "label": "Web 漏洞利用",
+      "file": "03-web-exploit.rules",
+      "rules": 23,
+      "classtypes": {}
     },
     {
-      "category": "40-scan",
-      "label": "扫描探测",
-      "file": "40-scan.rules",
-      "rules": 45,
-      "classtypes": {
-        "vuln-scanner": 37,
-        "dir-scan": 8
-      }
-    },
-    {
-      "category": "50-malware-c2",
-      "label": "恶意软件 / 挖矿 / 隧道外联",
-      "file": "50-malware-c2.rules",
-      "rules": 124,
-      "classtypes": {
-        "coin-mining": 77,
-        "C2_trojan-activity": 28,
-        "tunnel-activity": 14,
-        "trojan-activity": 9,
-        "dns-exfiltration": 4
-      }
-    },
-    {
-      "category": "60-sensitive-data",
-      "label": "敏感信息 / 文件泄露",
-      "file": "60-sensitive-data.rules",
-      "rules": 83,
-      "classtypes": {
-        "sensitive-str": 60,
-        "sensitive-file-access": 23
-      }
-    },
-    {
-      "category": "90-other",
-      "label": "其它",
-      "file": "90-other.rules",
+      "category": "04-webshell",
+      "label": "WebShell 后门通信",
+      "file": "04-webshell.rules",
       "rules": 2,
-      "classtypes": {
-        "policy-violation": 1,
-        "misc-activity": 1
-      }
+      "classtypes": {}
+    },
+    {
+      "category": "05-framework-probe",
+      "label": "框架与中间件探测",
+      "file": "05-framework-probe.rules",
+      "rules": 46,
+      "classtypes": {}
+    },
+    {
+      "category": "06-credential",
+      "label": "凭据攻击",
+      "file": "06-credential.rules",
+      "rules": 8,
+      "classtypes": {}
+    },
+    {
+      "category": "07-lateral",
+      "label": "横向移动",
+      "file": "07-lateral.rules",
+      "rules": 4,
+      "classtypes": {}
+    },
+    {
+      "category": "08-tunnel-proxy",
+      "label": "隧道与代理",
+      "file": "08-tunnel-proxy.rules",
+      "rules": 6,
+      "classtypes": {}
+    },
+    {
+      "category": "09-dns-tunnel",
+      "label": "DNS 隧道与带外探测",
+      "file": "09-dns-tunnel.rules",
+      "rules": 7,
+      "classtypes": {}
+    },
+    {
+      "category": "10-c2-beacon",
+      "label": "命令与控制信标",
+      "file": "10-c2-beacon.rules",
+      "rules": 6,
+      "classtypes": {}
+    },
+    {
+      "category": "11-malware-delivery",
+      "label": "恶意文件投递",
+      "file": "11-malware-delivery.rules",
+      "rules": 5,
+      "classtypes": {}
+    },
+    {
+      "category": "12-attack-chain",
+      "label": "攻击链关联检测",
+      "file": "12-attack-chain.rules",
+      "rules": 14,
+      "classtypes": {}
+    },
+    {
+      "category": "13-non-http",
+      "label": "非 HTTP 协议攻击",
+      "file": "13-non-http.rules",
+      "rules": 8,
+      "classtypes": {}
+    },
+    {
+      "category": "14-http-header-chain",
+      "label": "HTTP 头载荷与利用链",
+      "file": "14-http-header-chain.rules",
+      "rules": 13,
+      "classtypes": {}
+    },
+    {
+      "category": "15-non-http-scan",
+      "label": "非 HTTP 通道与扫描器痕迹",
+      "file": "15-non-http-scan.rules",
+      "rules": 7,
+      "classtypes": {}
     }
-  ],
-  "classtypes": {
-    "web-application-attack": 6003,
-    "exploit-kit": 2573,
-    "credential-theft": 1545,
-    "xss-attack": 338,
-    "web-application-activity": 165,
-    "sql-injection": 104,
-    "coin-mining": 77,
-    "file-read-attempt": 72,
-    "sensitive-str": 60,
-    "vuln-scanner": 37,
-    "java-deserialization": 32,
-    "C2_trojan-activity": 28,
-    "sensitive-file-access": 23,
-    "file-upload-attempt": 23,
-    "unauthorized-access": 21,
-    "webshell-activity": 19,
-    "tunnel-activity": 14,
-    "CVE-exploit": 12,
-    "xxe-attack": 9,
-    "trojan-activity": 9,
-    "dir-scan": 8,
-    "shellcode-detect": 7,
-    "dns-exfiltration": 4,
-    "rce-attempt": 2,
-    "policy-violation": 1,
-    "misc-activity": 1
-  },
-  "fixes": {
-    "modifier_order": 36,
-    "threshold_to_detection_filter": 66,
-    "content_semicolon_hex": 5,
-    "pcre_body_normalized": 20,
-    "pcre_semicolon_hex": 15,
-    "content_backslash_hex": 12,
-    "http_method_space_stripped": 2,
-    "legacy_keyword:http_uri": 19,
-    "msg_semicolon_stripped": 4,
-    "flow_direction:to_client": 6,
-    "flow_dedupe_from_flag": 2,
-    "legacy_keyword:dns_query": 63,
-    "flow_direction:to_server": 4,
-    "legacy_keyword:http_header": 6,
-    "pcre_flag_dropped": 6,
-    "legacy_keyword:http_user_agent": 1,
-    "legacy_keyword:http_stat_code": 5,
-    "legacy_keyword:http_client_body": 3,
-    "legacy_keyword:http_server_body": 2,
-    "quarantined_ja3s": 8
-  },
-  "quarantined": {
-    "1000371": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000372": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000842": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000843": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000844": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000845": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000854": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    },
-    "1000855": {
-      "reason": "JA3S 是服务端 TLS 指纹，跨服务器普遍碰撞（实测命中 seeyon/sangfor/yahoo 等正常服务）；与部署环境无关，属判据本身不可靠，故隔离"
-    }
-  }
+  ]
 }

@@ -358,7 +358,10 @@ def test_page_fills_area_and_drops_node_list() -> None:
     )
     assert "节点（点一行即可改名）" not in src, "节点列表卡应已删除"
     assert 'height="100%"' in src, "图要跟着容器高度走（占满）"
-    assert "min-h-0 flex-1 flex-col" in src, "图卡片要 flex-1 撑满剩余高度"
+    # 断言"三个关键类都在"而不是整串顺序：前端改类名顺序（`flex min-h-0 min-w-0 flex-1 flex-col`）
+    # 不该让守卫误报 —— 它守的是"图卡片能撑满剩余高度"这件事本身。
+    for cls in ("min-h-0", "flex-1", "flex-col"):
+        assert cls in src, f"图卡片缺 {cls}（撑不满剩余高度）"
     # 2026-10 改版：整屏排布局改由 PageShell 的 `fill` 负责（页头 + 侧边栏的偏移在外壳里算），
     # 页面自己不再写 h-screen（那样会和固定页头打架）。
     assert " fluid fill" in src or "fill fluid" in src, "整屏排布局（不整页滚动）"

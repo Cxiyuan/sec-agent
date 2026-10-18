@@ -1,0 +1,36 @@
+# ============================================================================
+# APT 流量检测规则包 · 分类 04 —— Webshell 后门通信
+# ----------------------------------------------------------------------------
+# 文件名称    : 04-WebShell后门通信.rules
+# 攻击类型    : Webshell 后门通信
+# ATT&CK     : TA0003 持久化 / T1505.003
+# 规则数量    : 2
+# SID 段     : 9104001 - 9104002
+#
+# 检测原理
+#   识别 Webshell 文件访问与命令参数传递行为。
+#
+# 误报与适配提示
+#   业务系统若存在同名文件(如 shell.php)会误报,建议结合响应体与返回码确认。
+# ============================================================================
+
+# 提示: 误报: 正常业务若存在同名文件会命中,建议配合响应体特征确认
+alert http any any -> any any ( \
+    msg:"[后门通信-01] Webshell - 已知后门文件名访问"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/\/(rce|cmd|shell|backdoor|wso|b374k|c99|cmdjsp|gsl|godzilla|behinder|ants|n1nty)\.(php|jsp|asp|aspx|asa|cer|cdx)(\?|$)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0003, attack_technique T1505.003, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9104001; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[后门通信-02] Webshell - 脚本文件携带命令类参数"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/\.(php|jsp|asp|aspx)\?[a-z0-9_]*=(cmd|exec|command|passwd|pwd|z0|z1|z2|eval)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0003, attack_technique T1505.003, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9104002; rev:1;)

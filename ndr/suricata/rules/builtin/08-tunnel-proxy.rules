@@ -1,0 +1,66 @@
+# ============================================================================
+# APT 流量检测规则包 · 分类 08 —— 隧道与代理
+# ----------------------------------------------------------------------------
+# 文件名称    : 08-隧道与代理.rules
+# 攻击类型    : 隧道与代理
+# ATT&CK     : TA0011 命令与控制 / T1090 代理
+# 规则数量    : 6
+# SID 段     : 9108001 - 9108006
+#
+# 检测原理
+#   识别 SOCKS4/5 代理、HTTP CONNECT 隧道、GRE 封装等流量转发行为。
+#
+# 误报与适配提示
+#   存在合法代理或 GRE VPN 的环境须禁用对应条目。
+# ============================================================================
+
+# 提示: 误报: 部分二进制私有协议可能巧合命中前 3 字节
+alert tcp any any -> any any ( \
+    msg:"[隧道-01] SOCKS5 代理握手 - 无认证模式"; \
+    flow:to_server,established; \
+    content:"|05 01 00|"; startswith; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence High, severity High, created_at 2026_10_18; \
+    sid:9108001; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[隧道-02] SOCKS5 代理握手 - 用户名口令认证"; \
+    flow:to_server,established; \
+    content:"|05 01 02|"; startswith; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence High, severity High, created_at 2026_10_18; \
+    sid:9108002; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[隧道-03] SOCKS5 请求阶段 - TCP CONNECT"; \
+    flow:to_server,established; \
+    content:"|05 01 00 01|"; startswith; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9108003; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[隧道-04] SOCKS4 / SOCKS4a 握手"; \
+    flow:to_server,established; \
+    content:"|04 01|"; depth:2; \
+    byte_test:2,>,1023,2,relative; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9108004; rev:1;)
+
+# 提示: 误报: 合法 HTTPS 代理场景必然命中,建议仅在内网横向流量启用
+alert http any any -> any any ( \
+    msg:"[隧道-05] HTTP CONNECT 隧道建立"; \
+    flow:to_server,established; \
+    http.method; content:"CONNECT"; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1572, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9108005; rev:1;)
+
+# 提示: 误报高: 存在 GRE VPN 的环境应禁用本条
+alert ip any any -> any any ( \
+    msg:"[隧道-06] IP 层隧道封装 (GRE)"; \
+    ip_proto:47; \
+    classtype:non-standard-protocol; \
+    metadata:attack_tactic TA0011, attack_technique T1572, confidence Low, severity Low, created_at 2026_10_18; \
+    sid:9108006; rev:1;)

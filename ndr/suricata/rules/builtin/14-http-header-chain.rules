@@ -1,0 +1,156 @@
+# ==============================================================================
+# APT 流量检测规则包 · 分类 14 —— HTTP 头载荷与特定漏洞利用链
+# ------------------------------------------------------------------------------
+# 文件名称    : 14-HTTP头载荷与利用链.rules
+# 攻击类型    : Shellshock / Log4Shell(头) / Struts2 OGNL / Cookie 注入 /
+#               Node.js RCE / NiFi 未授权 / edoc2 文档系统
+# ATT&CK     : TA0001 初始访问 / T1190 利用面向公众的应用
+# 规则数量    : 11 条
+# SID 段     : 9114001 - 9114011
+#
+# 检测原理
+#   大量攻击载荷不出现在 URI 中,而藏在 HTTP 头里 —— 这是只分析 http.log 的
+#   方案会漏掉的关键攻击面。演练实证(http_header.log 全量挖掘)：
+#     - Shellshock:      User-Agent = "() { :; }; /bin/bash -c 'cat /etc/passwd'"
+#     - Log4Shell 混淆:  Accept / Accept-Language / Referer / Host 中出现
+#                        ${:-y$}{${6pr:-j}nd${env:fm4:-}i:d${xyf::-n}s://...
+#     - JNDI 回调服务器: ${jndi:rmi://<ip>:1099/...} / ${jndi:ldap://<ip>:1389/...}
+#     - Struts2 OGNL:    Content-Type 中 %%{(#nike='multipart/form-data').(#dm=@ognl...
+#     - Cookie 注入:     Cookie 中 34776 次命中注入特征
+#     - Node.js RCE:     ?parseData=...require('child_process').execSync('id')...
+#
+# 误报与适配提示
+#   Cookie 注入规则在存在复杂业务 Cookie 的环境可能命中,建议结合响应码确认。
+#   NiFi / edoc2 规则仅在对应产品存在时有意义,可在 disable.conf 中按客户裁剪。
+# ==============================================================================
+
+alert http any any -> any any ( \
+    msg:"[请求头-01] Shellshock 命令注入 - HTTP 头 (CVE-2014-6271)"; \
+    flow:to_server,established; \
+    http.header; content:"() {"; nocase; \
+    pcre:"/\(\)\s*\{[^}]{0,40}\}\s*\x3b\s*(echo|\/bin\/|bash|expr|cat|wget|curl)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2014-6271, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9114001; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-02] Shellshock 变形特征 - () { 函数定义注入"; \
+    flow:to_server,established; \
+    http.header; content:"() {"; nocase; \
+    pcre:"/\(\)\s*\{\s*[a-z_]+\s*\x3b\s*\}\s*\x3b/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2014-7169, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114002; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-03] Log4Shell - HTTP 头中 jndi 查找 (CVE-2021-44228)"; \
+    flow:to_server,established; \
+    http.header; content:"jndi"; nocase; \
+    pcre:"/jndi\s*(\%3a|:)\s*(ldap|rmi|dns|iiop|nis|nds|corba)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2021-44228, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9114003; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-04] Log4Shell - 嵌套混淆 ${} 结构 (头中绕过)"; \
+    flow:to_server,established; \
+    http.header; content:"${"; nocase; \
+    pcre:"/\$\{[^{}]{0,60}\}\s*\$\{[^{}]{0,60}\}/"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2021-45046, confidence Medium, severity Critical, created_at 2026_10_18; \
+    sid:9114004; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-05] Log4Shell - 变量插值变形 (${url: / ${env: / ${:-)"; \
+    flow:to_server,established; \
+    http.header; content:"${"; nocase; \
+    pcre:"/\$\{(url|env|sys|date|lower|upper|::-|[a-z0-9]+)\s*:/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2021-45046, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114005; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-06] Struts2 OGNL 表达式注入 (S2-045 系列)"; \
+    flow:to_server,established; \
+    http.header; content:"OgnlContext"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2017-5638, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9114006; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-07] Struts2 OGNL - 通用 (#_memberAccess 绕过)"; \
+    flow:to_server,established; \
+    http.header; content:"#"; nocase; \
+    pcre:"/(#_memberAccess|#context\[|DEFAULT_MEMBER_ACCESS|getExcludedPackageNames)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9114007; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-08] SQL 注入 - Cookie 中携带注入载荷"; \
+    flow:to_server,established; \
+    http.cookie; \
+    pcre:"/(union[\s\+]+(all[\s\+]+)?select|extractvalue\s*\(|updatexml\s*\(|information_schema|(\%27|')\s*(or|and)\s*[0-9]+\s*=\s*[0-9]+)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cwe CWE-89, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114008; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-09] SQL 注入 - X-Forwarded-For / X-Real-IP 伪造注入"; \
+    flow:to_server,established; \
+    http.header; \
+    pcre:"/(x-forwarded-for|x-real-ip|client-ip|x-originating-ip).{0,64}(union[\s\+\/\*]+(all[\s\+\/\*]+)?select|extractvalue\s*\(|updatexml\s*\(|information_schema|waitfor[\s\+\/\*]+delay|sleep\s*\(|benchmark\s*\(|pg_sleep\s*\(|(\%27|')\s*\)?\s*(or|and)\s*[0-9]+\s*=\s*[0-9]+|(\%27|')\s*\)?\s*\x3b\s*(select|update|delete|insert))/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cwe CWE-89, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114009; rev:2;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-10] Node.js 命令执行 - child_process / execSync"; \
+    flow:to_server,established; \
+    http.uri; content:"child_process"; nocase; \
+    pcre:"/(child_process|execSync|execFileSync|spawnSync)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cwe CWE-94, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9114010; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-11] 特定系统漏洞利用路径 - Apache NiFi / edoc2 文档系统"; \
+    flow:to_server,established; \
+    http.uri; content:"/nifi-api"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114011; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[请求头-12] edoc2 电子文档管理系统漏洞利用端点"; \
+    flow:to_server,established; \
+    http.uri; content:"edoc2"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114012; rev:1;)
+
+# 实证: 注入载荷出现在 Location / CDN-SRC-IP / X-Forwarded-For 等任意请求头中,
+#       例如 `CDN-SRC-IP: 2'and extractvalue(1,concat(0x5c,(select md5(332)),0x5c)) and '1'='1`
+#       既有 RD-HEADER-08/09 只覆盖 Cookie 与 XFF 家族,故补一条通用请求头注入检测。
+#       限定 to_server,避免响应头回显用户输入造成误报。
+alert http any any -> any any ( \
+    msg:"[请求头-13] SQL 注入 - 任意请求头携带注入载荷"; \
+    flow:to_server,established; \
+    http.header; \
+    pcre:"/(extractvalue\s*\(|updatexml\s*\(|information_schema|union[\s\+\/\*]+(all[\s\+\/\*]+)?select|waitfor[\s\+\/\*]+delay|benchmark\s*\(|pg_sleep\s*\(|(concat|md5|database|version)\s*\(\s*\)|(\%27|')\s*\)?\s*(and|or)\s*[0-9]+\s*=\s*[0-9]+)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cwe CWE-89, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9114013; rev:1;)

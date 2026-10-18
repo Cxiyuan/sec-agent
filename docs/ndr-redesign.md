@@ -1434,14 +1434,24 @@ vs 反向 `203 → 214` **614 次**（2600 倍）；`203 → 源站` 的请求�
 `ndr/suricata/tools/classify_rules.py` 按 classtype 归到 7 个攻击类型分类，**规则原文逐行保留**：
 
 | 分类 | 条数 | 覆盖的原始 classtype |
+| 分类文件 | 条数 | 说明 |
 |---|---|---|
-| `10-web-attack` Web 应用攻击 | 6774 | web-application-attack / xss / sql-injection / xxe / rce / file-upload / webshell / java-deserialization / shellcode… |
-| `20-exploit` 漏洞利用 | 2586 | exploit-kit / CVE-exploit |
-| `30-credential` 凭证与未授权 | 1566 | credential-theft / unauthorized-access |
-| `40-scan` 扫描探测 | 45 | vuln-scanner / dir-scan |
-| `50-malware-c2` 恶意软件/挖矿/隧道 | 133 | trojan-activity / C2_trojan-activity / coin-mining / tunnel-activity / dns-exfiltration |
-| `60-sensitive-data` 敏感信息 | 83 | sensitive-str / sensitive-file-access |
-| `90-other` 其它 | 2 | policy-violation / misc-activity |
+| `01-recon-tools.rules` | 29 | 侦察与攻击工具指纹 |
+| `02-port-scan.rules` | 7 | 端口与主机扫描 |
+| `03-web-exploit.rules` | 23 | Web 漏洞利用 |
+| `04-webshell.rules` | 2 | WebShell 后门通信 |
+| `05-framework-probe.rules` | 46 | 框架与中间件探测 |
+| `06-credential.rules` | 8 | 凭据攻击 |
+| `07-lateral.rules` | 4 | 横向移动 |
+| `08-tunnel-proxy.rules` | 6 | 隧道与代理 |
+| `09-dns-tunnel.rules` | 7 | DNS 隧道与带外探测 |
+| `10-c2-beacon.rules` | 6 | 命令与控制信标 |
+| `11-malware-delivery.rules` | 5 | 恶意文件投递 |
+| `12-attack-chain.rules` | 14 | 攻击链关联检测 |
+| `13-non-http.rules` | 8 | 非 HTTP 协议攻击 |
+| `14-http-header-chain.rules` | 13 | HTTP 头载荷与利用链 |
+| `15-non-http-scan.rules` | 7 | 非 HTTP 通道与扫描器痕迹 |
+
 
 **语法修复（CI 用真实 Suricata 8 轮迭代发现，共约 250 处；只改写法不改判据）**：
 content 修饰符位置（`http_method` 必须在 content 之后）、Suricata 7 已移除的 `threshold` → `detection_filter`、

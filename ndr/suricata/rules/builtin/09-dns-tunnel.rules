@@ -1,0 +1,74 @@
+# ============================================================================
+# APT 流量检测规则包 · 分类 09 —— DNS 隧道与带外探测
+# ----------------------------------------------------------------------------
+# 文件名称    : 09-DNS隧道与带外探测.rules
+# 攻击类型    : DNS 隧道与带外探测
+# ATT&CK     : TA0011 / T1071.004 / T1590
+# 规则数量    : 7
+# SID 段     : 9109001 - 9109007
+#
+# 检测原理
+#   识别 DNS 隧道编码特征与漏洞验证阶段的带外(OOB)回连域名。
+#
+# 误报与适配提示
+#   部分 CDN 与云解析会产生长域名与多级标签,需结合频次判定。
+# ============================================================================
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-01] DNS 隧道 - 多级单字符标签(数据编码特征)"; \
+    dns.query; pcre:"/^([0-9a-z]\.){6,}/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:non-standard-protocol; \
+    metadata:attack_tactic TA0011, attack_technique T1071.004, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9109001; rev:1;)
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-02] DNS 带外探测 - 32 位十六进制子域"; \
+    dns.query; pcre:"/^[0-9a-f]{32}\./i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1590, confidence High, severity High, created_at 2026_10_18; \
+    sid:9109002; rev:1;)
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-03] DNS 带外探测 - UUID 格式子域"; \
+    dns.query; pcre:"/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1590, confidence High, severity High, created_at 2026_10_18; \
+    sid:9109003; rev:1;)
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-04] DNS 带外探测 - oast 家族平台"; \
+    dns.query; content:"oast"; nocase; \
+    pcre:"/(oastify\.com|oast\.(live|site|pro|fun))/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1590, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9109004; rev:1;)
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-05] DNS 带外探测 - 其他公共 OOB 平台"; \
+    dns.query; \
+    pcre:"/(interact\.sh|ceye\.io|dnslog\.cn|dnslog\.top|burpcollaborator\.net|requestrepo\.com|xss\.ht|canarytokens\.com)/i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1590, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9109005; rev:1;)
+
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-06] DNS 隧道 - 超长单标签查询名"; \
+    dns.query; pcre:"/^[^.]{60,}\./i"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:non-standard-protocol; \
+    metadata:attack_tactic TA0011, attack_technique T1071.004, confidence Low, severity Medium, created_at 2026_10_18; \
+    sid:9109006; rev:1;)
+
+# 提示: 依赖频次,需按现网 DNS 基线校准
+alert dns any any -> any any ( \
+    msg:"[DNS隧道-07] DNS 高频长域名查询(隧道心跳或子域枚举)"; \
+    dns.query; bsize:>40; \
+    detection_filter:track by_src, count 100, seconds 60; \
+    classtype:non-standard-protocol; \
+    metadata:attack_tactic TA0011, attack_technique T1071.004, confidence Low, severity Low, created_at 2026_10_18; \
+    sid:9109007; rev:1;)

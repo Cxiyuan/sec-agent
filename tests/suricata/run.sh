@@ -75,7 +75,9 @@ printf '%s\n' "$RENDERED" | grep -q 'HTTP_PORTS: "80,81,88,8008,8010,8048,8080,8
 printf '%s\n' "$RENDERED" | grep -q 'community-id: yes' || { echo "community-id 没开" >&2; exit 1; }
 printf '%s\n' "$RENDERED" | grep -q 'unix-command:' || { echo "没开热重载用的 unix socket" >&2; exit 1; }
 # 规则列表只含 active 里的文件；引擎自带事件规则（*-events.rules）一个都不能引用
-for f in 10-web-attack 20-exploit 30-credential 40-scan 50-malware-c2 60-sensitive-data 90-other; do
+# 分类文件名不写死：内置集换代后分类会变（2026-10 换成 15 类按攻击类型分文件），
+# 从 index.json 读出来循环，才不会每换一版规则就改一次这个脚本。
+for f in $(python3 -c 'import json,sys; d=json.load(open("ndr/suricata/rules/builtin/index.json")); print(" ".join(c["category"] for c in d["categories"]))'); do
   printf '%s\n' "$RENDERED" | grep -q "$f.rules" \
     || { echo "rule-files 里缺少分类文件 $f.rules" >&2; exit 1; }
 done

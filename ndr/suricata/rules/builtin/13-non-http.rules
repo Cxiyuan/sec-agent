@@ -1,0 +1,86 @@
+# ==============================================================================
+# APT 流量检测规则包 · 分类 13 —— 非 HTTP 协议攻击
+# ------------------------------------------------------------------------------
+# 文件名称    : 13-非HTTP协议攻击.rules
+# 攻击类型    : SNMP / SIP / MQTT / NTP / 自动化 SSH 客户端 / HFS 利用
+# ATT&CK     : TA0043 侦察 / TA0008 横向移动 / T1046 网络服务发现
+# 规则数量    : 8 条
+# SID 段     : 9113001 - 9113008
+#
+# 检测原理
+#   覆盖 HTTP 之外的攻击面。演练证据:
+#     - SNMP 团体名爆破: 对内网 172.16.x.x 发起 3.6 万次查询，团体名 public/internal/private
+#     - SIP 分机枚举:   第二攻击段多主机对 5060 端口扫描 sip:100@ 分机
+#     - MQTT 探测:     单主机对 1883 端口发起 1.7 万次连接(IoT 横向面)
+#     - NTP monlist:    NTP 放大攻击侦察常用手法
+#     - 自动化 SSH 库:  paramiko / ssh2js 等非交互式客户端指纹
+#     - Rejetto HFS:    HTTP File Server 远程命令执行(CVE-2024-23692)
+#
+# 误报与适配提示
+#   SNMP/NTP 规则在存在网管系统或 NTP 服务器的环境会命中，须按资产角色抑制。
+#   MQTT 规则在存在 IoT 业务的环境需上调频次阈值。
+# ==============================================================================
+
+alert udp any any -> any 161 ( \
+    msg:"[其他协议-01] SNMP 团体名爆破 - public"; \
+    content:"public"; nocase; \
+    detection_filter:track by_src, count 10, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9113001; rev:1;)
+
+alert udp any any -> any 161 ( \
+    msg:"[其他协议-02] SNMP 团体名爆破 - private/internal"; \
+    content:"private"; nocase; \
+    detection_filter:track by_src, count 10, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9113002; rev:1;)
+
+alert udp any any -> any 5060 ( \
+    msg:"[其他协议-03] SIP 分机枚举探测"; \
+    content:"sip:"; nocase; \
+    detection_filter:track by_src, count 20, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9113003; rev:1;)
+
+alert tcp any any -> any 1883 ( \
+    msg:"[其他协议-04] MQTT 高频连接(IoT 探测或暴破)"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 20, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9113004; rev:1;)
+
+alert udp any any -> any 123 ( \
+    msg:"[其他协议-05] NTP monlist 探测(放大攻击侦察)"; \
+    content:"|17 00 03 2a|"; depth:4; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1498.001, confidence High, severity Medium, created_at 2026_10_18; \
+    sid:9113005; rev:1;)
+
+alert tcp any any -> any 22 ( \
+    msg:"[其他协议-06] 自动化 SSH 客户端库指纹 - paramiko"; \
+    flow:to_server,established; \
+    content:"paramiko"; nocase; depth:64; \
+    classtype:attempted-user; \
+    metadata:attack_tactic TA0006, attack_technique T1110.001, confidence High, severity High, created_at 2026_10_18; \
+    sid:9113006; rev:1;)
+
+alert tcp any any -> any 22 ( \
+    msg:"[其他协议-07] 自动化 SSH 客户端库指纹 - ssh2js"; \
+    flow:to_server,established; \
+    content:"ssh2js"; nocase; depth:64; \
+    classtype:attempted-user; \
+    metadata:attack_tactic TA0006, attack_technique T1110.001, confidence High, severity High, created_at 2026_10_18; \
+    sid:9113007; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[其他协议-08] Rejetto HFS 远程命令执行探测"; \
+    flow:to_server,established; \
+    http.uri; content:"{.exec|7c|"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, cve CVE-2024-23692, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9113008; rev:1;)

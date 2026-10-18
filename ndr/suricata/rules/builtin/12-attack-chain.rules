@@ -1,0 +1,184 @@
+# ==============================================================================
+# APT 流量检测规则包 · 分类 12 —— 攻击链关联检测
+# ------------------------------------------------------------------------------
+# 文件名称    : 12-攻击链关联检测.rules
+# 攻击类型    : 攻击链 / 战役级关联判定
+# ATT&CK     : 全链路（侦察 → 探测 → 利用 → 凭据 → 横移 → C2）
+# 规则数量    : 14 条（7 条阶段标记 + 7 条关联判定）
+# SID 段     : 9112001 - 9112014
+#
+# 检测原理
+#   单条规则只能证明"发生过某个动作",无法证明"这是一次有组织的攻击"。
+#   本文件引入跨流状态(xbits):先由标记规则把攻击阶段记到源 IP 上,
+#   再由关联规则判断同一源 IP 是否出现了阶段组合,从而把孤立告警聚合为
+#   战役级高置信信号 —— 这是 APT 产品区别于普通 IDS 的核心能力。
+#
+#   阶段记忆窗口默认 3600 秒,可按客户环境在 xbits 的 expire 参数调整。
+#
+# 误报与适配提示
+#   标记规则使用 flowbits:noalert,本身不产生告警,仅置位。
+#   关联规则的置信度显著高于单条规则,建议产品侧对 CHAIN 类告警提升处置优先级。
+#   若客户环境存在常态漏扫器,应先用 threshold.config 抑制该源,避免污染阶段状态。
+#
+# 性能说明
+#   标记规则为宽匹配正则,会带来额外开销。本文件适用于 1G 以下链路;
+#   若部署于更高带宽环境,建议仅保留 CHAIN-03 / CHAIN-07 两条高价值关联规则。
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 阶段标记规则（noalert，不产生告警，仅记录攻击阶段到源 IP）
+# ------------------------------------------------------------------------------
+
+alert http any any -> any any ( \
+    msg:"[攻击链-M1] 阶段标记 - 攻击工具指纹"; \
+    flow:to_server,established; \
+    http.user_agent; \
+    pcre:"/(Fuzz Faster U Fool|gobuster\/|feroxbuster\/|sqlmap\/|Nuclei|Nmap Scripting Engine|Acunetix|nikto|dirbuster|wpscan|masscan|ZmEu|Morfeus|zgrab|Nessus|OpenVAS|whatweb|Wappalyzer|httpx|arjun|wafw00f|commix|XSStrike)/i"; \
+    xbits:set, apt.stage.recon, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity Info, created_at 2026_10_18; \
+    sid:9112001; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-M2] 阶段标记 - 目标探测与指纹收集"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(\/actuator|\/nacos|\/druid|\/solr|\/seeyon|ajax\.do|swagger|api-docs|webjars|knife4j|phpmyadmin|adminer|zabbix|grafana|kibana|elasticsearch|smartbi|xxl-job-admin|jenkins|manager\/html|weblogic|wls-wsat|jboss|jmx-console|\.git\/|\.svn\/|\.env|\.aws\/|web\.config|\.htaccess|\.bak|\.old|\.sql|mgmt\/tm\/util\/bash|mobile_portal|freport|ReportServer|\.asmx)/i"; \
+    xbits:set, apt.stage.probe, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0043, attack_technique T1592, confidence High, severity Info, created_at 2026_10_18; \
+    sid:9112002; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-M3] 阶段标记 - 漏洞利用载荷"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(union[\s\+]+(all[\s\+]+)?select|extractvalue\s*\(|updatexml\s*\(|information_schema|sleep\s*\(|benchmark\s*\(|waitfor[\s\+]+delay|procedure[\s\+]+analyse|fn_sqlvarbasetostr|hashbytes\s*\(|(\.\.\/){2,}|etc(\/|%2f)passwd|\$\{jndi:|\$\{jndi%3a|jndi:(ldap|rmi|dns):|(^|[\?&\/=+])(cmd|exec|command|execute|passthru|popen)\s*=|\.(php|jsp|asp|aspx)\?[a-z0-9_]*=(cmd|exec|pass|z0|eval))/i"; \
+    xbits:set, apt.stage.exploit, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Info, created_at 2026_10_18; \
+    sid:9112003; rev:1;)
+
+alert tcp any any -> any [22,3389,3306,1433,5432,6379,27017,1521,23,5900,5985] ( \
+    msg:"[攻击链-M4] 阶段标记 - 凭据服务高频访问"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 20, seconds 60; \
+    xbits:set, apt.stage.cred, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0006, attack_technique T1110, confidence Medium, severity Info, created_at 2026_10_18; \
+    sid:9112004; rev:1;)
+
+alert tcp any any -> any [445,139,5985,5986,88,389] ( \
+    msg:"[攻击链-M5] 阶段标记 - 横向移动与域内侦察"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 20, seconds 60; \
+    xbits:set, apt.stage.lateral, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0008, attack_technique T1021, confidence Medium, severity Info, created_at 2026_10_18; \
+    sid:9112005; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-M6] 阶段标记 - C2 信标与控制面板"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(^\/\?a=[^&]*&f=[^&]*&t=[^&]*&p=[0-9]+|\/api\/(client|tunnel|file|dashboard|task|payload|beacon|session)\/(list|ls|info|add|del|exec|upload|download)|^\/\?([a-z]=[^&]*&){2,}[a-z]=)/i"; \
+    xbits:set, apt.stage.c2, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0011, attack_technique T1071.001, confidence High, severity Info, created_at 2026_10_18; \
+    sid:9112006; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[攻击链-M7] 阶段标记 - 隧道与代理链路"; \
+    flow:to_server,established; \
+    content:"|05 01|"; depth:2; \
+    xbits:set, apt.stage.tunnel, track ip_src, expire 3600; \
+    flowbits:noalert; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence High, severity Info, created_at 2026_10_18; \
+    sid:9112007; rev:1;)
+
+# ------------------------------------------------------------------------------
+# 关联判定规则（产生告警，置信度显著高于单条规则）
+# ------------------------------------------------------------------------------
+
+alert http any any -> any any ( \
+    msg:"[攻击链-01] 攻击链 - 同一源先侦察后利用"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(union[\s\+]+select|extractvalue\s*\(|updatexml\s*\(|(\.\.\/){2,}|etc(\/|%2f)passwd|\$\{jndi:|(^|[\?&\/=+])(cmd|exec|command|execute)\s*=)/i"; \
+    xbits:isset, apt.stage.recon, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112008; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-02] 攻击链 - 同一源先探测指纹后定向利用"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(union[\s\+]+select|extractvalue\s*\(|updatexml\s*\(|(\.\.\/){2,}|etc(\/|%2f)passwd|\$\{jndi:|(^|[\?&\/=+])(cmd|exec|command|execute)\s*=)/i"; \
+    xbits:isset, apt.stage.probe, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112009; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-03] 攻击链 - 漏洞利用成功后出现 C2 信标（最高危）"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(^\/\?a=[^&]*&f=[^&]*&t=[^&]*&p=[0-9]+|\/api\/(client|tunnel|file|dashboard)\/(list|ls|info)|^\/\?([a-z]=[^&]*&){2,}[a-z]=)/i"; \
+    xbits:isset, apt.stage.exploit, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:trojan-activity; \
+    metadata:attack_tactic TA0011, attack_technique T1071.001, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112010; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[攻击链-04] 攻击链 - 凭据攻击后出现横向移动"; \
+    flow:established; \
+    xbits:isset, apt.stage.cred, track ip_src; \
+    xbits:isset, apt.stage.lateral, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:trojan-activity; \
+    metadata:attack_tactic TA0008, attack_technique T1021, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112011; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[攻击链-05] 攻击链 - 攻击流量经代理隧道转发"; \
+    flow:to_server,established; \
+    content:"|05 01|"; depth:2; \
+    xbits:isset, apt.stage.recon, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:policy-violation; \
+    metadata:attack_tactic TA0011, attack_technique T1090, confidence High, severity High, created_at 2026_10_18; \
+    sid:9112012; rev:1;)
+
+alert http any any -> any any ( \
+    msg:"[攻击链-06] 攻击链 - 经隧道链路发起漏洞利用"; \
+    flow:to_server,established; \
+    http.uri; \
+    pcre:"/(union[\s\+]+select|extractvalue\s*\(|updatexml\s*\(|(\.\.\/){2,}|etc(\/|%2f)passwd|\$\{jndi:|(^|[\?&\/=+])(cmd|exec|command|execute)\s*=)/i"; \
+    xbits:isset, apt.stage.tunnel, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 600; \
+    classtype:web-application-attack; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112013; rev:1;)
+
+alert tcp any any -> any any ( \
+    msg:"[攻击链-07] 完整 APT 攻击链确认 - 侦察+探测+利用+C2 四阶段齐备"; \
+    flow:established; \
+    xbits:isset, apt.stage.recon, track ip_src; \
+    xbits:isset, apt.stage.probe, track ip_src; \
+    xbits:isset, apt.stage.exploit, track ip_src; \
+    xbits:isset, apt.stage.c2, track ip_src; \
+    threshold: type limit, track by_src, count 1, seconds 3600; \
+    classtype:trojan-activity; \
+    metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Critical, created_at 2026_10_18; \
+    sid:9112014; rev:1;)

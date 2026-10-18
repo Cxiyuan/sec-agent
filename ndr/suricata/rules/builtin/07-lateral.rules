@@ -1,0 +1,47 @@
+# ============================================================================
+# APT 流量检测规则包 · 分类 07 —— 横向移动
+# ----------------------------------------------------------------------------
+# 文件名称    : 07-横向移动.rules
+# 攻击类型    : 横向移动
+# ATT&CK     : TA0008 横向移动 / T1021
+# 规则数量    : 4
+# SID 段     : 9107001 - 9107004
+#
+# 检测原理
+#   识别 SMB、WinRM、Kerberos、LDAP 相关的横向移动与域内侦察行为。
+#
+# 误报与适配提示
+#   域控、文件服务器、运维管理平台的正常流量会命中,须按资产角色抑制。
+# ============================================================================
+
+alert tcp any any -> any [445,139] ( \
+    msg:"[横移-01] SMB 横向连接 - 出向高频(共享枚举或横移)"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 30, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0008, attack_technique T1021.002, confidence Medium, severity High, created_at 2026_10_18; \
+    sid:9107001; rev:1;)
+
+alert tcp any any -> any [5985,5986] ( \
+    msg:"[横移-02] WinRM 远程管理 - 出向(横向执行)"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 10, seconds 60; \
+    classtype:attempted-admin; \
+    metadata:attack_tactic TA0008, attack_technique T1021.006, confidence Medium, severity Medium, created_at 2026_10_18; \
+    sid:9107002; rev:1;)
+
+alert tcp any any -> any 88 ( \
+    msg:"[横移-03] Kerberos 高频票据请求(票据枚举前置)"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 20, seconds 60; \
+    classtype:misc-activity; \
+    metadata:attack_tactic TA0006, attack_technique T1558.003, confidence Low, severity Medium, created_at 2026_10_18; \
+    sid:9107003; rev:1;)
+
+alert tcp any any -> any 389 ( \
+    msg:"[横移-04] LDAP 高频查询(域内侦察)"; \
+    flow:to_server,established; \
+    detection_filter:track by_src, count 30, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0007, attack_technique T1069.002, confidence Low, severity Medium, created_at 2026_10_18; \
+    sid:9107004; rev:1;)
