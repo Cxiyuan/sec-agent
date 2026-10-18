@@ -845,7 +845,7 @@ export function minuteTrafficOption(data: TrafficMinutes | null): EChartsOption 
           `合计 ${formatBytes(p.bytes_per_sec ?? 0)}/秒`,
           `发送 ${formatBytes(p.bytes_out_per_sec ?? 0)}/秒 · 接收 ${formatBytes(p.bytes_in_per_sec ?? 0)}/秒`,
           `连接 ${p.docs} 条`,
-          `丢包 ${p.pkts_dropped ?? 0} 包（Zeek 每 5 分钟上报，掉包率 ${rate}%）`,
+          `丢包 ${p.pkts_dropped ?? 0} 包（每 5 分钟上报，掉包率 ${rate}%）`,
         ].join("<br/>");
       },
     },

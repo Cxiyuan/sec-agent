@@ -46,14 +46,19 @@ import {
 import { highlightParts } from "@/lib/highlight";
 
 /**
- * 检测规则页：树型展开/收缩（网络采集器 → 内置规则 / 自定义规则 / 签名规则）。
+ * 检测规则页：树型展开/收缩（检测规则 → 特征匹配 / 行为分析 / 基线偏离 / 签名规则集）。
  *
  * 规则只有网络一侧：条件引用网络侧字段（http/ssl/dns/conn…）与签名引擎告警，
  * 检测器只在网络事件上求值。主机监控那条线已随对应日志源一起下线。
  *
- * 2026-10 改版（用户反馈「列表菜单太简陋」）：三级树 + 树线 + 7 列网格叶子行，
+ * 2026-10 改版一（用户反馈「列表菜单太简陋」）：三级树 + 树线 + 7 列网格叶子行，
  * 接口路径、请求体字段、`expanded` / `openIds` / `showDisabled` / `busy` 的语义与
  * localStorage key 一律保持原样 —— 只排版版式与视觉。
+ *
+ * 2026-10 改版二（对齐后端 API 契约）：分组口径从「内置定义 / 自建规则」换成后端
+ * `rules.py` 直出的**事件来源三类**（source_kind）—— 特征匹配 / 行为分析 / 基线偏离。
+ * 「是不是内置」不再占一个分组，改在叶子行挂「内置」徽章（它决定可编辑性，不决定分组）。
+ * 签名规则集（引擎规则文件）不是 /api/rules 的规则，仍单独一个节点。
  */
 
 const SRC = { list: "检测规则（/api/rules）" } as const;
@@ -62,15 +67,47 @@ const SRC = { list: "检测规则（/api/rules）" } as const;
 const TREE_KEY = "shentong.rules.tree";
 /**
  * `expanded` 的合法 key 白名单（唯一的合法集合）。
- * 读取时只保留这 4 个 —— 主机监控那条线已下线，老浏览器里可能残留 `host*` 之类的键，
- * 它们不影响渲染但是脏数据，未来若新增/删除节点还会被"复活"。
+ * 读取时只保留这 5 个 —— 老浏览器里可能残留 `network:builtin` 之类的旧键（分组口径
+ * 2026-10 换成来源三类），它们不影响渲染但是脏数据，未来若新增/删除节点还会被"复活"。
  */
 const TREE_KEYS = [
-  "network",
-  "network:builtin",
-  "network:custom",
-  "network:signature",
+  "root",
+  "kind:feature_match",
+  "kind:behavior_analysis",
+  "kind:baseline_deviation",
+  "signature",
 ] as const;
+
+/**
+ * 事件来源三类（与后端 `rules.py::_source_kind_of` / `_SOURCE_LABELS` 一一对应）。
+ * 顺序即界面顺序：特征匹配（签名引擎命中）→ 行为分析（流量判据）→ 基线偏离（自身基线）。
+ * key 同时是 `expanded` 的持久化键与 DOM id 前缀。
+ */
+const KIND_GROUPS = [
+  {
+    key: "kind:feature_match",
+    kind: "feature_match",
+    label: "特征匹配",
+    hint: "签名引擎按报文特征命中：Web 攻击、扫描器指纹、C2…",
+  },
+  {
+    key: "kind:behavior_analysis",
+    kind: "behavior_analysis",
+    label: "行为分析",
+    hint: "流量日志上的规模/时序判据：横向移动、慢速枚举、TLS 异常…",
+  },
+  {
+    key: "kind:baseline_deviation",
+    kind: "baseline_deviation",
+    label: "基线偏离",
+    hint: "与自身历史基线的偏离：新来源地址、认证失败激增、连接数 2σ…",
+  },
+] as const;
+
+/** 规则的来源归类：后端没给（老数据/异常）时按行为分析收拢，规则不丢。 */
+function kindOf(r: RuleItem): string {
+  return KIND_GROUPS.some((g) => g.kind === r.source_kind) ? r.source_kind : "behavior_analysis";
+}
 
 function ruleType(r: RuleItem): string {
   const c = (r.conditions || {}) as {
@@ -100,8 +137,9 @@ export default function RulesPage() {
   const errs = usePanelErrors();
   const [rules, setRules] = React.useState<RuleItem[]>([]);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({
-    network: true,
-    "network:builtin": true,
+    root: true,
+    // 行为分析是最大的一组（内置 19 条），默认展开；其余收起来，需要时自己点开
+    "kind:behavior_analysis": true,
   });
   const [openIds, setOpenIds] = React.useState<Record<string, boolean>>({});
   const [busy, setBusy] = React.useState("");
@@ -206,16 +244,17 @@ export default function RulesPage() {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
-  /** 全部展开 / 全部收起：只动这 4 个 key —— `openIds`（叶子详情）一个字都不碰。
-   *  规则详情面板最小高度约 120px，全部展开 27 条 ≈ 3240px，页面会长 3 屏，
+  /** 全部展开 / 全部收起：只动这 5 个 key —— `openIds`（叶子详情）一个字都不碰。
+   *  规则详情面板最小高度约 120px，全部展开 22 条 ≈ 2640px，页面会长 3 屏，
    *  滚动条从约 1/4 屏缩到 1/30 屏，用户失去位置感。 */
   function setAll(open: boolean) {
     setExpanded((prev) => ({
       ...prev,
-      network: open,
-      "network:builtin": open,
-      "network:custom": open,
-      "network:signature": open,
+      root: open,
+      "kind:feature_match": open,
+      "kind:behavior_analysis": open,
+      "kind:baseline_deviation": open,
+      signature: open,
     }));
   }
 
@@ -233,27 +272,29 @@ export default function RulesPage() {
   // 搜索时停用规则也必须进候选池：搜不到 ≠ 不在库里（详见下面 UI 里的那句 hint）
   const pool = showDisabled || needle ? rules : basePool;
   const shown = needle ? pool.filter(match) : pool;
-  const builtin = shown.filter((r) => r.source === "builtin");
-  const custom = shown.filter((r) => r.source !== "builtin");
-  // 规则只有网络一侧（主机监控线已下线）
-  const netBuiltin = builtin;
-  const netCustom = custom;
 
-  const totalBuiltin = basePool.filter((r) => r.source === "builtin").length;
-  const totalCustom = basePool.filter((r) => r.source !== "builtin").length;
+  /**
+   * 三个来源分组（契约：`GET /api/rules` 每条带 source_kind/source_label，按三类分组展示）。
+   * items = 当前可见（受搜索与「显示已停用」影响）；total = 该组全量（未搜索口径，计数分母）；
+   * hidden = 被「显示已停用」收起来的条数（空态文案用）；hitDisabled = 搜索命中里的停用条数。
+   */
+  const groups = KIND_GROUPS.map((g) => {
+    const items = shown.filter((r) => kindOf(r) === g.kind);
+    return {
+      ...g,
+      items,
+      total: basePool.filter((r) => kindOf(r) === g.kind).length,
+      hidden: showDisabled ? 0 : disabledRules.filter((r) => kindOf(r) === g.kind).length,
+      hitDisabled: needle ? items.filter((r) => !r.enabled).length : 0,
+    };
+  });
+
   const hitCount = needle ? shown.length : 0;
   const hitDisabled = needle ? shown.filter((r) => !r.enabled).length : 0;
-  const hitBuiltinDisabled = needle ? builtin.filter((r) => !r.enabled).length : 0;
-  const hitCustomDisabled = needle ? custom.filter((r) => !r.enabled).length : 0;
 
-  // 分组各自的「被收起条数」：用来把空态说清楚是被收起还是真没有
-  const hiddenBuiltin = showDisabled ? 0 : disabledRules.filter((r) => r.source === "builtin").length;
-  const hiddenCustom = showDisabled ? 0 : disabledRules.filter((r) => r.source !== "builtin").length;
-
-  /** 命中 0 条时不渲染「网络 › 内置规则（0 条）› 空态」这种三层空壳 —— 用户要读三层才知道没有结果 */
+  /** 命中 0 条时不渲染「检测规则 › 特征匹配（0 条）› 空态」这种三层空壳 —— 用户要读三层才知道没有结果 */
   const showRoot = !needle || shown.length > 0;
-  const showBuiltin = !needle || builtin.length > 0;
-  const showCustom = !needle || custom.length > 0;
+  const showGroup = (key: string) => !needle || groups.some((g) => g.key === key && g.items.length > 0);
 
   /**
    * 渲染期的展开判定。
@@ -261,10 +302,9 @@ export default function RulesPage() {
    * 签名分组例外：它不是规则列表，没有可匹配的叶子，放进搜索结果里会占掉半屏。
    */
   const isOpen = (id: string) => (needle ? !collapsed.current.has(id) : !!expanded[id]);
-  const isSignatureOpen = !!expanded["network:signature"];
-  const netOpen = isOpen("network");
-  const builtinOpen = isOpen("network:builtin");
-  const customOpen = isOpen("network:custom");
+  const isSignatureOpen = !!expanded["signature"];
+  const rootOpen = isOpen("root");
+  const groupOpen = (key: string) => isOpen(key);
 
   function setCond(i: number, patch: Partial<Cond>) {
     setConds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -493,7 +533,10 @@ export default function RulesPage() {
 
   /** 一条规则（叶子行 + 它的详情面板）。写成普通函数而不是组件：避免在 map 里每次渲染都新建一个
    *  组件类型（那会让 React 认为换了一整棵树，22 行全部重挂载、详情展开态丢失）。 */
-  function leafRow(r: RuleItem, last: boolean, editable: boolean) {
+  function leafRow(r: RuleItem, last: boolean) {
+    // 可编辑性按行判定：内置规则（后端按名 upsert，启动即覆盖）不可改，自定义规则可改。
+    // 分组口径换成来源三类后，一组里同时有内置和自定义 —— 组级开关会误伤另一批。
+    const editable = r.source !== "builtin";
     const panelId = `rule-panel-${r.id}`;
     const openRow = !!openIds[r.id];
     // 待定态用常亮的 brand-50（不依赖 hover）：请求在飞的时候鼠标不一定在行上，
@@ -546,6 +589,8 @@ export default function RulesPage() {
                 {hl(r.name)}
               </span>
               {!r.enabled ? <Badge variant="info">已停用</Badge> : null}
+              {/* 「是不是内置」原来靠分组表达；分组换成来源三类后挪到行内徽章 */}
+              {r.source === "builtin" ? <Badge variant="outline">内置</Badge> : null}
               {busy === r.id ? (
                 <span className="shrink-0 text-xs text-primary">切换中…</span>
               ) : null}
@@ -659,7 +704,7 @@ export default function RulesPage() {
   }
 
   /** 分组列表体：有行 → 列头 + 叶子列表；空 → 说清是「被收起」还是「真没有」。 */
-  function groupBody(items: RuleItem[], hidden: number, editable: boolean) {
+  function groupBody(items: RuleItem[], hidden: number) {
     if (!items.length) {
       if (hidden > 0) {
         return (
@@ -667,7 +712,7 @@ export default function RulesPage() {
             <EmptyState
               size="compact"
               tone="muted"
-              title={`${hidden} 条${editable ? "自定义" : "内置"}规则已停用，当前已收起`}
+              title={`${hidden} 条规则已停用，当前已收起`}
               hint="勾选上方「显示已停用」可查看停用原因并重新启用"
             />
           </div>
@@ -677,15 +722,13 @@ export default function RulesPage() {
         <div className="pl-5">
           <EmptyState
             size="compact"
-            title={emptyOrFailed(errs, SRC.list, editable ? "这一组还没有自定义规则" : "这一组还没有规则")}
-            hint={editable ? "内置规则不满足现场口径时，新建一条自己的检测条件" : undefined}
+            title={emptyOrFailed(errs, SRC.list, "这一组还没有规则")}
+            hint="内置规则不满足现场口径时，新建一条自己的检测条件"
             tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
             action={
-              editable ? (
-                <Button size="sm" onClick={openCreate}>
-                  新建规则
-                </Button>
-              ) : undefined
+              <Button size="sm" onClick={openCreate}>
+                新建规则
+              </Button>
             }
           />
         </div>
@@ -695,7 +738,7 @@ export default function RulesPage() {
       <>
         <div className="pl-5">{leafHeader()}</div>
         <TreeChildren>
-          {items.map((r, i) => leafRow(r, i === items.length - 1, editable))}
+          {items.map((r, i) => leafRow(r, i === items.length - 1))}
         </TreeChildren>
       </>
     );
@@ -738,14 +781,13 @@ export default function RulesPage() {
         )}
         <PanelError errors={errs} />
 
-        {/* 树型结构：顶层按 网络/主机 分类，子节点是规则来源。
-            签名规则（Suricata）归网络类 —— 它只看网络流量，与内置/自定义规则并列。
+        {/* 树型结构：顶层是「检测规则」，子节点按事件来源三类 + 签名规则集（引擎规则文件）。
             整棵树装在一张 Card 里：树的行要 hover 高亮（bg-brand-50），行必须落在
             surface-2（白）上才看得见；落在 canvas 上时 bg-brand-50 比它更亮，
             「高亮」会变成「变白」，层级倒挂。 */}
         <Section
           title="规则来源"
-          description="按来源分组：内置定义 / 自建规则 / 签名文件。默认只列生效中的规则，停用的收在开关里。"
+          description="按来源分组：特征匹配 / 行为分析 / 基线偏离。默认只列生效中的规则，停用的收在开关里。"
         >
           <Card>
             <PanelToolbar
@@ -877,19 +919,19 @@ export default function RulesPage() {
                 <li>
                   <button
                     type="button"
-                    id="tree-network"
-                    aria-expanded={netOpen}
-                    aria-controls="tree-network-children"
+                    id="tree-root"
+                    aria-expanded={rootOpen}
+                    aria-controls="tree-root-children"
                     className={cn(
                       "flex h-11 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
                       "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                     )}
-                    onClick={() => toggleNode("network")}
+                    onClick={() => toggleNode("root")}
                   >
                     <Radio className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <TreeChevron open={netOpen} />
+                    <TreeChevron open={rootOpen} />
                     <span className="truncate text-sm font-medium text-foreground">
-                      网络（网络采集器）
+                      检测规则
                     </span>
                     {/* 左读语义、右读数量 —— 和表格的列约定一致，不需要重新学习 */}
                     <span className="ml-auto shrink-0 pl-3 text-xs tabular-nums text-muted-foreground">
@@ -897,86 +939,63 @@ export default function RulesPage() {
                     </span>
                   </button>
 
-                  <TreeChildren id="tree-network-children" className={!netOpen ? "hidden" : undefined}>
-                    {netOpen ? (
+                  <TreeChildren id="tree-root-children" className={!rootOpen ? "hidden" : undefined}>
+                    {rootOpen ? (
                       <>
-                        {showBuiltin ? (
-                          <TreeRow last={false} mid={20}>
-                            <button
-                              type="button"
-                              id="tree-network-builtin"
-                              aria-expanded={builtinOpen}
-                              aria-controls="tree-network-builtin-children"
-                              className={cn(
-                                "flex h-10 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
-                                "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                              )}
-                              onClick={() => toggleNode("network:builtin")}
-                            >
-                              <TreeChevron open={builtinOpen} />
-                              <span className="truncate text-13 font-medium text-foreground">
-                                内置规则
-                              </span>
-                              {groupCount(netBuiltin.length, totalBuiltin, hiddenBuiltin, hitBuiltinDisabled)}
-                            </button>
-                            <div
-                              id="tree-network-builtin-children"
-                              className={!builtinOpen ? "hidden" : undefined}
-                            >
-                              {builtinOpen
-                                ? groupBody(netBuiltin, needle ? 0 : hiddenBuiltin, false)
-                                : null}
-                            </div>
-                          </TreeRow>
-                        ) : null}
+                        {/* 三个来源分组：map 出来而不是手写三份 —— 分组口径来自契约，
+                            顺序/键名/标签只此一处定义（KIND_GROUPS）。
+                            全部 last={false}：签名规则集节点永远排在它们后面，
+                            树干必须穿过每组通到最后一个节点（末行才收线）。 */}
+                        {groups.map((g) =>
+                          showGroup(g.key) ? (
+                            <TreeRow key={g.key} last={false} mid={20}>
+                              <button
+                                type="button"
+                                id={`tree-${g.key}`}
+                                aria-expanded={groupOpen(g.key)}
+                                aria-controls={`tree-${g.key}-children`}
+                                title={g.hint}
+                                className={cn(
+                                  "flex h-10 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
+                                  "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                                )}
+                                onClick={() => toggleNode(g.key)}
+                              >
+                                <TreeChevron open={groupOpen(g.key)} />
+                                <span className="truncate text-13 font-medium text-foreground">
+                                  {g.label}
+                                </span>
+                                {groupCount(g.items.length, g.total, g.hidden, g.hitDisabled)}
+                              </button>
+                              <div
+                                id={`tree-${g.key}-children`}
+                                className={!groupOpen(g.key) ? "hidden" : undefined}
+                              >
+                                {groupOpen(g.key)
+                                  ? groupBody(g.items, needle ? 0 : g.hidden)
+                                  : null}
+                              </div>
+                            </TreeRow>
+                          ) : null,
+                        )}
 
-                        {showCustom ? (
-                          <TreeRow last={false} mid={20}>
-                            <button
-                              type="button"
-                              id="tree-network-custom"
-                              aria-expanded={customOpen}
-                              aria-controls="tree-network-custom-children"
-                              className={cn(
-                                "flex h-10 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
-                                "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                              )}
-                              onClick={() => toggleNode("network:custom")}
-                            >
-                              <TreeChevron open={customOpen} />
-                              <span className="truncate text-13 font-medium text-foreground">
-                                自定义规则
-                              </span>
-                              {groupCount(netCustom.length, totalCustom, hiddenCustom, hitCustomDisabled)}
-                            </button>
-                            <div
-                              id="tree-network-custom-children"
-                              className={!customOpen ? "hidden" : undefined}
-                            >
-                              {customOpen
-                                ? groupBody(netCustom, needle ? 0 : hiddenCustom, true)
-                                : null}
-                            </div>
-                          </TreeRow>
-                        ) : null}
-
-                        {/* 签名规则：不是规则列表，没有可匹配的叶子，所以不受 needle 的展开覆盖；
+                        {/* 签名规则集：不是规则列表，没有可匹配的叶子，所以不受 needle 的展开覆盖；
                             展开时才 mount 面板并首次请求 /api/suricata/rules（按需加载）。 */}
                         <TreeRow last mid={20}>
                           <button
                             type="button"
-                            id="tree-network-signature"
+                            id="tree-signature"
                             aria-expanded={isSignatureOpen}
-                            aria-controls="tree-network-signature-children"
+                            aria-controls="tree-signature-children"
                             className={cn(
                               "flex h-10 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
                               "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                             )}
-                            onClick={() => toggleNode("network:signature")}
+                            onClick={() => toggleNode("signature")}
                           >
                             <TreeChevron open={isSignatureOpen} />
                             <span className="truncate text-13 font-medium text-foreground">
-                              签名规则（Suricata）
+                              签名规则集
                             </span>
                             <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
                               规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，
@@ -984,7 +1003,7 @@ export default function RulesPage() {
                             </span>
                           </button>
                           <div
-                            id="tree-network-signature-children"
+                            id="tree-signature-children"
                             className={cn("pl-5", !isSignatureOpen && "hidden")}
                           >
                             {isSignatureOpen ? <SuricataRulesPanel variant="inline" /> : null}

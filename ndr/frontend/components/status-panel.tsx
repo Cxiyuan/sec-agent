@@ -136,7 +136,7 @@ const FIELD_LABELS: Record<string, string> = {
   proxy_user: "代理认证账号",
   ts: "事件时间",
   timestamp: "事件时间",
-  uid: "连接标识（Zeek uid）",
+  uid: "连接标识",
   source: "来源",
   app_proto: "应用协议",
   direction: "方向",
@@ -323,6 +323,24 @@ export function StatusPanel() {
   const [hitBusy, setHitBusy] = React.useState(false);
   const [hitMsg, setHitMsg] = React.useState("");
   const [whitelistScope, setWhitelistScope] = React.useState<"src" | "src_dst">("src");
+  /**
+   * 命中事件的来源筛选（契约四.5：可按 `source_kind` 过滤三类；留空 = 全部）。
+   * ref 与 state 双写：轮询 effect 只跑一次（hitKind 不能进它的依赖，会重建定时器），
+   * load() 读 ref 保证轮询始终用最新口径；筛选变化时立刻重取一次，不等下一个 5 秒 tick。
+   */
+  const [hitKind, setHitKind] = React.useState("");
+  const hitKindRef = React.useRef("");
+
+  function changeHitKind(kind: string) {
+    hitKindRef.current = kind;
+    setHitKind(kind);
+    void loadInto(
+      errs,
+      SRC.hits,
+      `/api/detector/hits?limit=50${kind ? `&source_kind=${kind}` : ""}`,
+      setHits,
+    );
+  }
   const [stats, setStats] = React.useState<DetectorStats | null>(null);
   const [push, setPush] = React.useState<AgentPushPayload | null>(null);
   const [baseline, setBaseline] = React.useState<BaselinePayload | null>(null);
@@ -395,7 +413,12 @@ export function StatusPanel() {
       loadInto(errs, SRC.history, "/api/detector/history?limit=288", setHistory),
       loadInto(errs, SRC.rate, "/api/detector/rate", setRate),
       loadInto(errs, SRC.coverage, "/api/detector/coverage", setCoverage),
-      loadInto(errs, SRC.hits, "/api/detector/hits?limit=50", setHits),
+      loadInto(
+        errs,
+        SRC.hits,
+        `/api/detector/hits?limit=50${hitKindRef.current ? `&source_kind=${hitKindRef.current}` : ""}`,
+        setHits,
+      ),
       loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
@@ -648,6 +671,19 @@ export function StatusPanel() {
             <CardHeader className="pb-2">
               <CardTitle className="flex flex-wrap items-center gap-2">
                 命中事件（最近）
+                {/* 来源三类筛选（契约四.5）：与规则页的三组同口径，换口径立刻重取 */}
+                <select
+                  className="h-7 rounded-md border bg-transparent px-2 text-xs"
+                  value={hitKind}
+                  onChange={(e) => changeHitKind(e.target.value)}
+                  aria-label="按来源筛选命中事件"
+                  title="按事件来源筛选：特征匹配 / 行为分析 / 基线偏离"
+                >
+                  <option value="">全部来源</option>
+                  <option value="feature_match">特征匹配</option>
+                  <option value="behavior_analysis">行为分析</option>
+                  <option value="baseline_deviation">基线偏离</option>
+                </select>
                 {hits?.total ? (
                   <span className="text-xs font-normal text-muted-foreground">
                     共 {hits.total} 条 · 每条有唯一事件 ID · 点「详情」看证据
@@ -664,6 +700,7 @@ export function StatusPanel() {
                       <TableHead>最近时间</TableHead>
                       <TableHead>事件 ID</TableHead>
                       <TableHead>规则</TableHead>
+                      <TableHead>来源</TableHead>
                       <TableHead>严重度</TableHead>
                       <TableHead>请求方</TableHead>
                       <TableHead className="text-right">次数</TableHead>
@@ -692,6 +729,10 @@ export function StatusPanel() {
                               已加白
                             </Badge>
                           ) : null}
+                        </TableCell>
+                        {/* 来源三类（契约 1.1）：界面按这三类展示，不体现采集器名字 */}
+                        <TableCell className="text-muted-foreground">
+                          {row.source_label || "—"}
                         </TableCell>
                         <TableCell>{severityBadge(row.severity)}</TableCell>
                         <TableCell>
@@ -778,6 +819,10 @@ export function StatusPanel() {
                         <span className="ml-1 text-muted-foreground">
                           （{severityText(hitDetail.severity)}）
                         </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">来源：</span>
+                        {hitDetail.source_label || "—"}
                       </div>
                       <div>
                         <span className="text-muted-foreground">首次/最近：</span>

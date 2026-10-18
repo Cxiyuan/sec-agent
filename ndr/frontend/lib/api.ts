@@ -323,6 +323,13 @@ export interface RuleItem {
   conditions: RuleConditions;
   severity: string;
   source: string;
+  /**
+   * 事件来源三类（后端 `rules.py::_source_kind_of`，界面按它分组展示）：
+   * `feature_match`=特征匹配 / `behavior_analysis`=行为分析 / `baseline_deviation`=基线偏离。
+   */
+  source_kind: string;
+  /** 来源三类的中文名（后端直出，界面直接显示，不自己映射） */
+  source_label: string;
   enabled: boolean;
   priority: number;
   /** 适用范围：network = 网络侧（网络采集器）、host = 主机侧（主机监控）；内置规则由后端按条件自动判定 */
@@ -727,6 +734,13 @@ export interface HitEventItem {
   last_seen: string;
   rule: string;
   severity: string;
+  /**
+   * 事件来源三类（契约 1.1，界面按这三类展示与筛选）：
+   * `feature_match`=特征匹配 / `behavior_analysis`=行为分析 / `baseline_deviation`=基线偏离。
+   */
+  source_kind: string;
+  /** 来源中文名（后端直出） */
+  source_label: string;
   source: string;
   /** 直连对端；中继链路上它是代理/WAF */
   src_ip: string;
