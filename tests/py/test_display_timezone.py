@@ -96,9 +96,13 @@ def test_recent_traffic_dashboard_contract() -> None:
     assert "smooth: true" in body, "波浪线（平滑曲线）"
     assert "areaStyle" not in body, "不要填充区域"
     assert 'step: "end"' not in body, "不要折叠线"
-    # 用户口径：流量绿、掉包黄；掉包走右 Y 轴
-    assert '"#22c55e"' in body, "流量绿色"
-    assert '"#eab308"' in body, "掉包黄色"
+    # 用户口径：流量绿、掉包黄；掉包走右 Y 轴。
+    # 2026-10 前端改造后颜色统一到**设计 token**（`chartTokens()`，读 CSS 变量），
+    # 不再写死 hex —— 所以断言"用的是 token"，不再断言具体色值。
+    assert "chartTokens()" in body, "颜色要取设计 token（不许写死 hex）"
+    assert "t.series[" in body, "流量用序列色（token）"
+    assert "t.sev.medium" in body, "掉包用严重度语义色（token，琥珀系）"
+    assert '"#' not in body, "图表里不应再出现写死的 hex 颜色"
     assert "yAxisIndex: 1" in body, "掉包在右 Y 轴"
     # 容量尺（字节）在**左**轴、用**对数**刻度（线性时低位数据贴 X 轴像没数据）
     assert 'type: "log"' in body, "左轴要用对数刻度"
