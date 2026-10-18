@@ -121,6 +121,18 @@ export default function RulesPage() {
   const [loading, setLoading] = React.useState(true);
   /** 待删除的自定义规则：删除不可逆，走共享 Dialog 二次确认（原生 confirm 与全站弹层材质对不上） */
   const [askDel, setAskDel] = React.useState<RuleItem | null>(null);
+  /**
+   * 停用规则默认收起。
+   *
+   * 这个页面回答的是「现在在跑什么」，而退役/停用的规则会一直留在库里——后端刻意不删
+   * （`main.py::_retire_builtin_rules`：留着运维能看到它为什么没了、也随时能开回来）。
+   * 几十条停用规则混在生效规则里，会把真正干活的那批淹掉。需要核对原因或重新启用时
+   * 用标题行的开关放出来。
+   *
+   * 注意别改成「删掉停用规则」：内置规则是按名 upsert 的，删行后下次启动 `exists is None`
+   * 会按种子重新建行，连启用状态一起复位——等于把已退役的规则复活。
+   */
+  const [showDisabled, setShowDisabled] = React.useState(false);
 
   // 自定义规则表单（抽屉）：editId 为空 = 新增
   const [drawer, setDrawer] = React.useState(false);
@@ -173,11 +185,16 @@ export default function RulesPage() {
     });
   }
 
-  const builtin = rules.filter((r) => r.source === "builtin");
-  const custom = rules.filter((r) => r.source !== "builtin");
+  const disabledRules = rules.filter((r) => !r.enabled);
+  const shown = showDisabled ? rules : rules.filter((r) => r.enabled);
+  const builtin = shown.filter((r) => r.source === "builtin");
+  const custom = shown.filter((r) => r.source !== "builtin");
   // 规则只有网络一侧（主机监控线已下线）
   const netBuiltin = builtin;
   const netCustom = custom;
+  // 分组各自的「被收起条数」：用来把空态说清楚是被收起还是真没有
+  const hiddenBuiltin = showDisabled ? 0 : disabledRules.filter((r) => r.source === "builtin").length;
+  const hiddenCustom = showDisabled ? 0 : disabledRules.filter((r) => r.source !== "builtin").length;
 
   function setCond(i: number, patch: Partial<Cond>) {
     setConds((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -333,10 +350,21 @@ export default function RulesPage() {
   }
 
   /** 内置规则表（不含外层卡片：树节点自己就是容器）。 */
-  function builtinTable(items: RuleItem[]) {
+  function builtinTable(items: RuleItem[], hidden: number) {
     // 首次加载画骨架：接口还没回来就显示「这一组还没有规则」，会被当成规则丢了
     if (loading) return <TableSkeleton rows={5} cols={5} />;
     if (!items.length) {
+      // 有规则、只是全被「显示已停用」收起来了：不能报「还没有规则」
+      if (hidden > 0) {
+        return (
+          <EmptyState
+            size="compact"
+            tone="muted"
+            title={`${hidden} 条内置规则已停用，当前已收起`}
+            hint="勾选上方「显示已停用」可查看停用原因并重新启用"
+          />
+        );
+      }
       return (
         <EmptyState
           size="compact"
@@ -418,9 +446,20 @@ export default function RulesPage() {
   }
 
   /** 自定义规则表（同样不含外层卡片）；「添加规则」按钮在区块标题行上。 */
-  function customTable(items: RuleItem[]) {
+  function customTable(items: RuleItem[], hidden: number) {
     if (loading) return <TableSkeleton rows={5} cols={6} />;
     if (!items.length) {
+      // 有规则、只是全被「显示已停用」收起来了
+      if (hidden > 0) {
+        return (
+          <EmptyState
+            size="compact"
+            tone="muted"
+            title={`${hidden} 条自定义规则已停用，当前已收起`}
+            hint="勾选上方「显示已停用」可以查看并重新启用"
+          />
+        );
+      }
       return (
         <EmptyState
           size="compact"
@@ -499,9 +538,21 @@ export default function RulesPage() {
             签名规则（Suricata）归网络类 —— 它只看网络流量，与内置/自定义规则并列。 */}
         <Section
           title="规则来源"
-          description="按来源分组：内置定义 / 自建规则 / 签名文件。展开节点可看条件与启用状态。"
+          description="按来源分组：内置定义 / 自建规则 / 签名文件。默认只列生效中的规则，停用的收在开关里。"
           extra={
             <>
+              {/* 停用规则默认收起；有停用规则时才出现开关，没有就不占位置 */}
+              {disabledRules.length > 0 ? (
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-brand-500"
+                    checked={showDisabled}
+                    onChange={(e) => setShowDisabled(e.target.checked)}
+                  />
+                  显示已停用（<span className="tabular-nums">{disabledRules.length}</span>）
+                </label>
+              ) : null}
               <Button size="sm" variant="outline" onClick={() => void load()}>
                 刷新
               </Button>
@@ -529,7 +580,7 @@ export default function RulesPage() {
                   expanded={!!expanded["network:builtin"]}
                   onToggle={() => toggleNode("network:builtin")}
                 >
-                  {builtinTable(netBuiltin)}
+                  {builtinTable(netBuiltin, hiddenBuiltin)}
                 </TreeNode>
 
                 <TreeNode
@@ -540,7 +591,7 @@ export default function RulesPage() {
                   expanded={!!expanded["network:custom"]}
                   onToggle={() => toggleNode("network:custom")}
                 >
-                  {customTable(netCustom)}
+                  {customTable(netCustom, hiddenCustom)}
                 </TreeNode>
 
                 <TreeNode
