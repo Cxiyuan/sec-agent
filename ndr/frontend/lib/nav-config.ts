@@ -88,12 +88,6 @@ const TRAFFIC_ITEMS: NavItem[] = [
     desc: "监控网段主动访问出去的视角",
     icon: Radar,
   },
-  {
-    href: "/topology",
-    label: "拓扑发现",
-    desc: "转发链路与全量通信的自动拓扑",
-    icon: Network,
-  },
 ];
 
 const ASSET_ITEMS: NavItem[] = [

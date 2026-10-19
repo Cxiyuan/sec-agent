@@ -11,13 +11,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+#: `datetime.UTC` 是 3.11 才有的别名（本项目 requires-python >=3.11），这里取等价写法：
+#: 行为完全相同，但不会让按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 from typing import Any
 
 from sqlalchemy import String, cast, func, or_, select
 
 from app.db.base import SessionLocal
 from app.db.models import HitEvent
+from app.ingestion.log_types import EVENT_TYPE_LABELS
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -285,6 +290,10 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "dst_ips": list(row.dst_ips or []),
             "dst_ports": list(row.dst_ports or []),
             "event_types": list(row.event_types or []),
+            # 中文名并列返回：前端不用自己维护映射表（原来是直接显示 `signature_hit`）
+            "event_type_labels": [
+                EVENT_TYPE_LABELS.get(str(x), str(x)) for x in (row.event_types or [])
+            ],
             "conn_states": list(row.conn_states or []),
             "log_types": list(row.log_types or []),
             "real_client_ips": list(row.real_client_ips or []),
@@ -570,6 +579,8 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     rule_source="baseline",
                     source_kind="baseline_deviation",
                     src_ip=str((item.get("src_ips") or [""])[0] or ""),
+                    # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
+                    event_types=["baseline_deviation"],
                     count=int(item.get("count") or 0),
                     dst_ips=[str(x) for x in (item.get("dst_ips") or [])][:20],
                     evidence=[
@@ -596,6 +607,8 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     rule_source="baseline",
                     source_kind="baseline_deviation",
                     src_ip=str(item.get("src_ip") or ""),
+                    # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
+                    event_types=["baseline_deviation"],
                     count=1,
                     evidence=[
                         {

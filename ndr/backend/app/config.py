@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     # 已处理登记保留秒数（2h 窗口，防 Redis 撑爆）
     detector_handled_ttl: int = 7200
     detector_handled_bucket_seconds: int = 600
-    detector_handled_max_members: int = 50000
+    detector_handled_max_members: int = 200000
     redis_memory_warn_perc: int = 85
     detector_agg_seconds: int = 300
     detector_agg_max_keys: int = 5000
@@ -307,7 +307,7 @@ class Settings(BaseSettings):
     # （历史值恒定），`value > mean + 2*0` 就等于「比均值多 1 个连接就报」。
     # 取 `std_eff = max(std, |mean|*ratio, min)` —— 恒定/极抖的维度不再一碰就炸。
     baseline_std_floor_ratio: float = 0.1
-    baseline_std_floor_min: float = 1.0
+    baseline_std_floor_min: float = 2.0
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）
     baseline_cleanup_seconds: int = 3600  # 过期画像清理的检查节奏（秒）
     baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库
@@ -325,7 +325,7 @@ class Settings(BaseSettings):
     asset_request_log_types: str = "http,dns"  # 哪些日志类型算「一次请求」（空 = 不记请求数）
     profile_enabled: bool = True
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
-    profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）
+    profile_risk_threshold: float = 0.75  # 画像异常风险分阈值（达到才报）
     # 弱信号（新 UA / 新路径 / 非常用时段）**组合打折**，且总分封顶在阈值以下：
     # 加和式风险分的实测后果是 1,688 个实体靠「新源 IP + 新接口路径」正好凑到 0.60。
     profile_signal_damping: float = 0.6
@@ -341,7 +341,7 @@ class Settings(BaseSettings):
     # 列表大部分是僵尸条目。收到 30 天（会话是短生命周期标识，长尾没有分析价值）。
     profile_retention_days: int = 30
     # 冷启动门槛**按窗口数**（不是事件条数）：至少被观测到这么多个落库窗口才参与打分
-    profile_min_windows: int = 5
+    profile_min_windows: int = 10
     # 错误响应（status ≥ 400 且非 401/403）判据：次数下限 + 占本窗口事件的比例
     profile_error_min_count: int = 50
     profile_error_ratio: float = 0.3

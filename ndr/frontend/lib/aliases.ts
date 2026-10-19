@@ -6,7 +6,7 @@
  * 为什么做成模块级小 store 而不是 React Context：页面各自渲染 Nav/TopBar（没有共享的
  * admin layout），套 Provider 得改一堆页面；而且别名是「读多写少、跨页共用」的纯展示数据，
  * 模块级缓存 + useSyncExternalStore 最省事：任何组件调 `displayName(ip)` 就能拿到别名，
- * 在拓扑页改完 `applyAliases()` 立刻全局生效。
+ * 保存别名后 `applyAliases()` 立刻全局生效。
  *
  * **fail-open**：读失败就按「没有别名」处理（显示 IP），绝不让别名把页面拖挂。
  */
@@ -49,7 +49,7 @@ export function displayName(ip: string | null | undefined): string {
   return (key && aliases[key]) || key;
 }
 
-/** 直接写入缓存（拓扑页保存别名后调用，立即全局生效） */
+/** 直接写入缓存（保存别名后调用，立即全局生效） */
 export function applyAliases(next: Record<string, string> | null | undefined): void {
   aliases = { ...(next || {}) };
   loaded = true;

@@ -309,18 +309,20 @@ def test_known_api_path_is_not_reported(profiles: ModuleType) -> None:
 
 
 def test_fail_burst_bands(profiles: ModuleType) -> None:
-    """认证失败突增的分档（用户 2026-10 定）：≥5 → .25 / ≥10 → .35 / ≥20 且零成功 → .6。"""
+    """认证失败突增的分档（2026-10 误报治理后）：≥5 → .25 / ≥10 → .45 / ≥20 且零成功 → .8。"""
     assert profiles.fail_burst_score(4, 0) == (0.0, "")
     assert profiles.fail_burst_score(5, 5) == (0.0, "")  # 失败必须多于成功
     assert profiles.fail_burst_score(5, 4)[0] == 0.25
     assert profiles.fail_burst_score(9, 1)[0] == 0.25
-    assert profiles.fail_burst_score(10, 3)[0] == 0.35
-    assert profiles.fail_burst_score(19, 1)[0] == 0.35
+    assert profiles.fail_burst_score(10, 3)[0] == 0.45
+    assert profiles.fail_burst_score(19, 1)[0] == 0.45
     # 有成功过 → 不进最高档（可能是用户反复输错，不是脚本在撞）
-    assert profiles.fail_burst_score(20, 5)[0] == 0.35
+    assert profiles.fail_burst_score(20, 5)[0] == 0.45
     score, suffix = profiles.fail_burst_score(20, 0)
-    assert score == 0.6 and "疑似爆破" in suffix
-    assert profiles.fail_burst_score(100, 0)[0] == 0.6  # 封顶在最上一档
+    assert score == 0.8 and "疑似爆破" in suffix
+    assert profiles.fail_burst_score(100, 0)[0] == 0.8  # 封顶在最上一档
+    # 最高档必须**高于**阈值：否则阈值一上调，"≥20 次零成功"这种几乎不会误报的真信号会被一起压掉
+    assert score > profiles.params.risk_threshold()
 
 
 def test_top_fail_band_reaches_threshold_alone(profiles: ModuleType) -> None:
@@ -595,7 +597,8 @@ def test_cold_start_is_by_window_not_event_count(profiles: ModuleType) -> None:
     prof = _profile(profiles, window_count=1, obs_count=100000)
     out = profiles.detect("account", _obs(kind="account", src_ips=["198.51.100.99"]), prof)
     assert out["cold_start"] is True and out["reasons"] == []
-    ready = _profile(profiles, window_count=5, obs_count=10)
+    # 用参数值而不是写死数字：`profile.min_windows` 会随误报治理调整（2026-10 由 5 → 10）
+    ready = _profile(profiles, window_count=profiles.params.min_windows(), obs_count=10)
     assert profiles.detect("account", _obs(kind="account"), ready)["cold_start"] is False
 
 

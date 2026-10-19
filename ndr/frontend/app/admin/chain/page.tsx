@@ -43,7 +43,7 @@ const WINDOWS: Array<{ label: string; minutes: number }> = [
   { label: "近 24 小时", minutes: 1440 },
 ];
 
-/** 源站展示名：**IP:端口 优先**，域名/Host 只作补充（与拓扑页「默认显示 IP」同口径）。
+/** 源站展示名：**IP:端口 优先**，域名/Host 只作补充（默认显示 IP，别名优先）。
  *  为什么要这样：中继链路上 hostname 是 HTTP Host/SNI（如内网服务的 `master:5000`），
  *  只显示它就看不出到底是哪台机器（2026-10 用户反馈）。 */
 function originLabel(chain: ChainItem, name: (ip: string) => string): string {

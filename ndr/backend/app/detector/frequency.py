@@ -60,23 +60,26 @@ class FreqWindow:
             cooldown = max(0, _to_int(raw_cooldown, self.cooldown))
         base = f"{_PREFIX}:{name}:{group}"
         cnt_key = f"{base}:cnt"
+        dst_key = f"{base}:dst" if distinct_field else ""
         ttl = window * 2 + 60
+        # distinct 值必须在**进 pipeline 之前**算好：建键的 zadd 要与 expire 在同一个
+        # pipeline 里，且 expire 排在 zadd 之后。原来的写法是「pipeline 里 expire、
+        # execute 之后才 zadd」—— 首次插入时键还不存在，expire 对空键无效，
+        # 该 dst 键就此**永远没有 TTL**（2026-10 生产实测：62,695 个 dst 键里 94.5%
+        # TTL=-1；只有被命中 ≥2 次的分组能蹭到下一次 pipeline 的 expire）。
+        dst_value = str(getattr(entry, distinct_field, "") or "") if distinct_field else ""
 
         pipe = self.r.pipeline()
         pipe.zremrangebyscore(cnt_key, "-inf", cutoff)
         pipe.zadd(cnt_key, {f"{entry.fingerprint()}:{ts:.3f}": ts})
         pipe.expire(cnt_key, ttl)
-        dst_key = ""
-        if distinct_field:
-            dst_key = f"{base}:dst"
+        if dst_key:
             pipe.zremrangebyscore(dst_key, "-inf", cutoff)
+            if dst_value:
+                pipe.zadd(dst_key, {dst_value: ts})
+            # 顺序关键：先 zadd 建键、再 expire 给键设过期
             pipe.expire(dst_key, ttl)
         pipe.execute()
-
-        if distinct_field:
-            value = str(getattr(entry, distinct_field, "") or "")
-            if value:
-                self.r.zadd(dst_key, {value: ts})
 
         count = _to_int(self.r.zcard(cnt_key), 0)
         if count < min_count:

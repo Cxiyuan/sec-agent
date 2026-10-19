@@ -111,3 +111,40 @@ def is_baseline_eligible(entry: UnifiedLog) -> bool:
     if entry.source_system == "suricata":
         return False
     return is_detectable(entry)
+
+#: 事件类型的中文名（界面展示用；值仍是英文标识）。
+#: 放这里是为了让 **API 层与命中事件层共用同一张表** —— 两处各写一份必然走偏
+#: （2026-10 就出现过：事件中心直接显示 `signature_hit` 这种英文原始码）。
+EVENT_TYPE_LABELS: dict[str, str] = {
+    "conn_established": "连接建立",
+    "connection_shutdown": "连接关闭",
+    "generic": "普通连接",
+    "rejected_connection": "连接被拒绝",
+    "scan_attempt": "扫描尝试",
+    "port_scan": "端口扫描",
+    "http_request": "HTTP 请求",
+    "http_login": "HTTP 登录",
+    "http_error": "HTTP 错误响应",
+    "http_upload": "文件上传",
+    "dns_query": "DNS 查询",
+    "dns_anomaly": "DNS 异常",
+    "tls_anomaly": "TLS 异常",
+    "protocol_anomaly": "协议异常",
+    "capture_anomaly": "采集异常",
+    "file_transfer": "文件传输",
+    "smtp_activity": "邮件活动",
+    "smtp_abuse": "邮件滥用",
+    "ssh_activity": "SSH 活动",
+    "dhcp_activity": "DHCP 活动",
+    "auth_success": "认证成功",
+    "signature_hit": "签名命中",
+    "zeek_notice": "Zeek 告警",
+    "tls_session": "TLS 会话",
+    "brute_force": "暴力破解",
+    "credential_abuse": "凭据滥用",
+    "lateral_movement": "横向移动",
+    "data_exfil": "数据外传",
+    "c2_beacon": "C2 心跳",
+    "webshell": "WebShell 访问",
+    "baseline_deviation": "基线偏离",
+}

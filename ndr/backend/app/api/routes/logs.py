@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+from app.ingestion.log_types import EVENT_TYPE_LABELS
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -47,38 +48,6 @@ TEXT_FIELDS: dict[str, str] = {
 
 #: 事件类型的**中文名**（界面只给中文，值仍是英文标识）。
 #: 覆盖归一化器实际产出的全部类型；以后新增类型忘了加映射时，界面回落显示原值（不至于空白）。
-EVENT_TYPE_LABELS: dict[str, str] = {
-    "conn_established": "连接建立",
-    "connection_shutdown": "连接关闭",
-    "generic": "普通连接",
-    "rejected_connection": "连接被拒绝",
-    "scan_attempt": "扫描尝试",
-    "port_scan": "端口扫描",
-    "http_request": "HTTP 请求",
-    "http_login": "HTTP 登录",
-    "http_error": "HTTP 错误响应",
-    "http_upload": "文件上传",
-    "dns_query": "DNS 查询",
-    "dns_anomaly": "DNS 异常",
-    "tls_anomaly": "TLS 异常",
-    "protocol_anomaly": "协议异常",
-    "capture_anomaly": "采集异常",
-    "file_transfer": "文件传输",
-    "smtp_activity": "邮件活动",
-    "smtp_abuse": "邮件滥用",
-    "ssh_activity": "SSH 活动",
-    "dhcp_activity": "DHCP 活动",
-    "auth_success": "认证成功",
-    "signature_hit": "签名命中",
-    "zeek_notice": "Zeek 告警",
-    "tls_session": "TLS 会话",
-    "brute_force": "暴力破解",
-    "credential_abuse": "凭据滥用",
-    "lateral_movement": "横向移动",
-    "data_exfil": "数据外传",
-    "c2_beacon": "C2 心跳",
-    "webshell": "WebShell 访问",
-}
 
 #: 日志类型的中文名（界面下拉里「中文（英文标识）」并列显示；值仍是英文）
 LOG_TYPE_LABELS: dict[str, str] = {

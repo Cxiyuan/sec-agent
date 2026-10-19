@@ -348,25 +348,6 @@ def test_relays_survive_node_limit(
     assert {A, B} <= ids, f"中继不能被裁掉（实际 {sorted(ids)}）"
 
 
-def test_page_fills_area_and_drops_node_list() -> None:
-    """拓扑图占满右侧内容区，下方的节点列表卡删除（用户 2026-10 要求）。
-
-    注意：删列表不能顺手把信息也删掉 —— 时效（last_seen）与入口证据改在**悬停提示**里给。
-    """
-    src = (ROOT / "ndr" / "frontend" / "app" / "admin" / "topology" / "page.tsx").read_text(
-        encoding="utf-8"
-    )
-    assert "节点（点一行即可改名）" not in src, "节点列表卡应已删除"
-    assert 'height="100%"' in src, "图要跟着容器高度走（占满）"
-    # 断言"三个关键类都在"而不是整串顺序：前端改类名顺序（`flex min-h-0 min-w-0 flex-1 flex-col`）
-    # 不该让守卫误报 —— 它守的是"图卡片能撑满剩余高度"这件事本身。
-    for cls in ("min-h-0", "flex-1", "flex-col"):
-        assert cls in src, f"图卡片缺 {cls}（撑不满剩余高度）"
-    # 2026-10 改版：整屏排布局改由 PageShell 的 `fill` 负责（页头 + 侧边栏的偏移在外壳里算），
-    # 页面自己不再写 h-screen（那样会和固定页头打架）。
-    assert " fluid fill" in src or "fill fluid" in src, "整屏排布局（不整页滚动）"
-    # 时效与入口证据仍要能看到
-    assert "最近活跃：" in src, "时效要挪到悬停提示里，不能随列表一起消失"
-    assert "上游未观测" in src, "入口证据要挪到悬停提示里"
-    # 搜索改为在图上高亮（原来只过滤列表，列表没了就成了死控件）
-    assert "在图上高亮" in src
+# 2026-10 前端改版（提交 555fb81）删掉了独立的拓扑页（`/admin/topology` 与 `/topology`），
+# 图与链路信息并入「可视化流量」的抽屉里，因此原来守那张页面的用例一并移除；
+# 本文件其余用例守的是后端拓扑图算法（转发链路还原、全量视图塑形、别名校验），仍然有效。

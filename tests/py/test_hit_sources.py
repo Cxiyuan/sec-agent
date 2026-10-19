@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import importlib
+import pathlib as _pathlib
 from types import ModuleType
 from typing import Any
+
+ROOT = _pathlib.Path(__file__).resolve().parents[2]
 
 import pytest
 
@@ -198,3 +201,40 @@ def test_generic_category_prefers_signature_name(hits_mod: ModuleType) -> None:
     # 有具体归类时仍用归类（归类是安全语义，比签名名更该显眼）
     digest["samples"][0]["doc"]["alert"]["category"] = "Detection of a Network Scan"
     assert hits_mod.event_title_of(digest, "feature_match") == "网络扫描"
+
+
+# ===== 事件类型必须是中文，基线事件也要有类型（2026-10 用户发现「全是 signature_hit」）=====
+
+
+def test_event_type_labels_are_chinese(hits_mod: ModuleType) -> None:
+    """界面「事件类型」要显示中文（签名命中/协议异常/基线偏离），不能是英文原始码。
+
+    中文表在命中事件模块里以 `EVENT_TYPE_LABELS` 导入 —— 走 hits_mod 取，
+    两栈（NDR / agent）都能解析；只有 NDR 侧有命中事件落库，agent 侧跳过。
+    """
+    labels = getattr(hits_mod, "EVENT_TYPE_LABELS", None)
+    if not labels:
+        pytest.skip("该栈没有命中事件中文类型表（仅 NDR 侧有）")
+    assert labels["signature_hit"] == "签名命中"
+    assert labels["protocol_anomaly"] == "协议异常"
+    # 基线偏离事件不来自日志文档，但也要有可读类型
+    assert labels["baseline_deviation"] == "基线偏离"
+    # 签名命中以外的常见类型都得有中文名（漏了会直接漏到界面上）
+    for code in ("conn_established", "http_request", "dns_query", "tls_anomaly", "file_transfer"):
+        assert labels.get(code), f"{code} 缺中文名"
+
+
+def test_hit_item_carries_chinese_event_types(hits_mod: ModuleType) -> None:
+    """命中事件的列表/详情项要**同时**给英文码和中文名，前端不用自建映射表。"""
+    src = (ROOT / "ndr" / "backend" / "app" / "detector" / "hits.py").read_text(encoding="utf-8")
+    assert '"event_type_labels"' in src, "命中事件项缺 event_type_labels"
+    assert "EVENT_TYPE_LABELS.get" in src
+
+
+def test_baseline_events_have_event_type(hits_mod: ModuleType) -> None:
+    """基线偏离事件必须写 event_types（否则界面「事件类型」显示"无"）。"""
+    src = (ROOT / "ndr" / "backend" / "app" / "detector" / "hits.py").read_text(encoding="utf-8")
+    seg = src[src.index("def save_baseline_deviations") :]
+    assert seg.count('event_types=["baseline_deviation"]') == 2, (
+        "画像分支和数值基线分支都要补 event_types"
+    )
