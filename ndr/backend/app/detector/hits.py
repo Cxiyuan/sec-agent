@@ -408,6 +408,11 @@ def signature_hint(digest: dict[str, Any]) -> tuple[str, str, str]:
     return "", "", ""
 
 
+#: 这些归类**不含具体信息**（签名引擎把抓不准的都归到 Misc activity）。
+#: 有签名名时优先用签名名，界面上「sliver https debian」比「其它可疑活动」有用得多。
+_GENERIC_TITLES: set[str] = {"其它可疑活动", "其它攻击行为", "可疑活动"}
+
+
 def signature_category_label(category: str) -> str:
     """classtype（短名或人话文本）→ 中文安全事件归类；认不出返回空串。"""
     raw = " ".join(str(category or "").strip().lower().split())
@@ -444,9 +449,12 @@ def event_title_of(digest: dict[str, Any], source_kind: str) -> str:
     if source_kind == "feature_match":
         category, signature, _sig_id = signature_hint(digest)
         mapped = signature_category_label(category)
-        if mapped:
-            return mapped
         title = _title_from_signature(signature)
+        # 笼统归类（「其它可疑活动」/「其它攻击行为」）不如签名名有信息量：
+        # 实测 Suricata 自带把大量签名归到 Misc activity，而签名名叫
+        # 「sliver https debian」—— 界面上后者才能看出是什么事。
+        if mapped and (mapped not in _GENERIC_TITLES or not title):
+            return mapped
         if title:
             return title
         return "其它可疑活动"

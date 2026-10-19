@@ -172,3 +172,26 @@ def test_category_label_accepts_both_forms(hits_mod: ModuleType) -> None:
     assert label("Web Application Attack") == "Web 应用攻击"
     assert label("") == ""
     assert label("从未见过的类别") == ""
+
+
+def test_generic_category_prefers_signature_name(hits_mod: ModuleType) -> None:
+    """笼统归类（Misc activity → 其它可疑活动）要让位给签名名，界面才有信息量。"""
+    digest = {
+        "src_ip": "10.1.2.3",
+        "samples": [
+            {
+                "source": "suricata",
+                "doc": {
+                    "alert": {
+                        "signature": "sliver https debian",
+                        "signature_id": 1000881,
+                        "category": "Misc activity",
+                    }
+                },
+            }
+        ],
+    }
+    assert hits_mod.event_title_of(digest, "feature_match") == "sliver https debian"
+    # 有具体归类时仍用归类（归类是安全语义，比签名名更该显眼）
+    digest["samples"][0]["doc"]["alert"]["category"] = "Detection of a Network Scan"
+    assert hits_mod.event_title_of(digest, "feature_match") == "网络扫描"
