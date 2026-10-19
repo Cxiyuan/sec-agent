@@ -373,9 +373,7 @@ def device_entity(entry: UnifiedLog) -> tuple[str, str]:
     """
     # 用 getattr 容错：主机类事件/老文档可能没有 TLS 字段，不能让取值抛异常
     ua = str(getattr(entry, "user_agent", "") or "").strip()
-    ja3 = str(
-        getattr(entry, "ja3", "") or getattr(entry, "ja4", "") or ""
-    ).strip()
+    ja3 = str(getattr(entry, "ja3", "") or getattr(entry, "ja4", "") or "").strip()
     if not ua and not ja3:
         return "", ""
     digest = hashlib.sha256(f"{ua}\n{ja3}".encode("utf-8", errors="ignore")).hexdigest()

@@ -300,9 +300,9 @@ def test_thresholds_warn_when_sampling_dead() -> None:
 
 
 def test_thresholds_are_wired_into_health() -> None:
-    src = (
-        ROOT / "ndr" / "backend" / "app" / "api" / "routes" / "health_components.py"
-    ).read_text(encoding="utf-8")
+    src = (ROOT / "ndr" / "backend" / "app" / "api" / "routes" / "health_components.py").read_text(
+        encoding="utf-8"
+    )
     assert "thresholds.evaluate" in src
     assert '"thresholds"' in src
 
