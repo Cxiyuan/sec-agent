@@ -149,3 +149,49 @@ def test_flush_skips_cleanup_before_interval(
     calls.clear()
     engine.flush()  # 立刻再来一次：间隔没到，不该再清
     assert calls == []
+
+
+# ---------- 数值基线：标准差下限钳制（2026-10 误报治理） ----------
+
+
+def _engine_with(engine_mod: ModuleType, key: str, **state: Any) -> Any:
+    """构造一个基线缓存里已学过某维度的引擎（绕开 Redis/DB）。"""
+    eng = engine_mod.BaselineEngine(client=None)
+    base = {"count": 500, "warmed": True, "mean": 0.0, "std": 0.0}
+    base.update(state)
+    eng._base[key] = base
+    return eng
+
+
+def test_zero_std_baseline_no_longer_fires(engine_mod: ModuleType) -> None:
+    """**回归核心**：std=0（历史值恒定）时，多 1 个连接不再算偏离。
+
+    实测线上 10,011 个维度里 32% 是 std=0，而判据是 `value > mean + 2*std` ——
+    原来等于「比历史恒定值多 1 就报」，抽样 200 条基线偏离事件里 11.5% 这么来的。
+    """
+    eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=20.0, std=0.0)
+    digest = {"src_ip": "10.0.0.1", "count": 21, "dst_ports": [], "dst_ips": []}
+    deviations, _checked, warmed = eng._numeric(digest)
+    assert warmed >= 1, "这个维度要算已预热，否则下面测不到判据"
+    assert not [d for d in deviations if d["feature"] == "conn_count"], "多 1 个连接不该报"
+
+
+def test_zero_std_baseline_still_catches_big_jump(engine_mod: ModuleType) -> None:
+    """钳制不是把门关死：恒定 20 的基线出现 200 倍跳变照样要报。"""
+    eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=20.0, std=0.0)
+    digest = {"src_ip": "10.0.0.1", "count": 2000, "dst_ports": [], "dst_ips": []}
+    deviations, _checked, _warmed = eng._numeric(digest)
+    hit = [d for d in deviations if d["feature"] == "conn_count"]
+    assert hit, "大跳变必须报"
+    # 钳制生效时把原始 std 也带上，证据可追溯
+    assert hit[0]["std"] > 0
+    assert hit[0].get("std_raw") == 0.0
+    assert hit[0]["z"] is not None
+
+
+def test_std_floor_uses_mean_ratio(engine_mod: ModuleType) -> None:
+    """标准差下限取「均值×比例」：均值 1000 的基线，std=5 太脆，应被抬到 100。"""
+    eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=1000.0, std=5.0)
+    digest = {"src_ip": "10.0.0.1", "count": 1010, "dst_ports": [], "dst_ips": []}
+    deviations, _c, _w = eng._numeric(digest)
+    assert not [d for d in deviations if d["feature"] == "conn_count"], "均值 0.5% 的抖动不该报"

@@ -303,6 +303,11 @@ class Settings(BaseSettings):
     baseline_enabled: bool = True
     baseline_observe_days: int = 7  # 观测期：不足这么多天只学习、不判异常
     baseline_zscore: float = 2.0  # 数值基线判偏离的标准差倍数
+    # 标准差下限钳制（2026-10 误报治理）：实测线上 10,011 个基线维度里 **32% 的 std=0**
+    # （历史值恒定），`value > mean + 2*0` 就等于「比均值多 1 个连接就报」。
+    # 取 `std_eff = max(std, |mean|*ratio, min)` —— 恒定/极抖的维度不再一碰就炸。
+    baseline_std_floor_ratio: float = 0.1
+    baseline_std_floor_min: float = 1.0
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）
     baseline_cleanup_seconds: int = 3600  # 过期画像清理的检查节奏（秒）
     baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库
@@ -321,6 +326,12 @@ class Settings(BaseSettings):
     profile_enabled: bool = True
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
     profile_risk_threshold: float = 0.6  # 画像异常风险分阈值（达到才报）
+    # 弱信号（新 UA / 新路径 / 非常用时段）**组合打折**，且总分封顶在阈值以下：
+    # 加和式风险分的实测后果是 1,688 个实体靠「新源 IP + 新接口路径」正好凑到 0.60。
+    profile_signal_damping: float = 0.6
+    profile_weak_cap_ratio: float = 0.9
+    # 新源 IP 只在「占本窗口来源地址比例 ≥ 这个值」时才计分（多出口/移动网常态）
+    profile_new_ip_min_share: float = 0.5
     # 「当前风险」的有效期（分钟）：超过这么久没被判过风险，就不再算「当前风险」。
     # 为什么要它（2026-10 实机 QA）：归零只在「该实体又被观测到」时发生，实体一去不回
     # （会话结束）就会把几小时前的陈旧风险永久挂在「画像风险 TOP」上。0 = 不过滤（当历史看）。

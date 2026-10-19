@@ -72,6 +72,7 @@ def _obs(
     dst_ips: list[str] | None = None,
     paths: list[str] | None = None,
     hours: list[int] | None = None,
+    user_agents: list[str] | None = None,
     fail: int = 0,
     success: int = 1,
     errors: int = 0,
@@ -83,7 +84,7 @@ def _obs(
         "display": "disp",
         "src_ips": Counter(src_ips or []),
         "dst_ips": Counter(dst_ips or []),
-        "user_agents": Counter(["UA/1.0"]),
+        "user_agents": Counter(user_agents or ["UA/1.0"]),
         "paths": Counter(paths or []),
         "hours": Counter(str(h) for h in (hours if hours is not None else [3])),
         "success": success,
@@ -117,11 +118,16 @@ def test_hour_reason_needs_age(profiles: ModuleType) -> None:
 
 
 def test_hour_reason_fires_when_warm_and_rare(profiles: ModuleType) -> None:
-    """见过 12 个时段（0~11 时）、画像 3 天前建的、当前 15 时没人来过 → 该报，且 +0.15。"""
+    """见过 12 个时段（0~11 时）、画像 3 天前建的、当前 15 时没人来过 → 该报。
+
+    分值：弱信号按 `profile_signal_damping` 打折（0.15 × 0.6 = 0.09），
+    单独一条远不足以越线 —— 这正是 2026-10 误报治理要的效果。
+    """
     prof = _profile(profiles, hour_hist={str(h): 20 for h in range(12)})
     out = profiles.detect("session", _obs(hours=[15]), prof)
     assert "非常用时段" in _reasons(out)
-    assert out["risk"] == pytest.approx(0.15)
+    assert out["risk"] == pytest.approx(0.15 * profiles.params.signal_damping())
+    assert out["risk"] < profiles.params.risk_threshold()
 
 
 def test_hour_reason_skipped_when_hour_is_common(profiles: ModuleType) -> None:
@@ -277,7 +283,9 @@ def test_new_api_path_reason(profiles: ModuleType) -> None:
     prof = _profile(profiles, paths=known)
     out = profiles.detect("account", _obs(kind="account", paths=["/api/p0", "/api/new"]), prof)
     assert "新接口路径" in _reasons(out)
-    assert out["risk"] == pytest.approx(0.25)
+    # 弱信号打折（0.25 × 0.6），不越阈值
+    assert out["risk"] == pytest.approx(0.25 * profiles.params.signal_damping())
+    assert out["risk"] < profiles.params.risk_threshold()
 
 
 def test_new_api_path_needs_enough_known_paths(profiles: ModuleType) -> None:
@@ -643,3 +651,88 @@ def test_auth_success_only_counts_login_paths(profiles: ModuleType) -> None:
     assert bucket["success"] == 1
     assert bucket["fail"] == 1
     assert bucket["errors"] == 1
+
+
+# ---------- 风险分分层聚合（2026-10 误报治理的核心） ----------
+
+
+def test_weak_signals_never_cross_threshold(profiles: ModuleType) -> None:
+    """**回归核心**：新源 IP + 新接口路径 曾经正好凑到 0.60（线上 1,688 个实体如此）。
+
+    现在弱信号一律打折且封顶在阈值以下 —— 「换台设备 + 调个新接口」不该报。
+    """
+    known = {f"/api/p{i}": 10 for i in range(10)}
+    prof = _profile(profiles, src_ips={"10.0.0.1": 100}, paths=known)
+    out = profiles.detect(
+        "account",
+        _obs(kind="account", src_ips=["10.9.9.9"], user_agents=["UA/2.0"], paths=["/api/new"]),
+        prof,
+    )
+    reasons = _reasons(out)
+    assert "新源 IP" in reasons and "新接口路径" in reasons
+    assert out["risk"] < profiles.params.risk_threshold(), reasons
+
+
+def test_strong_signal_alone_reaches_threshold(profiles: ModuleType) -> None:
+    """会话跨 IP 这类强信号**单独**就要能达阈值（不许被弱信号压制）。"""
+    prof = _profile(profiles, src_ips={"10.0.0.1": 100, "10.1.0.1": 100})
+    out = profiles.detect(
+        "session", _obs(src_ips=["10.0.0.5", "10.3.0.7"], paths=[], hours=[3]), prof
+    )
+    assert "会话跨" in _reasons(out)
+    assert out["risk"] >= profiles.params.risk_threshold()
+
+
+def test_brute_force_plus_new_ip_crosses_threshold(profiles: ModuleType) -> None:
+    """中等信号可以叠加达阈值：失败突增（10 次）+ 新源 IP = 0.7。"""
+    prof = _profile(profiles, src_ips={"10.0.0.1": 100})
+    out = profiles.detect("account", _obs(kind="account", src_ips=["10.9.9.9"], fail=10), prof)
+    assert "认证失败突增" in _reasons(out)
+    assert out["risk"] >= profiles.params.risk_threshold()
+
+
+def test_zero_success_brute_force_alone_is_strong(profiles: ModuleType) -> None:
+    """≥20 次且一次没成功 → 强信号，单独即达阈值。"""
+    prof = _profile(profiles, src_ips={"10.0.0.1": 100})
+    out = profiles.detect("account", _obs(kind="account", fail=25, success=0), prof)
+    assert out["risk"] >= profiles.params.risk_threshold()
+
+
+def test_saturated_source_ips_do_not_score(profiles: ModuleType) -> None:
+    """**P1-5**：来源地址存满上限（50）的实体，新 IP 永远成立 → 不计分。
+
+    销售 / 运维 / 服务账号长期从很多地址登录，不降权就是持续性误报。
+    """
+    saturated = {f"10.1.{i}.1": 5 for i in range(50)}
+    prof = _profile(profiles, src_ips=saturated)
+    out = profiles.detect("account", _obs(kind="account", src_ips=["10.9.9.9"]), prof)
+    reasons = _reasons(out)
+    assert "新源 IP" in reasons and "饱和" in reasons, reasons
+    assert out["risk"] == 0.0
+
+
+def test_low_share_new_ip_does_not_score(profiles: ModuleType) -> None:
+    """**P1-5**：本窗口来源地址很多、新的只占少数 → 不计分（多出口/移动网常态）。"""
+    known = {f"10.0.0.{i}": 100 for i in range(1, 6)}
+    prof = _profile(profiles, src_ips=known)
+    out = profiles.detect(
+        "account",
+        _obs(kind="account", src_ips=[f"10.0.0.{i}" for i in range(1, 6)] + ["10.9.9.9"]),
+        prof,
+    )
+    reasons = _reasons(out)
+    assert "新源 IP" in reasons and "不计分" in reasons, reasons
+    assert out["risk"] == 0.0
+
+
+def test_score_risk_is_monotonic(profiles: ModuleType) -> None:
+    """聚合函数必须单调：加信号不能降分（否则界面上"多报一条反而分数更低"）。"""
+    score = profiles.score_risk
+    th = profiles.params.risk_threshold()
+    assert score([]) == 0.0
+    assert score([(profiles.LOW, 0.25)]) < th
+    assert score([(profiles.LOW, 0.25), (profiles.LOW, 0.2)]) >= score([(profiles.LOW, 0.25)])
+    assert score([(profiles.MED, 0.35)]) < th
+    assert score([(profiles.HIGH, 0.45)]) >= th
+    assert score([(profiles.HIGH, 0.45), (profiles.HIGH, 0.6)]) > score([(profiles.HIGH, 0.45)])
+    assert score([(profiles.HIGH, 0.45)] * 20) <= 1.0

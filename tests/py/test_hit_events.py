@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -184,7 +185,8 @@ def test_panel_shows_pairs_id_and_detail() -> None:
     assert 'row.dst_ips.join("、")' not in src
     # 列表要带事件 ID；点开看详情时**拉一次**接口拿完整证据（避免在列表里塞巨大 JSON）
     assert "/api/detector/hits" in src
-    assert "/api/detector/hits/${row.id}" in src or "/api/detector/hits/${detail.id}" in src
+    # 详情弹窗必须**再拉一次**详情接口（列表不带证据）；变量名随实现变化，只看调用形态
+    assert re.search(r"/api/detector/hits/\$\{[a-zA-Z_.]+\}", src), "缺少按 ID 拉详情的调用"
     assert "id" in src  # UI 列表/详情都会引用 row.id
     # 处置动作（忽略/白名单）至少存在其一
     assert ("忽略" in src and "白名单" in src) or "ignore" in src or "whitelist" in src

@@ -56,6 +56,13 @@ include = ["app*"]
 line-length = 100
 target-version = "py311"
 
+
+[tool.ruff.lint]
+# UP017 建议用 `datetime.UTC` 别名（3.11+）。但仓库要兼容旧解析器/IDE 的 LSP
+# （pyright 按 3.9 解析时会报 "UTC is unknown import symbol"），统一用
+# `timezone.utc`：语义完全相同，纯风格差异，这里显式豁免。
+ignore = ["UP017"]
+
 [tool.ruff.lint.isort]
 # 同一模块的 import 与 as 别名合并成一条（避免拆成多条重复 import）
 combine-as-imports = true

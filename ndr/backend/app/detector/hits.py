@@ -300,7 +300,6 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
     return out
 
 
-
 #: 事件来源类别（**不体现采集器名字**，用户口径 2026-10）：
 #: feature_match=特征匹配（签名引擎）/ behavior_analysis=行为分析（流量规则）/ baseline_deviation=基线偏离
 SOURCE_LABELS: dict[str, str] = {
@@ -368,6 +367,7 @@ SIGNATURE_CATEGORY_ALIASES: dict[str, str] = {
     "generic icmp event": "icmp-event",
     "a tcp connection was detected": "tcp-connection",
 }
+
 
 #: 一条事件的签名线索只存在于**聚合态样本**里（摘要顶层只有规则名/计数）：
 #: 样本是 `{"source": …, "doc": <原始文档>}`，签名引擎的原始文档把签名放在嵌套 `alert` 对象里。
@@ -603,6 +603,8 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                             "本窗口值": item.get("value"),
                             "历史均值": item.get("mean"),
                             "标准差": item.get("std"),
+                            # 钳制过（原始 std 为 0 或极小）时带上原始值，证据可追溯
+                            "原始标准差": item.get("std_raw"),
                             "偏离倍数": item.get("z"),
                         }
                     ],
@@ -708,7 +710,9 @@ def list_hits(
     order_by = {
         "oldest": func.coalesce(HitEvent.last_seen, HitEvent.created_at).asc(),
         "count": HitEvent.count.desc(),
-    }.get(str(sort or "recent").strip(), func.coalesce(HitEvent.last_seen, HitEvent.created_at).desc())
+    }.get(
+        str(sort or "recent").strip(), func.coalesce(HitEvent.last_seen, HitEvent.created_at).desc()
+    )
     try:
         with SessionLocal() as db:
             total = int(db.scalar(select(func.count()).select_from(HitEvent).where(*conds)) or 0)
@@ -741,8 +745,10 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
                 db.scalar(
                     select(func.count())
                     .select_from(HitEvent)
-                    .where(func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
-                           HitEvent.ignored.is_(True))
+                    .where(
+                        func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
+                        HitEvent.ignored.is_(True),
+                    )
                 )
                 or 0
             )
@@ -790,7 +796,9 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
         count = int(row[1] or 0)
         if ts_value is None:
             continue
-        moment = ts_value if isinstance(ts_value, datetime) else datetime.fromisoformat(str(ts_value))
+        moment = (
+            ts_value if isinstance(ts_value, datetime) else datetime.fromisoformat(str(ts_value))
+        )
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=UTC)
         epoch = int(moment.timestamp()) // bucket_seconds * bucket_seconds

@@ -142,20 +142,31 @@ class BaselineEngine:
                 continue
             warmed += 1
             mean = _num(base.get("mean"))
-            std = _num(base.get("std"))
+            raw_std = _num(base.get("std"))
+            # 标准差下限钳制（2026-10 误报治理，实测驱动）：
+            # 线上 10,011 个基线维度里 **32% 的 std=0**（历史值恒定），而判据是
+            # `value > mean + zscore*std` —— std=0 就等于「比均值多 1 个连接就报偏离」，
+            # 抽样 200 条基线偏离事件里有 11.5% 就是这么来的。
+            # 下限取「均值×比例」与「绝对底线」两者较大者，恒定基线因此要求有实际倍数偏离。
+            std = max(
+                raw_std,
+                abs(mean) * params.std_floor_ratio(),
+                params.std_floor_min(),
+            )
             if value <= mean + zscore * std:
                 continue
-            deviations.append(
-                {
-                    "feature": feature,
-                    "src_ip": src,
-                    "value": value,
-                    "mean": round(mean, 3),
-                    "std": round(std, 3),
-                    # 标准差为 0（历史值恒定）时 z 没有意义，给 null 而不是 inf
-                    "z": round((value - mean) / std, 2) if std > 0 else None,
-                }
-            )
+            item: dict[str, Any] = {
+                "feature": feature,
+                "src_ip": src,
+                "value": value,
+                "mean": round(mean, 3),
+                "std": round(std, 3),
+                "z": round((value - mean) / std, 2) if std > 0 else None,
+            }
+            if std > raw_std:
+                # 钳制生效时把原始值也带上，证据里能看出「这条是靠下限兜住的」
+                item["std_raw"] = round(raw_std, 3)
+            deviations.append(item)
         self._trim_cache()
         return deviations, len(_FEATURES), warmed
 

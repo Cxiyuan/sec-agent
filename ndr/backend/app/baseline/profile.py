@@ -17,7 +17,7 @@ import ipaddress
 import re
 from collections import Counter
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, delete, func, or_, select
@@ -64,7 +64,7 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 def beijing_hour(ts: datetime) -> int:
     """把事件时间转成北京时间的小时（0-23）。naive 时间按 UTC 处理。"""
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
+        ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(BEIJING_TZ).hour
 
 
@@ -178,6 +178,46 @@ _FAIL_BANDS: tuple[tuple[int, bool, float], ...] = (
 )
 
 
+#: 信号层级（2026-10 误报治理）。
+#: 实测背景：线上 1,826 个风险实体里 **1,688 个是「新源 IP(0.35) + 新接口路径(0.25) = 0.60」**
+#: 正好凑到阈值 —— 换台设备 + 调个新接口这种完全正常的组合也会报。
+#: 加和式打分的根本问题：三个弱信号 ≈ 一个强信号。改成按层级聚合：
+#:   HIGH（会话跨 IP / 零成功爆破 / 错误响应突增）**单独即可达阈值**；
+#:   MED（新源 IP、未到零成功的失败突增）可叠加，但不能单独越线；
+#:   LOW（新 UA / 新路径 / 非常用时段）**组合打折 + 封顶在阈值以下**。
+HIGH = 3
+MED = 2
+LOW = 1
+
+
+def score_risk(hits: list[tuple[int, float]]) -> float:
+    """把 (层级, 分值) 聚合成 0~1 的风险分（单调、可解释）。"""
+    threshold = params.risk_threshold()
+    damping = params.signal_damping()
+    high = [w for tier, w in hits if tier == HIGH]
+    med = [w for tier, w in hits if tier == MED]
+    low = [w for tier, w in hits if tier == LOW]
+    if high:
+        # 强信号：抬到阈值；多个强信号再逐级加分
+        risk = max(threshold, max(high)) + 0.1 * (len(high) - 1)
+        return min(1.0, round(risk + sum(med) + sum(low) * damping, 2))
+    if len(med) >= 2:
+        # 两个中等信号互相印证 → 可以达阈值（如「失败突增 + 新源 IP」）
+        return min(1.0, round(sum(med) + sum(low) * damping, 2))
+    if med:
+        # 只有**一个**中等信号：跟弱信号一起也必须封顶在阈值下
+        # （否则「新源 IP + 新 UA + 新路径」= 0.62 又成了"换手机+装 App"就报）
+        return min(
+            round(sum(med) + sum(low) * damping, 2),
+            round(threshold * params.weak_cap_ratio(), 2),
+        )
+    # 只有弱信号：打折，且**封顶在阈值以下**（本次修复的核心：弱信号叠加永不过线）
+    return min(
+        round(sum(low) * damping, 2),
+        round(threshold * params.weak_cap_ratio(), 2),
+    )
+
+
 def fail_burst_score(fail: int, success: int) -> tuple[float, str]:
     """认证失败突增的分值：返回（分值, 理由后缀）。达不到最低档返回 (0.0, "")。
 
@@ -203,8 +243,8 @@ def _old_enough(profile: EntityProfile) -> bool:
     if first is None:
         return False
     if first.tzinfo is None:
-        first = first.replace(tzinfo=UTC)
-    return datetime.now(UTC) - first >= timedelta(hours=min_hours)
+        first = first.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - first >= timedelta(hours=min_hours)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -403,7 +443,8 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         return {"reasons": [], "risk": 0.0, "cold_start": True}
 
     reasons: list[str] = []
-    risk = 0.0
+    # (层级, 分值) 收集，最后统一由 score_risk 聚合（见该函数的实测背景说明）
+    hits: list[tuple[int, float]] = []
 
     known_ips = set((profile.src_ips or {}).keys())
     known_v6_prefixes = {_v6_prefix(ip) for ip in known_ips if ":" in ip}
@@ -418,14 +459,26 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         new_ips.append(ip)
     new_ips.sort()
     if new_ips:
-        reasons.append(f"新源 IP：{', '.join(new_ips[:3])}")
-        risk += 0.35
+        # 两个降权条件（P1-5，实测驱动）：
+        # ① 来源地址已存满上限（销售/运维/服务账号天天从新地址来）→ 这个信号
+        #    对它们**永远成立**，只能靠强信号判，不能靠"见过没见过"；
+        # ② 本窗口来源地址很多而新的只占少数（多出口 / 移动网常态）→ 不构成异常。
+        saturated = len(known_ips) >= _LIMITS["src_ips"]
+        share = len(new_ips) / max(1, len(obs["src_ips"]))
+        label = f"新源 IP：{', '.join(new_ips[:3])}"
+        if saturated:
+            reasons.append(f"{label}（该实体来源地址已饱和，不计分）")
+        elif share < params.new_ip_min_share():
+            reasons.append(f"{label}（占本窗口来源地址 {share:.0%}，不计分）")
+        else:
+            reasons.append(label)
+            hits.append((MED, 0.35))
 
     known_ua = set((profile.user_agents or {}).keys())
     new_ua = sorted(ua for ua in obs["user_agents"] if ua not in known_ua)
     if new_ua:
         reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
-        risk += 0.2
+        hits.append((LOW, 0.2))
 
     # 新接口路径：只算接口形态（静态资源已在采集时排掉），且要求画像已认识若干条路径，
     # 否则刚建的画像「第一条路径就是新的」等于白报。
@@ -433,7 +486,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     new_paths = sorted(p for p in obs["paths"] if p not in known_paths)
     if new_paths and len(known_paths) >= max(0, int(params.path_min_known())):
         reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
-        risk += 0.25
+        hits.append((LOW, 0.25))
 
     # 非常用时段：三个条件都要满足才判（否则就是整点批量误报，见 config 里那两个门槛）
     hist = profile.hour_hist or {}
@@ -448,7 +501,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         rare = [h for h in obs["hours"] if _safe_int(hist.get(h, 0)) / total_hours < 0.01]
         if len(rare) == len(obs["hours"]):
             reasons.append(f"非常用时段（北京时间）：{','.join(sorted(rare))} 时")
-            risk += 0.15
+            hits.append((LOW, 0.15))
 
     if kind == SESSION:
         # 只在**同族内** ≥ 2 个才算会话跨 IP：v4+v6 是同一客户端的双栈，不是劫持
@@ -458,7 +511,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         v6 = {_v6_prefix(ip) for ip in v6}
         if len(v4) >= 2 or len(v6) >= 2:
             reasons.append(f"会话跨 {len(v4) + len(v6)} 个同族源 IP（疑似会话劫持）")
-            risk += 0.45
+            hits.append((HIGH, 0.45))
 
     # 错误响应突增：404/5xx 风暴是探测与扫描最直接的痕迹（成功/失败都看不到它）
     errors = _safe_int(obs.get("errors"))
@@ -466,14 +519,15 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     error_ratio = errors / window_events
     if errors >= params.error_min_count() and error_ratio >= params.error_ratio():
         reasons.append(f"错误响应突增（{errors} 次，占本窗口事件 {error_ratio:.0%}）")
-        risk += 0.3
+        hits.append((HIGH, 0.3))
 
     score, suffix = fail_burst_score(obs["fail"], obs["success"])
     if score > 0:
         reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次）{suffix}")
-        risk += score
+        # 分档即分层：达到阈值的那一档（≥20 次零成功）是强信号，其余算中等
+        hits.append((HIGH if score >= params.risk_threshold() else MED, score))
 
-    return {"reasons": reasons, "risk": min(risk, 1.0), "cold_start": False}
+    return {"reasons": reasons, "risk": score_risk(hits), "cold_start": False}
 
 
 def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -544,7 +598,7 @@ def update_profiles(
     """
     if not observations or not params.profile_enabled():
         return {"created": 0, "updated": 0}
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     created = updated = 0
     try:
         with SessionLocal() as db:
@@ -610,7 +664,7 @@ def cleanup() -> dict[str, int]:
     不再活跃的画像永远不会清；放到小时级清理里，一小时内全库都会对齐，
     而且口径仍然只来自配置（不在 SQL 里重写一份正则，避免两处漂移）。
     """
-    before = datetime.now(UTC) - timedelta(days=params.profile_retention_days())
+    before = datetime.now(timezone.utc) - timedelta(days=params.profile_retention_days())
     deleted = pruned = 0
     try:
         with SessionLocal() as db:
@@ -721,7 +775,7 @@ def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]
     if kind:
         stmt = stmt.where(EntityProfile.kind == kind)
     if ttl > 0:
-        cutoff = datetime.now(UTC) - timedelta(minutes=ttl)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=ttl)
         stmt = stmt.where(EntityProfile.risk_at.is_not(None), EntityProfile.risk_at >= cutoff)
     try:
         with SessionLocal() as db:

@@ -69,6 +69,24 @@ KNOBS: tuple[Knob, ...] = (
         note="当前值 > 均值 + N 个标准差才算偏离",
     ),
     Knob(
+        "baseline.std_floor_ratio",
+        "标准差下限（均值比例）",
+        "float",
+        settings.baseline_std_floor_ratio,
+        low=0.0,
+        high=1.0,
+        note="标准差下限 = 均值×此值；恒定基线（std=0）靠它止血，不然多 1 个连接就报",
+    ),
+    Knob(
+        "baseline.std_floor_min",
+        "标准差下限（绝对值）",
+        "float",
+        settings.baseline_std_floor_min,
+        low=0.0,
+        high=1000.0,
+        note="标准差下限的绝对底线（计数类特征用它兜住 0 均值）",
+    ),
+    Knob(
         "baseline.flush_seconds",
         "落库节奏",
         "int",
@@ -143,6 +161,33 @@ KNOBS: tuple[Knob, ...] = (
         low=0.0,
         high=1.0,
         note="风险分达到它才算异常、才写进摘要标签",
+    ),
+    Knob(
+        "profile.signal_damping",
+        "弱信号折扣",
+        "float",
+        settings.profile_signal_damping,
+        low=0.0,
+        high=1.0,
+        note="新 UA / 新接口路径 / 非常用时段 这类弱信号的合计分**乘这个折扣**",
+    ),
+    Knob(
+        "profile.weak_cap_ratio",
+        "弱信号封顶",
+        "float",
+        settings.profile_weak_cap_ratio,
+        low=0.0,
+        high=1.0,
+        note="只有弱信号时风险分封顶在「阈值×此值」，保证弱信号叠加永远不过阈值",
+    ),
+    Knob(
+        "profile.new_ip_min_share",
+        "新源 IP 占比门槛",
+        "float",
+        settings.profile_new_ip_min_share,
+        low=0.0,
+        high=1.0,
+        note="新源 IP 占本窗口来源地址的比例不足此值不计分（多出口/移动网常态）",
     ),
     Knob(
         "profile.risk_ttl_minutes",
@@ -283,6 +328,14 @@ def zscore() -> float:
     return _num(_BY_KEY["baseline.zscore"])
 
 
+def std_floor_ratio() -> float:
+    return _num(_BY_KEY["baseline.std_floor_ratio"])
+
+
+def std_floor_min() -> float:
+    return _num(_BY_KEY["baseline.std_floor_min"])
+
+
 def flush_seconds() -> int:
     return int(_num(_BY_KEY["baseline.flush_seconds"]))
 
@@ -325,6 +378,18 @@ def error_ratio() -> float:
 
 def risk_threshold() -> float:
     return _num(_BY_KEY["profile.risk_threshold"])
+
+
+def signal_damping() -> float:
+    return _num(_BY_KEY["profile.signal_damping"])
+
+
+def weak_cap_ratio() -> float:
+    return _num(_BY_KEY["profile.weak_cap_ratio"])
+
+
+def new_ip_min_share() -> float:
+    return _num(_BY_KEY["profile.new_ip_min_share"])
 
 
 def risk_ttl_minutes() -> int:

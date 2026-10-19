@@ -48,7 +48,10 @@ def test_event_title_is_concrete_category(hits_mod: ModuleType) -> None:
         )
         == "未知扫描器指纹"
     )
-    assert hits_mod.event_title_of({"signature_category": "unknown-class"}, "feature_match") == "其它可疑活动"
+    assert (
+        hits_mod.event_title_of({"signature_category": "unknown-class"}, "feature_match")
+        == "其它可疑活动"
+    )
     # 行为分析类：事件名就是规则名（规则名本身即具体行为）
     assert hits_mod.event_title_of({"rule": "内网慢速横向"}, "behavior_analysis") == "内网慢速横向"
 

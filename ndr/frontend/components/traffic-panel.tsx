@@ -150,6 +150,8 @@ export function TrafficPanel({ view }: { view: View }) {
   const [peers, setPeers] = React.useState<PeersResult | null>(null);
   const [peersLoading, setPeersLoading] = React.useState(false);
   const SRC = React.useMemo(() => ({ ips: `流量聚合（/api/traffic/ips?view=${view}）` }), [view]);
+  // 图例色块复用图表色（与节点保持一致，切暗色跟着变）
+  const t = chartTokens();
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -186,10 +188,12 @@ export function TrafficPanel({ view }: { view: View }) {
   const meta = VIEW_META[view];
   const rows = data?.items ?? [];
 
-  // 拓扑图（2026-10 用户要求）：
+  // 拓扑图（2026-10 用户要求，参照参考图样式）：
   // - **以当前选中的 IP 为中心**，其它 IP 环绕排布（手动算坐标，不用 force，位置稳定不飘）；
   // - 节点用**服务器图标**（不是圆圈）；
-  // - 线路可读：鼠标移到线路上提示**上行/下行各多少**。
+  // - 连线为**直线**（非曲线）；实线 = 双向流量已捕获，虚线 = 尝试连接但对方无响应回包（推测/未直接抓到）；
+  // - 可拖拽节点、可滚轮缩放（画布类型）；
+  // - 鼠标移到线路上提示**上行/下行各多少**。
   const graphOption = React.useMemo<EChartsOption>(() => {
     if (!peers) return {};
     // 颜色从 chartTokens() 取（原来是 5 个硬编码 hex）：图表蓝必须等于 UI 蓝，切暗色要跟着变
@@ -232,24 +236,32 @@ export function TrafficPanel({ view }: { view: View }) {
         symbol: SERVER_ICON,
         symbolSize: [26 + weight * 14, 26 + weight * 14],
         itemStyle: { color: node.internal ? t.series[1] : t.axis },
-        label: { show: true, position: "bottom", fontSize: 9, color: t.axis },
+        label: { show: true, position: "bottom", fontSize: 9, color: t.fg },
         category: node.internal ? "网段内" : "网段外",
       });
     });
 
-    const linkData = peers.edges.map((e) => ({
-      source: peers.center,
-      target: e.target === peers.center ? e.source : e.target,
-      value: e.bytes,
-      bytesOut: (e as { bytes_out?: number }).bytes_out ?? 0,
-      bytesIn: (e as { bytes_in?: number }).bytes_in ?? 0,
-      lineStyle: {
-        width: Math.max(1, Math.min(7, Math.log10(1 + e.bytes) / 1.6)),
-        color: t.track,
-        opacity: 0.55,
-        curveness: 0.06,
-      },
-    }));
+    const linkData = peers.edges.map((e) => {
+      const bytesOut = (e as { bytes_out?: number }).bytes_out ?? 0;
+      const bytesIn = (e as { bytes_in?: number }).bytes_in ?? 0;
+      // 虚线 = 尝试连接但对方无响应回包（bytes_in === 0，推测/未直接抓到）
+      const noResponse = bytesIn === 0;
+      return {
+        source: peers.center,
+        target: e.target === peers.center ? e.source : e.target,
+        value: e.bytes,
+        bytesOut,
+        bytesIn,
+        inferred: noResponse,
+        lineStyle: {
+          width: Math.max(1, Math.min(7, Math.log10(1 + e.bytes) / 1.6)),
+          color: t.series[0],
+          opacity: noResponse ? 0.5 : 0.8,
+          type: (noResponse ? "dashed" : "solid") as "dashed" | "solid",
+          curveness: 0,
+        },
+      };
+    });
 
     return {
       tooltip: {
@@ -257,16 +269,20 @@ export function TrafficPanel({ view }: { view: View }) {
         formatter: (params: unknown) => {
           const item = params as {
             dataType?: string;
-            data?: { name?: string; value?: number; bytesOut?: number; bytesIn?: number };
+            data?: { name?: string; value?: number; bytesOut?: number; bytesIn?: number; inferred?: boolean };
           };
           if (item.dataType === "edge") {
             // 线路：上下行分开报（用户明确要求）
+            const inferred = Boolean(item.data?.inferred);
             return [
               "<b>链路流量</b>",
               `上行 ↑ ${formatBytes(Number(item.data?.bytesOut || 0))}`,
               `下行 ↓ ${formatBytes(Number(item.data?.bytesIn || 0))}`,
               `合计 ${formatBytes(Number(item.data?.value || 0))}`,
-            ].join("<br/>");
+              inferred ? "⚠ 尝试连接但对方无响应回包（推测）" : "",
+            ]
+              .filter(Boolean)
+              .join("<br/>");
           }
           return `<b>${item.data?.name ?? ""}</b><br/>流量 ${formatBytes(Number(item.data?.value || 0))}`;
         },
@@ -485,9 +501,29 @@ export function TrafficPanel({ view }: { view: View }) {
         footer={
           peers ? (
             <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
+              <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.series[0] }} />
+                  中心（你点进去的 IP）
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.series[1] }} />
+                  网段内
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.axis }} />
+                  网段外
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <svg width="24" height="6" className="inline-block align-middle" aria-hidden="true">
+                    <line x1="0" y1="3" x2="24" y2="3" stroke={t.series[0]} strokeWidth="2" strokeDasharray="5 3" />
+                  </svg>
+                  虚线 = 尝试连接但对方无响应（推测）
+                </span>
+              </div>
               <p className="mb-1">
-                中心：<span className="font-mono text-foreground">{peers.center}</span> · 深蓝 =
-                中心 · 青 = 网段内 · 灰 = 网段外 · 连线粗细 = 流量 · 悬停线路看上下行
+                中心：<span className="font-mono text-foreground">{peers.center}</span> · 连线粗细 = 流量 ·
+                悬停线路看上行/下行 · 可拖拽节点、滚轮缩放
               </p>
               <div className="flex flex-wrap gap-2">
                 {peers.edges.slice(0, 20).map((e) => (
