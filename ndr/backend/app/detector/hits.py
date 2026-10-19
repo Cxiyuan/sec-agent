@@ -328,12 +328,111 @@ SIGNATURE_CATEGORY_LABELS: dict[str, str] = {
     "shellcode-detect": "Shellcode 执行",
     "exploit-kit": "漏洞利用工具",
     "default-login-attempt": "默认口令尝试",
+    "web-application-activity": "Web 应用探测",
+    "string-detect": "可疑字符串",
+    "unusual-client-port-connection": "非常规客户端端口",
+    "protocol-command-decode": "协议命令解析异常",
+    "icmp-event": "ICMP 事件",
+    "tcp-connection": "TCP 连接事件",
 }
+
+#: Suricata 的 `alert.category` 是**人话文本**（classification.config 里的名字），
+#: 上面那张表用的是 classtype 短名。这里把文本映射回短名，两种写法都能命中。
+#: 实测库里就是文本形态（`Detection of a Network Scan` / `Attempted Administrator
+#: Privilege Gain` …），不映射的话事件标题只能落到兜底文案。
+SIGNATURE_CATEGORY_ALIASES: dict[str, str] = {
+    "detection of a network scan": "network-scan",
+    "attempted administrator privilege gain": "attempted-admin",
+    "successful administrator privilege gain": "attempted-admin",
+    "attempted user privilege gain": "attempted-user",
+    "successful user privilege gain": "attempted-user",
+    "unsuccessful user privilege gain": "attempted-user",
+    "a network trojan was detected": "trojan-activity",
+    "attempted information leak": "attempted-recon",
+    "successful information leak": "attempted-recon",
+    "attempted denial of service": "attempted-dos",
+    "denial of service attack": "denial-of-service",
+    "misc activity": "misc-activity",
+    "misc attack": "misc-attack",
+    "web application attack": "web-application-attack",
+    "access to a potentially vulnerable web application": "web-application-activity",
+    "potential corporate privacy violation": "policy-violation",
+    "a suspicious filename was detected": "suspicious-filename-detect",
+    "an attempted login using a suspicious username was detected": "suspicious-login",
+    "attempt to login by a default username and password": "default-login-attempt",
+    "detection of a non-standard protocol or event": "non-standard-protocol",
+    "executable code was detected": "shellcode-detect",
+    "a suspicious string was detected": "string-detect",
+    "a client was using an unusual port": "unusual-client-port-connection",
+    "generic protocol command decode": "protocol-command-decode",
+    "generic icmp event": "icmp-event",
+    "a tcp connection was detected": "tcp-connection",
+}
+
+#: 一条事件的签名线索只存在于**聚合态样本**里（摘要顶层只有规则名/计数）：
+#: 样本是 `{"source": …, "doc": <原始文档>}`，签名引擎的原始文档把签名放在嵌套 `alert` 对象里。
+#: 取不到就会退化成「签名命中(高危)」这种笼统标题 —— 实测线上就是这个现象（2026-10）。
+def _sig_fields(item: dict[str, Any]) -> tuple[str, str, str]:
+    """从任意一层对象里取 (签名归类, 签名名, 签名 ID)；嵌套 ``alert`` 也认。"""
+    category = str(item.get("signature_category") or "").strip()
+    signature = str(item.get("signature") or "").strip()
+    sig_id = str(item.get("signature_id") or "").strip()
+    alert = item.get("alert")
+    if isinstance(alert, dict):
+        category = category or str(alert.get("category") or "").strip()
+        signature = signature or str(alert.get("signature") or "").strip()
+        sig_id = sig_id or str(alert.get("signature_id") or "").strip()
+    return category, signature, sig_id
+
+
+def signature_hint(digest: dict[str, Any]) -> tuple[str, str, str]:
+    """摘要 → 样本 → 样本内原始文档 → 证据，逐层找签名线索。"""
+    category, signature, sig_id = _sig_fields(digest)
+    if category or signature or sig_id:
+        return category, signature, sig_id
+    for sample in digest.get("samples") or []:
+        if not isinstance(sample, dict):
+            continue
+        category, signature, sig_id = _sig_fields(sample)
+        if not (category or signature or sig_id):
+            doc = sample.get("doc")
+            if isinstance(doc, dict):
+                category, signature, sig_id = _sig_fields(doc)
+        if category or signature or sig_id:
+            return category, signature, sig_id
+    for item in digest.get("evidence") or []:
+        if isinstance(item, dict):
+            category, signature, sig_id = _sig_fields(item)
+            if category or signature or sig_id:
+                return category, signature, sig_id
+    return "", "", ""
+
+
+def signature_category_label(category: str) -> str:
+    """classtype（短名或人话文本）→ 中文安全事件归类；认不出返回空串。"""
+    raw = " ".join(str(category or "").strip().lower().split())
+    if not raw:
+        return ""
+    slug = SIGNATURE_CATEGORY_ALIASES.get(raw) or raw.replace(" ", "-").replace("_", "-")
+    return SIGNATURE_CATEGORY_LABELS.get(slug, "")
+
+
+def _title_from_signature(signature: str) -> str:
+    """没有归类时用**签名名本身**当标题（比「其它可疑活动」具体得多）。
+
+    签名名形如 `[扫描-07] UDP 端口扫描 - 出向高频`：去掉方括号编号前缀后直接展示。
+    """
+    text = str(signature or "").strip()
+    if text.startswith("[") and "]" in text:
+        text = text.split("]", 1)[1].strip()
+    text = " ".join(text.split())
+    return text[:40]
 
 
 def source_kind_of(digest: dict[str, Any]) -> str:
     """判断这条命中属于哪类来源（三类之一）。"""
-    if str(digest.get("signature") or "").strip() or str(digest.get("signature_id") or "").strip():
+    _category, signature, sig_id = signature_hint(digest)
+    if signature or sig_id:
         return "feature_match"
     if str(digest.get("kind") or "") in ("account", "session") or digest.get("baseline"):
         return "baseline_deviation"
@@ -343,12 +442,14 @@ def source_kind_of(digest: dict[str, Any]) -> str:
 def event_title_of(digest: dict[str, Any], source_kind: str) -> str:
     """命中事件在界面上显示的**安全事件归类**（具体，不笼统）。"""
     if source_kind == "feature_match":
-        category = str(digest.get("signature_category") or "").strip().lower()
-        mapped = SIGNATURE_CATEGORY_LABELS.get(category)
+        category, signature, _sig_id = signature_hint(digest)
+        mapped = signature_category_label(category)
         if mapped:
             return mapped
-        if str(digest.get("signature") or "").strip():
-            return "其它可疑活动"
+        title = _title_from_signature(signature)
+        if title:
+            return title
+        return "其它可疑活动"
     return str(digest.get("rule") or "未归类事件")
 
 
