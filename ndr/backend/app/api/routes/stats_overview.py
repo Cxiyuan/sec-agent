@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -28,6 +28,10 @@ from app.config import settings
 from app.db.models import User
 from app.ingestion.log_types import stats_protocol_log_types
 from app.workers.log import get_logger
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 log = get_logger(__name__)
 
@@ -494,10 +498,8 @@ def stats_traffic(
         payload["cached"] = True
         return payload
 
-    from datetime import UTC, datetime as _dt, timedelta as _td
-
-    end_dt = _dt.now(UTC)
-    start_dt = end_dt - _td(minutes=want)
+    end_dt = datetime.now(UTC)
+    start_dt = end_dt - timedelta(minutes=want)
     start_iso = start_dt.isoformat().replace("+00:00", "Z")
     end_iso = end_dt.isoformat().replace("+00:00", "Z")
     out: dict[str, Any] = {

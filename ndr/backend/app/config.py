@@ -308,6 +308,17 @@ class Settings(BaseSettings):
     # 取 `std_eff = max(std, |mean|*ratio, min)` —— 恒定/极抖的维度不再一碰就炸。
     baseline_std_floor_ratio: float = 0.1
     baseline_std_floor_min: float = 2.0
+    # 数值基线的判据：poisson=计数上尾检验（默认）/ zscore=旧的 mean+z*std（保留回滚用）
+    baseline_scheme: str = "poisson"
+    # 上尾显著性阈值（做 Bonferroni 校正后更严：alpha/特征数）
+    baseline_alpha: float = 1e-3
+    # 学习源：window=按全量窗口采样（默认，见 baseline/sampler.py）/ digest=按摘要（旧行为）
+    baseline_learn_source: str = "window"
+    # 池化强度：等组（v4 /24、v6 /64）先验相当于多少条虚拟样本
+    baseline_pool_k: float = 20.0
+    # 偏差限额（最后一道闸，把"统计显著"收敛成"值得人看"）
+    baseline_deviation_cap_per_entity_hour: int = 3
+    baseline_deviation_cap_per_hour: int = 200
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）
     baseline_cleanup_seconds: int = 3600  # 过期画像清理的检查节奏（秒）
     baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库
@@ -325,7 +336,13 @@ class Settings(BaseSettings):
     asset_request_log_types: str = "http,dns"  # 哪些日志类型算「一次请求」（空 = 不记请求数）
     profile_enabled: bool = True
     profile_min_obs: int = 5  # 观测次数不足时只学习、不判异常（冷启动）
-    profile_risk_threshold: float = 0.75  # 画像异常风险分阈值（达到才报）
+    profile_risk_threshold: float = 0.75
+    # 画像打分方式：llr=似然比后验概率（默认）/ additive=旧的层级加和分（回滚用）
+    profile_scoring: str = "llr"
+    # LLR 先验：1/999 ≈ 千分之一的会话是恶意的（行业经验值，有标注后校准）
+    profile_prior_odds: float = 0.001
+    # 后验概率告警线：5% ≈ 1:20 的胜算（先验之上需要约 3.9 的 LLR）
+    profile_posterior_threshold: float = 0.05
     # 弱信号（新 UA / 新路径 / 非常用时段）**组合打折**，且总分封顶在阈值以下：
     # 加和式风险分的实测后果是 1,688 个实体靠「新源 IP + 新接口路径」正好凑到 0.60。
     profile_signal_damping: float = 0.6

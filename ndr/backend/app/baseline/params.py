@@ -69,6 +69,58 @@ KNOBS: tuple[Knob, ...] = (
         note="当前值 > 均值 + N 个标准差才算偏离",
     ),
     Knob(
+        "baseline.scheme",
+        "数值基线判据",
+        "text",
+        settings.baseline_scheme,
+        note="poisson=计数上尾检验（推荐）／zscore=旧的 mean+z·std（回滚用）",
+    ),
+    Knob(
+        "baseline.alpha",
+        "上尾显著性阈值",
+        "float",
+        settings.baseline_alpha,
+        low=1e-9,
+        high=0.2,
+        note="越小越严；实际阈值会按特征数做 Bonferroni 校正（alpha/3）",
+    ),
+    Knob(
+        "baseline.learn_source",
+        "数值基线学习源",
+        "text",
+        settings.baseline_learn_source,
+        note="window=按窗口学全量流量（推荐）／digest=只学命中规则的摘要（旧行为）",
+    ),
+    Knob(
+        "baseline.pool_k",
+        "等组池化强度",
+        "float",
+        settings.baseline_pool_k,
+        low=0.0,
+        high=1000.0,
+        note="自身样本少时向 /24（v6 /64）先验收缩，相当于多少条虚拟样本；0=不池化",
+    ),
+    Knob(
+        "baseline.deviation_cap_per_entity_hour",
+        "单实体偏差上限",
+        "int",
+        settings.baseline_deviation_cap_per_entity_hour,
+        low=0,
+        high=1000,
+        unit="次/小时",
+        note="同一源 IP 每小时最多报几次数值偏离；0=不限",
+    ),
+    Knob(
+        "baseline.deviation_cap_per_hour",
+        "全局偏差上限",
+        "int",
+        settings.baseline_deviation_cap_per_hour,
+        low=0,
+        high=100000,
+        unit="次/小时",
+        note="全部实体的数值偏离每小时总上限；0=不限",
+    ),
+    Knob(
         "baseline.std_floor_ratio",
         "标准差下限（均值比例）",
         "float",
@@ -161,6 +213,31 @@ KNOBS: tuple[Knob, ...] = (
         low=0.0,
         high=1.0,
         note="风险分达到它才算异常、才写进摘要标签",
+    ),
+    Knob(
+        "profile.scoring",
+        "画像打分方式",
+        "text",
+        settings.profile_scoring,
+        note="llr=似然比后验概率（默认，可排序）／additive=旧的层级加和分（回滚用）",
+    ),
+    Knob(
+        "profile.prior_odds",
+        "恶意会话先验概率",
+        "float",
+        settings.profile_prior_odds,
+        low=1e-9,
+        high=0.5,
+        note="LLR 打分的先验：0.001 表示「千分之一的会话是恶意的」；有标注数据后校准替换",
+    ),
+    Knob(
+        "profile.posterior_threshold",
+        "后验概率阈值",
+        "float",
+        settings.profile_posterior_threshold,
+        low=0.0,
+        high=1.0,
+        note="LLR 打分下后验概率达到它才算异常（默认 5%，约 1:20）",
     ),
     Knob(
         "profile.signal_damping",
@@ -380,6 +457,48 @@ def risk_threshold() -> float:
     return _num(_BY_KEY["profile.risk_threshold"])
 
 
+def knob(key: str) -> Any:
+    """按白名单键名读一个参数的**生效值**（类型按 Knob 定义强转）。
+
+    给"只在个别分支用到"的参数用，省得为每个 Knob 都配一个存取器；
+    键不在白名单里返回 `None`（不抛异常，调用方自己给默认值）。
+    """
+    entry = _BY_KEY.get(str(key or "").strip())
+    if entry is None:
+        return None
+    if entry.kind == "bool":
+        return _flag(entry)
+    if entry.kind == "int":
+        return int(_num(entry))
+    if entry.kind == "float":
+        return _num(entry)
+    return _text(entry)
+
+
+def scoring() -> str:
+    """画像打分方式：`llr`（默认，后验概率）或 `additive`（旧的层级加和分）。"""
+    value = _text(_BY_KEY["profile.scoring"]).strip().lower()
+    return value if value in ("llr", "additive") else "llr"
+
+
+def prior_odds() -> float:
+    """恶意会话的先验概率（不是 odds 的比值，是 P(恶意) 本身）。"""
+    return min(0.5, max(1e-9, _num(_BY_KEY["profile.prior_odds"])))
+
+
+def posterior_threshold() -> float:
+    return min(1.0, max(0.0, _num(_BY_KEY["profile.posterior_threshold"])))
+
+
+def alert_threshold() -> float:
+    """当前打分方式下的告警线。
+
+    两种打分的数值空间**不可混用**：加和分的 0.75 是「加权和」，后验概率的 0.05 是
+    「1:20 的胜算」。所有比较阈值的地方都必须走这个函数，否则一换开关就全都不报了。
+    """
+    return posterior_threshold() if scoring() == "llr" else risk_threshold()
+
+
 def signal_damping() -> float:
     return _num(_BY_KEY["profile.signal_damping"])
 
@@ -582,3 +701,31 @@ def reset(db: Session, keys: list[str] | None = None) -> int:
     db.commit()
     invalidate()
     return removed
+
+
+def scheme() -> str:
+    """数值基线判据：`poisson`（默认）或 `zscore`。脏值一律回落 poisson。"""
+    value = _text(_BY_KEY["baseline.scheme"]).strip().lower()
+    return value if value in ("poisson", "zscore") else "poisson"
+
+
+def alpha() -> float:
+    return _num(_BY_KEY["baseline.alpha"])
+
+
+def learn_source() -> str:
+    """学习源：`window`（默认，按窗口学全量）或 `digest`（旧行为）。"""
+    value = _text(_BY_KEY["baseline.learn_source"]).strip().lower()
+    return value if value in ("window", "digest") else "window"
+
+
+def pool_k() -> float:
+    return _num(_BY_KEY["baseline.pool_k"])
+
+
+def deviation_cap_per_entity_hour() -> int:
+    return int(_num(_BY_KEY["baseline.deviation_cap_per_entity_hour"]))
+
+
+def deviation_cap_per_hour() -> int:
+    return int(_num(_BY_KEY["baseline.deviation_cap_per_hour"]))

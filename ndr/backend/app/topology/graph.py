@@ -22,12 +22,16 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import settings
 from app.ingestion import relay_nodes
 from app.workers.log import get_logger
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 log = get_logger(__name__)
 

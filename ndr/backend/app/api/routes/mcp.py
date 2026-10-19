@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 import httpx
@@ -25,6 +25,10 @@ from app.db.base import get_db
 from app.db.models import ConclusionRecord, McpToken, User
 from app.investigation import tools as es_tools
 from app.mcp import auth as token_auth, calls, ndr_tools
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 

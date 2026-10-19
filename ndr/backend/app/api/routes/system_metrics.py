@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -24,6 +24,10 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 

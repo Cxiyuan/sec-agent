@@ -61,7 +61,9 @@ def detector_coverage(
     `delivered_total=5 / es_docs=55251 → ratio 0.0 / warn=true` 的恒假警。
     现在用最近一个统计区间的 `d_delivered` 折算出窗口增量；快照过期就明确标注、不下判警。
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
+
+    UTC = timezone.utc
 
     from app.config import settings
 
@@ -153,7 +155,9 @@ def detector_rate(
     不含队列自身增长——接口拿不到上一时刻的队列深度做基线，所以这是**下界**估计，
     不是原来注释里说的完整守恒（QA 应修 4 顺带修正的注释与实现不符）。
     """
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
+
+    UTC = timezone.utc
 
     from app.config import settings
 

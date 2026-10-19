@@ -14,7 +14,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
@@ -24,6 +24,10 @@ from app.ingestion.session_cookie import session_id_from_cookie
 from app.runtime_config import get as runtime_get
 from app.schemas import Severity, UnifiedLog
 from app.workers.log import get_logger
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 log = get_logger(__name__)
 

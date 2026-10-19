@@ -163,35 +163,84 @@ def _engine_with(engine_mod: ModuleType, key: str, **state: Any) -> Any:
     return eng
 
 
-def test_zero_std_baseline_no_longer_fires(engine_mod: ModuleType) -> None:
+#: 两套判据都要守：poisson 是当前默认，zscore 是回滚档（换了开关不能又冒回老误报）
+_SCHEMES = ("poisson", "zscore")
+
+
+def _force_scheme(engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, scheme: str) -> None:
+    """把判据钉死（`params` 读的是运行时可改配置，测试不能跟着环境里的覆盖值走）。"""
+    monkeypatch.setattr(engine_mod.params, "scheme", lambda: scheme)
+
+
+def _judge_conn(eng: Any, count: float) -> tuple[list[dict[str, Any]], int]:
+    """判一次「连接数」，另两个特征给 0（本例只关心 conn_count；学习源=window 时
+    `_numeric()` 只取已判好的结论，判异入口是 `_judge()`）。"""
+    return eng._judge(
+        "10.0.0.1",
+        {"conn_count": count, "distinct_dst_ports": 0.0, "distinct_dst_ips": 0.0},
+    )
+
+
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_zero_std_baseline_no_longer_fires(
+    engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
     """**回归核心**：std=0（历史值恒定）时，多 1 个连接不再算偏离。
 
     实测线上 10,011 个维度里 32% 是 std=0，而判据是 `value > mean + 2*std` ——
     原来等于「比历史恒定值多 1 就报」，抽样 200 条基线偏离事件里 11.5% 这么来的。
+    泊松判据下这个边界更彻底：λ=20 时看到 21 的上尾概率约 0.44，压根谈不上显著。
     """
+    _force_scheme(engine_mod, monkeypatch, scheme)
     eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=20.0, std=0.0)
-    digest = {"src_ip": "10.0.0.1", "count": 21, "dst_ports": [], "dst_ips": []}
-    deviations, _checked, warmed = eng._numeric(digest)
+    deviations, warmed = _judge_conn(eng, 21.0)
     assert warmed >= 1, "这个维度要算已预热，否则下面测不到判据"
     assert not [d for d in deviations if d["feature"] == "conn_count"], "多 1 个连接不该报"
 
 
-def test_zero_std_baseline_still_catches_big_jump(engine_mod: ModuleType) -> None:
-    """钳制不是把门关死：恒定 20 的基线出现 200 倍跳变照样要报。"""
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_zero_std_baseline_still_catches_big_jump(
+    engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    """钳制/上尾检验都不是把门关死：恒定 20 的基线出现 100 倍跳变照样要报。"""
+    _force_scheme(engine_mod, monkeypatch, scheme)
     eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=20.0, std=0.0)
-    digest = {"src_ip": "10.0.0.1", "count": 2000, "dst_ports": [], "dst_ips": []}
-    deviations, _checked, _warmed = eng._numeric(digest)
+    deviations, _warmed = _judge_conn(eng, 2000.0)
     hit = [d for d in deviations if d["feature"] == "conn_count"]
     assert hit, "大跳变必须报"
-    # 钳制生效时把原始 std 也带上，证据可追溯
-    assert hit[0]["std"] > 0
-    assert hit[0].get("std_raw") == 0.0
-    assert hit[0]["z"] is not None
+    if scheme == "zscore":
+        # 钳制生效时把原始 std 也带上，证据可追溯
+        assert hit[0]["std"] > 0
+        assert hit[0].get("std_raw") == 0.0
+        assert hit[0]["z"] is not None
+    else:
+        # 泊松档的证据是上尾概率与（Bonferroni 校正后的）阈值
+        assert hit[0]["p"] < 1e-3
+        assert hit[0]["alpha"] <= 0.001
+        assert hit[0]["mean"] > 0
 
 
-def test_std_floor_uses_mean_ratio(engine_mod: ModuleType) -> None:
+def test_std_floor_uses_mean_ratio(
+    engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """标准差下限取「均值×比例」：均值 1000 的基线，std=5 太脆，应被抬到 100。"""
+    _force_scheme(engine_mod, monkeypatch, "zscore")
     eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=1000.0, std=5.0)
-    digest = {"src_ip": "10.0.0.1", "count": 1010, "dst_ports": [], "dst_ips": []}
-    deviations, _c, _w = eng._numeric(digest)
+    deviations, _warmed = _judge_conn(eng, 1010.0)
     assert not [d for d in deviations if d["feature"] == "conn_count"], "均值 0.5% 的抖动不该报"
+
+
+def test_digest_learning_source_still_judges(
+    engine_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回滚档（`baseline.learn_source=digest`）没被改坏：摘要自己判异、顺带学习。"""
+    _force_scheme(engine_mod, monkeypatch, "zscore")
+    monkeypatch.setattr(engine_mod.params, "learn_source", lambda: "digest")
+    eng = _engine_with(engine_mod, "10.0.0.1:conn_count", mean=20.0, std=0.0)
+    digest = {"src_ip": "10.0.0.1", "count": 2000, "dst_ports": [], "dst_ips": []}
+    deviations, checked, warmed = eng._numeric(digest)
+    assert checked == 3 and warmed >= 1
+    hit = [d for d in deviations if d["feature"] == "conn_count"]
+    assert hit and hit[0]["z"] is not None
+    # 顺带学习：本轮的特征值进了待落库队列
+    assert eng._pending.get("10.0.0.1:conn_count") == [2000.0]

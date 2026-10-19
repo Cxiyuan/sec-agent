@@ -24,6 +24,7 @@ from app.baseline.asset import (
     finalize as assets_finalize,
     observe_entry as assets_observe_entry,
 )
+from app.baseline.poisson import bonferroni_alpha, count_p_value
 from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
 from app.schemas import UnifiedLog
@@ -35,6 +36,7 @@ log = get_logger(__name__)
 _FEATURES = ("conn_count", "distinct_dst_ports", "distinct_dst_ips")
 _WANT_BATCH = 200  # 缓存里没有的键攒够这么多就批量捞一次
 _MAX_LABEL_ENTITIES = 6  # 单条摘要最多带几个画像异常（防止摘要膨胀）
+_MAX_WINDOW_DEV = 20000  # 窗口偏离表最多留多少个 IP（超了丢最老的，计入 expired）
 
 
 def _num(value: Any) -> float:
@@ -42,6 +44,44 @@ def _num(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+#: 组的粒度：v4 按 /24、v6 按 /64（与画像「同族来源」口径一致）
+def group_prefix(ip: str) -> str:
+    """把源 IP 归到「等组」：v4 → /24，v6 → /64。取不到就返回空串（不参与池化）。"""
+    text = str(ip or "").strip()
+    if not text or text == "-":
+        return ""
+    if ":" in text:
+        parts = text.split(":")
+        return ":".join(parts[:4]) + "::/64" if len(parts) >= 4 else ""
+    octets = text.split(".")
+    if len(octets) == 4:
+        return ".".join(octets[:3]) + ".0/24"
+    return ""
+
+
+def pooled_lambda(own: dict[str, Any], group: dict[str, Any] | None, k: float) -> tuple[float, float]:
+    """经验贝叶斯部分池化：自身样本少时向「等组」先验收缩。
+
+    返回 `(均值, 方差)`。`own` / `group` 都是 `{count, mean, m2, std}` 形态。
+    单观测实体（n=1）几乎全用组先验 —— 这正是"48.7% 的键只被观测过 1 次"的解药。
+    """
+    n = _num(own.get("count"))
+    own_mean = _num(own.get("mean"))
+    own_var = (_num(own.get("m2")) / (n - 1)) if n >= 2 else 0.0
+    if group is None or k <= 0:
+        return own_mean, own_var
+    gn = _num(group.get("count"))
+    if gn < 2:
+        return own_mean, own_var
+    g_mean = _num(group.get("mean"))
+    g_var = _num(group.get("m2")) / (gn - 1) if gn >= 2 else 0.0
+    total = n + k
+    mean = (n * own_mean + k * g_mean) / total
+    # 全方差分解：组内方差加权 + 组间均值差（少了后一半，池化后方差偏小 → 假阳性）
+    second = (n * (own_var + own_mean * own_mean) + k * (g_var + g_mean * g_mean)) / total
+    return mean, max(0.0, second - mean * mean)
 
 
 class BaselineEngine:
@@ -55,6 +95,8 @@ class BaselineEngine:
         self._base: dict[str, dict[str, Any]] = {}  # 数值基线缓存（键 -> 状态）
         self._wanted: set[str] = set()  # 缓存里没有、想捞的键
         self._anomalies: dict[str, dict[str, Any]] = {}  # 最近判出的画像异常（按实体去重）
+        # 窗口通道的判异结果：src -> (判定时刻, 偏离列表, 已 warm 维度数)，等摘要来取
+        self._window_dev: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
         self._last_flush = 0.0
         self._last_cleanup = 0.0
         # 「距上次落库攒了多少条观测」——阈值必须看它，不能看累计值 stats["observed"]：
@@ -89,6 +131,109 @@ class BaselineEngine:
         if self._obs_since_flush >= max(1000, int(params.max_observations())):
             self.flush()
 
+    # ---------- 窗口：判异 + 学习（全量流量口径） ----------
+
+    def observe_window(self, sample: dict[str, Any]) -> None:
+        """把「一个窗口、一个源 IP」的计数样本**先判异、再并入**基线。
+
+        为什么单开一条通道：聚合摘要只包含**命中规则**的流量，拿它当学习源等于拿异常当常态
+        （见 `app/baseline/sampler.py`）。检测器在规则匹配**之前**把每条事件喂给采样器，
+        窗口到期每个 IP 一条样本 —— **判异和学习都在这条通道上**，口径才一致：摘要的
+        `count` 是「命中规则的事件数」，与全量窗口计数不是一回事，混着比就是拿两把尺子量。
+
+        判出来的偏离先存在 `_window_dev`（每 IP 只留最近一个窗口），等该 IP 的摘要产出时
+        由 `_numeric()` 取走挂上去 —— 只有摘才能落成命中事件，偏离必须搭这趟车。
+        """
+        if not params.baseline_enabled():
+            return
+        src = str(sample.get("src_ip") or "")
+        if not src or src == "-":
+            return
+        values = {feature: _num(sample.get(feature)) for feature in _FEATURES}
+        # 顺序很重要：先用**旧**基线判异，再把本窗口样本学进去（否则拿自己跟自己比）
+        found, warmed = self._judge(src, values)
+        if found or warmed:
+            self._window_dev[src] = (time.monotonic(), found, warmed)
+            self._trim_window_dev()
+        prefix = group_prefix(src)
+        added = 0
+        for feature in _FEATURES:
+            value = values[feature]
+            key = f"{src}:{feature}"
+            self._pending.setdefault(key, []).append(value)
+            self._wanted.add(key)
+            added += 1
+            if prefix:
+                # 组先验也要学：池化用它给"只观测过一两次"的实体兜底
+                gkey = f"grp:{prefix}:{feature}"
+                self._pending.setdefault(gkey, []).append(value)
+                self._wanted.add(gkey)
+        self.stats["baseline_sampled"] += added
+        if len(self._wanted) >= _WANT_BATCH:
+            self._load_wanted()
+
+    def _dev_keep_seconds(self) -> float:
+        """偏离/窗口结果的生命期：摘要按聚合窗口产出，比两个窗口更旧的没人要。"""
+        return max(120.0, float(settings.detector_agg_seconds) * 2)
+
+    def _trim_window_dev(self) -> None:
+        """限容：窗口偏离表最多留 `_MAX_WINDOW_DEV` 个 IP，超了先清过期的。"""
+        if len(self._window_dev) <= _MAX_WINDOW_DEV:
+            return
+        keep = self._dev_keep_seconds()
+        now = time.monotonic()
+        for src, record in list(self._window_dev.items()):
+            if now - record[0] > keep:
+                self.stats["baseline_deviation_expired"] += len(record[1])
+                self._window_dev.pop(src, None)
+        overflow = len(self._window_dev) - _MAX_WINDOW_DEV
+        if overflow > 0:
+            # dict 保序：丢最老的（这些 IP 的偏离等不到摘要就算了，计数可见）
+            for src in list(self._window_dev)[:overflow]:
+                self.stats["baseline_deviation_expired"] += len(self._window_dev[src][1])
+                self._window_dev.pop(src, None)
+
+    def _take_window_deviations(self, src: str) -> tuple[list[dict[str, Any]], int]:
+        """取走某 IP 最近一个窗口的判异结果（取走即删，避免同 IP 多条摘要重复报）。"""
+        record = self._window_dev.pop(src, None)
+        if record is None:
+            return [], 0
+        ts, found, warmed = record
+        if time.monotonic() - ts > self._dev_keep_seconds():
+            self.stats["baseline_deviation_expired"] += len(found)
+            return [], 0
+        return list(found), warmed
+
+    def _allow_deviation(self, src: str) -> bool:
+        """偏差限额：单实体每小时 + 全局每小时双上限。
+
+        为什么必须有：泊松检验哪怕做了 Bonferroni，基数一大（3,345 IP × 3 特征 × 288 窗口/天）
+        仍会积累可观假阳性。限额是**最后一道闸**，把"统计上显著"收敛成"值得人看"。
+        """
+        if self._client is None:
+            return True
+        hour = int(time.time() // 3600)
+        per_entity = int(params.deviation_cap_per_entity_hour())
+        globally = int(params.deviation_cap_per_hour())
+        try:
+            if per_entity > 0:
+                key = f"shentong:baseline:dev:{src}:{hour}"
+                hits = int(self._client.incr(key))
+                if hits == 1:
+                    self._client.expire(key, 3700)
+                if hits > per_entity:
+                    return False
+            if globally > 0:
+                key = f"shentong:baseline:dev:_all:{hour}"
+                hits = int(self._client.incr(key))
+                if hits == 1:
+                    self._client.expire(key, 3700)
+                if hits > globally:
+                    return False
+        except Exception as exc:  # noqa: BLE001 — 限额算不出来时不能挡住检测
+            log.debug("偏差限额计数失败（放行）: %s", exc)
+        return True
+
     # ---------- 摘要：打标 ----------
 
     def annotate(self, digest: dict[str, Any]) -> dict[str, Any]:
@@ -115,23 +260,53 @@ class BaselineEngine:
         return label
 
     def _numeric(self, digest: dict[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
-        """数值基线：算摘要的特征值 → 与基线比较 → 排队更新。"""
+        """数值基线：把判异结果挂到摘要上。
+
+        两种学习源（`baseline.learn_source`）：
+
+        - `window`（默认）：判异和学都发生在 `observe_window()`（全量流量口径），这里只是把
+          该 IP 最近一个窗口的结论取走 —— 口径一致才不会拿两把尺子量。
+        - `digest`（旧行为，回滚用）：用摘要自身的特征值判异，顺带学习。
+
+        判据（`baseline.scheme`）：`poisson`（默认，计数上尾）或 `zscore`（旧的 mean+z·std）。
+        """
         src = str(digest.get("src_ip") or "")
         count = _num(digest.get("count"))
         if not src or src == "-" or count <= 0:
             return [], 0, 0
+        if params.learn_source() == "window":
+            found, warmed = self._take_window_deviations(src)
+            if found:
+                self.stats["baseline_deviation_reported"] += len(found)
+            return found, len(_FEATURES), warmed
         values = {
             "conn_count": count,
             "distinct_dst_ports": float(len(digest.get("dst_ports") or [])),
             "distinct_dst_ips": float(len(digest.get("dst_ips") or [])),
         }
+        # 旧行为：先用摘要学，再判（落库在 flush，本轮判异看到的仍是上轮基线）
+        for feature in _FEATURES:
+            self._pending.setdefault(f"{src}:{feature}", []).append(values[feature])
+        deviations, warmed = self._judge(src, values)
+        self._trim_cache()
+        return deviations, len(_FEATURES), warmed
+
+    def _judge(self, src: str, values: dict[str, float]) -> tuple[list[dict[str, Any]], int]:
+        """把一组特征值跟基线比一遍，返回 `(偏离列表, 已 warm 的维度数)`。
+
+        只读缓存、不写待落库队列（学习由调用方负责）。
+        """
+        scheme = params.scheme()
+        # 多重比较校正：一次判定里要检验 len(_FEATURES) 个特征
+        alpha = bonferroni_alpha(params.alpha(), len(_FEATURES))
+        prefix = group_prefix(src)
+        pool_k = float(params.pool_k())
         zscore = params.zscore()
         deviations: list[dict[str, Any]] = []
         warmed = 0
         for feature in _FEATURES:
             value = values[feature]
             key = f"{src}:{feature}"
-            self._pending.setdefault(key, []).append(value)
             base = self._base.get(key)
             if base is None:
                 self._wanted.add(key)
@@ -141,34 +316,41 @@ class BaselineEngine:
             if int(base.get("count") or 0) < 2 or not base.get("warmed"):
                 continue
             warmed += 1
-            mean = _num(base.get("mean"))
+            group = self._base.get(f"grp:{prefix}:{feature}") if prefix else None
+            if prefix and group is None:
+                self._wanted.add(f"grp:{prefix}:{feature}")
+            mean, var = pooled_lambda(base, group, pool_k)
             raw_std = _num(base.get("std"))
-            # 标准差下限钳制（2026-10 误报治理，实测驱动）：
-            # 线上 10,011 个基线维度里 **32% 的 std=0**（历史值恒定），而判据是
-            # `value > mean + zscore*std` —— std=0 就等于「比均值多 1 个连接就报偏离」，
-            # 抽样 200 条基线偏离事件里有 11.5% 就是这么来的。
-            # 下限取「均值×比例」与「绝对底线」两者较大者，恒定基线因此要求有实际倍数偏离。
-            std = max(
-                raw_std,
-                abs(mean) * params.std_floor_ratio(),
-                params.std_floor_min(),
-            )
-            if value <= mean + zscore * std:
-                continue
             item: dict[str, Any] = {
                 "feature": feature,
                 "src_ip": src,
                 "value": value,
                 "mean": round(mean, 3),
-                "std": round(std, 3),
-                "z": round((value - mean) / std, 2) if std > 0 else None,
+                "std": round(raw_std, 3),
             }
-            if std > raw_std:
-                # 钳制生效时把原始值也带上，证据里能看出「这条是靠下限兜住的」
-                item["std_raw"] = round(raw_std, 3)
+            if scheme == "zscore":
+                # 旧判据：标准差下限钳制（32% 的键 std=0，不钳制就是"多 1 个连接就报"）
+                std = max(raw_std, abs(mean) * params.std_floor_ratio(), params.std_floor_min())
+                if value <= mean + zscore * std:
+                    continue
+                item["std"] = round(std, 3)
+                item["z"] = round((value - mean) / std, 2) if std > 0 else None
+                if std > raw_std:
+                    item["std_raw"] = round(raw_std, 3)
+            else:
+                p_value = count_p_value(value, mean=mean, var=var)
+                if p_value >= alpha:
+                    continue
+                item["p"] = float(f"{p_value:.3g}")
+                item["alpha"] = float(f"{alpha:.3g}")
+                item["var"] = round(var, 3)
+                if group is not None:
+                    item["pooled_with"] = f"grp:{prefix}"
+            if not self._allow_deviation(src):
+                self.stats["baseline_deviation_capped"] += 1
+                continue
             deviations.append(item)
-        self._trim_cache()
-        return deviations, len(_FEATURES), warmed
+        return deviations, warmed
 
     def _load_wanted(self) -> None:
         """把想捞的键批量读进缓存（读不到的记成「还没学到」）。"""

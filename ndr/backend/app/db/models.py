@@ -255,6 +255,11 @@ class EntityProfile(Base):
     #: 原来按事件条数（5 条日志）就放行，新实体刚出现就开始判异常，早期误报多。
     window_count: Mapped[int] = mapped_column(Integer, default=0)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 似然比后验概率（0~1，见 `baseline/profile.py::posterior_of`）。为什么要单独一列：
+    #: `risk_score` 是层级加和分，只要有强信号就顶到 1.0（实测 1,833 个过线会话里 TOP 全是 1.0），
+    #: 排序等于没有优先级；后验概率保留大小差异，界面/MCP 排序用它。判据也随之切换
+    #: （`profile.scoring=llr` 时看过后验阈值），见 `top_anomalies`。
+    posterior: Mapped[float] = mapped_column(Float, default=0.0)
     #: 风险分/异常理由的**判定时间**（= 本轮落库时间）。为什么要单独一列：`updated_at`
     #: 每轮观测都会刷新，拿它当「风险时间」会让几小时前的陈旧风险看着像刚刚算出来的
     #: （2026-10 实机 QA 发现的问题）。本轮无异常时 risk_score 归零、本列置空。

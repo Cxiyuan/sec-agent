@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -14,6 +14,10 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.db.base import get_db
 from app.db.models import AnalysisMemory, User
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 

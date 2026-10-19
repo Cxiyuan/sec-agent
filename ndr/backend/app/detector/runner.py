@@ -14,11 +14,16 @@ import json
 import signal
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+#: 等价于 3.11 的 `datetime.UTC`（本项目 requires-python >=3.11）；这里用别名写法，
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 from typing import Any
 
 from app import triage_policy
 from app.baseline.engine import BaselineEngine
+from app.baseline.sampler import WindowSampler
 from app.config import settings
 from app.db.base import SessionLocal
 from app.detector import health, hits, push
@@ -152,6 +157,9 @@ def run() -> None:
     agg = Aggregator(client, settings.detector_agg_seconds, settings.detector_agg_max_keys)
     # 基线（第 8 期）：数值 2σ 按摘要算、账号/会话画像逐条观测，算完随摘要打标给智能体
     engine = BaselineEngine(client)
+    # 数值基线的独立采样通道（2026-10 误报治理）：聚合摘要是「已命中规则的流量」，拿它学基线
+    # = 拿异常当常态（幸存者偏差）。这里在规则匹配**之前**按窗口给每个源 IP 计数，窗口对齐聚合窗口。
+    sampler = WindowSampler(settings.detector_agg_seconds)
     # 中继角色推算：按实际流量自动判定清单里的地址是「反代/WAF」还是「内网 DNS 转发器」，
     # 周期回写 PG（界面只读展示）；见 detector/relay_roles.py
     relay_roles = RelayRoleDetector()
@@ -262,6 +270,7 @@ def run() -> None:
                     handled,
                     stats,
                     engine,
+                    sampler,
                     relay_roles,
                     relay_dedup,
                 )
@@ -295,6 +304,9 @@ def run() -> None:
             stats["digest"] += 1
             # 历史采样的原料：按严重度累计 + 按规则计本区间数（进下一次统计块的采样点）
             mark_digest(stats, digest)
+        # 采样窗口到期 → 每 IP 一条样本：先判异、再学进基线（全量流量口径，见 baseline/sampler.py）
+        for sample in sampler.pop_ready():
+            engine.observe_window(sample)
         # 基线落库：画像观测 + 数值统计攒到这里一次性写（节奏由 baseline_flush_seconds 控制）
         engine.maybe_flush()
 
@@ -756,7 +768,9 @@ def _trim_queue(
         # 记录裁剪时段（H1）：兜底按水位扫 ES 会补回这些日志，这里留下面证供对账
         try:
             import json as _json
-            from datetime import UTC as _UTC, datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz
+
+            _UTC = _tz.utc
 
             client.lpush(
                 "shentong:trimmed:windows",
@@ -785,6 +799,7 @@ def _handle(
     handled: HandledRegistry,
     stats: Counter[str],
     engine: BaselineEngine,
+    sampler: WindowSampler,
     relay_roles: RelayRoleDetector,
     relay_dedup: RelayDedup,
 ) -> None:
@@ -849,6 +864,8 @@ def _handle(
     #    （见 log_types.is_baseline_eligible）。
     if log_types.is_baseline_eligible(entry):
         engine.observe(entry)
+        # 数值基线的窗口计数：和画像同一道闸门（签名命中是派生产物，不能当正常行为学）
+        sampler.observe(entry)
 
     # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
     candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import bcrypt
@@ -15,6 +15,10 @@ from sqlalchemy.orm import Session
 from app.config import FACTORY_ADMIN_PASSWORD, settings
 from app.db.base import get_db
 from app.db.models import User
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 

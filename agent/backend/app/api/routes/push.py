@@ -19,7 +19,7 @@ NDR 侧收到 2xx 就算送到、否则落回自己的持久队列重发。本�
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 import redis
@@ -34,6 +34,10 @@ from app.db.models import EventGroup
 from app.digest import bucket_minutes, digest_ips, group_fingerprint
 from app.workers.celery_app import celery_app
 from app.workers.log import get_logger
+
+#: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
+#: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
+UTC = timezone.utc
 
 log = get_logger(__name__)
 

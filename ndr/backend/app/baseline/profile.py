@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable
@@ -193,6 +194,83 @@ _FAIL_BANDS: tuple[tuple[int, bool, float], ...] = (
 HIGH = 3
 MED = 2
 LOW = 1
+
+
+#: 信号定义：`code → (似然比参数, 相关组)`。
+#:
+#: 为什么要有 code：原来的 `hits` 只有 (层级, 分值)，算得出"分数"但算不出"概率"，
+#: 也无法表达"这几个信号其实是一件事"。code 把"给机器算的信号"和"给人看的中文理由"分开。
+#:
+#: 为什么按组去相关：`new_src_ip` / `cross_ip` / `new_ua` 本质都是「换设备」，
+#: 朴素独立相加会把证据放大约 2~3 倍，正好把 OA 换手机的正常行为又推回阈值。
+#: 组内取最大 LLR（取最有力的那条证据），**组间**才相加。
+#:
+#: 先验概率刻意保守（`p_mal` 是行业经验值而非本环境实测）：有标注数据后由 L4 校准替换。
+#: 各组取「最有力的那条证据」（组内取最大 LLR），组间才相加。
+#:
+#: 参数标定目标（既有守卫用例 `tests/py/test_baseline_posterior.py` 钉住，改这里必须一起改）：
+#: 默认先验 0.001（logit≈-6.91）+ 后验阈值 0.05（logit≈-2.94）⇒ 需要 **总 LLR ≥ 3.96** 才告警。
+#: 于是三层语义与旧的层级加和打分完全一致：
+#:   HIGH 单独越线（cross_ip 4.32 / error_surge 4.40 / fail_burst_hard 5.14）；
+#:   MED 单独不够（new_src_ip 1.32 / fail_burst 2.80），但 MED+MED=4.12 过线；
+#:   弱信号合成一组（weak），组内只取最大（new_path 0.92），MED+weak=3.72 仍不过线
+#:   —— 保证「换手机 + 装 App + 换个钟点」这类弱信号叠加永远不告警。
+_SIGNALS: dict[str, tuple[str, float, float]] = {
+    # code                group      p(信号|恶意)  p(信号|良性)
+    "cross_ip": ("network", 0.60, 0.008),
+    "new_src_ip": ("network", 0.30, 0.08),
+    "error_surge": ("network", 0.65, 0.008),
+    "new_ua": ("weak", 0.25, 0.12),
+    "new_path": ("weak", 0.20, 0.08),
+    "unusual_hour": ("weak", 0.30, 0.15),
+    "fail_burst": ("auth", 0.70, 0.0425),
+    "fail_burst_hard": ("auth", 0.85, 0.005),
+}
+
+
+def _llr(code: str) -> float:
+    entry = _SIGNALS.get(code)
+    if entry is None:
+        return 0.0
+    _group, p_mal, p_ben = entry
+    if p_ben <= 0 or p_mal <= 0:
+        return 0.0
+    return math.log(p_mal / p_ben)
+
+
+def posterior_of(codes: list[str]) -> dict[str, Any]:
+    """把信号码聚合为**后验概率**（组内取最大、组间相加 + 先验）。
+
+    返回 `{"posterior": 0~1, "llr": n, "groups": {组: (code, llr)}, "contributions": {...}}`。
+    与加和分相比，概率语义带来的好处：不同实体的分数**可以按大小排序**（旧的加和分
+    只要有强信号就顶到 1.0，1,833 个过线会话里 TOP 全是 1.0，等于没有优先级）。
+    """
+    best: dict[str, tuple[str, float]] = {}
+    contributions: dict[str, float] = {}
+    for code in codes:
+        entry = _SIGNALS.get(code)
+        if entry is None:
+            continue
+        group = entry[0]
+        llr = _llr(code)
+        contributions[code] = round(llr, 3)
+        current = best.get(group)
+        if current is None or llr > current[1]:
+            best[group] = (code, llr)
+    total = sum(llr for _code, llr in best.values())
+    raw_prior = params.knob("profile.prior_odds")
+    prior = float(raw_prior) if isinstance(raw_prior, (int, float)) else 1e-3
+    prior = max(1e-9, min(1 - 1e-9, prior))
+    log_prior = math.log(prior / (1.0 - prior))
+    logit = total + log_prior
+    # 数值稳定：logit 很大时直接取 1
+    posterior = 1.0 / (1.0 + math.exp(-max(-700.0, min(700.0, logit))))
+    return {
+        "posterior": round(posterior, 6),
+        "llr": round(total, 3),
+        "groups": {g: code for g, (code, _llr_) in best.items()},
+        "contributions": contributions,
+    }
 
 
 def score_risk(hits: list[tuple[int, float]]) -> float:
@@ -441,15 +519,33 @@ def load_profiles(keys: list[tuple[str, str]]) -> dict[str, EntityProfile]:
 
 
 def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dict[str, Any]:
-    """与长期基线比对，返回 {reasons, risk, cold_start}。冷启动只学习不告警。"""
+    """与长期基线比对，返回 {reasons, risk, posterior, codes, alerted, cold_start}。
+
+    两个分数并存，用途不同：
+    - `risk`：**层级加和分**（0~1，`score_risk`）。落库在 `entity_profiles.risk_score`，
+      界面展示与 `min_risk` 过滤沿用它 —— 语义与改造前完全一致，回滚不动数据。
+    - `posterior`：**似然比后验概率**（`posterior_of`）。可横向排序（旧的加和分只要有强信号
+      就顶到 1.0，实测 1,833 个过线会话的 TOP 全是 1.0，等于没有优先级）。
+    `alerted`：本窗口算不算异常。`profile.scoring=llr` 时看后验概率，`additive` 时看加和分。
+    """
     # 冷启动按**窗口数**：原来按事件条数，一个实体刚来 5 条日志就参与打分，早期误报多。
     # 老画像（window_count 还是 0）由部署时的一次性回填处理，不会因此集体进冷启动。
     if profile is None or _safe_int(getattr(profile, "window_count", 0)) < params.min_windows():
-        return {"reasons": [], "risk": 0.0, "cold_start": True}
+        return {
+            "reasons": [],
+            "risk": 0.0,
+            "posterior": 0.0,
+            "llr": 0.0,
+            "codes": [],
+            "alerted": False,
+            "cold_start": True,
+        }
 
     reasons: list[str] = []
     # (层级, 分值) 收集，最后统一由 score_risk 聚合（见该函数的实测背景说明）
     hits: list[tuple[int, float]] = []
+    # 信号码：同一批事实的机器可读版本，喂给 posterior_of（见 _SIGNALS 的标定说明）
+    codes: list[str] = []
 
     known_ips = set((profile.src_ips or {}).keys())
     known_v6_prefixes = {_v6_prefix(ip) for ip in known_ips if ":" in ip}
@@ -478,12 +574,14 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         else:
             reasons.append(label)
             hits.append((MED, 0.35))
+            codes.append("new_src_ip")
 
     known_ua = set((profile.user_agents or {}).keys())
     new_ua = sorted(ua for ua in obs["user_agents"] if ua not in known_ua)
     if new_ua:
         reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
         hits.append((LOW, 0.2))
+        codes.append("new_ua")
 
     # 新接口路径：只算接口形态（静态资源已在采集时排掉），且要求画像已认识若干条路径，
     # 否则刚建的画像「第一条路径就是新的」等于白报。
@@ -492,6 +590,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     if new_paths and len(known_paths) >= max(0, int(params.path_min_known())):
         reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
         hits.append((LOW, 0.25))
+        codes.append("new_path")
 
     # 非常用时段：三个条件都要满足才判（否则就是整点批量误报，见 config 里那两个门槛）
     hist = profile.hour_hist or {}
@@ -507,6 +606,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         if len(rare) == len(obs["hours"]):
             reasons.append(f"非常用时段（北京时间）：{','.join(sorted(rare))} 时")
             hits.append((LOW, 0.15))
+            codes.append("unusual_hour")
 
     if kind == SESSION:
         # 只在**同族内** ≥ 2 个才算会话跨 IP：v4+v6 是同一客户端的双栈，不是劫持
@@ -517,6 +617,7 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         if len(v4) >= 2 or len(v6) >= 2:
             reasons.append(f"会话跨 {len(v4) + len(v6)} 个同族源 IP（疑似会话劫持）")
             hits.append((HIGH, 0.45))
+            codes.append("cross_ip")
 
     # 错误响应突增：404/5xx 风暴是探测与扫描最直接的痕迹（成功/失败都看不到它）
     errors = _safe_int(obs.get("errors"))
@@ -525,14 +626,32 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     if errors >= params.error_min_count() and error_ratio >= params.error_ratio():
         reasons.append(f"错误响应突增（{errors} 次，占本窗口事件 {error_ratio:.0%}）")
         hits.append((HIGH, 0.3))
+        codes.append("error_surge")
 
     score, suffix = fail_burst_score(obs["fail"], obs["success"])
     if score > 0:
         reasons.append(f"认证失败突增（{obs['fail']} 次，成功 {obs['success']} 次）{suffix}")
         # 分档即分层：达到阈值的那一档（≥20 次零成功）是强信号，其余算中等
-        hits.append((HIGH if score >= params.risk_threshold() else MED, score))
+        hard = score >= params.risk_threshold()
+        hits.append((HIGH if hard else MED, score))
+        codes.append("fail_burst_hard" if hard else "fail_burst")
 
-    return {"reasons": reasons, "risk": score_risk(hits), "cold_start": False}
+    risk = score_risk(hits)
+    posterior = posterior_of(codes)
+    if params.scoring() == "additive":
+        # 回滚档：判据与改造前一致（层级加和分过 risk_threshold）
+        alerted = risk >= params.risk_threshold()
+    else:
+        alerted = posterior["posterior"] >= params.posterior_threshold()
+    return {
+        "reasons": reasons,
+        "risk": risk,
+        "posterior": posterior["posterior"],
+        "llr": posterior["llr"],
+        "codes": codes,
+        "alerted": alerted,
+        "cold_start": False,
+    }
 
 
 def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -557,6 +676,9 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
                 "key": obs["key"],
                 "display": obs["display"],
                 "risk": round(detection["risk"], 3),
+                # 后验概率：可横向排序的那个分数（见 detect 的说明）
+                "posterior": round(float(detection.get("posterior") or 0.0), 6),
+                "alerted": bool(detection.get("alerted")),
                 "reasons": detection["reasons"],
                 "obs_count": _safe_int(profile.obs_count) if profile else 0,
                 "src_ips": sorted(obs["src_ips"].keys())[:5],
@@ -565,10 +687,9 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
             }
         )
     entities.sort(key=lambda x: -x["risk"])
-    threshold = params.risk_threshold()
     return {
         "entities": entities,
-        "anomalies": [e for e in entities if e["risk"] >= threshold],
+        "anomalies": [e for e in entities if e["alerted"]],
     }
 
 
@@ -648,10 +769,12 @@ def update_profiles(
                 risk = (risks or {}).get(f"{obs['kind']}|{obs['key']}") or {}
                 if risk:
                     row.risk_score = float(risk.get("risk") or 0.0)
+                    row.posterior = float(risk.get("posterior") or 0.0)
                     row.anomalies = list(risk.get("reasons") or [])[:20]
                     row.risk_at = now
                 else:
                     row.risk_score = 0.0
+                    row.posterior = 0.0
                     row.anomalies = []
                     # 风险时间跟着归零：只保留「当前风险」的判定时间，避免陈旧时间被当新时间
                     row.risk_at = None
@@ -702,6 +825,8 @@ def _profile_dict(p: EntityProfile) -> dict[str, Any]:
         "entity_display": p.entity_display,
         "obs_count": p.obs_count,
         "risk_score": p.risk_score,
+        # 后验概率（似然比打分）：与 risk_score 同时给出，界面要排序就用它
+        "posterior": p.posterior,
         # 风险分的判定时间：没有它，界面无法区分「现在异常」与「几小时前的陈旧结果」
         # （`updated_at` 每轮观测都刷新，不能当风险时间用）。
         "risk_at": p.risk_at.isoformat() if p.risk_at else None,
@@ -755,7 +880,14 @@ def list_profiles(
                 conds.append(EntityProfile.risk_score >= min_risk)
 
             count_q = select(func.count()).select_from(EntityProfile)
-            stmt = select(EntityProfile).order_by(EntityProfile.risk_score.desc())
+            # 排序口径跟着打分方式走：LLR 档按后验概率（有区分度），回滚档按风险分。
+            # 旧的加和分只要命中强信号就顶到 1.0，1,833 个过线会话 TOP 全是 1.0，排序等于没有。
+            order = (
+                EntityProfile.posterior.desc()
+                if params.scoring() == "llr"
+                else EntityProfile.risk_score.desc()
+            )
+            stmt = select(EntityProfile).order_by(order)
             for cond in conds:
                 count_q = count_q.where(cond)
                 stmt = stmt.where(cond)
@@ -776,7 +908,14 @@ def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]
     会话画像本身仍在算，摘要标签与 MCP 调查还看得到）。
     """
     ttl = max(0, int(params.risk_ttl_minutes()))
-    stmt = select(EntityProfile).where(EntityProfile.risk_score >= params.risk_threshold())
+    # 打分方式决定「过线」的判据：llr 看后验概率（可排序），additive 看层级加和分
+    llr_mode = params.scoring() != "additive"
+    if llr_mode:
+        stmt = select(EntityProfile).where(EntityProfile.posterior >= params.posterior_threshold())
+        order_by = EntityProfile.posterior.desc()
+    else:
+        stmt = select(EntityProfile).where(EntityProfile.risk_score >= params.risk_threshold())
+        order_by = EntityProfile.risk_score.desc()
     if kind:
         stmt = stmt.where(EntityProfile.kind == kind)
     if ttl > 0:
@@ -785,19 +924,21 @@ def top_anomalies(limit: int = 10, *, kind: str | None = None) -> dict[str, Any]
     try:
         with SessionLocal() as db:
             rows = db.scalars(
-                stmt.order_by(EntityProfile.risk_score.desc()).limit(
-                    max(1, min(int(limit or 10), 100))
-                )
+                stmt.order_by(order_by).limit(max(1, min(int(limit or 10), 100)))
             ).all()
     except Exception as exc:  # noqa: BLE001
         return {
             "threshold": params.risk_threshold(),
+            "posterior_threshold": params.posterior_threshold(),
+            "scoring": params.scoring(),
             "ttl_minutes": ttl,
             "items": [],
             "error": str(exc),
         }
     return {
         "threshold": params.risk_threshold(),
+        "posterior_threshold": params.posterior_threshold(),
+        "scoring": params.scoring(),
         "ttl_minutes": ttl,
         "items": [_profile_dict(r) for r in rows],
     }

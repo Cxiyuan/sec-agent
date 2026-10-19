@@ -478,7 +478,9 @@ def test_top_anomalies_only_lists_current_risk(
     out = profiles.top_anomalies(5)
     assert out["ttl_minutes"] == 60
     where = _where_of(session.statements[0])
-    assert "risk_score" in where
+    # 阈值列跟着打分方式走：llr 档按后验概率（有区分度），回滚档才是旧的 risk_score
+    expected = "posterior" if profiles.params.scoring() == "llr" else "risk_score"
+    assert expected in where, session.statements[0]
     assert "risk_at" in where, session.statements[0]
 
 

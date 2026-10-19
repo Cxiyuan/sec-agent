@@ -39,6 +39,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS source_kind VARCHAR(24) DEFAULT 'behavior_analysis'",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS window_count INTEGER NOT NULL DEFAULT 0",
+    # 画像后验概率（似然比打分）：risk_score 是加和分，强信号一出现就顶到 1.0，排序无区分度；
+    # 后验概率保留大小差异，TOP 排序与 llr 判据都靠它
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS posterior DOUBLE PRECISION NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
