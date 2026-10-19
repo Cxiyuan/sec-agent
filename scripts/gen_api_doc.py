@@ -15,9 +15,6 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "ndr" / "backend"))
-
-from app.main import app
 
 MODULES: list[tuple[str, str, str]] = [
     (
@@ -98,6 +95,7 @@ FOOTER = """
 ## 三、前端对接要点
 
 ### 事件中心 / 运营中心
+
 - 列表：`GET /api/detector/hits`，筛选参数 ——
   `minutes`（时间范围）、`source_kind`（三类来源）、`severity`、`rule`（事件归类子串）、
   `ip`（请求方/客户端/中继/目的）、`q`（跨字段关键字）、`include_ignored`、`sort=recent|oldest|count`、
@@ -108,12 +106,26 @@ FOOTER = """
 - 详情 / 处置：`GET /hits/{id}`、`POST /hits/{id}/ignore`、`POST /hits/{id}/whitelist`。
 
 ### 其它页面
+
 - **运营中心**：`/api/stats/overview?hours=24`、`/api/stats/traffic?minutes=30`、`/api/system/metrics`、`/api/health`
 - **日志检索**：`/api/logs/fields` → `/api/logs/facets` → `/api/logs/search` → `/api/logs/doc/{id}`
 - **可视化流量**：`/api/traffic/ips?view=outbound|lateral|egress` → `/api/traffic/peers?ip=…`
 - **资产中心**：`/api/assets/discover|scan|groups|records`
 - **行为画像**：`/api/baseline`、`/api/baseline/profiles`、`/api/baseline/numeric`、`/api/baseline/config`
 - **配置管理**：`/api/rules`、`/api/suricata/rules`、`/api/zeek/*`、`/api/es/*`、`/api/config/audit`
+
+## 三·补、近期字段变化（端点没变，字段有增）
+
+| 接口 | 新增字段 | 说明 |
+| --- | --- | --- |
+| `GET /api/detector/hits`、`/hits/{id}` | `event_type_labels` | 事件类型的**中文名**（`signature_hit` → 签名命中、`protocol_anomaly` → 协议异常、`baseline_deviation` → 基线偏离）。与 `event_types`（英文码）并列返回，前端不用自建映射表 |
+| `GET /api/detector/hits`、`/hits/{id}` | （已有）`source_kind` / `source_label` | 三类来源：特征匹配 / 行为分析 / 基线偏离 |
+| `GET /api/baseline/profiles` | `posterior` | 似然比**后验概率**（0~1）。打分方式=llr 时列表按它排序；`risk_score` 仍返回（加和分，回滚口径） |
+| `GET /api/baseline/config` | 9 个新参数键 | `baseline.scheme` / `alpha` / `learn_source` / `pool_k` / `deviation_cap_per_entity_hour` / `deviation_cap_per_hour`、`profile.scoring` / `prior_odds` / `posterior_threshold`（都可在界面改、30 秒生效） |
+| `POST /api/baseline/alerts/{profile_id}/disposition` | **新端点** | 告警处置（`false_positive` / `confirm`）；`profile_id` 可填画像 UUID 或实体键。判成误报后该实体（或 `signal` 指定的那一路证据）在 `profile.false_positive_suppress_days` 天内不再参与打分 |
+| `GET /api/baseline/alerts/dispositions` | **新端点** | 最近处置记录（核对降权是否生效） |
+| `GET /api/detector/hits`、`/hits/{id}` | `cluster_id` | 告警簇 ID：同一事件归类 + 同一 /24（v6 /64）+ 同一小时归为一簇，界面可把同簇收成一行 |
+| `hit_events.evidence`（事件证据） | `p` / `alpha` / `var` / `pooled_with` | 泊松判据下的偏离证据：上尾概率、校正后阈值、方差、是否用了组池化；回滚到 zscore 时仍是 `z` / `std` / `std_raw` |
 
 ## 四、前端必读的坑
 1. 登录是**表单编码**，不是 JSON。
@@ -126,6 +138,10 @@ FOOTER = """
 
 
 def main() -> int:
+    # 延迟导入：先把后端加入 sys.path，再导入应用（模块顶层做这件事会踩 I001/E402）
+    sys.path.insert(0, str(ROOT / "ndr" / "backend"))
+    from app.main import app  # 延迟到 sys.path 就绪之后
+
     spec = app.openapi()
     rows: list[tuple[str, str, str, str, str]] = []
     for path, item in spec.get("paths", {}).items():

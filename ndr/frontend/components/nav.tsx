@@ -22,13 +22,13 @@ import { sidebarOf, sidebarSectionOf } from "@/lib/nav-config";
  * - 顶部写明分区名、子页按 `group` 分组：8 条平铺时找「配置体检」要逐条读，
  *   分成「接入与范围 / 检测与过滤 / 存储与对接 / 诊断与账号」之后是扫一眼定位。
  *
- * 2026-10 三次改版（用户反馈「功能配置菜单不美观简洁」）：
- * - 条目从「图标 + 标题 + 描述」三行改成**单行**（`h-8`，32px）。8 条从 620px 降到约 380px，
- *   1080p 上不再需要滚动。描述搬到 `title`（鼠标悬停出原生提示），并补一行 `sr-only`
- *   —— `title` 在键盘聚焦时不弹、读屏支持也不一致，只给 `title` 等于把描述丢给了鼠标用户。
- * - 选中态从 5 个信号减到 2 个（去掉左侧竖条），hover 从「色相差」改成「表面差」
- *   （`bg-surface-1`），让 hover 与选中分属两个视觉通道（详见下方注释）。
- * - 宽度改吃 CSS 变量 `--sidebar-w`，与 `page-shell` 的 `ml-` 同源（见 globals.css）。
+ * 2026-10 四次改版（用户要求「比照深信服态势感知平台复刻」）：
+ * - 侧栏整块翻深藏青（`--sidebar-*`，globals.css）：深信服 SIP 是「深导航 + 浅内容」，
+ *   内容区不动，只有侧栏是深的 —— 一眼换产品，但表格/表单的浅色密度不受影响；
+ * - 激活项改「蓝底白字 + 左侧 3px 亮蓝竖条」（深信服激活态）：之前 bg-brand-50 +
+ *   text-primary 在深底上不成立；竖条贴在侧栏左缘（before:-left-2 抵消 nav 的 px-2）；
+ * - 分组标题前加 3px 小竖条，与激活项同一根「标尺」；
+ * - hover 从「色相差」回到「表面差」：bg-sidebar-hover（深一档），文字提亮到白。
  */
 export function SideNav() {
   const pathname = usePathname();
@@ -59,13 +59,13 @@ export function SideNav() {
   return (
     // 侧栏宽必须吃 CSS 变量：对面 page-shell 的 `ml-[var(--sidebar-w)]` 是同一个值，
     // 写两处硬编码（w-60 / ml-60）时改一边就会错位。
-    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-[var(--sidebar-w)] flex-col border-r border-border bg-card">
+    <aside className="fixed left-0 top-14 flex h-[calc(100vh-3.5rem)] w-[var(--sidebar-w)] flex-col border-r border-sidebar-border bg-sidebar-bg">
       {/* 分区名：页头的一级菜单只标「选中」，侧边栏顶部再写一次，是为了让这块面板有主语 ——
           8 个二级页来回切的时候，标题不动、只有下面高亮在动，位置感才稳。
           图标轨（<1024）下 56px 放不下 4 个中文字符（会挤成竖排），整块隐藏。 */}
       {section ? (
-        <div className="shrink-0 border-b border-border-subtle px-4 py-2.5 max-lg:hidden">
-          <p className="text-xs font-medium text-muted-foreground">{section.label}</p>
+        <div className="shrink-0 border-b border-sidebar-border px-4 py-2.5 max-lg:hidden">
+          <p className="text-xs font-medium text-sidebar-group">{section.label}</p>
         </div>
       ) : null}
       <nav aria-label={section?.label} className="flex-1 overflow-auto px-2 py-2">
@@ -79,16 +79,19 @@ export function SideNav() {
                   {/* 图标轨下组名放不下，分组的「隔断」语义用 1px 分隔线表达 */}
                   <div
                     aria-hidden
-                    className="mx-2 my-2 border-t border-border-subtle lg:hidden"
+                    className="mx-2 my-2 border-t border-sidebar-border lg:hidden"
                   />
                   <p
                     className={cn(
-                      "px-3 pb-1.5 text-xs font-medium text-muted-foreground/70 max-lg:hidden",
+                      // 分组标题前的 3px 小竖条与激活项左侧那根同款：分组边界靠「一根标尺」
+                      // 表达，不靠多加的灰字层级
+                      "flex items-center gap-1.5 px-3 pb-1.5 text-xs font-medium text-sidebar-group max-lg:hidden",
                       // 分组用「1px 线 + 12px」而不是「16px 空白」：32px 的密集条目之间，
                       // 只用间距表达的分组会被读成「一条特别宽的空隙」而不是分组边界。
-                      i === 0 ? "pt-0" : "mt-2 border-t border-border-subtle pt-3",
+                      i === 0 ? "pt-0" : "mt-2 border-t border-sidebar-border pt-3",
                     )}
                   >
+                    <span aria-hidden className="h-2.5 w-[3px] shrink-0 rounded-full bg-sidebar-bar" />
                     {it.group}
                   </p>
                 </>
@@ -100,20 +103,18 @@ export function SideNav() {
                 title={it.desc ? `${it.label} · ${it.desc}` : it.label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  // 选中态信号从 5 个减到 2 个：`bg-brand-50` + `text-primary`（图标继承
-                  // currentColor 算同一个信号）。去掉了左侧 2px 竖条 —— 32px 单行条目下
-                  // 眼睛落在文字上（x≈12）而不是最左边缘（x=0..2），竖条基本看不见，
-                  // 而它 + 底色 + 双色文字在亮色主题上读起来偏重。
-                  // hover 从「色相差」改成「表面差」（bg-surface-1）：原来 `--accent` 与
-                  // `--brand-50` 是同一个值，扫过侧栏时当前页那一条会「消失」在其余 7 条里。
-                  // 表面层级 vs 品牌色是两个通道，不可能混淆。
-                  "group mb-0.5 flex h-8 items-center gap-2 rounded-sm px-3 text-13 transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                  // relative：给激活项的 before 竖条当定位锚（见下）
+                  "group relative mb-0.5 flex h-8 items-center gap-2 rounded-sm px-3 text-13 transition-colors",
+                  // 深底上的焦点环用侧栏文字色（ring-ring/40 的钢蓝在深藏青上几乎看不见）
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-fg/60",
                   // 图标轨（<1024）：居中图标、取消横向 padding
                   "max-lg:justify-center max-lg:gap-0 max-lg:px-0",
                   active
-                    ? "bg-brand-50 font-medium text-primary"
-                    : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
+                    ? // 深信服激活态：蓝底白字 + 左侧 3px 亮蓝竖条。竖条 before:-left-2
+                      // 抵消 nav 的 px-2，贴在侧栏左缘（overflow 裁剪发生在 padding box，
+                      // -2 落进 padding 区，不会被滚动容器切掉）。
+                      "bg-sidebar-active font-medium text-white before:absolute before:-left-2 before:top-1/2 before:h-4 before:-translate-y-1/2 before:w-[3px] before:rounded-full before:bg-sidebar-bar max-lg:before:left-0"
+                    : "text-sidebar-fg hover:bg-sidebar-hover hover:text-white",
                 )}
               >
                 {it.icon ? (
@@ -131,11 +132,11 @@ export function SideNav() {
         })}
       </nav>
       {me?.default_password_in_use && (
-        <div className="border-t border-border-subtle p-3">
+        <div className="border-t border-sidebar-border p-3">
           <Link
             href="/config/account"
             title="仍在使用出厂口令 —— 点这里去改"
-            className="flex items-start gap-2 rounded-sm border border-sev-critical-bd bg-sev-critical-bg px-2 py-2 text-xs text-sev-critical-fg hover:brightness-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 max-lg:justify-center max-lg:gap-0 max-lg:px-0"
+            className="flex items-start gap-2 rounded-sm border border-sidebar-warn-bd/50 bg-sidebar-warn-fg/10 px-2 py-2 text-xs text-sidebar-warn-fg hover:bg-sidebar-warn-fg/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-fg/60 max-lg:justify-center max-lg:gap-0 max-lg:px-0"
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 max-lg:mt-0" />
             {/* 图标轨下文字会挤成竖排，只留图标 + title */}

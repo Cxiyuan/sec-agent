@@ -9,6 +9,7 @@ import {
   Drawer,
   EmptyState,
   Input,
+  Pagination,
   Section,
   Skeleton,
   Stat,
@@ -167,6 +168,7 @@ function HourBars({ hist }: { hist: Record<string, number> | undefined }) {
   );
 }
 
+/** 分页条：2026-10 换成共享编号分页（深信服式，见 packages/ui 的 Pagination）。 */
 function Pager({
   total,
   page,
@@ -176,24 +178,13 @@ function Pager({
   page: number;
   onPage: (next: number) => void;
 }) {
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return (
-    <div className="flex items-center gap-2 text-xs tabular-nums text-muted-foreground">
-      <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => onPage(page - 1)}>
-        上一页
-      </Button>
-      <span>
-        第 {page + 1} / {pages} 页 · 共 {total} 条
-      </span>
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={page + 1 >= pages}
-        onClick={() => onPage(page + 1)}
-      >
-        下一页
-      </Button>
-    </div>
+    <Pagination
+      page={page}
+      pages={Math.max(1, Math.ceil(total / PAGE_SIZE))}
+      total={total}
+      onPage={onPage}
+    />
   );
 }
 

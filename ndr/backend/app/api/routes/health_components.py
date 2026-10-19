@@ -23,7 +23,7 @@ from app.api.routes import logstash as logstash_route
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import User
-from app.detector import health, push
+from app.detector import health, push, thresholds
 from app.workers.log import get_logger
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
@@ -414,6 +414,46 @@ def _freshness_item(
     }
 
 
+def _thresholds_item(client: Any) -> dict[str, Any]:
+    """运行阈值项：Redis 碎片率 / 频率规则键量 / 判重丢弃 / 采样通道活性。
+
+    这些指标不会让接口报错，只会静默积累到某天"全链路卡死"（Redis `noeviction` 拒写）。
+    放在健康检查里，运营中心就能在出问题**之前**看到黄灯。
+    """
+    stats: dict[str, Any] = {}
+    try:
+        stats = client.hgetall(settings.baseline_stats_key) or {}
+        stats = {
+            (k.decode() if isinstance(k, bytes) else str(k)): (
+                v.decode() if isinstance(v, bytes) else v
+            )
+            for k, v in stats.items()
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取基线心跳失败（阈值项降级）: %s", exc)
+    result = thresholds.evaluate(client, stats=stats)
+    level = result.get("level") or "ok"
+    state = STATE_OK if level == "ok" else (STATE_DOWN if level == "crit" else STATE_DEGRADED)
+    bad = [it for it in result.get("items") or [] if it.get("level") != "ok"]
+    if bad:
+        detail = "；".join(
+            f"{it['key']}={it['value']}（阈值 {it['threshold']}）" for it in bad[:3]
+        )
+    else:
+        detail = "全部在阈值内："
+        detail += "、".join(
+            f"{it['key']}={it['value']}" for it in (result.get("items") or [])[:4]
+        )
+    return {
+        "key": "thresholds",
+        "name": "运行阈值",
+        "state": state,
+        "detail": detail[:400],
+        "last_seen": "",
+        "items": result.get("items") or [],
+    }
+
+
 def _collect() -> dict[str, Any]:
     """跑一轮全部探测（不缓存）。每项经 `_guard`，互不牵连。"""
     client: Any = None
@@ -486,6 +526,15 @@ def _collect() -> dict[str, Any]:
             _stub("capture", "采集质量（采集类协议异常）", STATE_UNKNOWN),
         )
     )
+
+    if client is not None:
+        items.append(
+            _guard(
+                "thresholds",
+                lambda: _thresholds_item(client),
+                _stub("thresholds", "运行阈值", STATE_UNKNOWN),
+            )
+        )
 
     return {
         "checked_at": datetime.now(UTC).isoformat(),

@@ -10,6 +10,7 @@ import {
   EmptyState,
   Input,
   LoadingBlock,
+  Pagination,
   Section,
   Table,
   TableBody,
@@ -823,54 +824,18 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   </Table>
                 )}
                 {recordsReady && recordsTotal > 0 ? (
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-2 text-xs text-muted-foreground">
-                    <span>共 {recordsTotal} 条</span>
-                    <div className="flex items-center gap-2">
-                      <span>每页</span>
-                      <select
-                        value={recordsSize}
-                        onChange={(e) => {
-                          setRecordsSize(Number(e.target.value));
-                          setRecordsPage(0);
-                        }}
-                        className="h-7 rounded-md border border-border bg-surface-2 px-1 text-xs text-foreground"
-                      >
-                        {[20, 50, 100, 200].map((n) => (
-                          <option key={n} value={n}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={recordsPage <= 0}
-                        onClick={() => setRecordsPage((p) => Math.max(0, p - 1))}
-                      >
-                        上一页
-                      </Button>
-                      <span className="tabular-nums">
-                        {recordsPage + 1} / {Math.max(1, Math.ceil(recordsTotal / recordsSize))}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={
-                          recordsPage >= Math.max(1, Math.ceil(recordsTotal / recordsSize)) - 1
-                        }
-                        onClick={() =>
-                          setRecordsPage((p) =>
-                            Math.min(
-                              Math.max(1, Math.ceil(recordsTotal / recordsSize)) - 1,
-                              p + 1,
-                            ),
-                          )
-                        }
-                      >
-                        下一页
-                      </Button>
-                    </div>
-                  </div>
+                  <Pagination
+                    className="border-t border-border px-3 py-2"
+                    page={recordsPage}
+                    pages={Math.max(1, Math.ceil(recordsTotal / recordsSize))}
+                    total={recordsTotal}
+                    size={recordsSize}
+                    onPage={setRecordsPage}
+                    onSize={(n) => {
+                      setRecordsSize(n);
+                      setRecordsPage(0);
+                    }}
+                  />
                 ) : null}
               </CardContent>
             </Card>

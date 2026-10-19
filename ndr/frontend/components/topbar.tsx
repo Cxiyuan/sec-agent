@@ -22,6 +22,10 @@ import { cn } from "@shentong/ui";
  * 「系统配置总览」页与齿轮入口已取消（用户 2026-10 要求）：配置项都在左侧各页里，
  * 不需要一层索引页；`/admin/settings` 不再存在。
  *
+ * 2026-10 复刻深信服 SIP：页头与侧边栏同为深藏青（`--sidebar-*`），连成一整块深色
+ * chrome（深信服就是「深顶栏 + 深侧栏 + 浅内容」）。下拉/铃铛浮层仍是浅色卡片 ——
+ * 深色栏上挂浅色浮层是正常模式，阴影已经表达了层级。
+ *
  * 铃铛的语义（本页自己聚合，不新增后端接口）：把**需要马上处理**的运行告警汇成一个数，
  * 点开每条都能跳到对应页面。数据源都是既有的只读接口，取不到就当没有（不报错、不挡住页面）。
  */
@@ -133,10 +137,10 @@ export function TopBar() {
   const notices = noticesOf(stats, push);
 
   return (
-    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-border bg-card px-4">
+    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-sidebar-border bg-sidebar-bg px-4">
       <div className="flex items-center gap-2 px-1">
-        <Shield className="h-6 w-6 text-primary" />
-        <span className="whitespace-nowrap text-base font-semibold tracking-tight">深瞳 · NDR</span>
+        <Shield className="h-6 w-6 text-sidebar-bar" />
+        <span className="whitespace-nowrap text-base font-semibold tracking-tight text-white">深瞳 · NDR</span>
       </div>
 
       {/* 一级菜单：分析中心鼠标停留展开二级菜单，其余直接进默认子页 */}
@@ -151,8 +155,8 @@ export function TopBar() {
                 className={cn(
                   "flex items-center gap-1 rounded-sm px-3 py-1.5 text-sm transition-colors",
                   active
-                    ? "bg-primary/10 font-medium text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ? "bg-white/10 font-medium text-white"
+                    : "text-sidebar-fg hover:bg-sidebar-hover hover:text-white",
                 )}
               >
                 {section.label}
@@ -193,7 +197,7 @@ export function TopBar() {
             aria-label={notices.length ? `告警 ${notices.length} 条` : "告警"}
             title={notices.length ? "有需要处理的事项" : "暂无告警"}
             onClick={() => setOpen((v) => !v)}
-            className="relative rounded-sm p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className="relative rounded-sm p-2 text-sidebar-fg hover:bg-sidebar-hover hover:text-white"
           >
             <Bell className="h-5 w-5" />
             {notices.length > 0 && (
@@ -224,13 +228,13 @@ export function TopBar() {
           )}
         </div>
 
-        <span className="hidden text-sm text-muted-foreground sm:inline" title="当前登录用户">
+        <span className="hidden text-sm text-sidebar-fg sm:inline" title="当前登录用户">
           {me?.username ?? "—"}
         </span>
 
         <button
           type="button"
-          className="rounded-sm px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="rounded-sm px-2 py-1 text-sm text-sidebar-fg hover:bg-sidebar-hover hover:text-white"
           onClick={() => {
             clearToken();
             router.push("/login");

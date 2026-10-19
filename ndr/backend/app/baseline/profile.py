@@ -16,6 +16,7 @@ import hashlib
 import ipaddress
 import math
 import re
+import time
 from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -27,9 +28,11 @@ from app.baseline import params
 from app.baseline.stats import like_pattern
 from app.config import settings
 from app.db.base import SessionLocal
-from app.db.models import EntityProfile
+from app.db.models import AlertDisposition, EntityProfile
 from app.ingestion.session_cookie import session_id_from_cookie as _shared_session_id
 from app.schemas import UnifiedLog
+
+UTC = timezone.utc
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -359,6 +362,26 @@ def session_entity(cookie: str) -> tuple[str, str]:
     return digest, digest[:8]
 
 
+def device_entity(entry: UnifiedLog) -> tuple[str, str]:
+    """设备实体：`UA + TLS 指纹（JA3/JA4）` → 哈希。返回 (entity_key, display)。
+
+    为什么要按设备而不是按 cookie 建会话画像（2026-10 实测）：
+    会话实体原来按 cookie 值建键，而 cookie 会轮换、每个短命会话都是新实体 ——
+    实测 **10.3 万个会话画像 vs 1,876 个账号画像**，绝大多数实体只被观测过一两个窗口，
+    画像越多的实体越不可信（刚学完就开始判，跨 IP/失败稍多就过线）。
+    同一台设备换个 cookie 不是"新实体"，是同一个东西的又一次会话。
+    """
+    # 用 getattr 容错：主机类事件/老文档可能没有 TLS 字段，不能让取值抛异常
+    ua = str(getattr(entry, "user_agent", "") or "").strip()
+    ja3 = str(
+        getattr(entry, "ja3", "") or getattr(entry, "ja4", "") or ""
+    ).strip()
+    if not ua and not ja3:
+        return "", ""
+    digest = hashlib.sha256(f"{ua}\n{ja3}".encode("utf-8", errors="ignore")).hexdigest()
+    return digest, f"设备 {digest[:8]}"
+
+
 def account_entity(entry: UnifiedLog) -> str:
     """账号：归一化阶段已做提取（`user` 字段优先，其次登录路径参数）。"""
     return (entry.account or entry.user or "").strip()[:128]
@@ -484,6 +507,12 @@ def observe_entry(buckets: dict[str, dict[str, Any]], entry: UnifiedLog) -> int:
         added += 1
 
     skey, sdisplay = session_entity(entry.cookie)
+    if params.entity_key() == "device":
+        # 设备维度优先：同一台设备的会话归到一个实体（cookie 轮换不再拆成多个画像）。
+        # 取不到 UA/JA3 时回落到 cookie —— 宁可多一个画像，也不要丢掉这条观测。
+        dkey, ddisplay = device_entity(entry)
+        if dkey:
+            skey, sdisplay = dkey, ddisplay
     if skey:
         bucket_key = f"{SESSION}|{skey}"
         bucket = buckets.get(bucket_key)
@@ -516,6 +545,141 @@ def load_profiles(keys: list[tuple[str, str]]) -> dict[str, EntityProfile]:
 
 
 # ---------- 异常判定 ----------
+
+
+#: 共享出口判定用的 Redis 客户端（由引擎注入；没有就退化成只看「存满上限」）
+_rarity_client: Any = None
+
+
+def set_client(client: Any) -> None:
+    """注入 Redis 客户端（引擎初始化时调用；画像模块本身不做 I/O 初始化）。"""
+    global _rarity_client
+    _rarity_client = client
+
+
+def _prefix_shared(prefix: str, entity_key: str) -> bool:
+    """该 /24（v6 /64）是不是**共享出口**：当天出现过足够多不同实体就算。
+
+    为什么要判：移动网、公司 NAT 出口、反向代理的 /24 里能同时出现几十个账号，
+    「这个账号从新的 /24 来」在这种网段上根本不是信号（实测移动用户 4G/WiFi 切换即触发）。
+    用 HLL 记当天实体集合，误差 ~0.8%，对「够不够 20 个」这种判断绰绰有余。
+    """
+    if _rarity_client is None or not params.ip_rarity_enabled():
+        return False
+    if not prefix or not entity_key:
+        return False
+    day = datetime.now(UTC).strftime("%Y%m%d")
+    cache_key = f"shentong:profile:rarity:{day}:{prefix}"
+    try:
+        _rarity_client.pfadd(cache_key, entity_key)
+        _rarity_client.expire(cache_key, 172800)  # 两天：跳天边界不用重算
+        return int(_rarity_client.pfcount(cache_key)) >= params.ip_rarity_min_entities()
+    except Exception as exc:  # noqa: BLE001 — 判不出来时按「不是共享出口」处理（保守）
+        log.debug("共享出口判定失败（按不是处理）: %s", exc)
+        return False
+
+
+def _established(values: Any) -> int:
+    """「已确立」的值的种数：见过 >= `profile.novelty_max_count` 次才算。
+
+    只数已确立的，是为了让「一次性出现的一堆值」（爬虫路径、随机探针）不会把
+    高基数降级提前触发掉。
+    """
+    threshold = params.novelty_max_count()
+    counter = values or {}
+    try:
+        return sum(1 for v in counter.values() if _safe_int(v) >= threshold)
+    except AttributeError:
+        return 0
+
+
+#: 误报标注缓存（进程内，短 TTL）：detect() 每个窗口每个实体都会问一次，
+#: 直接查库会把 PG 打爆；标注是低频动作，45 秒延迟完全可以接受。
+_SUPPRESS_TTL = 45.0
+_SUPPRESS_CAP = 20000
+_suppressed_cache: dict[str, tuple[float, frozenset[str]]] = {}
+
+
+def invalidate_suppressed(kind: str, entity_key: str) -> None:
+    """标注之后立刻失效缓存（不然要等 TTL 才生效）。"""
+    _suppressed_cache.pop(f"{kind}|{entity_key}", None)
+
+
+def load_suppressed(kind: str, entity_key: str) -> set[str]:
+    """取该实体近 N 天被判"误报"的信号码；`*` 表示整条告警被否。
+
+    降权口径（`profile.false_positive_suppress_days`，默认 7 天）：
+    运维说"这条是误报"，就不该下周还在报同一条 —— 但也不能永久闭嘴（业务会变），
+    所以用时间窗，而不是一票否决到底。
+    """
+    if not kind or not entity_key:
+        return set()
+    cache_key = f"{kind}|{entity_key}"
+    now = time.monotonic()
+    hit = _suppressed_cache.get(cache_key)
+    if hit and now - hit[0] <= _SUPPRESS_TTL:
+        return set(hit[1])
+    days = max(0, int(params.knob("profile.false_positive_suppress_days") or 0))
+    if days <= 0:
+        _suppressed_cache[cache_key] = (now, frozenset())
+        return set()
+    since = datetime.now(UTC) - timedelta(days=days)
+    found: set[str] = set()
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(AlertDisposition).where(
+                    AlertDisposition.kind == kind,
+                    AlertDisposition.entity_key == entity_key,
+                    AlertDisposition.verdict == "false_positive",
+                    AlertDisposition.created_at >= since,
+                )
+            ).all()
+            for row in rows:
+                found.add(str(row.signal or "") or "*")
+    except Exception as exc:  # noqa: BLE001 — 读不到标注不能挡住检测
+        log.debug("读取误报标注失败（本次不降权）: %s", exc)
+    if len(_suppressed_cache) >= _SUPPRESS_CAP:
+        _suppressed_cache.clear()
+    _suppressed_cache[cache_key] = (now, frozenset(found))
+    return found
+
+
+def record_disposition(
+    kind: str,
+    entity_key: str,
+    verdict: str,
+    *,
+    signal: str = "",
+    operator: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    """写一条处置标注（`false_positive` / `confirm`），并让降权缓存立即失效。"""
+    verdict = "confirm" if str(verdict).strip().lower() == "confirm" else "false_positive"
+    row = AlertDisposition(
+        kind=str(kind or "")[:16],
+        entity_key=str(entity_key or "")[:128],
+        signal=str(signal or "")[:48],
+        verdict=verdict,
+        operator=str(operator or "")[:64],
+        note=str(note or "")[:500],
+    )
+    with SessionLocal() as db:
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        out = {
+            "id": str(row.id),
+            "kind": row.kind,
+            "entity_key": row.entity_key,
+            "signal": row.signal,
+            "verdict": row.verdict,
+            "operator": row.operator,
+            "note": row.note,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+    invalidate_suppressed(row.kind, row.entity_key)
+    return out
 
 
 def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dict[str, Any]:
@@ -567,8 +731,17 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         saturated = len(known_ips) >= _LIMITS["src_ips"]
         share = len(new_ips) / max(1, len(obs["src_ips"]))
         label = f"新源 IP：{', '.join(new_ips[:3])}"
+        # ③ 该网段是共享出口（移动网/代理/NAT：当天同网段出现几十个实体）→ 新 IP 没信号量
+        shared_egress = any(
+            _prefix_shared(
+                _v4_prefix(ip) if ":" not in ip else _v6_prefix(ip), str(profile.entity_key or "")
+            )
+            for ip in new_ips[:3]
+        )
         if saturated:
             reasons.append(f"{label}（该实体来源地址已饱和，不计分）")
+        elif shared_egress:
+            reasons.append(f"{label}（该网段为共享出口，不计分）")
         elif share < params.new_ip_min_share():
             reasons.append(f"{label}（占本窗口来源地址 {share:.0%}，不计分）")
         else:
@@ -579,18 +752,27 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
     known_ua = set((profile.user_agents or {}).keys())
     new_ua = sorted(ua for ua in obs["user_agents"] if ua not in known_ua)
     if new_ua:
-        reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
-        hits.append((LOW, 0.2))
-        codes.append("new_ua")
+        # 高基数降级：已确立的 UA 种类够多 → 「新 UA」对这类实体没有信号量（看 browsers 多的人）
+        if _established(profile.user_agents) >= params.high_cardinality_limit():
+            reasons.append(f"新 User-Agent：{new_ua[0][:60]}（该实体 UA 种类已饱和，不计分）")
+        else:
+            reasons.append(f"新 User-Agent：{new_ua[0][:60]}")
+            hits.append((LOW, 0.2))
+            codes.append("new_ua")
 
     # 新接口路径：只算接口形态（静态资源已在采集时排掉），且要求画像已认识若干条路径，
     # 否则刚建的画像「第一条路径就是新的」等于白报。
     known_paths = set((profile.paths or {}).keys())
     new_paths = sorted(p for p in obs["paths"] if p not in known_paths)
     if new_paths and len(known_paths) >= max(0, int(params.path_min_known())):
-        reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
-        hits.append((LOW, 0.25))
-        codes.append("new_path")
+        # 高基数降级：门户类站点路径成百上千，「第 51 条新路径」毫无信号量
+        # （实测 200 条高风险会话里 182 条都是它）
+        if _established(profile.paths) >= params.high_cardinality_limit():
+            reasons.append(f"新接口路径：{', '.join(new_paths[:3])}（已知路径过多，不计分）")
+        else:
+            reasons.append(f"新接口路径：{', '.join(new_paths[:3])}")
+            hits.append((LOW, 0.25))
+            codes.append("new_path")
 
     # 非常用时段：三个条件都要满足才判（否则就是整点批量误报，见 config 里那两个门槛）
     hist = profile.hour_hist or {}
@@ -636,6 +818,23 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         hits.append((HIGH if hard else MED, score))
         codes.append("fail_burst_hard" if hard else "fail_burst")
 
+    # 误报闭环：运维判过"误报"的信号在时间窗内不再参与打分（`*` = 整条告警被否）。
+    # 只降打分，不删理由 —— 界面上仍要看得到"为什么当初报了它"。
+    suppressed = (
+        load_suppressed(kind, str(profile.entity_key or "")) if profile is not None else set()
+    )
+    suppressed_notes: list[str] = []
+    if suppressed:
+        if "*" in suppressed:
+            suppressed_notes.append("该告警已被标记为误报，本次不参与打分（降权期内）")
+            codes = []
+        else:
+            kept = [c for c in codes if c not in suppressed]
+            if len(kept) != len(codes):
+                suppressed_notes.append(
+                    "以下信号已被标记为误报，本次不参与打分：" + "、".join(sorted(suppressed))
+                )
+            codes = kept
     risk = score_risk(hits)
     posterior = posterior_of(codes)
     if params.scoring() == "additive":
@@ -643,6 +842,8 @@ def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dic
         alerted = risk >= params.risk_threshold()
     else:
         alerted = posterior["posterior"] >= params.posterior_threshold()
+    if suppressed_notes:
+        reasons = suppressed_notes + reasons
     return {
         "reasons": reasons,
         "risk": risk,

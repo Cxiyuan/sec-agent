@@ -18,6 +18,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -29,7 +30,7 @@ from app.baseline.asset import (
 )
 from app.config import settings
 from app.db.base import get_db
-from app.db.models import User
+from app.db.models import AlertDisposition, EntityProfile, User
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -273,3 +274,86 @@ def reset_baseline_config(
     _invalidate_overview_cache()
     log.info("基线/画像参数已恢复默认：%d 项", removed)
     return {"removed": removed, "items": params.items(), "effective": params.effective()}
+
+
+# ---------- 误报闭环（2026-10）----------
+
+
+class DispositionIn(BaseModel):
+    """处置标注：`false_positive`（误报，降权）或 `confirm`（确认，仅留档）。"""
+
+    verdict: str = "false_positive"
+    #: 空 = 整条告警级别；填信号码（如 `new_src_ip`）= 只降权那一路证据
+    signal: str = ""
+    note: str = ""
+
+
+def _disposition_item(row: AlertDisposition) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "kind": row.kind,
+        "entity_key": row.entity_key,
+        "signal": row.signal,
+        "verdict": row.verdict,
+        "operator": row.operator,
+        "note": row.note,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.post("/alerts/{profile_id}/disposition")
+def save_alert_disposition(
+    profile_id: str,
+    payload: DispositionIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """给一条画像告警打上处置结论（误报 / 确认），用于后续**自动降权**。
+
+    `profile_id` 既接受画像 UUID，也接受实体键（会话是 cookie/设备哈希、账号就是账号名）——
+    前端两种地方都能发起，不必先查 UUID。
+
+    降权口径：判成误报后，该实体（或该信号）在 `profile.false_positive_suppress_days`
+    天内不再参与打分；只影响打分，理由仍会展示，运维能看到"当初为什么报"。
+    """
+    row = db.get(EntityProfile, profile_id)
+    if row is None:
+        row = db.scalars(
+            select(EntityProfile).where(EntityProfile.entity_key == profile_id).limit(1)
+        ).first()
+    if row is None:
+        return JSONResponse(
+            status_code=404, content={"detail": f"画像不存在：{profile_id}"}
+        )
+    out = profiles.record_disposition(
+        row.kind,
+        row.entity_key,
+        payload.verdict,
+        signal=payload.signal,
+        operator=getattr(user, "username", "") or "",
+        note=payload.note,
+    )
+    _invalidate_overview_cache()
+    log.info(
+        "告警处置：%s %s → %s（signal=%s）",
+        row.kind,
+        row.entity_key[:12],
+        out["verdict"],
+        out["signal"] or "整条",
+    )
+    return out
+
+
+@router.get("/alerts/dispositions")
+def list_alert_dispositions(
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+    limit: int = 50,
+    kind: str = "",
+):
+    """最近的处置记录（界面「误报记录」用；也可用来核对降权是否生效）。"""
+    stmt = select(AlertDisposition).order_by(AlertDisposition.created_at.desc())
+    if kind:
+        stmt = stmt.where(AlertDisposition.kind == kind)
+    rows = db.scalars(stmt.limit(max(1, min(limit, 500)))).all()
+    return {"items": [_disposition_item(r) for r in rows], "limit": limit}

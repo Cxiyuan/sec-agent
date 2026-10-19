@@ -343,6 +343,16 @@ class Settings(BaseSettings):
     profile_prior_odds: float = 0.001
     # 后验概率告警线：5% ≈ 1:20 的胜算（先验之上需要约 3.9 的 LLR）
     profile_posterior_threshold: float = 0.05
+    # 误报降权窗口：运维标过「误报」的实体/信号在这段时间内不再参与打分（0 = 不降权）
+    profile_false_positive_suppress_days: int = 7
+    # 新颖度：一个值被见过这么多次就算"已知"，不再算新（防止"很久没来"被当新人）
+    profile_novelty_max_count: int = 3
+    # 高基数降级：某类值（UA/接口路径/来源 IP）已知种类超过它就停止用"新/旧"判分
+    # ——门户类站点路径成百上千，"第 51 条新路径"毫无信号量（实测 182/200 条告警都是它）
+    profile_high_cardinality_limit: int = 50
+    # IP 稀有度：一个 /24 里出现这么多不同实体 → 共享出口（移动网/代理），新 IP 不计分
+    profile_ip_rarity_min_entities: int = 20
+    profile_ip_rarity_enabled: bool = True
     # 弱信号（新 UA / 新路径 / 非常用时段）**组合打折**，且总分封顶在阈值以下：
     # 加和式风险分的实测后果是 1,688 个实体靠「新源 IP + 新接口路径」正好凑到 0.60。
     profile_signal_damping: float = 0.6
@@ -359,6 +369,8 @@ class Settings(BaseSettings):
     profile_retention_days: int = 30
     # 冷启动门槛**按窗口数**（不是事件条数）：至少被观测到这么多个落库窗口才参与打分
     profile_min_windows: int = 10
+    # 会话画像的实体键：device=按 UA+TLS 指纹（默认，cookie 轮换不再拆画像）／cookie=旧行为
+    profile_entity_key: str = "device"
     # 错误响应（status ≥ 400 且非 401/403）判据：次数下限 + 占本窗口事件的比例
     profile_error_min_count: int = 50
     profile_error_ratio: float = 0.3

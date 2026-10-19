@@ -37,12 +37,15 @@ const FALLBACK = {
     "#1a8b8b",
     "#b4851f",
   ],
-  critical: "#b31d1d",
-  high: "#b8500c",
-  medium: "#a87407",
-  low: "#1b5cb2",
-  info: "#4d5c6e",
-  ok: "#1c7a4f",
+  // 2026-10 起跟 ndr/frontend 的 :root `--sev-*-fg` 一致（深信服威胁等级色系）。
+  // 这个文件是 SSR/首帧兜底，取不到 CSS 变量时才用；改 :root 必须同步改这里，
+  // 否则图表第一帧会闪一下旧色。
+  critical: "#c22439",
+  high: "#a85100",
+  medium: "#8c6a03",
+  low: "#284df0",
+  info: "#525f6f",
+  ok: "#066a4a",
   axis: "#5f6b7a",
   grid: "#e9edf2",
   track: "#dde3ea",

@@ -217,6 +217,33 @@ class AssetStat(Base):
     )
 
 
+class AlertDisposition(Base):
+    """告警处置标注（误报闭环，2026-10）。
+
+    一行 = 「某实体的某条告警」被运维判成什么：
+    - `verdict`: `false_positive`（误报，降权用）或 `confirm`（确认，仅记录）；
+    - `signal`: 空 = 整条告警级别；填信号码（如 `new_src_ip`）= 只降权那一路证据。
+
+    为什么要落到 PG 而不是内存：反馈的价值在于**跨重启累积**——将来做在线学习/校准
+    都靠它；进程内计数一重启就没了，等于天天从零学。
+    """
+
+    __tablename__ = "alert_dispositions"
+    __table_args__ = (
+        Index("ix_alert_dispositions_entity", "kind", "entity_key"),
+        Index("ix_alert_dispositions_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    entity_key: Mapped[str] = mapped_column(String(128))
+    signal: Mapped[str] = mapped_column(String(48), default="")
+    verdict: Mapped[str] = mapped_column(String(16), default="false_positive")
+    operator: Mapped[str] = mapped_column(String(64), default="")
+    note: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class EntityProfile(Base):
     """账号 / 会话跨窗口长期画像（UEBA 式统计基线）。
 
@@ -301,6 +328,9 @@ class HitEvent(Base):
     #: feature_match=特征匹配（签名引擎）/ behavior_analysis=行为分析（流量规则）/
     #: baseline_deviation=基线偏离（画像/数值基线）
     source_kind: Mapped[str] = mapped_column(String(24), default="behavior_analysis", index=True)
+    #: 告警簇 ID（`clustering.cluster_id`：归类 + 网段 + 小时）。一次扫描会命中几十个地址，
+    #: 逐条看等于噪声，按簇看才知道"这是一件事"；簇是聚合出来的标识，粒度由 clustering 定义。
+    cluster_id: Mapped[str] = mapped_column(String(24), default="", index=True)
     #: 直连对端；中继链路上它是代理/WAF，真实请求方在 real_client_ips
     src_ip: Mapped[str] = mapped_column(String(64), default="")
     client: Mapped[str] = mapped_column(String(64), default="")

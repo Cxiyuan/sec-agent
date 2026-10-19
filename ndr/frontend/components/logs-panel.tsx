@@ -10,6 +10,7 @@ import {
   EmptyState,
   Input,
   LoadingBlock,
+  Pagination,
   Section,
   Skeleton,
   Table,
@@ -220,7 +221,6 @@ export function LogsPanel() {
   }, []);
 
   const total = result?.total ?? 0;
-  const page = Math.floor(offset / size) + 1;
   const pages = Math.max(1, Math.ceil(total / size));
   // 首次加载（还没有结果、也没有失败）：画骨架。原来这里直接渲染「没有命中日志」，
   // 首屏看起来像查询坏了 —— 空态和加载态必须分开。
@@ -448,27 +448,18 @@ export function LogsPanel() {
       <Section
         title="日志列表"
         extra={
-          <div className="flex items-center gap-2 text-xs tabular-nums text-muted-foreground">
-            <span>
-              第 {page} / {pages} 页
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={offset <= 0 || loading}
-              onClick={() => void run(Math.max(0, offset - size))}
-            >
-              上一页
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={offset + size >= total || loading}
-              onClick={() => void run(offset + size)}
-            >
-              下一页
-            </Button>
-          </div>
+          <Pagination
+            page={Math.floor(offset / size)}
+            pages={pages}
+            total={total}
+            size={size}
+            onPage={(p) => void run(p * size)}
+            onSize={(n) => {
+              setSize(n);
+              setOffset(0);
+            }}
+            disabled={loading}
+          />
         }
       >
         <Card>

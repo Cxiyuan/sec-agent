@@ -18,10 +18,11 @@ from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
 from typing import Any
 
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, case, cast, func, or_, select
 
 from app.db.base import SessionLocal
 from app.db.models import HitEvent
+from app.detector import clustering
 from app.ingestion.log_types import EVENT_TYPE_LABELS
 from app.workers.log import get_logger
 
@@ -275,6 +276,8 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "rule": row.rule,
             # 来源类别（特征匹配 / 行为分析 / 基线偏离）——界面按这三类展示，不再提采集器名字
             "source_kind": getattr(row, "source_kind", "") or "behavior_analysis",
+            # 告警簇（归类 + 网段 + 小时）：界面按簇折叠时用，单条也能看到自己属于哪一簇
+            "cluster_id": getattr(row, "cluster_id", "") or "",
             "source_label": SOURCE_LABELS.get(
                 getattr(row, "source_kind", "") or "behavior_analysis", "行为分析"
             ),
@@ -477,12 +480,17 @@ def save_from_digest(digest: dict[str, Any]) -> str:
     pairs = _pairs(digest)
     try:
         with SessionLocal() as db:
+            title = event_title_of(digest, source_kind_of(digest))
             row = HitEvent(
                 first_seen=_iso(digest.get("first_seen")),
                 last_seen=_iso(digest.get("last_seen")),
                 # 事件标题 = **具体安全事件归类**（签名命中不再显示成「签名命中(高危)」）
-                rule=event_title_of(digest, source_kind_of(digest)),
+                rule=title,
                 source_kind=source_kind_of(digest),
+                # 告警簇：同一归类 + 同一网段 + 同一小时归为一件事（一次扫描命中几十个 IP 时靠它折叠）
+                cluster_id=clustering.cluster_id(
+                    title, src or (reals[0] if reals else ""), _iso(digest.get("last_seen"))
+                ),
                 rule_severity=str(
                     digest.get("rule_severity") or digest.get("severity") or "medium"
                 ),
@@ -575,6 +583,11 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     first_seen=first,
                     last_seen=last,
                     rule=_reason_label(reasons[0]),
+                    cluster_id=clustering.cluster_id(
+                        _reason_label(reasons[0]),
+                        str((item.get("src_ips") or [""])[0] or ""),
+                        last,
+                    ),
                     rule_severity=_severity_of_risk(risk),
                     rule_source="baseline",
                     source_kind="baseline_deviation",
@@ -603,6 +616,11 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     first_seen=first,
                     last_seen=last,
                     rule=_FEATURE_LABELS.get(feature, "数值基线偏离"),
+                    cluster_id=clustering.cluster_id(
+                        _FEATURE_LABELS.get(feature, "数值基线偏离"),
+                        str(item.get("src_ip") or ""),
+                        last,
+                    ),
                     rule_severity="high",
                     rule_source="baseline",
                     source_kind="baseline_deviation",
@@ -641,6 +659,7 @@ def _hit_conditions(
     rule: str = "",
     ip: str = "",
     q: str = "",
+    cluster_id: str = "",
 ) -> list[Any]:
     """把过滤条件翻译成 SQLAlchemy 条件（**纯函数**，可单测，不碰数据库）。
 
@@ -664,6 +683,10 @@ def _hit_conditions(
     rule_text = str(rule or "").strip()
     if rule_text:
         conds.append(HitEvent.rule.ilike(f"%{rule_text}%"))
+    cluster_text = str(cluster_id or "").strip()
+    if cluster_text:
+        # 簇是聚类算出来的标识；界面「按簇展开」点进来就看这一簇的全部事件
+        conds.append(HitEvent.cluster_id == cluster_text)
     ip_text = str(ip or "").strip()
     if ip_text:
         like = f"%{ip_text}%"
@@ -701,6 +724,7 @@ def list_hits(
     rule: str = "",
     ip: str = "",
     q: str = "",
+    cluster_id: str = "",
     sort: str = "recent",
 ) -> dict[str, Any]:
     """命中事件列表（默认最近在前）。
@@ -719,6 +743,7 @@ def list_hits(
         rule=rule,
         ip=ip,
         q=q,
+        cluster_id=cluster_id,
     )
     order_by = {
         "oldest": func.coalesce(HitEvent.last_seen, HitEvent.created_at).asc(),
@@ -826,6 +851,106 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
         "by_severity": by_severity,
         "top_rules": by_rule,
         "trend": [{"ts": k, "count": v} for k, v in sorted(buckets.items())],
+    }
+
+
+def clusters(
+    *,
+    minutes: int = 1440,
+    limit: int = 20,
+    include_ignored: bool = False,
+    source_kind: str = "",
+) -> dict[str, Any]:
+    """**告警簇**：把同一件事下的几十条事件折成一行（事件中心「按簇看」用）。
+
+    一簇 = 同一事件归类 + 同一网段（v4 /24、v6 /64）+ 同一小时（见 `detector/clustering.py`）。
+    为什么不在前端折叠：前端只能对**已加载的那一页**折叠，跨页/跨时间的同一件事折不起来；
+    聚合放在库侧才能给出"这件事总共命中多少次、涉及多少个地址、最新到什么时候"。
+    """
+    window = max(1, int(minutes or 1440))
+    cap = max(1, min(int(limit or 20), 200))
+    since = datetime.now(UTC) - timedelta(minutes=window)
+    ts = func.coalesce(HitEvent.last_seen, HitEvent.created_at)
+    conds: list[Any] = [ts >= since]
+    if not include_ignored:
+        conds.append(HitEvent.ignored.is_(False))
+    kind = str(source_kind or "").strip()
+    if kind in SOURCE_LABELS:
+        conds.append(HitEvent.source_kind == kind)
+    # 迁移前写入的老事件没有簇 ID（列默认空串）：如果不过滤，它们会合成一个虚假的巨型簇
+    conds.append(HitEvent.cluster_id.is_not(None))
+    conds.append(HitEvent.cluster_id != "")
+    # 严重度取「本簇里最高的一级」：簇里有高危就整体按高危看（运维先看重的）
+    sev_rank = case(
+        (HitEvent.rule_severity == "high", 3),
+        (HitEvent.rule_severity == "medium", 2),
+        else_=1,
+    )
+    sev_label = {3: "high", 2: "medium", 1: "low"}
+    try:
+        with SessionLocal() as db:
+            stmt = (
+                select(
+                    HitEvent.cluster_id,
+                    func.min(HitEvent.rule),
+                    func.min(HitEvent.src_ip),
+                    func.min(ts),
+                    func.max(ts),
+                    func.count(),
+                    func.coalesce(func.sum(HitEvent.count), 0),
+                    func.count(func.distinct(HitEvent.src_ip)),
+                    func.count(func.distinct(HitEvent.client)),
+                    func.max(sev_rank),
+                    func.min(HitEvent.source_kind),
+                )
+                .where(*conds)
+                .group_by(HitEvent.cluster_id)
+                .order_by(func.max(ts).desc())
+                .limit(cap)
+            )
+            rows = list(db.execute(stmt).all())
+            total_clusters = int(
+                db.scalar(
+                    select(func.count(func.distinct(HitEvent.cluster_id)))
+                    .select_from(HitEvent)
+                    .where(*conds)
+                )
+                or 0
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读告警簇失败：{exc}", "items": [], "total": 0}
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        cid = str(row[0] or "")
+        rule = str(row[1] or "")
+        sample_ip = str(row[2] or "")
+        first = row[3] if isinstance(row[3], datetime) else None
+        last = row[4] if isinstance(row[4], datetime) else None
+        src_kind = str(row[10] or "behavior_analysis")
+        items.append(
+            {
+                "cluster_id": cid,
+                "label": clustering.cluster_label(rule, sample_ip, last),
+                "rule": rule,
+                "net": clustering.net_of(sample_ip),
+                "hour": clustering.hour_of(last),
+                "source_kind": src_kind,
+                "source_label": SOURCE_LABELS.get(src_kind, "行为分析"),
+                "severity": sev_label.get(int(row[9] or 1), "low"),
+                "events": int(row[5] or 0),
+                "count": int(row[6] or 0),
+                "src_ips": int(row[7] or 0),
+                "clients": int(row[8] or 0),
+                "first_seen": first.isoformat() if first else "",
+                "last_seen": last.isoformat() if last else "",
+            }
+        )
+    return {
+        "minutes": window,
+        "total": total_clusters,
+        "items": items,
+        "returned": len(items),
     }
 
 

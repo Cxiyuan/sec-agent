@@ -13,6 +13,7 @@ import {
   Drawer,
   EmptyState,
   Input,
+  Pagination,
   Section,
   Skeleton,
   Stat,
@@ -83,14 +84,42 @@ const TIME_RANGES: Array<[number, string]> = [
   [10080, "最近 7 天"],
 ];
 
-const PAGE_SIZES = [20, 50, 100, 200];
-
 /** 事件来源三类：值与后端 `SOURCE_LABELS` 的 key 对应（精确匹配），标签与后端中文名一致 */
 const SOURCE_KINDS: Array<[string, string]> = [
   ["feature_match", "特征匹配"],
   ["behavior_analysis", "行为分析"],
   ["baseline_deviation", "基线偏离"],
 ];
+
+/**
+ * 来源三类配色（2026-10 复刻深信服：类型标签走**紫 / 青 / 品红**，刻意避开严重度的
+ * 红橙金蓝绿 —— 否则「中危」和「基线偏离」两个金/黄标签在列表里会读成同一件事）。
+ * 样式与严重度徽章同构：浅底 + 深字 + 同色系 1px 描边。
+ */
+const SRC_TONE: Record<string, string> = {
+  feature_match: "border-src-feature-bd bg-src-feature-bg text-src-feature-fg",
+  behavior_analysis: "border-src-behavior-bd bg-src-behavior-bg text-src-behavior-fg",
+  baseline_deviation: "border-src-baseline-bd bg-src-baseline-bg text-src-baseline-fg",
+};
+
+/** 列表 / 抽屉里的来源来自后端 `source_label`（是中文），只能按中文取色。 */
+const SRC_LABEL_TONE: Record<string, string> = Object.fromEntries(
+  SOURCE_KINDS.map(([key, label]) => [label, SRC_TONE[key]])
+);
+
+/** 一个来源名的小徽章（列表「来源」列与抽屉共用） */
+function SourceChip({ label }: { label: string }) {
+  return (
+    <span
+      className={cn(
+        "whitespace-nowrap rounded-xs border px-1.5 py-0.5 text-xs",
+        SRC_LABEL_TONE[label] ?? "border-border-subtle text-muted-foreground"
+      )}
+    >
+      {label}
+    </span>
+  );
+}
 
 /** 严重度：值必须小写英文（后端 == 精确匹配）；文案与共享库 `severityText` 同源 */
 const SEVERITIES: Array<[string, string]> = [
@@ -245,10 +274,18 @@ function renderIpCell(key: string, row: IpAggRow): React.ReactNode {
         </span>
       );
     case "sources":
-      return (
-        <span className="truncate" title={row.sourceCounts.map(([s]) => s).join(" / ")}>
-          {row.sourceCounts.map(([s], i) => (i > 0 ? " / " : "") + s).join("") || "—"}
+      // 三类各有固定色：扫"来源"这一列时先看到色块再读字，跟上面的筛选 chips 同一套色
+      return row.sourceCounts.length ? (
+        <span
+          className="flex flex-wrap items-center gap-1"
+          title={row.sourceCounts.map(([s]) => s).join(" / ")}
+        >
+          {row.sourceCounts.map(([label]) => (
+            <SourceChip key={label} label={label} />
+          ))}
         </span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
       );
     case "severity":
       return severityBadge(row.maxSeverity);
@@ -480,7 +517,6 @@ export function EventsPanel() {
   // 主列表按主机 IP 聚合（插入序 = 首现顺序，不重排）
   const aggRows = React.useMemo(() => aggregateByIp(items), [items]);
   const total = list?.total ?? 0;
-  const page = Math.floor(offset / form.size) + 1;
   const pages = Math.max(1, Math.ceil(total / form.size));
 
   const firstLoad = !list && !stats && !errs.has;
@@ -588,10 +624,12 @@ export function EventsPanel() {
                     aria-pressed={active}
                     onClick={() => applyForm({ sourceKind: active ? "" : key })}
                     className={cn(
+                      // 未选中保持中性灰（它是筛选器），选中才亮出该类自己的语义色 ——
+                      // 这样"当前在看哪一类"和"这类是什么颜色"是同一件事，不用两处对照。
                       "rounded-full border px-2 py-0.5 text-xs transition-colors motion-reduce:transition-none",
                       active
-                        ? "border-primary bg-brand-50 text-primary"
-                        : "border-border-subtle text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        ? SRC_TONE[key] ?? "border-primary bg-brand-50 text-primary"
+                        : "border-border-subtle text-muted-foreground hover:border-border hover:text-foreground",
                     )}
                   >
                     {label} · {fmt(n)}
@@ -817,46 +855,19 @@ export function EventsPanel() {
       <Section
         title="事件列表（按主机 IP 聚合）"
         extra={
-          <div
-            className="flex flex-wrap items-center gap-2 text-xs tabular-nums text-muted-foreground"
-            aria-live="polite"
-          >
-            <span>
-              窗口共 {total} 条命中 · 本页聚合 {aggRows.length} 个主机 IP
+          <div className="flex flex-wrap items-center gap-3" aria-live="polite">
+            <Pagination
+              page={Math.floor(offset / form.size)}
+              pages={pages}
+              total={total}
+              size={form.size}
+              onPage={(p) => void run(p * form.size, { stats: false })}
+              onSize={(n) => applyForm({ size: n })}
+              disabled={loading}
+            />
+            <span className="text-xs tabular-nums text-muted-foreground">
+              本页聚合 {aggRows.length} 个主机 IP
             </span>
-            <label className="flex items-center gap-1">
-              每页
-              <select
-                className="h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
-                value={form.size}
-                onChange={(e) => applyForm({ size: Number(e.target.value) })}
-              >
-                {PAGE_SIZES.map((n) => (
-                  <option key={n} value={n}>
-                    {n} 条
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span>
-              第 {page} / {pages} 页
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={offset <= 0 || loading}
-              onClick={() => void run(Math.max(0, offset - form.size), { stats: false })}
-            >
-              上一页
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={offset + form.size >= total || loading}
-              onClick={() => void run(offset + form.size, { stats: false })}
-            >
-              下一页
-            </Button>
           </div>
         }
       >
@@ -1057,7 +1068,15 @@ export function EventsPanel() {
                       </p>
                       <p className="flex gap-1">
                         <span className="shrink-0 text-muted-foreground">来源：</span>
-                        <span>{ipSummary.sourceCounts.map(([s]) => s).join(" / ") || "无"}</span>
+                        <span className="flex flex-wrap items-center gap-1">
+                          {ipSummary.sourceCounts.length ? (
+                            ipSummary.sourceCounts.map(([label]) => (
+                              <SourceChip key={label} label={label} />
+                            ))
+                          ) : (
+                            <span>无</span>
+                          )}
+                        </span>
                       </p>
                     </div>
                   </div>

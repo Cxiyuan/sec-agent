@@ -321,6 +321,60 @@ KNOBS: tuple[Knob, ...] = (
         note="画像已知接口路径 ≥ 这么多条才判「新接口路径」",
     ),
     Knob(
+        "profile.false_positive_suppress_days",
+        "误报降权窗口",
+        "int",
+        settings.profile_false_positive_suppress_days,
+        low=0,
+        high=365,
+        unit="天",
+        note="运维标过「误报」的实体/信号在这段时间内不再参与打分；0=不降权",
+    ),
+    Knob(
+        "profile.novelty_max_count",
+        "新颖度·已知门槛",
+        "int",
+        settings.profile_novelty_max_count,
+        low=1,
+        high=100,
+        unit="次",
+        note="一个值被见过这么多次就算已知，不再算「新」",
+    ),
+    Knob(
+        "profile.high_cardinality_limit",
+        "高基数降级门槛",
+        "int",
+        settings.profile_high_cardinality_limit,
+        low=3,
+        high=5000,
+        unit="种",
+        note="已知种类超过它就停止用「新/旧」判分（门户站点路径成百上千，没信号量）",
+    ),
+    Knob(
+        "profile.ip_rarity_min_entities",
+        "共享出口实体数门槛",
+        "int",
+        settings.profile_ip_rarity_min_entities,
+        low=1,
+        high=100000,
+        unit="个",
+        note="一个 /24 里出现这么多不同实体 → 判为共享出口（移动网/代理），新 IP 不计分",
+    ),
+    Knob(
+        "profile.ip_rarity_enabled",
+        "启用共享出口判定",
+        "bool",
+        settings.profile_ip_rarity_enabled,
+        note="关闭后只看「已存满上限」这一个降权条件",
+    ),
+    Knob(
+        "profile.entity_key",
+        "会话画像实体键",
+        "text",
+        settings.profile_entity_key,
+        note="device=按 UA+TLS 指纹（推荐，cookie 轮换不再拆画像）／cookie=旧行为",
+    ),
+    Knob(
         "profile.min_windows",
         "冷启动门槛（窗口数）",
         "int",
@@ -473,6 +527,12 @@ def knob(key: str) -> Any:
     if entry.kind == "float":
         return _num(entry)
     return _text(entry)
+
+
+def entity_key() -> str:
+    """会话画像的实体键口径：`device`（默认，UA+TLS 指纹）或 `cookie`（旧行为）。"""
+    value = _text(_BY_KEY["profile.entity_key"]).strip().lower()
+    return value if value in ("device", "cookie") else "device"
 
 
 def scoring() -> str:
@@ -729,3 +789,19 @@ def deviation_cap_per_entity_hour() -> int:
 
 def deviation_cap_per_hour() -> int:
     return int(_num(_BY_KEY["baseline.deviation_cap_per_hour"]))
+
+
+def novelty_max_count() -> int:
+    return max(1, int(_num(_BY_KEY["profile.novelty_max_count"])))
+
+
+def high_cardinality_limit() -> int:
+    return max(3, int(_num(_BY_KEY["profile.high_cardinality_limit"])))
+
+
+def ip_rarity_min_entities() -> int:
+    return max(1, int(_num(_BY_KEY["profile.ip_rarity_min_entities"])))
+
+
+def ip_rarity_enabled() -> bool:
+    return _flag(_BY_KEY["profile.ip_rarity_enabled"])

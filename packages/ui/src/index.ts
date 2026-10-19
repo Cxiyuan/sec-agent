@@ -19,4 +19,5 @@ export * from "./components/ui/loading";
 export * from "./components/ui/switch";
 export * from "./components/ui/field";
 export * from "./components/ui/panel-toolbar";
+export * from "./components/ui/pagination";
 export * from "./components/chart";

@@ -43,6 +43,39 @@ const config: Config = {
           700: "hsl(var(--brand-700))",
         },
 
+        /* 侧边栏（深信服 SIP 复刻：深藏青导航，见 globals.css 的 --sidebar-*）。
+           变量只在 :root 定义 —— 侧栏不随主题翻转，两个前端都可安全引用。 */
+        sidebar: {
+          bg: "hsl(var(--sidebar-bg))",
+          border: "hsl(var(--sidebar-border))",
+          fg: "hsl(var(--sidebar-fg))",
+          hover: "hsl(var(--sidebar-hover))",
+          active: "hsl(var(--sidebar-active))",
+          bar: "hsl(var(--sidebar-bar))",
+          group: "hsl(var(--sidebar-group))",
+          "warn-fg": "hsl(var(--sidebar-warn-fg))",
+          "warn-bd": "hsl(var(--sidebar-warn-bd))",
+        },
+
+        /* 事件来源三类：特征匹配 / 行为分析 / 基线偏离（色相避开严重度，见 globals.css） */
+        src: {
+          feature: {
+            bg: "hsl(var(--src-feature-bg))",
+            fg: "hsl(var(--src-feature-fg))",
+            bd: "hsl(var(--src-feature-bd))",
+          },
+          behavior: {
+            bg: "hsl(var(--src-behavior-bg))",
+            fg: "hsl(var(--src-behavior-fg))",
+            bd: "hsl(var(--src-behavior-bd))",
+          },
+          baseline: {
+            bg: "hsl(var(--src-baseline-bg))",
+            fg: "hsl(var(--src-baseline-fg))",
+            bd: "hsl(var(--src-baseline-bd))",
+          },
+        },
+
         /* 严重度：bg / fg / bd 三件套 */
         sev: {
           critical: {

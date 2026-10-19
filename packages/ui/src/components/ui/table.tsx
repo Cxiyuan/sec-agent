@@ -4,16 +4,18 @@ import { cn } from "../../lib/utils";
 /**
  * 表格：运维盯屏时间最长的元素，密度与扫读反馈优先。
  *
- * 三处关键调整：
- * 1. 表头加 surface-1 实底（原来只有一条边框，和内容分不开，滚动时容易看串行）；
- * 2. 行 hover 从 `bg-muted/50` 换成 `bg-brand-50` —— muted 和卡片几乎同色，
- *    原来的 hover 基本看不出来，"点到了没有"全靠猜；
- * 3. 正文 13px / 行高 36px（py-2），比原来的 p-3 + text-sm 更紧凑但不挤。
+ * 2026-10 复刻深信服 SIP 列表样式（用户要求，保持浅色主题、只改结构）：
+ * 1. **全边框网格**：每格都画 border-r（末列去掉）、行间 border-b —— 深信服列表是
+ *    「横竖都有线」的密集网格，不是只有横线的现代简约风。配 border-collapse 让线合并成 1px；
+ * 2. 表头文字从 muted-foreground 提到 foreground：深信服表头是深色粗感文字 + 浅灰底，
+ *    扫读时列名先读到；原来浅灰表头在 #f5f7f9 底上对比度只有 ~3:1；
+ * 3. 行 hover 保持 bg-brand-50（品牌淡蓝），与深信服 hover 同色系；
+ * 4. 正文 13px / 行高 36px（py-2）不变。
  */
 export const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
   ({ className, ...props }, ref) => (
     <div className="relative w-full overflow-auto">
-      <table ref={ref} className={cn("w-full caption-bottom text-13", className)} {...props} />
+      <table ref={ref} className={cn("w-full border-collapse caption-bottom text-13", className)} {...props} />
     </div>
   )
 );
@@ -59,7 +61,8 @@ export const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-8 whitespace-nowrap bg-surface-1 px-3 text-left align-middle text-xs font-medium text-muted-foreground",
+      // border-r + last:border-r-0：竖线只画在列与列之间，最右一列不画（贴卡片描边）
+      "h-8 whitespace-nowrap border-r border-border-subtle bg-surface-1 px-3 text-left align-middle text-xs font-medium text-foreground last:border-r-0",
       className
     )}
     {...props}
@@ -71,6 +74,6 @@ export const TableCell = React.forwardRef<
   HTMLTableCellElement,
   React.TdHTMLAttributes<HTMLTableCellElement>
 >(({ className, ...props }, ref) => (
-  <td ref={ref} className={cn("px-3 py-2 align-middle", className)} {...props} />
+  <td ref={ref} className={cn("border-r border-border-subtle px-3 py-2 align-middle last:border-r-0", className)} {...props} />
 ));
 TableCell.displayName = "TableCell";

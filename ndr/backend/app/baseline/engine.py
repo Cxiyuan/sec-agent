@@ -89,6 +89,8 @@ class BaselineEngine:
 
     def __init__(self, client: Any = None) -> None:
         self._client = client
+        # 画像侧「共享出口」判定要用 Redis（HLL 记每个 /24 当天的实体集合）
+        profiles.set_client(client)
         self._obs: dict[str, dict[str, Any]] = {}  # 画像窗口观测（key = kind|entity）
         self._assets: dict[str, dict[str, Any]] = {}  # 被访问方窗口观测（key = Zeek 连接 uid）
         self._pending: dict[str, list[float]] = {}  # 数值基线待落库样本

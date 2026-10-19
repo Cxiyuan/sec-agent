@@ -401,6 +401,7 @@ def detector_hits(
     rule: str = "",
     ip: str = "",
     q: str = "",
+    cluster_id: str = "",
     sort: str = "recent",
 ):
     """**命中事件列表**（PG，最新在前）—— 每条都有**系统唯一事件 ID**。
@@ -423,7 +424,32 @@ def detector_hits(
         rule=rule,
         ip=ip,
         q=q,
+        cluster_id=cluster_id,
         sort=sort,
+    )
+
+
+@router.get("/hits/clusters")
+def detector_hit_clusters(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = 1440,
+    limit: int = 20,
+    include_ignored: bool = False,
+    source_kind: str = "",
+):
+    """**告警簇**（事件中心「按簇看」）：把同一件事的几十条事件折成一行。
+
+    一簇 = 同一事件归类 + 同一网段（v4 `/24`、v6 `/64`）+ 同一小时。
+    为什么需要：一次扫描会同时命中几十个地址，逐条看全是噪声；簇里能直接看到
+    「命中多少次 / 涉及多少个地址 / 最新到什么时候」，先看重的（`severity` 取簇内最高）。
+
+    需要展开时拿 `cluster_id` 回 `/api/detector/hits?cluster_id=…` 即可。
+    """
+    return hits.clusters(
+        minutes=minutes,
+        limit=limit,
+        include_ignored=include_ignored,
+        source_kind=source_kind,
     )
 
 

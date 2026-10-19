@@ -8,8 +8,11 @@ import { cn } from "../../lib/utils";
  * `text-base` 的 CardTitle、有的干脆没有标题直接铺表格。结果同一套产品里，
  * 「这一屏分几块」的视觉锚点在每个页面长得都不一样。
  *
+ * 2026-10 复刻深信服 SIP：标题前加 3px 蓝色竖条（深信服分区标题的经典样式）——
+ * 扫一屏时先读到「标尺」再读文字，分区边界比原来的一条底线更早被看到。
+ *
  * 层级约定（与卡片、内联格配套）：
- *   L1 Section  = 16px 标题 + 1px 底线，负责"分区"        ← 本组件
+ *   L1 Section  = 16px 标题 + 蓝竖条 + 1px 底线，负责"分区"        ← 本组件
  *   L2 Card     = 14px 标题 + 描边 + 极浅投影，负责"一坨内容"
  *   L3 Inline   = 无标题、底色块，负责"一个数字/一条状态"
  *
@@ -45,7 +48,11 @@ export function Section({
         )}
       >
         <div className="min-w-0">
-          <h2 className="text-base font-medium leading-6 text-foreground">{title}</h2>
+          <h2 className="flex items-center gap-2 text-base font-medium leading-6 text-foreground">
+            {/* 深信服式分区标尺：3px 圆角竖条 + 标题。shrink-0 防长标题把竖条压扁 */}
+            <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full bg-primary" />
+            {title}
+          </h2>
           {description ? (
             <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</p>
           ) : null}
