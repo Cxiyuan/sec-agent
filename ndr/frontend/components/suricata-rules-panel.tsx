@@ -5,6 +5,7 @@ import {
   ApiError,
   apiFetch,
   errorText,
+  formatDateTime,
   type SuricataRulesCheck,
   type SuricataRulesStatus,
 } from "@/lib/api";
@@ -244,7 +245,7 @@ export function SuricataRulesPanel({ variant = "card" }: { variant?: "card" | "i
                       生效规则文件 <span className="font-mono">{fileList(active?.files)}</span>
                     </p>
                     <p className="text-muted-foreground">
-                      最近检查 <span className="tabular-nums">{status.last_check_at || "—"}</span>｜
+                      最近检查 <span className="tabular-nums">{formatDateTime(status.last_check_at) || "—"}</span>｜
                       {resultText(status.last_check)}
                     </p>
                   </div>
@@ -438,7 +439,7 @@ export function SuricataRulesPanel({ variant = "card" }: { variant?: "card" | "i
                 <ul className="space-y-1 text-xs">
                   {status?.history.slice(0, 5).map((item, idx) => (
                     <li key={`${item.at}-${idx}`} className="font-mono tabular-nums">
-                      {item.at}｜{item.scheduled ? "定时" : "手动"}｜{resultText(item)}
+                      {item.at ? formatDateTime(item.at) : "—"}｜{item.scheduled ? "定时" : "手动"}｜{resultText(item)}
                     </li>
                   ))}
                 </ul>

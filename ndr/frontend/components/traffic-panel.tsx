@@ -10,6 +10,7 @@ import {
   ChartSkeleton,
   Drawer,
   EmptyState,
+  LoadingBlock,
   Section,
   Table,
   TableBody,
@@ -17,7 +18,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  TableSkeleton,
   apiFetch,
   chartTokens,
   formatDateTime,
@@ -177,12 +177,12 @@ export function TrafficPanel({ view }: { view: View }) {
       setPeersLoading(true);
       setPeers({ center: ip, nodes: [], edges: [] });
       const res = await apiFetch<PeersResult>(
-        `/api/traffic/peers?ip=${encodeURIComponent(ip)}&view=${view}&minutes=${minutes}`,
+        `/api/traffic/peers?ip=${encodeURIComponent(ip)}&view=${view}&minutes=${minutes}&limit=${limit}`,
       ).catch(() => null);
       setPeersLoading(false);
       if (res) setPeers(res);
     },
-    [minutes, view],
+    [minutes, view, limit],
   );
 
   const meta = VIEW_META[view];
@@ -203,9 +203,11 @@ export function TrafficPanel({ view }: { view: View }) {
     const rings = peersOnly.length > 12 ? [230, 360] : [260];
     const perRing = Math.max(1, Math.ceil(peersOnly.length / rings.length));
     const maxBytes = Math.max(1, ...peersOnly.map((n) => n.bytes));
-    // 服务器图标（堆叠机箱）：用作 symbol，颜色由 itemStyle 控制
-    // 服务器图标：两个叠放的机箱（简单路径，避免小数点在源码里连成 IP 的样子）
-    const SERVER_ICON = "path://M2 3h20v7H2zM2 14h20v7H2z";
+    // 服务器图标：来自 桌面/服务器.svg（iconfont 风格，1024 基准坐标，多子路径单色）。
+    // 合并全部子路径为一个复合 path，交给 ECharts 按 symbolSize 自适应缩放；
+    // 颜色由 itemStyle 控制（中心蓝 / 网段内浅蓝 / 网段外灰），随主题切换。
+    const SERVER_ICON =
+      "path://M264.815304 86.77287v850.498782h573.217392V86.77287H264.815304z m286.630957 761.010087a48.217043 48.217043 0 1 1-0.044522-96.389566 48.217043 48.217043 0 0 1 0.044522 96.389566z m0-187.392a27.826087 27.826087 0 1 1 0 55.652173 27.826087 27.826087 0 0 1 0-55.652173z m-27.826087-64.912696a27.826087 27.826087 0 1 1 55.652174 0 27.826087 27.826087 0 0 1-55.652174 0z m185.032348-138.195478H394.195478V411.336348h314.457044v45.946435z m0-82.098087H394.195478V329.282783h314.457044v45.901913z m0-79.293218H394.195478V167.891478h314.457044v128z M551.446261 799.521391m-18.565565 0a18.565565 18.565565 0 1 0 37.13113 0 18.565565 18.565565 0 1 0-37.13113 0Z M437.337043 212.368696h228.173914v42.651826H437.337043z";
 
     const nodeData: Array<Record<string, unknown>> = [
       {
@@ -353,7 +355,7 @@ export function TrafficPanel({ view }: { view: View }) {
               </select>
             </label>
             <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
-              {loading ? "统计中…" : "刷新"}
+              {loading ? "加载中…" : "刷新"}
             </Button>
           </div>
         }
@@ -378,8 +380,8 @@ export function TrafficPanel({ view }: { view: View }) {
             ) : null}
 
             {!data && !errs.has ? (
-              /* 首次加载：画表格骨架，不要把「正在统计」显示成「没有流量」 */
-              <TableSkeleton rows={8} cols={6} />
+              /* 首次加载：圆点转圈 + 加载中，不要把「正在读」显示成「没有流量」 */
+              <LoadingBlock className="py-20" />
             ) : rows.length === 0 ? (
               <EmptyState
                 title={errs.isFailed(SRC.ips) ? "读取失败（见上方错误条）" : "该时间段内没有匹配的流量"}

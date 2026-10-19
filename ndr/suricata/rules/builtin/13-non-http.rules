@@ -19,6 +19,8 @@
 # 误报与适配提示
 #   SNMP/NTP 规则在存在网管系统或 NTP 服务器的环境会命中，须按资产角色抑制。
 #   MQTT 规则在存在 IoT 业务的环境需上调频次阈值。
+#   [2026-10-19 生产调优] 9113004(MQTT 高频连接) 原用 flow:to_server,established + detection_filter 计数,
+#   会把单条 MQTT 会话的数据包计为高频,导致正常 IoT 连接误报。已改为 flow:to_server; flags:S; 仅统计 SYN 次数。
 # ==============================================================================
 
 alert udp any any -> any 161 ( \
@@ -47,7 +49,7 @@ alert udp any any -> any 5060 ( \
 
 alert tcp any any -> any 1883 ( \
     msg:"[其他协议-04] MQTT 高频连接(IoT 探测或暴破)"; \
-    flow:to_server,established; \
+    flow:to_server; flags:S; \
     detection_filter:track by_src, count 20, seconds 60; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \

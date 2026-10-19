@@ -19,6 +19,10 @@
 #   标记规则使用 flowbits:noalert,本身不产生告警,仅置位。
 #   关联规则的置信度显著高于单条规则,建议产品侧对 CHAIN 类告警提升处置优先级。
 #   若客户环境存在常态漏扫器,应先用 threshold.config 抑制该源,避免污染阶段状态。
+#   [2026-10-19 生产调优] M4(9112004)/M5(9112005) 原用 flow:to_server,established + detection_filter,
+#   会把单条会话的数据包计为高频访问,导致阶段状态被正常连接误标、并连带触发 CHAIN-04 关联误报。
+#   已改为 flow:to_server; flags:S; 仅统计 SYN(连接请求)次数。CHAIN-01~07 因依赖 http.uri/content 匹配,
+#   保持 established 不变(改 SYN 会破坏内容解析,属误修)。
 #
 # 性能说明
 #   标记规则为宽匹配正则,会带来额外开销。本文件适用于 1G 以下链路;
@@ -64,7 +68,7 @@ alert http any any -> any any ( \
 
 alert tcp any any -> any [22,3389,3306,1433,5432,6379,27017,1521,23,5900,5985] ( \
     msg:"[攻击链-M4] 阶段标记 - 凭据服务高频访问"; \
-    flow:to_server,established; \
+    flow:to_server; flags:S; \
     detection_filter:track by_src, count 20, seconds 60; \
     xbits:set, apt.stage.cred, track ip_src, expire 3600; \
     flowbits:noalert; \
@@ -74,7 +78,7 @@ alert tcp any any -> any [22,3389,3306,1433,5432,6379,27017,1521,23,5900,5985] (
 
 alert tcp any any -> any [445,139,5985,5986,88,389] ( \
     msg:"[攻击链-M5] 阶段标记 - 横向移动与域内侦察"; \
-    flow:to_server,established; \
+    flow:to_server; flags:S; \
     detection_filter:track by_src, count 20, seconds 60; \
     xbits:set, apt.stage.lateral, track ip_src, expire 3600; \
     flowbits:noalert; \

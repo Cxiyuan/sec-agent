@@ -4,8 +4,8 @@
 # 文件名称    : 15-非HTTP通道与扫描器痕迹.rules
 # 攻击类型    : WebSocket C2 / 扫描器缓存残留 / Syslog 探测 / MQTT 发布
 # ATT&CK     : TA0011 命令与控制 / TA0043 侦察
-# 规则数量    : 5 条
-# SID 段     : 9115001 - 9115005
+# 规则数量    : 7 条
+# SID 段     : 9115001 - 9115007
 #
 # 检测原理
 #   WebSocket 已成为主流 C2 载体(规避 HTTP 日志审计)。演练实证：
@@ -26,10 +26,10 @@ alert http any any -> any any ( \
     msg:"[C2通道-01] WebSocket 握手高频出现(疑似 C2 通道建立)"; \
     flow:to_server,established; \
     http.header; content:"Sec-WebSocket-Key"; nocase; \
-    detection_filter:track by_src, count 20, seconds 60; \
+    detection_filter:track by_src, count 50, seconds 60; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9115001; rev:1;)
+    sid:9115001; rev:2;)
 
 alert tcp any any -> any 6379 ( \
     msg:"[C2通道-02] Redis 中发现 Nuclei 扫描器状态残留"; \
@@ -37,7 +37,8 @@ alert tcp any any -> any 6379 ( \
     content:"nuclei-inflight"; nocase; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity High, created_at 2026_10_18; \
-    sid:9115002; rev:1;)
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    sid:9115002; rev:2;)
 
 alert tcp any any -> any 6379 ( \
     msg:"[C2通道-03] Redis 中发现漏洞验证残留键 (xxlpoc 等)"; \
@@ -46,7 +47,8 @@ alert tcp any any -> any 6379 ( \
     pcre:"/(xxlpoc|poc_|_poc|testpoc)/i"; \
     classtype:attempted-admin; \
     metadata:attack_tactic TA0001, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9115003; rev:1;)
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    sid:9115003; rev:2;)
 
 alert tcp any any -> any 5432 ( \
     msg:"[C2通道-04] PostgreSQL 中发现 qbscan 扫描器残留"; \
@@ -54,7 +56,8 @@ alert tcp any any -> any 5432 ( \
     content:"qbscan"; nocase; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity High, created_at 2026_10_18; \
-    sid:9115004; rev:1;)
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    sid:9115004; rev:2;)
 
 alert udp any any -> any 514 ( \
     msg:"[C2通道-05] Syslog 端口探测"; \
@@ -79,4 +82,5 @@ alert tcp any any -> any [25,587,465] ( \
     pcre:"/(example\.(com|net|org|invalid|test)|external-test-example|example-invalid)/i"; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1590, confidence Medium, severity Medium, created_at 2026_10_18; \
-    sid:9115007; rev:1;)
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    sid:9115007; rev:2;)

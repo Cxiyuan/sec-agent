@@ -25,7 +25,7 @@ EOF
 
 # 期望条数从分类索引里读（与镜像里的内置规则集同源，避免手写数字漂移）
 INDEX="$ROOT/ndr/suricata/rules/builtin/index.json"
-[ -f "$INDEX" ] || { echo "缺少分类索引 $INDEX（先跑 ndr/suricata/tools/classify_rules.py）" >&2; exit 1; }
+[ -f "$INDEX" ] || { echo "缺少分类索引 $INDEX（先跑 ndr/suricata/tools/build_builtin_index.py）" >&2; exit 1; }
 EXPECT_TOTAL=$(sed -n 's/^  "total": \([0-9]*\),$/\1/p' "$INDEX" | head -1)
 EXPECT_FILES=$(grep -c '"file":' "$INDEX")
 [ -n "$EXPECT_TOTAL" ] && [ "$EXPECT_TOTAL" -gt 0 ] || { echo "索引里读不到 total" >&2; exit 1; }

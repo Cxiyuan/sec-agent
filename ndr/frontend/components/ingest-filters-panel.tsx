@@ -272,7 +272,13 @@ export function IngestFiltersPanel() {
     try {
       await apiFetch(`/api/ingest-filters/${f.id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...f, enabled: !f.enabled }),
+        body: JSON.stringify({
+          name: f.name,
+          description: f.description,
+          conditions: f.conditions,
+          enabled: !f.enabled,
+          priority: f.priority,
+        }),
       });
       void load();
     } catch (e) {

@@ -9,6 +9,7 @@ import {
   Dialog,
   EmptyState,
   Input,
+  LoadingBlock,
   Section,
   Table,
   TableBody,
@@ -16,7 +17,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  TableSkeleton,
   apiFetch,
   formatDateTime,
 } from "@shentong/ui";
@@ -131,6 +131,10 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
    *  否则加载中的 200ms~2s 会被误显示成「还没有分组 / 台账还是空的」。 */
   const [groupsReady, setGroupsReady] = React.useState(false);
   const [recordsReady, setRecordsReady] = React.useState(false);
+  /** 台账分页：当前页（0 基）、每页条数、总条数（来自后端 total）。 */
+  const [recordsPage, setRecordsPage] = React.useState(0);
+  const [recordsSize, setRecordsSize] = React.useState(20);
+  const [recordsTotal, setRecordsTotal] = React.useState(0);
   /** 空态里的「新建分组 / 新增资产」直接复用上面的表单：聚焦输入框，不另写创建逻辑。 */
   const groupNameRef = React.useRef<HTMLInputElement>(null);
   const ipInputRef = React.useRef<HTMLInputElement>(null);
@@ -158,15 +162,18 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
   const loadRecords = React.useCallback(async () => {
     const params = new URLSearchParams();
     if (q.trim()) params.set("q", q.trim());
+    params.set("limit", String(recordsSize));
+    params.set("offset", String(recordsPage * recordsSize));
     const res = await apiFetch<{ items: RecordRow[]; total: number }>(
       `/api/assets/records?${params.toString()}`,
     ).catch(() => null);
     if (res) {
       errs.clear(SRC.records);
       setRecords(res.items);
+      setRecordsTotal(res.total);
     } else errs.fail(SRC.records);
     setRecordsReady(true);
-  }, [errs, q, SRC.records]);
+  }, [errs, q, recordsPage, recordsSize, SRC.records]);
 
   const loadHosts = React.useCallback(async () => {
     const res = await apiFetch<DiscoverResult>(
@@ -411,7 +418,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
               ) : null}
               {/* 首屏：接口还没回来、也没有失败 → 画骨架；「正在读」不能写成「没有主机」。 */}
               {hosts === null && !errs.has ? (
-                <TableSkeleton rows={6} cols={6} />
+                <LoadingBlock className="py-16" />
               ) : (hosts?.items ?? []).length === 0 ? (
                 <EmptyState
                   title={
@@ -487,7 +494,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                 </div>
               ) : null}
               {scan === null && !errs.has ? (
-                <TableSkeleton rows={6} cols={7} />
+                <LoadingBlock className="py-16" />
               ) : (scan?.items ?? []).length === 0 ? (
                 <EmptyState
                   title={
@@ -558,7 +565,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
             <Card>
               <CardContent className="p-0">
                 {!groupsReady ? (
-                  <TableSkeleton rows={4} cols={5} />
+                  <LoadingBlock className="py-16" />
                 ) : groups.length === 0 ? (
                   <EmptyState
                     title={
@@ -713,17 +720,27 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
             </Card>
           </Section>
           <Section
-            title={`资产台账（${records.length}）`}
+            title={`资产台账（${recordsTotal}）`}
             extra={
               <>
                 <Input
                   aria-label="按 IP / 主机名搜索台账"
                   value={q}
-                  onChange={(e) => setQ(e.target.value)}
+                  onChange={(e) => {
+                    setQ(e.target.value);
+                    setRecordsPage(0);
+                  }}
                   placeholder="按 IP / 主机名搜"
                   className="h-8 w-52"
                 />
-                <Button size="sm" variant="outline" onClick={() => void loadRecords()}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setRecordsPage(0);
+                    void loadRecords();
+                  }}
+                >
                   搜索
                 </Button>
               </>
@@ -732,7 +749,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
             <Card>
               <CardContent className="p-0">
                 {!recordsReady ? (
-                  <TableSkeleton rows={6} cols={8} />
+                  <LoadingBlock className="py-16" />
                 ) : records.length === 0 ? (
                   <EmptyState
                     title={
@@ -805,6 +822,56 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                     </TableBody>
                   </Table>
                 )}
+                {recordsReady && recordsTotal > 0 ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-2 text-xs text-muted-foreground">
+                    <span>共 {recordsTotal} 条</span>
+                    <div className="flex items-center gap-2">
+                      <span>每页</span>
+                      <select
+                        value={recordsSize}
+                        onChange={(e) => {
+                          setRecordsSize(Number(e.target.value));
+                          setRecordsPage(0);
+                        }}
+                        className="h-7 rounded-md border border-border bg-surface-2 px-1 text-xs text-foreground"
+                      >
+                        {[20, 50, 100, 200].map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={recordsPage <= 0}
+                        onClick={() => setRecordsPage((p) => Math.max(0, p - 1))}
+                      >
+                        上一页
+                      </Button>
+                      <span className="tabular-nums">
+                        {recordsPage + 1} / {Math.max(1, Math.ceil(recordsTotal / recordsSize))}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          recordsPage >= Math.max(1, Math.ceil(recordsTotal / recordsSize)) - 1
+                        }
+                        onClick={() =>
+                          setRecordsPage((p) =>
+                            Math.min(
+                              Math.max(1, Math.ceil(recordsTotal / recordsSize)) - 1,
+                              p + 1,
+                            ),
+                          )
+                        }
+                      >
+                        下一页
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </Section>

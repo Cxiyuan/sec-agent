@@ -203,7 +203,7 @@ export function StatusPanel() {
       loadInto(errs, SRC.traffic, "/api/stats/traffic?minutes=30", setTraffic),
       loadInto(errs, SRC.stats, "/api/detector/stats", setStats),
       loadInto(errs, SRC.push, "/api/agent-push", setPush),
-      loadInto(errs, SRC.baseline, "/api/baseline", setBaseline),
+      loadInto(errs, SRC.baseline, "/api/baseline?limit=10", setBaseline),
       loadInto(errs, SRC.es, "/api/es/status", setEsStatus),
       loadInto(errs, SRC.logstash, "/api/logstash", setLogstash),
       loadInto(errs, SRC.overview, "/api/stats/overview?hours=24", setOverview),

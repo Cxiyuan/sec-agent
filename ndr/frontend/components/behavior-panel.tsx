@@ -293,12 +293,13 @@ export function BehaviorPanel() {
   const assetsUrl =
     `/api/baseline/assets?q=${encodeURIComponent(aq)}` +
     `&scope=${ascope}` +
+    `&sort=visits` +
     `&limit=${PAGE_SIZE}&offset=${apage * PAGE_SIZE}`;
 
   async function load() {
     errs.reset();
     await Promise.all([
-      loadInto(errs, SRC.overview, "/api/baseline", setOverview),
+      loadInto(errs, SRC.overview, "/api/baseline?limit=10", setOverview),
       loadInto(errs, SRC.profiles, profilesUrl, setProfiles),
       loadInto(errs, SRC.numeric, numericUrl, setNumeric),
       loadInto(errs, SRC.assets, assetsUrl, setAssets),

@@ -29,8 +29,8 @@ alert http any any -> any any ( \
     msg:"[后门通信-02] Webshell - 脚本文件携带命令类参数"; \
     flow:to_server,established; \
     http.uri; \
-    pcre:"/\.(php|jsp|asp|aspx)\?[a-z0-9_]*=(cmd|exec|command|passwd|pwd|z0|z1|z2|eval)/i"; \
+    pcre:"/\.(php|jsp|asp|aspx)\?[a-z0-9_]*=(cmd|exec|command|z0|z1|z2|eval)/i"; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     classtype:web-application-attack; \
     metadata:attack_tactic TA0003, attack_technique T1505.003, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9104002; rev:1;)
+    sid:9104002; rev:2;)

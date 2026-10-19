@@ -157,7 +157,7 @@ count_rules_in() {
 # 首次启动（或规则被清空后）必须保证 active/ 里有可加载的文件，否则 rule-files 为空起不来。
 #
 # 默认加载**内置默认规则集**（镜像里按攻击类型分类的开发者规则，见 rules/builtin/ 与
-# tools/classify_rules.py）；只有内置目录缺失时才回落到空占位（0 条）。
+# tools/build_builtin_index.py 生成 index.json）；只有内置目录缺失时才回落到空占位（0 条）。
 # 在线更新（manifest）走 staging→校验→activate，仍可整体替换这套默认规则。
 bootstrap_rules() {
   mkdir -p "$ACTIVE_DIR" "$STAGING_DIR" "$PREVIOUS_DIR" "$REJECTED_DIR"

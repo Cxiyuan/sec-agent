@@ -174,7 +174,13 @@ export function ExclusionsPanel() {
     try {
       await apiFetch(`/api/exclusions/${f.id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...f, enabled: !f.enabled }),
+        body: JSON.stringify({
+          name: f.name,
+          description: f.description,
+          conditions: f.conditions,
+          enabled: !f.enabled,
+          priority: f.priority,
+        }),
       });
       load();
     } catch (e) {

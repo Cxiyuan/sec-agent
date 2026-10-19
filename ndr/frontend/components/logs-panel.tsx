@@ -9,6 +9,7 @@ import {
   Drawer,
   EmptyState,
   Input,
+  LoadingBlock,
   Section,
   Skeleton,
   Table,
@@ -17,7 +18,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  TableSkeleton,
   apiFetch,
   formatDateTime,
 } from "@shentong/ui";
@@ -374,7 +374,7 @@ export function LogsPanel() {
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={() => void run(0)} disabled={loading}>
                 <Search className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                {loading ? "查询中…" : "搜索"}
+                {loading ? "加载中…" : "搜索"}
               </Button>
               <Button
                 size="sm"
@@ -474,7 +474,7 @@ export function LogsPanel() {
         <Card>
           <CardContent className="p-0">
             {firstLoad ? (
-              <TableSkeleton rows={10} cols={6} />
+              <LoadingBlock className="py-20" />
             ) : result && result.items.length ? (
               <Table>
                 <TableHeader>

@@ -1431,7 +1431,7 @@ vs 反向 `203 → 214` **614 次**（2600 倍）；`203 → 源站` 的请求�
 ### 2026-10 签名引擎内置默认规则集（开发者规则全集 → 按攻击类型分类 → 离线可用）
 
 **来源与分类**：开发者提供的 `规则全集.rules`（11,190 条，自带 `classtype`，0 条缺分类）。
-`ndr/suricata/tools/classify_rules.py` 按 classtype 归到 7 个攻击类型分类，**规则原文逐行保留**：
+`ndr/suricata/tools/classify_rules.py` 按 classtype 归到 7 个攻击类型分类，**规则原文逐行保留**（**该工具已删除**：规则换代后由开发者按攻击类型直接给出文件，索引由 `build_builtin_index.py` 生成）：
 
 | 分类 | 条数 | 覆盖的原始 classtype |
 | 分类文件 | 条数 | 说明 |

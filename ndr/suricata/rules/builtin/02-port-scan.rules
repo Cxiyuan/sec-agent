@@ -41,27 +41,30 @@ alert tcp $HOME_NET any -> $EXTERNAL_NET any ( \
 alert tcp any any -> any any ( \
     msg:"[扫描-04] TCP NULL 扫描"; \
     flags:0; flow:stateless; \
+    detection_filter:track by_src, count 10, seconds 60; \
     classtype:network-scan; \
     metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102004; rev:1;)
+    sid:9102004; rev:2;)
 
 alert tcp any any -> any any ( \
     msg:"[扫描-05] TCP FIN 扫描"; \
     flags:F; flow:stateless; \
+    detection_filter:track by_src, count 20, seconds 60; \
     classtype:network-scan; \
     metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102005; rev:1;)
+    sid:9102005; rev:2;)
 
 alert tcp any any -> any any ( \
     msg:"[扫描-06] TCP XMAS 扫描"; \
     flags:FPU; flow:stateless; \
+    detection_filter:track by_src, count 10, seconds 60; \
     classtype:network-scan; \
     metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102006; rev:1;)
+    sid:9102006; rev:2;)
 
-alert udp $HOME_NET any -> $EXTERNAL_NET any ( \
+alert udp $HOME_NET any -> $EXTERNAL_NET ![53,123,443,161,514,5353,67,68,69,1900] ( \
     msg:"[扫描-07] UDP 端口扫描 - 出向高频"; \
-    detection_filter:track by_src, count 80, seconds 60; \
+    detection_filter:track by_src, count 200, seconds 60; \
     classtype:network-scan; \
     metadata:attack_tactic TA0043, attack_technique T1046, confidence Low, severity Low, created_at 2026_10_18; \
-    sid:9102007; rev:1;)
+    sid:9102007; rev:2;)

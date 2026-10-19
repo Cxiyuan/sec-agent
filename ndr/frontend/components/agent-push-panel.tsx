@@ -5,6 +5,7 @@ import {
   ApiError,
   apiFetch,
   errorText,
+  formatDateTime,
   type AgentPushPayload,
   type AgentPushStatus,
   type AgentPushTestResult,
@@ -467,7 +468,7 @@ export function AgentPushPanel() {
                     </div>
 
                     <p className="text-xs tabular-nums text-muted-foreground">
-                      最近成功 {st.last_success_at || "—"}；最近失败 {st.last_error_at || "—"}
+                      最近成功 {formatDateTime(st.last_success_at) || "—"}；最近失败 {formatDateTime(st.last_error_at) || "—"}
                       {st.last_error ? `（${st.last_error}）` : ""}
                       {st.error ? ` —— 状态不可读：${st.error}` : ""}
                     </p>

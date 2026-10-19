@@ -2,7 +2,7 @@
 
 规则来源：**开发者按攻击类型分好文件**提供的规则包（2026-10 换代，15 类 / 185 条），
 放在 `ndr/suricata/rules/builtin/`、由 `tools/build_builtin_index.py` 生成 `index.json`。
-旧的"按 classtype 自动分 7 类"那套（`classify_rules.py`）不再使用。
+旧的"按 classtype 自动分 7 类"那套（已删除的自动分类工具）不再使用。
 权威语法校验在 CI 的 `tests/suricata/run.sh`（拿真实 suricata 跑 `-T` 全量加载）；
 这里钉住的是「分类与索引一致、没有重复 sid、规则外形完整」这类不跑引擎也能查的东西。
 """
@@ -17,8 +17,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILTIN = ROOT / "ndr" / "suricata" / "rules" / "builtin"
-TOOL = ROOT / "ndr" / "suricata" / "tools" / "classify_rules.py"
-
 _ACTION_RE = re.compile(r"^\s*(alert|drop|reject|pass)\s")
 _CLASSTYPE_RE = re.compile(r"classtype:\s*([a-zA-Z0-9_-]+)")
 _SID_RE = re.compile(r"\bsid:\s*(\d+)")
@@ -124,7 +122,7 @@ def test_rules_look_syntactically_complete(index: dict) -> None:
 
 
 #: Suricata 自带的 `classification.config` 里的**标准 classtype**（用到的都在这里）。
-#: 为什么不再依赖 classify_rules.py：分类已由开发者按文件给出，工具不再参与内置集生成；
+#: 为什么不再依赖自动分类工具：分类已由开发者按文件给出，工具不再参与内置集生成；
 #: 这条守卫生的是"出现了不在标准表里的 classtype"（引擎会只告警不拦截，等于静默失效）。
 STANDARD_CLASSTYPES = {
     "attempted-admin",

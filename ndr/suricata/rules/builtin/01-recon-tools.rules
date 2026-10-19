@@ -179,11 +179,11 @@ alert http any any -> any any ( \
 alert http any any -> any any ( \
     msg:"[侦察-19] 攻击工具指纹 - httpx 批量探测工具"; \
     flow:to_server,established; \
-    http.user_agent; content:"httpx"; nocase; \
+    http.user_agent; pcre:"/(?<!python-)httpx\//i"; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1595.002, confidence Medium, severity Low, created_at 2026_10_18; \
-    sid:9101019; rev:1;)
+    sid:9101019; rev:2;)
 
 alert http any any -> any any ( \
     msg:"[侦察-20] 攻击工具指纹 - Arjun 参数发现工具"; \
@@ -258,14 +258,14 @@ alert http any any -> any any ( \
     sid:9101027; rev:1;)
 
 # 提示: 误报高: API 网关、健康检查、脚本客户端会命中,建议仅在严格环境启用
-alert http any any -> any any ( \
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[侦察-28] 非浏览器 User-Agent 高频请求(自动化客户端特征)"; \
     flow:to_server,established; \
     http.user_agent; content:!"Mozilla"; \
     detection_filter:track by_src, count 100, seconds 60; \
     classtype:attempted-recon; \
     metadata:attack_tactic TA0043, attack_technique T1595.002, confidence Low, severity Info, created_at 2026_10_18; \
-    sid:9101028; rev:2;)
+    sid:9101028; rev:3;)
 alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[侦察-29] 高频脚本化 HTTP 客户端(自动化攻击脚本特征)"; \
     flow:to_server,established; \

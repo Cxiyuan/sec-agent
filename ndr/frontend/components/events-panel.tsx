@@ -684,7 +684,7 @@ export function EventsPanel() {
               onClick={() => void run(offset)}
             >
               <RotateCw className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-              {loading ? "刷新中…" : "刷新"}
+              {loading ? "加载中…" : "刷新"}
             </Button>
           </div>
         }
@@ -780,7 +780,7 @@ export function EventsPanel() {
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={() => void run(0)} disabled={loading}>
                 <Search className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                {loading ? "查询中…" : "搜索"}
+                {loading ? "加载中…" : "搜索"}
               </Button>
               <Button size="sm" variant="outline" onClick={reset} disabled={loading}>
                 <RotateCcw className="mr-1 h-3.5 w-3.5" aria-hidden="true" />

@@ -58,21 +58,21 @@ alert http any any -> any any ( \
     sid:9110004; rev:1;)
 
 # 提示: 误报: 正常业务若存在 /api/client/list 类接口需加入抑制名单
-alert http any any -> any any ( \
+alert http $EXTERNAL_NET any -> $HOME_NET any ( \
     msg:"[C2信标-05] C2 控制面板 API 访问 (client/tunnel/file/dashboard)"; \
     flow:to_server,established; \
     http.uri; content:"/api/"; nocase; \
     pcre:"/\/api\/(client|tunnel|file|dashboard|task|payload|beacon|session)\/(list|ls|info|add|del|exec|upload|download)/i"; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
+    detection_filter:track by_src, count 5, seconds 60; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity Critical, created_at 2026_10_18; \
-    sid:9110005; rev:1;)
+    sid:9110005; rev:2;)
 
 alert http any any -> any any ( \
     msg:"[C2信标-06] 信标式极简查询串 - 全单字母参数名"; \
     flow:to_server,established; \
-    http.uri; pcre:"/^\/\?([a-z]=[^&]*&){2,}[a-z]=/i"; \
+    http.uri; pcre:"/^\/\?([a-z]=[^&]*&){3,}[a-z]=/i"; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9110006; rev:1;)
+    sid:9110006; rev:2;)

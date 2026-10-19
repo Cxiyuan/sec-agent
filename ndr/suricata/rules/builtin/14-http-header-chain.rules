@@ -5,8 +5,8 @@
 # 攻击类型    : Shellshock / Log4Shell(头) / Struts2 OGNL / Cookie 注入 /
 #               Node.js RCE / NiFi 未授权 / edoc2 文档系统
 # ATT&CK     : TA0001 初始访问 / T1190 利用面向公众的应用
-# 规则数量    : 11 条
-# SID 段     : 9114001 - 9114011
+# 规则数量    : 13 条
+# SID 段     : 9114001 - 9114013
 #
 # 检测原理
 #   大量攻击载荷不出现在 URI 中,而藏在 HTTP 头里 —— 这是只分析 http.log 的
@@ -123,23 +123,23 @@ alert http any any -> any any ( \
     metadata:attack_tactic TA0001, attack_technique T1190, cwe CWE-94, confidence High, severity Critical, created_at 2026_10_18; \
     sid:9114010; rev:1;)
 
-alert http any any -> any any ( \
+alert http $EXTERNAL_NET any -> $HOME_NET any ( \
     msg:"[请求头-11] 特定系统漏洞利用路径 - Apache NiFi / edoc2 文档系统"; \
     flow:to_server,established; \
     http.uri; content:"/nifi-api"; nocase; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     classtype:attempted-admin; \
     metadata:attack_tactic TA0001, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9114011; rev:1;)
+    sid:9114011; rev:2;)
 
-alert http any any -> any any ( \
+alert http $EXTERNAL_NET any -> $HOME_NET any ( \
     msg:"[请求头-12] edoc2 电子文档管理系统漏洞利用端点"; \
     flow:to_server,established; \
     http.uri; content:"edoc2"; nocase; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     classtype:web-application-attack; \
     metadata:attack_tactic TA0001, attack_technique T1190, confidence Medium, severity High, created_at 2026_10_18; \
-    sid:9114012; rev:1;)
+    sid:9114012; rev:2;)
 
 # 实证: 注入载荷出现在 Location / CDN-SRC-IP / X-Forwarded-For 等任意请求头中,
 #       例如 `CDN-SRC-IP: 2'and extractvalue(1,concat(0x5c,(select md5(332)),0x5c)) and '1'='1`
