@@ -285,6 +285,11 @@ def run() -> None:
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):
                 digest["baseline"] = engine.annotate(digest)
+                # 基线偏离也是"命中事件"的一类来源（第三类），与规则命中同表、同唯一事件 ID
+                if digest["baseline"]:
+                    hit_ids = hits.save_baseline_deviations(digest, digest["baseline"])
+                    if hit_ids:
+                        digest["baseline_event_ids"] = hit_ids
             _apply_routine_policy(digest, client, stats)
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1

@@ -399,7 +399,25 @@ def test_web_attack_rules_moved_to_signature_engine(mods: dict[str, Any]) -> Non
     ):
         assert name in moved, f"{name} 应已移交签名引擎（不在删除名单里）"
     live = {r["name"] for r in mods["builtin"].BUILTIN_RULES}
-    assert not (moved & live), "已移交的规则不能再留在内置定义里（会两头维护、同一件事报两遍）"
+    # 2026-10 规则收敛：扫描 / Web 利用 / DNS 陵道这批规则交给特征匹配后，
+    # 名字**留在** BUILTIN_RULES（保留历史判据与说明），但登记在 DELETED_RULES 且播种时跳过。
+    # 所以允许"同时在两边"的只有这批白名单，其它规则一律不许复活。
+    CONVERGED = {
+        "快速端口扫描",
+        "高频扫描连接",
+        "单目标多端口深扫",
+        "大面积目标探测",
+        "多路径探测(漏洞挖掘)",
+        "内网漏洞利用探测",
+        "DNS-TXT隧道",
+    }
+    assert CONVERGED <= moved, "收敛的 7 条必须都登记在删除清单里"
+    assert not (moved & live) - CONVERGED, "已移交的规则不能再被播种（除收敛白名单）"
+    from pathlib import Path
+
+    seed_path = Path(__file__).resolve().parents[2] / "ndr" / "backend" / "app" / "main.py"
+    seed_src = seed_path.read_text(encoding="utf-8")
+    assert 'if spec["name"] in DELETED_RULES:' in seed_src, "播种要跳过删除清单里的规则"
 
 
 def test_no_always_true_rule_conditions(mods: dict[str, Any]) -> None:

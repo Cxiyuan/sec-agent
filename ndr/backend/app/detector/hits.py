@@ -11,10 +11,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 
 from app.db.base import SessionLocal
 from app.db.models import HitEvent
@@ -268,6 +268,11 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "first_seen": row.first_seen.isoformat() if row.first_seen else "",
             "last_seen": row.last_seen.isoformat() if row.last_seen else "",
             "rule": row.rule,
+            # 来源类别（特征匹配 / 行为分析 / 基线偏离）——界面按这三类展示，不再提采集器名字
+            "source_kind": getattr(row, "source_kind", "") or "behavior_analysis",
+            "source_label": SOURCE_LABELS.get(
+                getattr(row, "source_kind", "") or "behavior_analysis", "行为分析"
+            ),
             "severity": row.rule_severity,
             "source": row.rule_source,
             "src_ip": row.src_ip,
@@ -295,6 +300,58 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
     return out
 
 
+
+#: 事件来源类别（**不体现采集器名字**，用户口径 2026-10）：
+#: feature_match=特征匹配（签名引擎）/ behavior_analysis=行为分析（流量规则）/ baseline_deviation=基线偏离
+SOURCE_LABELS: dict[str, str] = {
+    "feature_match": "特征匹配",
+    "behavior_analysis": "行为分析",
+    "baseline_deviation": "基线偏离",
+}
+
+#: 签名引擎的 classtype → **具体安全事件归类**（界面直接展示这个，不再显示「签名命中」这种笼统说法）
+SIGNATURE_CATEGORY_LABELS: dict[str, str] = {
+    "web-application-attack": "Web 应用攻击",
+    "attempted-admin": "权限提升尝试",
+    "attempted-user": "账号口令攻击",
+    "trojan-activity": "木马与后门活动",
+    "network-scan": "网络扫描",
+    "attempted-recon": "侦察探测",
+    "attempted-dos": "拒绝服务攻击",
+    "denial-of-service": "拒绝服务攻击",
+    "policy-violation": "策略违规",
+    "non-standard-protocol": "非标准协议通信",
+    "suspicious-filename-detect": "可疑文件投递",
+    "suspicious-login": "可疑登录",
+    "misc-attack": "其它攻击行为",
+    "misc-activity": "其它可疑活动",
+    "shellcode-detect": "Shellcode 执行",
+    "exploit-kit": "漏洞利用工具",
+    "default-login-attempt": "默认口令尝试",
+}
+
+
+def source_kind_of(digest: dict[str, Any]) -> str:
+    """判断这条命中属于哪类来源（三类之一）。"""
+    if str(digest.get("signature") or "").strip() or str(digest.get("signature_id") or "").strip():
+        return "feature_match"
+    if str(digest.get("kind") or "") in ("account", "session") or digest.get("baseline"):
+        return "baseline_deviation"
+    return "behavior_analysis"
+
+
+def event_title_of(digest: dict[str, Any], source_kind: str) -> str:
+    """命中事件在界面上显示的**安全事件归类**（具体，不笼统）。"""
+    if source_kind == "feature_match":
+        category = str(digest.get("signature_category") or "").strip().lower()
+        mapped = SIGNATURE_CATEGORY_LABELS.get(category)
+        if mapped:
+            return mapped
+        if str(digest.get("signature") or "").strip():
+            return "其它可疑活动"
+    return str(digest.get("rule") or "未归类事件")
+
+
 def save_from_digest(digest: dict[str, Any]) -> str:
     """摘要定型 → 写一行命中事件，返回**唯一事件 ID**（写失败返回空串，不打断检测）。"""
     reals = [str(x) for x in (digest.get("real_client_ips") or []) if str(x or "").strip()]
@@ -305,7 +362,9 @@ def save_from_digest(digest: dict[str, Any]) -> str:
             row = HitEvent(
                 first_seen=_iso(digest.get("first_seen")),
                 last_seen=_iso(digest.get("last_seen")),
-                rule=str(digest.get("rule") or ""),
+                # 事件标题 = **具体安全事件归类**（签名命中不再显示成「签名命中(高危)」）
+                rule=event_title_of(digest, source_kind_of(digest)),
+                source_kind=source_kind_of(digest),
                 rule_severity=str(
                     digest.get("rule_severity") or digest.get("severity") or "medium"
                 ),
@@ -340,26 +399,304 @@ def save_from_digest(digest: dict[str, Any]) -> str:
         return ""
 
 
-def list_hits(*, limit: int = 50, offset: int = 0, include_ignored: bool = False) -> dict[str, Any]:
-    """命中事件列表（最新在前）。默认不含已忽略的。"""
-    cap = max(1, min(int(limit or 50), 200))
-    start = max(0, int(offset or 0))
+#: 画像判据 → 事件归类名（界面直接显示，不写「基线偏离」这种笼统说法）
+_REASON_LABELS: tuple[tuple[str, str], ...] = (
+    ("新源 IP", "新来源地址"),
+    ("新 User-Agent", "新客户端指纹"),
+    ("新接口路径", "新接口访问"),
+    ("非常用时段", "非常用时段活动"),
+    ("会话跨", "会话可能被劫持"),
+    ("错误响应突增", "错误响应激增"),
+    ("认证失败突增", "认证失败激增"),
+)
+
+#: 数值基线特征 → 事件归类名
+_FEATURE_LABELS: dict[str, str] = {
+    "conn_count": "连接数异常偏离",
+    "distinct_dst_ports": "目的端口数异常偏离",
+    "distinct_dst_ips": "目的地址数异常偏离",
+}
+
+
+def _reason_label(reason: str) -> str:
+    for key, label in _REASON_LABELS:
+        if str(reason).startswith(key):
+            return label
+    return "行为基线偏离"
+
+
+def _severity_of_risk(risk: float) -> str:
+    if risk >= 0.75:
+        return "high"
+    if risk >= 0.45:
+        return "medium"
+    return "low"
+
+
+def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
+    """把本轮**基线偏离**（画像异常 + 数值 2σ 偏离）写成命中事件，返回事件 ID 列表。
+
+    为什么要有（2026-10 用户口径）：命中事件的数据来源分三类 —— 特征匹配 / 行为分析 /
+    **基线偏离**。前两类早就在落库（规则命中），基线偏离只打进摘要标签、没有独立事件，
+    第三类在库里就是空的。这里补齐，和规则命中同一张表（`hit_events`）、同一套唯一事件 ID。
+    """
+    if not baseline:
+        return []
+    created: list[str] = []
+    first = _iso(digest.get("first_seen"))
+    last = _iso(digest.get("last_seen"))
     try:
         with SessionLocal() as db:
-            conds = [] if include_ignored else [HitEvent.ignored.is_(False)]
+            # ① 画像异常（账号 / 会话）
+            for item in baseline.get("profiles") or []:
+                reasons = [str(x) for x in (item.get("reasons") or [])]
+                if not reasons:
+                    continue
+                risk = float(item.get("risk") or 0.0)
+                row = HitEvent(
+                    first_seen=first,
+                    last_seen=last,
+                    rule=_reason_label(reasons[0]),
+                    rule_severity=_severity_of_risk(risk),
+                    rule_source="baseline",
+                    source_kind="baseline_deviation",
+                    src_ip=str((item.get("src_ips") or [""])[0] or ""),
+                    count=int(item.get("count") or 0),
+                    dst_ips=[str(x) for x in (item.get("dst_ips") or [])][:20],
+                    evidence=[
+                        {
+                            "实体类型": "账号" if str(item.get("kind")) == "account" else "会话",
+                            "实体": str(item.get("display") or item.get("key") or ""),
+                            "风险分": round(risk, 3),
+                            "判定理由": reasons,
+                            "历史观测次数": int(item.get("obs_count") or 0),
+                        }
+                    ],
+                )
+                db.add(row)
+                db.flush()
+                created.append(str(row.id))
+            # ② 数值基线（2σ 偏离）
+            for item in baseline.get("numeric") or []:
+                feature = str(item.get("feature") or "")
+                row = HitEvent(
+                    first_seen=first,
+                    last_seen=last,
+                    rule=_FEATURE_LABELS.get(feature, "数值基线偏离"),
+                    rule_severity="high",
+                    rule_source="baseline",
+                    source_kind="baseline_deviation",
+                    src_ip=str(item.get("src_ip") or ""),
+                    count=1,
+                    evidence=[
+                        {
+                            "特征": _FEATURE_LABELS.get(feature, feature),
+                            "本窗口值": item.get("value"),
+                            "历史均值": item.get("mean"),
+                            "标准差": item.get("std"),
+                            "偏离倍数": item.get("z"),
+                        }
+                    ],
+                )
+                db.add(row)
+                db.flush()
+                created.append(str(row.id))
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 — 基线事件写失败不能挡住检测
+        log.warning("基线偏离事件落库失败：%s", exc)
+        return created
+    return created
+
+
+def _hit_conditions(
+    *,
+    include_ignored: bool = False,
+    source_kind: str = "",
+    minutes: int = 0,
+    severity: str = "",
+    rule: str = "",
+    ip: str = "",
+    q: str = "",
+) -> list[Any]:
+    """把过滤条件翻译成 SQLAlchemy 条件（**纯函数**，可单测，不碰数据库）。
+
+    事件中心的筛选项就落在这里：时间范围 / 三类来源 / 严重度 / 事件归类 / IP / 关键字。
+    """
+    # 显式 Any：条件里既有 BinaryExpression（is_()）又有 ColumnElement（== / like），
+    # 让 pyright 别按第一个元素的类型推断整个 list。
+    conds: list[Any] = []
+    if not include_ignored:
+        conds.append(HitEvent.ignored.is_(False))
+    kind = str(source_kind or "").strip()
+    if kind in SOURCE_LABELS:
+        conds.append(HitEvent.source_kind == kind)
+    sev = str(severity or "").strip().lower()
+    if sev:
+        conds.append(HitEvent.rule_severity == sev)
+    if minutes and int(minutes) > 0:
+        since = datetime.now(UTC) - timedelta(minutes=int(minutes))
+        # 用 last_seen（事件最近发生时间）筛：比 created_at 更贴近"这半小时发生的事"
+        conds.append(func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since)
+    rule_text = str(rule or "").strip()
+    if rule_text:
+        conds.append(HitEvent.rule.ilike(f"%{rule_text}%"))
+    ip_text = str(ip or "").strip()
+    if ip_text:
+        like = f"%{ip_text}%"
+        conds.append(
+            or_(
+                HitEvent.src_ip.ilike(like),
+                HitEvent.client.ilike(like),
+                HitEvent.via.ilike(like),
+                cast(HitEvent.dst_ips, String).ilike(like),
+            )
+        )
+    keyword = str(q or "").strip()
+    if keyword:
+        like = f"%{keyword}%"
+        conds.append(
+            or_(
+                HitEvent.rule.ilike(like),
+                HitEvent.src_ip.ilike(like),
+                HitEvent.client.ilike(like),
+                HitEvent.via.ilike(like),
+                cast(HitEvent.evidence, String).ilike(like),
+            )
+        )
+    return conds
+
+
+def list_hits(
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    include_ignored: bool = False,
+    source_kind: str = "",
+    minutes: int = 0,
+    severity: str = "",
+    rule: str = "",
+    ip: str = "",
+    q: str = "",
+    sort: str = "recent",
+) -> dict[str, Any]:
+    """命中事件列表（默认最近在前）。
+
+    支持事件中心需要的筛选：`minutes`（时间范围）、`source_kind`（三类来源）、
+    `severity`、`rule`（事件归类子串）、`ip`（请求方/客户端/中继/目的）、`q`（跨字段关键字）。
+    `sort`：`recent`=最近发生在前（默认）/ `oldest` / `count`=按命中次数。
+    """
+    cap = max(1, min(int(limit or 50), 200))
+    start = max(0, int(offset or 0))
+    conds = _hit_conditions(
+        include_ignored=include_ignored,
+        source_kind=source_kind,
+        minutes=minutes,
+        severity=severity,
+        rule=rule,
+        ip=ip,
+        q=q,
+    )
+    order_by = {
+        "oldest": func.coalesce(HitEvent.last_seen, HitEvent.created_at).asc(),
+        "count": HitEvent.count.desc(),
+    }.get(str(sort or "recent").strip(), func.coalesce(HitEvent.last_seen, HitEvent.created_at).desc())
+    try:
+        with SessionLocal() as db:
             total = int(db.scalar(select(func.count()).select_from(HitEvent).where(*conds)) or 0)
             rows = list(
                 db.scalars(
-                    select(HitEvent)
-                    .where(*conds)
-                    .order_by(HitEvent.created_at.desc())
-                    .limit(cap)
-                    .offset(start)
+                    select(HitEvent).where(*conds).order_by(order_by).limit(cap).offset(start)
                 ).all()
             )
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读命中事件失败：{exc}", "items": [], "total": 0}
     return {"items": _rows_to_dict(rows), "total": total, "returned": len(rows)}
+
+
+def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
+    """事件中心首页要的聚合：总量、按三类来源、按严重度、按事件归类、按小时趋势。
+
+    一次 SQL 拿完（group by 三次 + 时间分桶），前端直接画卡片和折线，不用自己聚合。
+    """
+    window = max(1, int(minutes or 1440))
+    since = datetime.now(UTC) - timedelta(minutes=window)
+    bucket_seconds = 3600 if window >= 360 else 600  # ≤6 小时按 10 分钟分桶，否则按小时
+    try:
+        with SessionLocal() as db:
+            base = [
+                func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
+                HitEvent.ignored.is_(False),
+            ]
+            total = int(db.scalar(select(func.count()).select_from(HitEvent).where(*base)) or 0)
+            ignored = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(HitEvent)
+                    .where(func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
+                           HitEvent.ignored.is_(True))
+                )
+                or 0
+            )
+
+            def group_by(column: Any) -> list[dict[str, Any]]:
+                stmt = (
+                    select(column, func.count())
+                    .where(*base)
+                    .group_by(column)
+                    .order_by(func.count().desc())
+                )
+                rows = list(db.execute(stmt).all())
+                return [
+                    {
+                        "key": str(row[0] or ""),
+                        "label": SOURCE_LABELS.get(str(row[0] or ""), str(row[0] or "")),
+                        "count": int(row[1] or 0),
+                    }
+                    for row in rows
+                ]
+
+            by_kind = group_by(HitEvent.source_kind)
+            by_severity = group_by(HitEvent.rule_severity)
+            rule_stmt = (
+                select(HitEvent.rule, func.count())
+                .where(*base)
+                .group_by(HitEvent.rule)
+                .order_by(func.count().desc())
+                .limit(10)
+            )
+            by_rule = [
+                {"rule": str(row[0] or ""), "count": int(row[1] or 0)}
+                for row in list(db.execute(rule_stmt).all())
+            ]
+            # 趋势：按时间分桶（供折线图）
+            ts = func.coalesce(HitEvent.last_seen, HitEvent.created_at)
+            trend_stmt = select(ts, func.count()).where(*base).group_by(ts).order_by(ts)
+            trend_rows = list(db.execute(trend_stmt).all())
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读命中事件统计失败：{exc}", "total": 0}
+
+    buckets: dict[str, int] = {}
+    for row in trend_rows:
+        ts_value = row[0]
+        count = int(row[1] or 0)
+        if ts_value is None:
+            continue
+        moment = ts_value if isinstance(ts_value, datetime) else datetime.fromisoformat(str(ts_value))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        epoch = int(moment.timestamp()) // bucket_seconds * bucket_seconds
+        key = datetime.fromtimestamp(epoch, UTC).isoformat().replace("+00:00", "Z")
+        buckets[key] = buckets.get(key, 0) + int(count)
+    return {
+        "minutes": window,
+        "bucket_seconds": bucket_seconds,
+        "total": total,
+        "ignored": ignored,
+        "by_source_kind": by_kind,
+        "by_severity": by_severity,
+        "top_rules": by_rule,
+        "trend": [{"ts": k, "count": v} for k, v in sorted(buckets.items())],
+    }
 
 
 def get_hit(hit_id: str) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 {
   "source": "开发者按攻击类型分好文件的规则包（2026-10）",
-  "total": 185,
+  "total": 180,
   "categories": [
     {
       "category": "01-recon-tools",
@@ -41,14 +41,7 @@
       "category": "06-credential",
       "label": "凭据攻击",
       "file": "06-credential.rules",
-      "rules": 8,
-      "classtypes": {}
-    },
-    {
-      "category": "07-lateral",
-      "label": "横向移动",
-      "file": "07-lateral.rules",
-      "rules": 4,
+      "rules": 7,
       "classtypes": {}
     },
     {

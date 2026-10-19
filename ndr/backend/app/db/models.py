@@ -292,6 +292,10 @@ class HitEvent(Base):
     rule: Mapped[str] = mapped_column(String(200), default="")
     rule_severity: Mapped[str] = mapped_column(String(16), default="medium")
     rule_source: Mapped[str] = mapped_column(String(32), default="builtin")
+    #: 事件来源类别（**不体现采集器名字**）：
+    #: feature_match=特征匹配（签名引擎）/ behavior_analysis=行为分析（流量规则）/
+    #: baseline_deviation=基线偏离（画像/数值基线）
+    source_kind: Mapped[str] = mapped_column(String(24), default="behavior_analysis", index=True)
     #: 直连对端；中继链路上它是代理/WAF，真实请求方在 real_client_ips
     src_ip: Mapped[str] = mapped_column(String(64), default="")
     client: Mapped[str] = mapped_column(String(64), default="")

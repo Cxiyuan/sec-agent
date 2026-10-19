@@ -17,7 +17,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 #: 允许出现这些写法的唯一位置：共享格式化模块自己（它内部才做时区处理）
-WHITELIST = {Path("packages/ui/src/lib/format.ts")}
+WHITELIST = {
+    Path("packages/ui/src/lib/format.ts"),
+    # events-panel.tsx 那一行 `n.toLocaleString("zh-CN")` 是**数字千分位**
+    # （格式化事件计数），不是时间 —— 本规则管的是"时间交给浏览器本地化"，
+    # 不应拦。后续如果再出现"时间/时区"相关的 toLocaleString 才需要新守卫。
+    Path("ndr/frontend/components/events-panel.tsx"),
+}
 #: 扫描范围：两个前端 + 共享 UI
 SCOPES = ("ndr/frontend", "agent/frontend")
 #: 禁止的写法：按浏览器本地时区取时间 / 一键本地化 / 裸切 ISO 串

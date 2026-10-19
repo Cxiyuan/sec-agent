@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,6 +53,19 @@ def _validate(body: RuleIn) -> list[dict[str, str]]:
     return errors
 
 
+_SOURCE_LABELS = {"feature_match": "特征匹配", "behavior_analysis": "行为分析", "baseline_deviation": "基线偏离"}
+
+
+def _source_kind_of(r: Rule) -> str:
+    """规则属于哪一类来源：签名引擎事件 → 特征匹配；其余内置/自定义 → 行为分析。"""
+    text = json.dumps(r.conditions or {}, ensure_ascii=False)
+    if "signature_hit" in text or "signature_category" in text or "signature_severity" in text:
+        return "feature_match"
+    if str((r.conditions or {}).get("mode") or "") == "baseline":
+        return "baseline_deviation"
+    return "behavior_analysis"
+
+
 def _rule_dict(r: Rule) -> dict[str, Any]:
     return {
         "id": r.id,
@@ -60,6 +74,9 @@ def _rule_dict(r: Rule) -> dict[str, Any]:
         "conditions": r.conditions,
         "severity": r.severity,
         "source": r.source,
+        # 三类来源分组（界面按它分组：特征匹配 / 行为分析 / 基线偏离）
+        "source_kind": _source_kind_of(r),
+        "source_label": _SOURCE_LABELS.get(_source_kind_of(r), "行为分析"),
         "enabled": r.enabled,
         "priority": r.priority,
     }

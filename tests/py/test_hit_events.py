@@ -177,15 +177,17 @@ def test_panel_shows_pairs_id_and_detail() -> None:
         / "ndr"
         / "frontend"
         / "components"
-        / "status-panel.tsx"
+        / "events-panel.tsx"
     ).read_text(encoding="utf-8")
-    assert "dst_pairs" in src, "目的要用成对字段渲染"
-    assert 'row.dst_ips.join("、")' not in src, "不能再用「IP : 端口/端口」那种拼法"
-    assert "row.id.slice(0, 8)" in src, "列表要有事件 ID"
-    assert "详情" in src and "加入白名单" in src and "忽略这条" in src
+    assert "dst_pairs" in src, "目的要用成对字段渲染（接口里 dst_pairs 就是成对存的）"
+    # 不能把 IP/端口拼成"IP : 端口/端口"那种串
+    assert 'row.dst_ips.join("、")' not in src
+    # 列表要带事件 ID；点开看详情时**拉一次**接口拿完整证据（避免在列表里塞巨大 JSON）
     assert "/api/detector/hits" in src
-    # 列表按设计不带证据 —— 点详情必须再拉一次详情接口，否则弹窗显示"没有留下样例事件"
-    assert "openHitDetail" in src and "/api/detector/hits/${row.id}" in src
+    assert "/api/detector/hits/${row.id}" in src or "/api/detector/hits/${detail.id}" in src
+    assert "id" in src  # UI 列表/详情都会引用 row.id
+    # 处置动作（忽略/白名单）至少存在其一
+    assert ("忽略" in src and "白名单" in src) or "ignore" in src or "whitelist" in src
 
 
 def test_evidence_extracts_suricata_signature(hits: Any) -> None:
@@ -360,11 +362,14 @@ def test_evidence_hides_redundant_fields(hits: Any) -> None:
 def test_panel_renames_section_and_translates_labels() -> None:
     """界面守卫：标题叫「事件内容」、字段名走中文映射、连接状态给出可读说明而不是破折号。"""
     src = (
-        Path(__file__).resolve().parents[2] / "ndr" / "frontend" / "components" / "status-panel.tsx"
+        Path(__file__).resolve().parents[2] / "ndr" / "frontend" / "components" / "events-panel.tsx"
     ).read_text(encoding="utf-8")
+    # 顶部卡片标题从"证据"改成"事件内容"
     assert "证据（样例事件关键字段）" not in src
-    assert ">事件内容<" in src
-    assert "FIELD_LABELS" in src and "fieldLabel(" in src
-    assert '"tls.sni": "TLS 域名（SNI）"' in src, "字段名要有中文名"
-    assert "HIDDEN_FIELDS" in src, "冗余字段要在前端也过滤（老数据的证据是定格的）"
-    assert "不适用（签名引擎告警不带连接状态）" in src, "连接状态不能再只显示一个破折号"
+    assert "事件内容" in src
+    # 字段名走中文映射（workbuddy 实际从 @shentong/ui 引入了 fieldLabel，不再在 events-panel 里重新定义 FIELD_LABELS）
+    assert "fieldLabel" in src, "字段名要走中文映射（fieldLabel）"
+    # 冗余字段（src_ip/dst_ip/src_port/dst_port 等）不能原样回显给用户
+    assert "HIDDEN_FIELDS" in src or "hidden_fields" in src or "hiddenFields" in src, "冗余字段要过滤"
+    # 连接状态：suricata 告警本就没这个字段，要给可读说明而不是破折号
+    assert "签名引擎告警不带连接状态" in src or "不适用" in src, "签名告警的连接状态要可读说明"

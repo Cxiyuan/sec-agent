@@ -35,6 +35,8 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS dst_ips JSONB NOT NULL DEFAULT '{}'::jsonb",
     # 被访问方资产的归属（口径 C，2026-10）：internal（内网，异常判定只看它）/ external（公网目标）
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
+    # 命中事件来源类别（特征匹配 / 行为分析 / 基线偏离）
+    "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS source_kind VARCHAR(24) DEFAULT 'behavior_analysis'",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS window_count INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
@@ -65,7 +67,6 @@ _CONFIG_DRIVEN_RULES = {"JA3指纹命中"}
 #: 规则名是 upsert 的键：改名不迁移就会留下「旧行 + 新行」两份，而旧行还带着用户设过的
 #: 主机监控」，旧库靠这张表就地改名。
 _RENAMED_BUILTINS: dict[str, str] = {}
-
 
 
 def _delete_builtin_rules(db: Any) -> None:
@@ -120,9 +121,7 @@ def _strip_legacy_prefix(db: Any) -> int:
     `_RENAMED_BUILTINS` 那张表只覆盖历史上改过名的少数几条，**不覆盖"统一去前缀"这件事**，
     所以这里按前缀整体扫一遍。用 ORM 的 `like()`（参数化）而不是拼 SQL —— 避开 `%` 占位符坑。
     """
-    rows = db.execute(
-        select(Rule).where(Rule.name.like(_LEGACY_RULE_PREFIX + "%"))
-    ).scalars().all()
+    rows = db.execute(select(Rule).where(Rule.name.like(_LEGACY_RULE_PREFIX + "%"))).scalars().all()
     if not rows:
         return 0
     removed = renamed = 0
@@ -301,6 +300,11 @@ def _seed() -> None:
         _retire_builtin_rules(db)
         _delete_builtin_rules(db)
         for spec in BUILTIN_RULES:
+            # 「删除清单」里的规则**不再播种**（2026-10 规则收敛：扫描/Web 利用/DNS 隧道
+            # 统一交给特征匹配，避免 Zeek 侧与签名引擎双份告警）。
+            # 名字留在 BUILTIN_RULES 里是为了保留原始判据与历史说明，可随时撤回。
+            if spec["name"] in DELETED_RULES:
+                continue
             rule_spec = _dynamic_rule_spec(spec)
             exists = db.execute(
                 select(Rule).where(Rule.name == rule_spec["name"])

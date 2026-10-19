@@ -391,14 +391,49 @@ def detector_hits(
     limit: int = 50,
     offset: int = 0,
     include_ignored: bool = False,
+    source_kind: str = "",
+    minutes: int = 0,
+    severity: str = "",
+    rule: str = "",
+    ip: str = "",
+    q: str = "",
+    sort: str = "recent",
 ):
     """**命中事件列表**（PG，最新在前）—— 每条都有**系统唯一事件 ID**。
+
+    `source_kind` 按**三类来源**过滤（前端三个分组直接用）：
+    `feature_match`=特征匹配 / `behavior_analysis`=行为分析 / `baseline_deviation`=基线偏离；
+    留空 = 全部。
 
     为什么落 PG（2026-10 用户要求）：命中以前只是 Redis 里的一段「最近命中」流水（重启即丢、
     没有稳定标识），而事件需要被长期引用与关联分析。现在每条命中有唯一 ID，界面详情、忽略、
     白名单、交智能体追溯都引用它。默认不返回已忽略的事件（`include_ignored=true` 可看全量）。
     """
-    return hits.list_hits(limit=limit, offset=offset, include_ignored=include_ignored)
+    return hits.list_hits(
+        limit=limit,
+        offset=offset,
+        include_ignored=include_ignored,
+        source_kind=source_kind,
+        minutes=minutes,
+        severity=severity,
+        rule=rule,
+        ip=ip,
+        q=q,
+        sort=sort,
+    )
+
+
+@router.get("/hits/stats")
+def detector_hits_stats(
+    _: Annotated[User, Depends(get_current_user)],
+    minutes: int = 1440,
+):
+    """**命中事件聚合**（事件中心首页用）：总量、按三类来源、按严重度、TOP 事件归类、趋势。
+
+    `minutes` 默认 1440（近 24 小时）；`trend` 的桶大小随窗口变（≤6 小时按 10 分钟，否则按小时），
+    前端直接拿 `trend[]` 画折线、拿 `by_source_kind[]` 画三类占比。
+    """
+    return hits.hits_stats(minutes=minutes)
 
 
 @router.get("/hits/{hit_id}")
