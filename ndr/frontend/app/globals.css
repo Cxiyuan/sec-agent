@@ -40,9 +40,11 @@
   --popover: var(--surface-3);
   --popover-foreground: var(--foreground);
 
-  /* 次要文字 #586574：白底对比 5.99:1，12px 长时间阅读不费眼 */
+  /* 次要文字：企业级可读性优先，拒绝淡色。
+     由原 40% 提至 32% 明度（≈ #3c4756），白底对比约 7.4:1，达到 AAA 档。
+     二级文字一律走这个变量，不再用 opacity 把它压淡（opacity 会同时吃掉对比度与锐度）。 */
   --muted: 210 22% 97%;
-  --muted-foreground: 213 14% 40%;
+  --muted-foreground: 213 16% 32%;
   --secondary: 210 22% 97%;
   --secondary-foreground: var(--foreground);
   --accent: 214 90% 96%;
@@ -146,7 +148,8 @@
 
   --foreground: 210 30% 92%;
   --muted: 220 26% 10%;
-  --muted-foreground: 213 16% 62%;
+  /* 暗色二级文字：提亮到 70% 明度（≈ #aab6c6），深底对比约 7:1，长盯屏不糊 */
+  --muted-foreground: 213 18% 70%;
   --secondary: 220 26% 10%;
   --accent: 218 22% 20%;
   --accent-foreground: 212 82% 70%;
@@ -212,6 +215,22 @@ body {
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 企业级字体渲染：开启字距微调与连字，长文更顺眼、不糊边 */
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern", "liga", "calt";
+  text-size-adjust: 100%;
+}
+
+/* 表单控件默认不继承字体，会出现"界面一套字、下拉一套字"的割裂感。
+   统一回 --font-sans，让全站字体一致（含原生 select / input / button）。 */
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+  font-feature-settings: inherit;
+  /* 控件内数字同样走等宽，和表格/KPI 对齐 */
+  font-variant-numeric: tabular-nums;
 }
 
 /* 默认细线：容器边界请显式用 border（--border），行分隔用 border-subtle */

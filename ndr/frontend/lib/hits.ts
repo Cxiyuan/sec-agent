@@ -260,3 +260,154 @@ export function actionErrorText(e: unknown): string {
 export function bodyErrorText(error: string): string {
   return `操作失败：${error}`;
 }
+
+// ---------- IP 中心聚合（事件中心列表：以主机 IP 为主体，而非事件 ID 流水账） ----------
+
+/**
+ * 严重度排序：聚合时取该 IP 下最严重的那档做主徽章。
+ * 与共享库 `severityText` 同口径（critical > high > medium > low > info）。
+ */
+export const SEV_RANK: Record<string, number> = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+  "": 0,
+};
+
+/** 抽屉里「该 IP 的命中事件」子列表每页条数（固定窗口滚动 + 客户端分页） */
+export const IP_SUBLIST_PAGE = 20;
+
+/** 打开某 IP 抽屉时一次性拉取的命中数上限（后端上限 200）：够算完整聚合摘要，子列表再客户端分页 */
+export const IP_FETCH_LIMIT = 200;
+
+/**
+ * 一个 IP 聚合行：同一 `client`（回落 `src_ip`）的多条命中收成一行。
+ * `eventTypeCounts` / `sourceCounts` / `ruleCounts` 是「按次数加权」的聚合——
+ * 某事件类型这一档的计数 = 该类型下各命中的 `count` 之和，列表里直接以 `（次数）` 呈现。
+ * 顺序 = 首次出现顺序（插入序），**不**按聚合计数或时间重排（需求：谁先出现占那个位置）。
+ */
+export interface IpAggRow {
+  ip: string;
+  via?: string;
+  events: HitEventItem[];
+  eventTypeCounts: Array<[string, number]>;
+  sourceCounts: Array<[string, number]>;
+  ruleCounts: Array<[string, number]>;
+  severities: string[];
+  maxSeverity: string;
+  totalHits: number;
+  eventCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  ignored: number;
+}
+
+/** 聚合构建期用的可变结构（Map 便于累加），最终再转成稳定排序的数组 */
+interface IpAggBuilder {
+  ip: string;
+  via?: string;
+  events: HitEventItem[];
+  eventTypes: Map<string, number>;
+  sources: Map<string, number>;
+  rules: Map<string, number>;
+  severities: string[];
+  maxSeverity: string;
+  totalHits: number;
+  eventCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  ignored: number;
+}
+
+/** 把若干 key 的计数按 `by` 累加进 map（空 key 跳过，避免聚合出空档） */
+function bump(map: Map<string, number>, keys: string[], by: number): void {
+  for (const k of keys) {
+    if (!k) continue;
+    map.set(k, (map.get(k) ?? 0) + by);
+  }
+}
+
+/** Map → 按次数降序的二元组数组（展示稳定、重点在前；次数相同按名字排序兜底） */
+function toRanked(map: Map<string, number>): Array<[string, number]> {
+  return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/**
+ * 对一批 `HitEventItem` 按主机 IP（`client` 优先）做首现顺序聚合。
+ * 后端 `/api/detector/hits` 返的是事件 ID 级明细；聚合在前端做，不新增后端端点。
+ */
+export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
+  const map = new Map<string, IpAggBuilder>();
+  const order: string[] = [];
+  for (const it of items) {
+    const ip = it.client || it.src_ip || "未知请求方";
+    let b = map.get(ip);
+    if (!b) {
+      b = {
+        ip,
+        events: [],
+        eventTypes: new Map(),
+        sources: new Map(),
+        rules: new Map(),
+        severities: [],
+        maxSeverity: it.severity || "",
+        totalHits: 0,
+        eventCount: 0,
+        firstSeen: it.first_seen,
+        lastSeen: it.last_seen,
+        ignored: 0,
+      };
+      map.set(ip, b);
+      order.push(ip);
+    }
+    b.events.push(it);
+    b.totalHits += it.count;
+    b.eventCount += 1;
+    bump(b.eventTypes, it.event_types, it.count);
+    bump(b.sources, [it.source_label], it.count);
+    bump(b.rules, [it.rule], it.count);
+    if (it.severity && !b.severities.includes(it.severity)) b.severities.push(it.severity);
+    if (SEV_RANK[it.severity || ""] > SEV_RANK[b.maxSeverity]) b.maxSeverity = it.severity;
+    if (it.last_seen > b.lastSeen) b.lastSeen = it.last_seen;
+    if (it.first_seen < b.firstSeen) b.firstSeen = it.first_seen;
+    if (it.ignored) b.ignored += 1;
+    if (it.via && !b.via) b.via = it.via;
+  }
+  return order.map((ip) => {
+    const b = map.get(ip)!;
+    return {
+      ip: b.ip,
+      via: b.via,
+      events: b.events,
+      eventTypeCounts: toRanked(b.eventTypes),
+      sourceCounts: toRanked(b.sources),
+      ruleCounts: toRanked(b.rules),
+      severities: b.severities,
+      maxSeverity: b.maxSeverity,
+      totalHits: b.totalHits,
+      eventCount: b.eventCount,
+      firstSeen: b.firstSeen,
+      lastSeen: b.lastSeen,
+      ignored: b.ignored,
+    };
+  });
+}
+
+/** 抽屉里拉「该 IP 的全部命中」：只按 IP + 时间窗 + 是否含已忽略过滤，不过其它维度 */
+export function buildIpEventsQuery(
+  form: HitForm,
+  ip: string,
+  nextOffset: number,
+  limit = IP_FETCH_LIMIT,
+): string {
+  const params = new URLSearchParams();
+  params.set("ip", ip.trim());
+  params.set("minutes", String(form.minutes));
+  if (form.includeIgnored) params.set("include_ignored", "true");
+  params.set("sort", form.sort);
+  params.set("limit", String(limit));
+  params.set("offset", String(nextOffset));
+  return params.toString();
+}
