@@ -69,7 +69,7 @@ export function apply(ctx) {
     { id: 'github-webhook-ingress', insert: [{ id: 'observe-packed-ingress', name: observer }] },
   ]))
   const child = execa(process.execPath, [
-    join(installation, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), 'web', '--patch', example, '--patch', patch, '--no-open', '--port', '0',
+    join(installation, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), 'web', '--patch', example, '--patch', patch, '--no-open', '--port', '0', '--host', '127.0.0.1',
   ], { cwd: temporary, env: environment, extendEnv: false, reject: false, timeout: 90_000 })
   try {
     const ready = new Promise<string>((resolveReady, rejectReady) => {

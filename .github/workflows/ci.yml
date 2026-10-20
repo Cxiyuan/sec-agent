@@ -45,7 +45,9 @@ jobs:
       # GHCR 镜像名必须全小写；GitHub 用户名可能含大写（如 Cxiyuan）
       - name: Lowercase image namespace
         id: ns
-        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        # 输出里**带上 registry**：各 tag 只需 `${{ steps.ns.outputs.name }}/镜像:latest`，
+        # 既短又不会漏前缀（2026-10-20 为了压行宽把 ghcr.io/ 弄丢过一次，构建末段推不动）
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
@@ -66,7 +68,7 @@ jobs:
         with:
           context: ./ndr/backend
           push: true
-          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-ndr:latest
+          tags: ${{ steps.ns.outputs.name }}/shentong-ndr:latest
 
       # 前端 Dockerfile 需 COPY 仓库根下共享包 packages/ui，
       # 故 context 用仓库根，file 指向各自 Dockerfile。
@@ -90,7 +92,7 @@ jobs:
           context: ./ndr/zeek
           push: true
           # 基底版本可用 build-args 覆盖（默认 zeek/zeek:9.0）
-          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-zeek:latest
+          tags: ${{ steps.ns.outputs.name }}/shentong-zeek:latest
 
       # 签名引擎（Suricata）：构建期把 ET Open（MIT）规则拉下来固化进镜像。
       # 镜像名/tag 与 ndr/suricata/Dockerfile 的 SURICATA_BASE 对应，升级走一次提交。
@@ -101,7 +103,7 @@ jobs:
         with:
           context: ./ndr/suricata
           push: true
-          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-suricata:latest
+          tags: ${{ steps.ns.outputs.name }}/shentong-suricata:latest
 
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
