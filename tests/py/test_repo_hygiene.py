@@ -138,6 +138,11 @@ _ALLOWED_NETS: tuple[str, ...] = (
 )
 _ALLOWED = tuple(ipaddress.ip_network(n) for n in _ALLOWED_NETS)
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+#: 不扫的目录：`agent/` 已是 dsh（上游 vendored 的 TypeScript harness + 测试 fixtures），
+#: 不是我们的产品代码；"产品不得硬编码环境地址"这条规则约束的是 NDR 侧与部署编排。
+#: （2026-10-20 实测：dsh 的 office fixtures README 里带了 26.8.0.3 这类示例地址。）
+_IP_SKIP_DIRS: tuple[str, ...] = ("agent/", "node_modules/", "ndr/frontend/.next/")
+
 _IP_SKIP_EXT = {
     ".rules",
     ".map",
@@ -174,6 +179,9 @@ def test_no_environment_specific_ipv4() -> None:
         )
         for path in targets:
             if not path.is_file() or path.suffix in _IP_SKIP_EXT:
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            if any(rel.startswith(skip) for skip in _IP_SKIP_DIRS):
                 continue
             if _SKIP_PARTS & set(path.parts) or path.name in _SKIP_NAMES:
                 continue

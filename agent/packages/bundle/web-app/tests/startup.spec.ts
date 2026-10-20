@@ -4,7 +4,7 @@
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
@@ -12,7 +12,13 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { internals, provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { afterEach, describe, expect, it } from 'vitest'
-import { apply, WEB_STARTUP_SERVICE, type WebStartupValues } from '../src/startup.ts'
+import {
+  apply,
+  resolveDefaultBindHost,
+  WEB_HOST_ENV,
+  WEB_STARTUP_SERVICE,
+  type WebStartupValues,
+} from '../src/startup.ts'
 
 /** What one fixture boot observed. */
 interface Observed {
@@ -36,15 +42,25 @@ afterEach(async () => {
 /**
  * Mount the real provider and a consumer using injection-ordered config.
  * @param args - the invocation's inner arguments.
+ * @param env - environment overrides for the boot, restored afterwards.
  * @returns the service value and observed consumer/process effects.
  */
-async function bootProvider(args: string[]): Promise<{
+async function bootProvider(
+  args: string[],
+  env: Record<string, string | undefined> = {},
+): Promise<{
   values: WebStartupValues | undefined
   observed: Observed
 }> {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-web-startup-'))
   tempDirs.push(dir)
   const observed: Observed = { exits: [], out: '' }
+  const previousEnv = new Map<string, string | undefined>()
+  for (const [key, value] of Object.entries(env)) {
+    previousEnv.set(key, process.env[key])
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   writeFileSync(join(dir, 'reader.mjs'), `
 export function apply(_ctx, config) { globalThis.__webStartupObserved.readerConfig = config }
 `)
@@ -86,6 +102,10 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
   provideCmdline(ctx, { args, exit: code => void observed.exits.push(code) })
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(join(dir, 'cordis.yml')).href } })
   await ctx.loader.await()
+  for (const [key, value] of previousEnv) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   disposers.push(async () => { await ctx.fiber.dispose() })
   return {
     values: ctx.get(WEB_STARTUP_SERVICE) as WebStartupValues | undefined,
@@ -125,15 +145,37 @@ describe('web command-line provider', () => {
     expect(observed.exits).toEqual([1])
   })
 
-  it('leaves deployment values to each consumer when flags omit them', async () => {
-    const { values, observed } = await bootProvider([])
-    expect(values).toEqual({ openBrowser: true, trustedHosts: [] })
+  it('resolves DSH_WEB_HOST into the effective bind address when no --host is named', async () => {
+    const { values, observed } = await bootProvider([], { [WEB_HOST_ENV]: '10.0.0.7' })
+    expect(values).toEqual({ host: '10.0.0.7', openBrowser: true, trustedHosts: [] })
     expect(observed.readerConfig).toEqual({
-      host: '127.0.0.1',
+      host: '10.0.0.7',
       openBrowser: true,
       port: 3080,
       trustedHosts: [],
     })
+  })
+
+  it("resolves this machine's LAN address when neither --host nor DSH_WEB_HOST names one", async () => {
+    // Both sides read the same machine state, so the expectation holds on any
+    // host: a LAN interface when one answers, loopback otherwise.
+    const expected = resolveDefaultBindHost({}, networkInterfaces()).host
+    const { values, observed } = await bootProvider([], { [WEB_HOST_ENV]: undefined })
+    expect(values?.host).toBe(expected)
+    expect((observed.readerConfig as { host: string }).host).toBe(expected)
+  })
+
+  it('lets an explicit --host outrank DSH_WEB_HOST', async () => {
+    const { values } = await bootProvider(['--host', '127.0.0.1'], { [WEB_HOST_ENV]: '10.0.0.7' })
+    expect(values?.host).toBe('127.0.0.1')
+  })
+
+  it('rejects a wildcard DSH_WEB_HOST before activating consumers', async () => {
+    const { values, observed } = await bootProvider([], { [WEB_HOST_ENV]: '0.0.0.0' })
+    expect(observed.out).toContain(`error: ${WEB_HOST_ENV} 0.0.0.0 is an unspecified (wildcard) address`)
+    expect(values).toBeUndefined()
+    expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
   })
 
   it('prints its own help and leaves the consumer pending', async () => {
@@ -159,8 +201,9 @@ describe('web command-line provider', () => {
     const { values, observed } = await bootProvider([
       '--public-url', 'https://web.example/ui',
       '--trusted-host', 'lab.internal',
-    ])
+    ], { [WEB_HOST_ENV]: '127.0.0.1' })
     expect(values).toEqual({
+      host: '127.0.0.1',
       openBrowser: true,
       publicUrl: 'https://web.example/ui',
       trustedHosts: ['lab.internal'],
@@ -191,5 +234,46 @@ describe('web command-line provider', () => {
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
+  })
+})
+
+describe('default bind address resolution', () => {
+  const loopbackOnly = { lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }] }
+  const withLan = {
+    lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }],
+    en0: [
+      { family: 'IPv4', address: '192.168.1.20', internal: false },
+      { family: 'IPv6', address: 'fe80::1', internal: false },
+    ],
+  }
+
+  it('prefers the DSH_WEB_HOST declaration over interface scanning', () => {
+    expect(resolveDefaultBindHost({ [WEB_HOST_ENV]: '10.0.0.7' }, withLan))
+      .toEqual({ host: '10.0.0.7', source: 'env' })
+  })
+
+  it('treats an empty DSH_WEB_HOST as unset by shell convention', () => {
+    expect(resolveDefaultBindHost({ [WEB_HOST_ENV]: '' }, withLan))
+      .toEqual({ host: '192.168.1.20', source: 'lan' })
+  })
+
+  it('takes the first non-internal IPv4 address across the interface table', () => {
+    const table = { ...withLan, eth1: [{ family: 'IPv4', address: '10.1.2.3', internal: false }] }
+    expect(resolveDefaultBindHost({}, table)).toEqual({ host: '192.168.1.20', source: 'lan' })
+  })
+
+  it('ignores non-internal IPv6 entries, which stay an explicit --host choice', () => {
+    expect(resolveDefaultBindHost({}, { en0: [{ family: 'IPv6', address: 'fe80::1', internal: false }] }))
+      .toEqual({ host: '127.0.0.1', source: 'loopback' })
+  })
+
+  it('falls back to loopback when the machine reports no non-internal IPv4', () => {
+    expect(resolveDefaultBindHost({}, loopbackOnly)).toEqual({ host: '127.0.0.1', source: 'loopback' })
+    expect(resolveDefaultBindHost({}, {})).toEqual({ host: '127.0.0.1', source: 'loopback' })
+  })
+
+  it('tolerates an interface the OS reports without an address list', () => {
+    expect(resolveDefaultBindHost({}, { lo: undefined, en0: withLan.en0 }))
+      .toEqual({ host: '192.168.1.20', source: 'lan' })
   })
 })

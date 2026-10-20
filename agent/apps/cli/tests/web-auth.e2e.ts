@@ -66,10 +66,14 @@ function cleanEnvironment(root: string, dshHome: string): NodeJS.ProcessEnv {
 
 /** Start the public source CLI and wait for its authenticated readiness URL. */
 async function startWeb(root: string, dshHome: string, port: number): Promise<RunningWeb> {
+  // The assertions below name the loopback origin and drive the wire Host
+  // header directly, so pin the bind: the flagless default is this machine's
+  // LAN address.
   const child = spawn(process.execPath, [
     '--import', TSX_LOADER,
     DSH_SOURCE_BIN,
     'web',
+    '--host', '127.0.0.1',
     '--no-open',
     '--port', String(port),
   ], {

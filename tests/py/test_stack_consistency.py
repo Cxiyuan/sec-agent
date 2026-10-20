@@ -15,6 +15,14 @@ import sys
 from pathlib import Path
 
 import pytest
+
+# 2026-10-20：agent 侧已换成 dsh（TypeScript/pnpm monorepo），**不再有 Python 后端**，
+# 本文件里"两侧归一化结果必须一致"的前提消失了。保留用例（哪天 Python 侧回来还能用），
+# 但在没有 agent Python 包的环境里直接跳过，否则 CI 会去 spawn 一个不存在的模块。
+_AGENT_PY = Path(__file__).resolve().parents[2] / "agent" / "backend" / "app"
+if not _AGENT_PY.exists():
+    pytestmark = pytest.mark.skip(reason="agent 侧已无 Python 后端（dsh / TypeScript）")
+
 import samples
 
 ROOT = Path(__file__).resolve().parents[2]
