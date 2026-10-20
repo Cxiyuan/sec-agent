@@ -58,7 +58,7 @@ async function bootProvider(
   const previousEnv = new Map<string, string | undefined>()
   for (const [key, value] of Object.entries(env)) {
     previousEnv.set(key, process.env[key])
-    if (value === undefined) delete process.env[key]
+    if (value === undefined) Reflect.deleteProperty(process.env, key)
     else process.env[key] = value
   }
   writeFileSync(join(dir, 'reader.mjs'), `
@@ -103,7 +103,7 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(join(dir, 'cordis.yml')).href } })
   await ctx.loader.await()
   for (const [key, value] of previousEnv) {
-    if (value === undefined) delete process.env[key]
+    if (value === undefined) Reflect.deleteProperty(process.env, key)
     else process.env[key] = value
   }
   disposers.push(async () => { await ctx.fiber.dispose() })
