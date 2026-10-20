@@ -1,0 +1,11 @@
+{
+  "name": "xdr-plugins",
+  "description": "XDR self-developed dsh plugins workspace (out-of-tree, kept separate from the vendored dsh monorepo)",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --if-present run build"
+  }
+}

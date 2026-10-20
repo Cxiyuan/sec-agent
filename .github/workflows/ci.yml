@@ -278,3 +278,40 @@ jobs:
       - name: Build dsh (web)
         working-directory: agent/dsh
         run: pnpm run build
+
+  # agent/plugins：自研 dsh 插件（独立 pnpm workspace，peer 依赖发布在 npm 的
+  # @deepseek-ai 作用域包，与 dsh 源码目录物理分离）。同样只在 CI 构建验证。
+  # 首个插件尚未提交锁文件，先 --no-frozen-lockfile；锁文件入库后改冻结安装。
+  agent-plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288  # v5
+        with:
+          version: 11.28.5
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: agent/plugins
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck plugins
+        working-directory: agent/plugins
+        run: pnpm run typecheck
+
+      - name: Test plugins
+        working-directory: agent/plugins
+        run: pnpm test
+
+      - name: Build plugins
+        working-directory: agent/plugins
+        run: pnpm run build

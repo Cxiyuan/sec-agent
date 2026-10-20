@@ -1,0 +1,13 @@
+# xdr-ingest bundle patch：NDR 摘要接收插件的默认配置。
+# 行会整体替换同名 id 的 config，改值请在部署层 profile patch 里整行复述。
+#
+# token 不能留空（插件加载时拒绝启动）：默认走 XDR_INGEST_TOKEN 环境变量缝，
+# 也可在部署 patch / web 设置页直接写定值，但注意 patch 明文不入库。
+
+- id: xdr-ingest
+  config:
+    basePath: /xdr/ingest
+    token: !!js process.env.XDR_INGEST_TOKEN ?? ''
+    maxBodyBytes: 4194304
+    resultTtlHours: 24
+    maxEntries: 20000
