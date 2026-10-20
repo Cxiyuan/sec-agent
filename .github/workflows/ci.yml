@@ -229,8 +229,10 @@ jobs:
         working-directory: ndr/frontend
         run: npx tsc --noEmit
 
-  # agent = dsh（DeepSeek Harness）网页版：独立 pnpm monorepo（agent/ 自带
+  # agent = dsh（DeepSeek Harness）网页版：独立 pnpm monorepo（agent/dsh/ 自带
   # pnpm-workspace.yaml 与 pnpm-lock.yaml，与仓库根的 npm workspaces 互不干扰）。
+  # 目录分工：agent/dsh/ 是上游 dsh 源码（保持原样便于同步对比），
+  # agent/plugins/ 与 agent/skills/ 是我们开发的插件与技能（尚待落地）。
   # 按约定 agent 只在 CI 构建：冻结锁文件安装 + 全量构建
   # （原生插件 → Host/Client 库 → apps/web 前端，即 `dsh web` 服务的产物）。
   agent-web:
@@ -256,20 +258,20 @@ jobs:
       # 都必须红。agent 由 workbuddy 开发、我们负责提交 —— 门禁是我们唯一的防线，
       # 一旦"只报告"，坏代码会静默流进 main。
       - name: Install dependencies (frozen)
-        working-directory: agent
+        working-directory: agent/dsh
         run: pnpm install --frozen-lockfile
 
       # dsh 自带 typecheck / lint（TypeScript 侧）。agent 由 workbuddy 开发、我们负责提交，
       # 这两类错误必须在合并前暴露——`pnpm run build` 只保证构建产物能出，不保证类型干净。
       # 先「只报告不拦截」跑一轮：存量问题可能不少，清干净后再去掉 continue-on-error。
       - name: Typecheck dsh
-        working-directory: agent
+        working-directory: agent/dsh
         run: pnpm run typecheck
 
       - name: Lint dsh
-        working-directory: agent
+        working-directory: agent/dsh
         run: pnpm run lint
 
       - name: Build dsh (web)
-        working-directory: agent
+        working-directory: agent/dsh
         run: pnpm run build
