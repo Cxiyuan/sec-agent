@@ -26,7 +26,7 @@ from app.baseline.engine import BaselineEngine
 from app.baseline.sampler import WindowSampler
 from app.config import settings
 from app.db.base import SessionLocal
-from app.detector import health, hits, push
+from app.detector import health, hits, push, signature_events
 from app.detector.aggregate import Aggregator
 from app.detector.fingerprint import digest_age
 from app.detector.frequency import FreqWindow
@@ -868,10 +868,19 @@ def _handle(
         sampler.observe(entry)
 
     # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
-    candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(rules["per_event"])
-    # 规则适用范围：主机规则只在主机事件上求值，网络规则反之
-    stats["rules_evaluated"] += len(candidates)
-    hit = next((r for r in candidates if match_rule(r, entry)), None)
+    if signature_events.is_signature_alert(entry):
+        # 签名告警：事件类型**直接取签名归类**（Web 应用攻击 / 网络扫描 / 账号口令攻击…）。
+        # 不再走「签名命中(高/中/低危)」三条包装规则 —— 那三条既不是检测逻辑，
+        # 又让事件类型只剩一个 `signature_hit` 的内部码（2026-10 用户口径）。
+        stats["rules_evaluated"] += 1
+        hit: dict[str, Any] | None = signature_events.rule_of(entry)
+    else:
+        candidates = rules_for_log_type(rules.get("index"), entry.log_type) or list(
+            rules["per_event"]
+        )
+        # 规则适用范围：主机规则只在主机事件上求值，网络规则反之
+        stats["rules_evaluated"] += len(candidates)
+        hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:
         stats["hit"] += 1
         _aggregate(

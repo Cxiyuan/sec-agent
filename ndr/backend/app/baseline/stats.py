@@ -157,13 +157,33 @@ _SORTS: dict[str, Any] = {
 }
 
 
-def _numeric_conds(q: str, feature: str) -> list[Any]:
-    """「行为分析」页的数值基线过滤条件：`q` 匹配 key 子串，`feature` 匹配维度后缀。"""
+#: 组先验键的前缀：`grp:{v4 /24 或 v6 /64}:{维度}`（等组部分池化用，见 engine.pooled_lambda）
+GROUP_KEY_PREFIX = "grp:"
+
+
+def _numeric_conds(q: str, feature: str, scope: str = "entity") -> list[Any]:
+    """「行为分析」页的数值基线过滤条件。
+
+    `q` 匹配 key 子串；`feature` 匹配维度后缀；`scope` 区分两类行：
+
+    - `entity`（默认）：只看**实体行** `源IP:维度`（页面要看的那些）；
+    - `group`：只看**组先验行** `grp:{网段}:维度`（核对池化效果时用）；
+    - `all`：两类都返回。
+
+    为什么要这个参数：组先验是**内部统计**（给稀疏实体当先验），不是"某个 IP 的基线"。
+    混在一起展示时，运维会看到一个像网段的 key 而不知道它是什么（2026-10 实机反馈）。
+    """
     conds: list[Any] = []
     if (q or "").strip():
         conds.append(BaselineStat.key.like(like_pattern(q), escape="\\"))
     if (feature or "").strip():
         conds.append(BaselineStat.key.like(like_pattern(f":{feature.strip()}"), escape="\\"))
+    mode = (scope or "entity").strip().lower()
+    if mode == "group":
+        conds.append(BaselineStat.key.like(f"{GROUP_KEY_PREFIX}%"))
+    elif mode != "all":
+        # 默认排除组先验行；用 NOT LIKE 而不是正则以保持与其它条件同一种写法
+        conds.append(~BaselineStat.key.like(f"{GROUP_KEY_PREFIX}%"))
     return conds
 
 
@@ -262,6 +282,7 @@ def list_stats(
     limit: int = 50,
     offset: int = 0,
     group: str = "key",
+    scope: str = "entity",
 ) -> dict[str, Any]:
     """浏览数值基线（后台「行为分析」页用）。
 
@@ -277,7 +298,10 @@ def list_stats(
     cap = max(1, min(int(limit or 50), 500))
     start = max(0, int(offset or 0))
     now = datetime.now(UTC)
-    conds = _numeric_conds(q, feature)
+    conds = _numeric_conds(q, feature, scope)
+    # 组先验行不是"某个 IP 的基线"，按 IP 分组没有意义 → 强制回到按 key 浏览
+    if (scope or "").strip().lower() == "group":
+        group = "key"
     if (group or "").strip().lower() == "ip":
         return _list_by_ip(conds, sort=sort, cap=cap, start=start, now=now)
     order = _SORTS.get((sort or "count").strip(), _SORTS["count"])()
@@ -296,6 +320,7 @@ def list_stats(
     ]
     return {
         "group": "key",
+        "scope": (scope or "entity").strip().lower(),
         "total": total,
         "returned": len(items),
         "observe_days": params.observe_days(),

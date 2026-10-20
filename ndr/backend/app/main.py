@@ -235,6 +235,38 @@ def _migrate_asset_semantics() -> None:
         )
 
 
+#: 命中事件「标题/事件类型」的口径、版本：v1 = 内部码（signature_hit/baseline_deviation）
+#: 与包装规则名（「签名命中(高危)」）全部换成具体归类（Web 应用攻击 / 网络扫描 …）。
+#: 用版本号卡住回填，避免每次启动全表扫一遍。
+_HIT_LABELS_KEY = "hit_events.labels_version"
+_HIT_LABELS_VERSION = 1
+
+
+def _migrate_hit_event_labels() -> None:
+    """历史事件回填：标题与事件类型改成具体归类（幂等，只跑一次）。"""
+    from app.detector.hits import backfill_event_labels
+
+    with SessionLocal() as db:
+        row = db.get(SystemConfig, _HIT_LABELS_KEY)
+        payload = dict(row.value or {}) if row is not None else {}
+        try:
+            version = int(payload.get("value") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version >= _HIT_LABELS_VERSION:
+            return
+    fixed = backfill_event_labels()
+    with SessionLocal() as db:
+        row = db.get(SystemConfig, _HIT_LABELS_KEY)
+        value = {"value": _HIT_LABELS_VERSION}
+        if row is None:
+            db.add(SystemConfig(key=_HIT_LABELS_KEY, value=value))
+        else:
+            row.value = value
+        db.commit()
+    logger.info("事件归类口径升级到 v%d：回填 %d 行", _HIT_LABELS_VERSION, fixed)
+
+
 def _push_es_retention() -> None:
     """幂等下发 ILM 策略与事件索引模板；ES 没就绪就一直等，之后定期复查。
 
@@ -284,6 +316,7 @@ def _seed() -> None:
     _migrate()
     # 口径变了就清空重学（幂等；必须在检测器写新数据之前跑）
     _migrate_asset_semantics()
+    _migrate_hit_event_labels()
 
     # 自检：内置规则正则（这类问题会「静默失败」）
     from app.selfcheck import run_startup_selfcheck

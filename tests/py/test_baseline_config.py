@@ -255,6 +255,8 @@ def test_numeric_route_passes_filters(
     assert seen == {
         "q": "10.0.0",
         "feature": "conn_count",
+        # 2026-10：新增 scope（默认 entity，排除 grp: 组先验行）
+        "scope": "entity",
         "sort": "count",
         "limit": 5,
         "offset": 10,

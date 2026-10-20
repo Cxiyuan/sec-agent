@@ -161,7 +161,7 @@
 | `GET` | `/api/baseline/config` | — | — | — |
 | `PUT` | `/api/baseline/config` | — | — | body |
 | `POST` | `/api/baseline/config/reset` | — | — | body |
-| `GET` | `/api/baseline/numeric` | `q,feature,sort,limit,offset,group` | — | — |
+| `GET` | `/api/baseline/numeric` | `q,feature,sort,limit,offset,group,scope` | — | — |
 | `GET` | `/api/baseline/profiles` | `kind,q,min_risk,limit,offset` | — | — |
 | `GET` | `/api/baseline/stats` | `ip,key,limit` | — | — |
 
@@ -323,13 +323,15 @@ MCP 令牌与工具清单
 
 | 接口 | 新增字段 | 说明 |
 | --- | --- | --- |
-| `GET /api/detector/hits`、`/hits/{id}` | `event_type_labels` | 事件类型的**中文名**（`signature_hit` → 签名命中、`protocol_anomaly` → 协议异常、`baseline_deviation` → 基线偏离）。与 `event_types`（英文码）并列返回，前端不用自建映射表 |
+| `GET /api/detector/hits`、`/hits/{id}` | `event_types` / `event_type_labels` | **事件类型（具体归类，中文）**：`网络扫描`／`Web 应用攻击`／`账号口令攻击`／`权限提升尝试`／`连接数异常偏离`／`大流量外传`…（2026-10 改口径：不再返回 `signature_hit`、`baseline_deviation` 这类内部码）。两个字段同源，前端直接显示即可 |
 | `GET /api/detector/hits`、`/hits/{id}` | （已有）`source_kind` / `source_label` | 三类来源：特征匹配 / 行为分析 / 基线偏离 |
 | `GET /api/baseline/profiles` | `posterior` | 似然比**后验概率**（0~1）。打分方式=llr 时列表按它排序；`risk_score` 仍返回（加和分，回滚口径） |
 | `GET /api/baseline/config` | 9 个新参数键 | `baseline.scheme` / `alpha` / `learn_source` / `pool_k` / `deviation_cap_per_entity_hour` / `deviation_cap_per_hour`、`profile.scoring` / `prior_odds` / `posterior_threshold`（都可在界面改、30 秒生效） |
 | `POST /api/baseline/alerts/{profile_id}/disposition` | **新端点** | 告警处置（`false_positive` / `confirm`）；`profile_id` 可填画像 UUID 或实体键。判成误报后该实体（或 `signal` 指定的那一路证据）在 `profile.false_positive_suppress_days` 天内不再参与打分 |
 | `GET /api/baseline/alerts/dispositions` | **新端点** | 最近处置记录（核对降权是否生效） |
 | `GET /api/detector/hits`、`/hits/{id}` | `cluster_id` | 告警簇 ID：同一事件归类 + 同一 /24（v6 /64）+ 同一小时归为一簇，界面可把同簇收成一行 |
+| `GET /api/baseline/numeric` | **新参数** `scope` | `entity`（默认，只看 `源IP:维度`）／`group`（只看 `grp:{网段}:维度` 组先验）／`all`。组先验是等组池化的内部统计（稀疏实体向 /24 先验收缩），不是"某个 IP 的基线"，默认不返回，免得列表里混进 `grp:10.0.0.0/24` 这种像网段的键 |
+| `GET /api/rules` | **规则数变化** | 三条「签名命中(高/中/低危)」分流包装规则已删除（见 `DELETED_RULES`）。规则条数三档口径：**源码定义 19 条** → 其中 **7 条已收敛到特征匹配**（登记删除、播种跳过） → **实际生效 12 条**行为分析规则。签名告警**不走规则表**，事件类型直接取签名归类（classtype） |
 | `hit_events.evidence`（事件证据） | `p` / `alpha` / `var` / `pooled_with` | 泊松判据下的偏离证据：上尾概率、校正后阈值、方差、是否用了组池化；回滚到 zscore 时仍是 `z` / `std` / `std_raw` |
 
 ## 四、前端必读的坑

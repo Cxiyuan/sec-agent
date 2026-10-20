@@ -473,6 +473,23 @@ def event_title_of(digest: dict[str, Any], source_kind: str) -> str:
     return str(digest.get("rule") or "未归类事件")
 
 
+def event_types_of(digest: dict[str, Any], source_kind: str, title: str) -> list[str]:
+    """事件的**类型**（界面直接显示）：具体归类，不是内部码。
+
+    用户口径（2026-10）：事件类型要能看出"这是什么事件"——
+    `signature_hit` / `baseline_deviation` 这类内部码不展示。
+
+    - 特征匹配：取签名归类（Web 应用攻击 / 网络扫描 / 账号口令攻击…），认不出才退回标题；
+    - 行为分析：类型就是规则名（大流量外传、内网慢速横向…）；
+    - 基线偏离：类型就是偏离维度（连接数异常偏离…）。
+    """
+    if source_kind == "feature_match":
+        category, _signature, _sid = signature_hint(digest)
+        label = signature_category_label(category)
+        return [label or title or "其它可疑活动"]
+    return [title or "未归类事件"]
+
+
 def save_from_digest(digest: dict[str, Any]) -> str:
     """摘要定型 → 写一行命中事件，返回**唯一事件 ID**（写失败返回空串，不打断检测）。"""
     reals = [str(x) for x in (digest.get("real_client_ips") or []) if str(x or "").strip()]
@@ -504,7 +521,8 @@ def save_from_digest(digest: dict[str, Any]) -> str:
                 dst_pairs=pairs,
                 dst_ips=[str(x) for x in (digest.get("dst_ips") or [])],
                 dst_ports=[str(x) for x in (digest.get("dst_ports") or [])],
-                event_types=[str(x) for x in (digest.get("event_types") or [])],
+                # 事件类型 = 具体归类（中文），不存 signature_hit 这类内部码
+                event_types=event_types_of(digest, source_kind_of(digest), title),
                 conn_states=[str(x) for x in (digest.get("conn_states") or [])],
                 log_types=sorted(
                     {
@@ -593,7 +611,8 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     source_kind="baseline_deviation",
                     src_ip=str((item.get("src_ips") or [""])[0] or ""),
                     # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
-                    event_types=["baseline_deviation"],
+                    # 事件类型 = 具体告警归类（如「连接数异常偏离」），不写内部码
+                    event_types=[_reason_label(reasons[0])],
                     count=int(item.get("count") or 0),
                     dst_ips=[str(x) for x in (item.get("dst_ips") or [])][:20],
                     evidence=[
@@ -626,7 +645,7 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
                     source_kind="baseline_deviation",
                     src_ip=str(item.get("src_ip") or ""),
                     # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
-                    event_types=["baseline_deviation"],
+                    event_types=[_FEATURE_LABELS.get(feature, "数值基线偏离")],
                     count=1,
                     evidence=[
                         {
@@ -648,6 +667,73 @@ def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -
         log.warning("基线偏离事件落库失败：%s", exc)
         return created
     return created
+
+
+#: 事件类型列里出现过的**内部码**（这些才是"事件类型显示英文"的根源）。
+#: 老行直接存了 `signature_hit` / `baseline_deviation` 这类码，现在要换成具体归类。
+_LEGACY_TYPE_CODES: frozenset[str] = frozenset(
+    {"feature_match", "behavior_analysis", "baseline_deviation", "signature_hit"}
+    | set(EVENT_TYPE_LABELS)
+)
+
+#: 已废弃的"包装规则"名：`签名命中(高危)` 这类不是检测逻辑，界面上不该出现。
+_LEGACY_RULE_PREFIXES: tuple[str, ...] = ("签名命中",)
+
+
+def _concrete_title(row: Any) -> str:
+    """老行 → 具体事件归类（签名行从证据里的签名归类推回来）。"""
+    rule = str(row.rule or "").strip()
+    if not rule.startswith(_LEGACY_RULE_PREFIXES):
+        return rule
+    for item in row.evidence or []:
+        if not isinstance(item, dict):
+            continue
+        label = signature_category_label(str(item.get("signature_category") or ""))
+        if label:
+            return label
+        fallback = _title_from_signature(str(item.get("signature") or ""))
+        if fallback:
+            return fallback
+    return "其它可疑活动"
+
+
+def backfill_event_labels() -> int:
+    """把**老数据**的事件标题/事件类型改成具体归类（幂等，启动时跑一次）。
+
+    为什么要有：事件类型这一列早期存的是 `signature_hit` / `baseline_deviation`
+    这类内部码，标题是「签名命中(高危)」这种包装规则名 —— 界面照抄就全成了英文/笼统说法。
+    新写入已经改成具体归类（见 `event_types_of`），但历史行不会自己变，所以要回填。
+    返回改了多少行（日志里可审计）。
+    """
+    fixed = 0
+    try:
+        with SessionLocal() as db:
+            rows = db.execute(select(HitEvent)).scalars().all()
+            for row in rows:
+                old_rule = str(row.rule or "")
+                old_types = [str(x) for x in (row.event_types or [])]
+                title = _concrete_title(row)
+                new_types = [title if t in _LEGACY_TYPE_CODES else t for t in old_types]
+                if not new_types:
+                    new_types = [title or "其它可疑活动"]
+                if title == old_rule and new_types == old_types:
+                    continue
+                row.rule = title or old_rule
+                row.event_types = new_types
+                if title != old_rule:
+                    row.cluster_id = clustering.cluster_id(
+                        row.rule,
+                        str(row.client or row.src_ip or ""),
+                        row.last_seen,  # 传 datetime（cluster_id 自己按小时取桶）
+                    )
+                fixed += 1
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 — 回填失败不能挡住启动
+        log.warning("回填事件归类失败：%s", exc)
+        return fixed
+    if fixed:
+        log.info("事件归类回填：%d 行从内部码/包装规则名改为具体归类", fixed)
+    return fixed
 
 
 def _hit_conditions(

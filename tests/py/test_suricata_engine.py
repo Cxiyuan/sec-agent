@@ -10,6 +10,7 @@ Zeek 与 Suricata 的日志对不上，全都要等上线才发现。所以把�
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from types import ModuleType
 
@@ -19,7 +20,6 @@ import yaml
 from app.ingestion import log_types
 from app.ingestion.normalizer import normalize
 from app.rules import builtin as builtin_mod
-from app.rules.engine import build_rule_index
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,17 +30,23 @@ SIGNATURE_RULES = ("签名命中(高危)", "签名命中(中危)", "签名命中
 
 
 def test_builtin_rule_count() -> None:
-    # 2026-10 调研新增 1 条：`内网漏洞利用探测`（扇出 ≥10 个内网目的 + 利用特征）
-    assert len(builtin_mod.BUILTIN_RULES) == 22
+    """规则表里只剩**行为分析**规则（19 条源码定义，播种时跳过 7 条收敛项）。
+
+    2026-10 用户口径：规则管理里不该出现「签名命中(高/中/低危)」这类分流包装规则 ——
+    签名告警的类型由签名归类（classtype）直接决定，不走规则引擎（见 signature_events）。
+    """
+    assert len(builtin_mod.BUILTIN_RULES) == 19
+    assert not [r for r in builtin_mod.BUILTIN_RULES if "签名命中" in r["name"]]
 
 
 def test_deleted_rules_do_not_come_back() -> None:
     """删掉的 48 条必须在 DELETED_RULES 名单里（否则下次启动会被内置定义重新 upsert 回库）。"""
     names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
     deleted = set(builtin_mod.DELETED_RULES)
-    assert len(deleted) == 76, (
+    assert len(deleted) == 79, (
         "4 条历史 + 48 条重叠规则 + 1 条裸单条 TLS 异常 + 15 条主机规则（主机线下线）"
         " + 1 条停用转删除（扫描尝试连接）+ 7 条规则收敛（扫描/Web利用/DNS隧道交给特征匹配）"
+        " + 3 条签名分流包装规则（2026-10：签名告警改为按 classtype 归类成事件类型）"
     )
     # 2026-10 规则收敛：扫描 / Web 利用 / DNS 陵道这 7 条名字**留在** BUILTIN_RULES（保留判据），
     # 但登记在 DELETED_RULES 且播种时跳过 —— 所以允许两边都在的只有这批白名单。
@@ -69,64 +75,58 @@ def test_deleted_rules_do_not_come_back() -> None:
         assert name in deleted, f"{name} 不在删除名单里"
 
 
-def test_signature_rules_shape() -> None:
-    """三条签名规则：按 EVE severity 分档、scope=network、级别/优先级各异。"""
-    by_name = {spec["name"]: spec for spec in builtin_mod.BUILTIN_RULES}
-    expect = {
-        "签名命中(高危)": (1, "high", 12),
-        "签名命中(中危)": (2, "medium", 35),
-        "签名命中(低危)": (3, "low", 60),
-    }
-    assert set(expect) <= set(by_name)
-    for name, (sev_value, severity, priority) in expect.items():
-        spec = by_name[name]
-        assert spec["severity"] == severity
-        assert spec["priority"] == priority
-        conds = {c["field"]: c["value"] for c in spec["conditions"]["rules"]}
-        assert conds["event_type"] == "signature_hit"
-        assert conds["signature_severity"] == sev_value
+def test_signature_packaging_rules_are_gone() -> None:
+    """「签名命中(高/中/低危)」三条分流包装规则必须不存在（用户口径 2026-10）。
 
-
-def test_tls_rules_are_attack_oriented() -> None:
-    """TLS 判据按实测重做：删掉裸单条匹配的「TLS异常」，换成两条带频次门槛的判据。
-
-    实测依据（线上、6 小时窗口）：旧 tls_anomaly 7 天 59 条全是「握手不顺」的运维信号；
-    弱版本协商共 20 条、集中在 1 对（领先 18 次 vs 其余 ≤1）⇒ 阈值 5；
-    握手未建立 168 条 / 31 对、领先一对 105 次（其余 ≤10）⇒ 阈值 30。
+    签名告警的类型由签名归类（classtype）直接决定：Web 应用攻击 / 网络扫描 /
+    账号口令攻击…，事件类型不再是 `signature_hit` 这种内部码。
     """
     names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
-    assert "TLS异常" not in names, "裸单条匹配的低价值 TLS 规则应已删除"
-    assert "TLS异常" in builtin_mod.DELETED_RULES, (
-        "删除的规则要备案（否则会被内置定义 upsert 回库）"
+    for gone in ("签名命中(高危)", "签名命中(中危)", "签名命中(低危)"):
+        assert gone not in names, f"{gone} 不该再出现在规则表里"
+        assert gone in builtin_mod.DELETED_RULES, f"{gone} 必须登记删除（否则启动会被 upsert 回来）"
+
+
+def test_signature_events_synthesize_type_from_classtype() -> None:
+    """签名告警的合成规则：名字就是事件类型，严重度取 alert.severity。"""
+    from types import SimpleNamespace
+
+    mod = importlib.import_module("app.detector.signature_events")
+    entry = SimpleNamespace(
+        event_type="signature_hit",
+        signature_category="Web Application Attack",
+        signature="[Web-01] SQL 注入探测",
+        signature_id=9110001,
+        raw={"alert": {"category": "Web Application Attack", "severity": 1}},
     )
-
-    by_name = {spec["name"]: spec for spec in builtin_mod.BUILTIN_RULES}
-    weak = by_name["TLS弱版本协商"]["conditions"]
-    assert weak["mode"] == "count"
-    assert weak["key"] == ["src_ip", "dst_ip"]
-    assert weak["min_count"] == 5
-    assert weak["window"] == 21600, "窗口要落到实测数据的空白区（1 小时窗口下这条永不触发）"
-    assert weak["rules"][0]["field"] == "tls_version"
-
-    storm = by_name["TLS握手失败风暴"]["conditions"]
-    assert storm["mode"] == "count"
-    assert storm["min_count"] == 30
-    assert storm["window"] == 21600
-    assert {"field": "tls_established", "op": "eq", "value": False} in storm["rules"]
-
-    # 两条都挂在 ssl 日志上（不是通配规则），保证只在 TLS 事件上求值
-    index = build_rule_index(builtin_mod.BUILTIN_RULES)
-    routed = {r["name"] for r in index["types"].get("ssl", [])}
-    assert {"TLS弱版本协商", "TLS握手失败风暴"} <= routed
+    rule = mod.rule_of(entry)
+    assert rule["name"] == "Web 应用攻击"
+    assert rule["source"] == mod.SOURCE
+    assert rule["severity"] == "high"
+    assert "签名命中" not in rule["name"]
 
 
-def test_signature_rules_are_routed_to_suricata_logs() -> None:
-    """签名规则只在这类日志上求值：引用 suricata 专有字段 → 索引挂在 types['suricata']。"""
-    index = build_rule_index(builtin_mod.BUILTIN_RULES)
-    routed = {r["name"] for r in index["types"].get("suricata", [])}
-    assert set(SIGNATURE_RULES) <= routed
-    # 反过来：体积类规则（只引用 conn 字段）不能被卷进 suricata 的求值集合（会重复计数）
-    assert "大流量外传" not in routed
+def test_signature_events_unknown_category_falls_back() -> None:
+    """认不出 classtype 时退到「其它可疑活动」，绝不退回"签名命中"。"""
+    from types import SimpleNamespace
+
+    mod = importlib.import_module("app.detector.signature_events")
+    entry = SimpleNamespace(
+        event_type="signature_hit",
+        signature_category="",
+        signature="",
+        signature_id=0,
+        raw={},
+    )
+    assert mod.rule_of(entry)["name"] == mod.FALLBACK_LABEL
+    assert mod.severity_of(entry) == "low"
+
+
+def test_signature_alerts_are_not_baseline_eligible() -> None:
+    """签名告警是派生产物，不进基线（顺带确认归类改动没动这条闸门）。"""
+    entry = normalize("suricata", samples.DOCS["suricata_alert"])
+    assert entry is not None
+    assert log_types.is_baseline_eligible(entry) is False
 
 
 # ---------- 日志类型闸门与基线隔离 ----------

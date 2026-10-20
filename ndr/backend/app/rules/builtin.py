@@ -76,6 +76,13 @@ DELETED_RULES: dict[str, str] = {
         "「高频扫描连接」「内网慢速服务枚举」「内网慢速横向」按扇出判定。"
     ),
     "端口扫描": "notice 型死规则（本部署不产生 port_scan；唯一来源是已被修正的日志源词匹配误判）",
+    # 2026-10 用户口径：规则管理里不要「签名命中」这种规则名，事件类型也不要内部码。
+    # 原来这三条只做分流（按 Suricata alert.severity 分高/中/低），没有任何检测逻辑，
+    # 还把事件类型压成 `signature_hit`。现在签名告警由 detector/signature_events.py
+    # 直接按签名归类成事件类型（Web 应用攻击 / 网络扫描 / 账号口令攻击…）。
+    "签名命中(高危)": "分流包装规则（无检测逻辑）：签名告警改为直接按 classtype 归类成事件类型（2026-10）",
+    "签名命中(中危)": "同上：签名告警改为直接按 classtype 归类成事件类型（2026-10）",
+    "签名命中(低危)": "同上：签名告警改为直接按 classtype 归类成事件类型（2026-10）",
     # 2026-10 用户口径：明文凭证传输是「配置事实」而不是攻击事件 —— 实测 2,848 条/12h 全是
     # 校园 App 的正常登录（status=200、579/644 个真实客户端），逐次告警只占额度。真要治理，
     # 应作为「站点该上 HTTPS」的配置类问题一次性处理，而不是当事件告警。
@@ -603,52 +610,11 @@ BUILTIN_RULES: list[dict] = [
             ],
         },
     },
-    # ----------------- 签名引擎（Suricata）命中：按 EVE severity 分三档 -----------------
-    # 判据只有「事件类型 + Suricata 自己的 alert.severity」（1=高 / 2=中 / 3=低）：
-    # ET Open 有几万条规则，一刀切成「高危」会把 low 的探测类签名抬得过重，三档更可信。
-    # 签名名 / SID / 类别 / community_id 都在归一化字段里，摘要样本中直接可见。
-    {
-        "name": "签名命中(高危)",
-        "description": "签名引擎命中：Suricata 高危签名（alert.severity=1）",
-        "source": "builtin",
-        "priority": 12,
-        "severity": "high",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "event_type", "op": "eq", "value": "signature_hit"},
-                {"field": "signature_severity", "op": "eq", "value": 1},
-            ],
-        },
-    },
-    {
-        "name": "签名命中(中危)",
-        "description": "签名引擎命中：Suricata 中危签名（alert.severity=2）",
-        "source": "builtin",
-        "priority": 35,
-        "severity": "medium",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "event_type", "op": "eq", "value": "signature_hit"},
-                {"field": "signature_severity", "op": "eq", "value": 2},
-            ],
-        },
-    },
-    {
-        "name": "签名命中(低危)",
-        "description": "签名引擎命中：Suricata 低危签名（alert.severity=3）",
-        "source": "builtin",
-        "priority": 60,
-        "severity": "low",
-        "conditions": {
-            "logic": "and",
-            "rules": [
-                {"field": "event_type", "op": "eq", "value": "signature_hit"},
-                {"field": "signature_severity", "op": "eq", "value": 3},
-            ],
-        },
-    },
+    # ----------------- 签名引擎（Suricata）命中 -----------------
+    # 2026-10 用户口径：规则管理里不该出现「签名命中」这种东西。
+    # 签名告警没有检测逻辑可配：事件类型就是签名归类（Web 应用攻击 / 网络扫描 /
+    # 账号口令攻击…），由 `detector/signature_events.py` 直接产出事件、不走规则引擎。
+    # 原来那三条「签名命中(高/中/低危)」纯属分流包装，已删除（见 DELETED_RULES）。
     # ----------------- TLS 攻击判据（2026-10 按实测重做） -----------------
     # 背景：原「TLS异常」是裸单条匹配（来一条报一条），实测全是运维信号，已删除（见
     # DELETED_RULES 说明）。这里换成两条有攻击含义、且带同源同目标频次门槛的判据。

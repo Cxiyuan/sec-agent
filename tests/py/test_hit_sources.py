@@ -232,9 +232,39 @@ def test_hit_item_carries_chinese_event_types(hits_mod: ModuleType) -> None:
 
 
 def test_baseline_events_have_event_type(hits_mod: ModuleType) -> None:
-    """基线偏离事件必须写 event_types（否则界面「事件类型」显示"无"）。"""
+    """基线偏离事件必须写 event_types，且写**具体归类**（不能是 baseline_deviation 内部码）。"""
     src = (ROOT / "ndr" / "backend" / "app" / "detector" / "hits.py").read_text(encoding="utf-8")
     seg = src[src.index("def save_baseline_deviations") :]
-    assert seg.count('event_types=["baseline_deviation"]') == 2, (
-        "画像分支和数值基线分支都要补 event_types"
+    assert seg.count("event_types=[") == 2, "画像分支和数值基线分支都要写 event_types"
+    assert 'event_types=["baseline_deviation"]' not in seg, "事件类型不该再写内部码"
+    assert "event_types=[_reason_label(reasons[0])]" in seg, "画像分支要写偏离维度中文名"
+    assert 'event_types=[_FEATURE_LABELS.get(feature, "数值基线偏离")]' in seg, (
+        "数值基线分支要写特征中文名"
     )
+
+
+def test_event_types_are_concrete_not_internal_codes(hits_mod: ModuleType) -> None:
+    """事件类型是具体归类：特征匹配取签名归类，行为分析取规则名（2026-10 用户口径）。"""
+    digest = {
+        "rule": "Web攻击特征命中",
+        "samples": [
+            {
+                "doc": {
+                    "alert": {
+                        "category": "Detection of a Network Scan",
+                        "signature": "ET SCAN possible port scan",
+                    }
+                }
+            }
+        ],
+    }
+    types = hits_mod.event_types_of(digest, "feature_match", "签名命中")
+    assert types == ["网络扫描"], types
+    # 认不出归类时退回标题，也不会出现 signature_hit 这种内部码
+    types = hits_mod.event_types_of({}, "feature_match", "可疑流量")
+    assert types == ["可疑流量"]
+    # 行为分析：类型就是规则名
+    assert hits_mod.event_types_of({}, "behavior_analysis", "内网慢速横向") == ["内网慢速横向"]
+    for kind in ("feature_match", "behavior_analysis", "baseline_deviation"):
+        for label in hits_mod.event_types_of(digest, kind, "行为基线偏离"):
+            assert label not in ("signature_hit", "baseline_deviation", "feature_match"), label

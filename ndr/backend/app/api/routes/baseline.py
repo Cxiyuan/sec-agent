@@ -173,15 +173,25 @@ def baseline_numeric(
     limit: int = 50,
     offset: int = 0,
     group: str = "key",
+    scope: str = "entity",
 ):
     """数值基线浏览（「行为分析」页的表格）：按 key 子串 / 维度过滤，排序 + 分页。
+
+    `scope`：`entity`（默认，只看 `源IP:维度`）／`group`（只看 `grp:{网段}:维度` 组先验）／
+    `all`（两者都返回）。组先验是等组池化的内部统计，不是"某个 IP 的基线"。
 
     `group=ip` 时**一行一个 IP**（各维度放进 `features`）且**分页按 IP 走** —— 页面用这个模式，
     列表从 3×IP 行降到 1×IP 行；`group=key`（默认）是一行一个 `源IP:维度`。
     与 `/stats` 的区别：`/stats` 要指名 IP 或完整 key（适合精确查），这个能「翻着看」。
     """
     return stats_mod.list_stats(
-        q=q, feature=feature, sort=sort, limit=limit, offset=offset, group=group
+        q=q,
+        feature=feature,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+        group=group,
+        scope=scope,
     )
 
 

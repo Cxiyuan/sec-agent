@@ -292,9 +292,26 @@ export default function RulesPage() {
   const hitCount = needle ? shown.length : 0;
   const hitDisabled = needle ? shown.filter((r) => !r.enabled).length : 0;
 
-  /** 命中 0 条时不渲染「检测规则 › 特征匹配（0 条）› 空态」这种三层空壳 —— 用户要读三层才知道没有结果 */
+  /**
+   * 命中 0 条时不渲染「检测规则 › 特征匹配（0 条）› 空态」这种三层空壳 —— 用户要读三层才知道没有结果。
+   *
+   * 分组同理，但判据更严一层：某来源**一类规则都没有**就整组不占一行，不用等搜索才隐藏。
+   * 例如内置规则挪走签名分流包装后，「特征匹配」「基线偏离」可能整组是空的，渲染出来就是两行
+   * 「（0 条）」的空壳，用户会以为规则没加载。
+   */
   const showRoot = !needle || shown.length > 0;
-  const showGroup = (key: string) => !needle || groups.some((g) => g.key === key && g.items.length > 0);
+  const showGroup = (key: string) => {
+    const g = groups.find((x) => x.key === key);
+    if (!g) return false;
+    // 该来源一类规则都没有（含被「显示已停用」收起的）→ 整组不占一行。
+    // 判空分母用 `total + hidden`（= 该 kind 的全量条数），不能用 `total` 单独判定：
+    // `total` 的分母是 `basePool`，而 basePool 受「显示已停用」影响（关闭时只含已启用的），
+    // 所以某组规则**全部被停用**且开关关闭时 total = 0、但 hidden > 0 —— 那些规则真实存在，
+    // 这组仍要渲染（groupCount 会显示「N 条已停用」），误藏会让用户以为规则没加载。
+    // 两种开关状态下 total + hidden 都等于全量，可以当判空分母。
+    if (g.total + g.hidden === 0) return false;
+    return !needle || g.items.length > 0;
+  };
 
   /**
    * 渲染期的展开判定。

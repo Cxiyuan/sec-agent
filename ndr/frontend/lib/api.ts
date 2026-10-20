@@ -756,7 +756,17 @@ export interface HitEventItem {
   dst_pairs: string[];
   dst_ips: string[];
   dst_ports: string[];
+  /**
+   * 事件类型（2026-10 起契约：值是**中文具体归类** —— `网络扫描`／`Web 应用攻击`／
+   * `账号口令攻击`／`权限提升尝试`／`连接数异常偏离`／`大流量外传`…）。
+   *
+   * 早期版本返回的是 `signature_hit`／`protocol_anomaly` 这类内部英文码，现在后端
+   * （`hits.py::event_types_of`）直接给出具体归类，前端原样展示即可，**不再**需要
+   * 任何「英文码 → 中文」的映射表。
+   */
   event_types: string[];
+  /** 与 `event_types` 一一对应的中文标签（后端 `hits.py` 并列返回，前端可直接使用） */
+  event_type_labels?: string[];
   conn_states: string[];
   log_types: string[];
   real_client_ips: string[];

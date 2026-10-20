@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import importlib
+import pathlib as _pathlib
 from datetime import UTC, datetime, timedelta
 from types import ModuleType, SimpleNamespace
 from typing import Any, Self
+
+ROOT = _pathlib.Path(__file__).resolve().parents[2]
 
 import pytest
 
@@ -239,12 +242,68 @@ def test_list_stats_group_ip_dispatches(
     assert out["group"] == "ip"
     assert len(calls) == 1
     assert calls[0]["cap"] == 5 and calls[0]["start"] == 10
-    assert len(calls[0]["conds"]) == 2  # q + feature 两个过滤都传下去了
+    # q + feature + 默认 scope 的「排除组先验」三个条件都传下去了
+    assert len(calls[0]["conds"]) == 3
 
 
 def test_numeric_conds_escapes_like(stats_mod: ModuleType) -> None:
     """q 里的 `%`/`_` 是通配符，必须转义（不能让别人用 `%` 扫全表）。"""
     conds = stats_mod._numeric_conds("10%_", "")
-    assert len(conds) == 1
-    compiled = str(conds[0].compile(compile_kwargs={"literal_binds": True}))
-    assert "ESCAPE" in compiled.upper()
+    # 默认 scope=entity 会附带一条"排除组先验"的条件，所以这里是 2 条
+    assert len(conds) == 2
+    compiled = " ".join(
+        str(c.compile(compile_kwargs={"literal_binds": True})) for c in conds
+    ).upper()
+    assert "ESCAPE" in compiled
+
+
+# ===== 数值基线浏览的 scope 过滤（2026-10 实机反馈：列表里混进 grp: 组先验行）=====
+
+
+def _sql(conds: list[Any]) -> str:
+    """把条件渲染成带字面量的 SQL（SQLAlchemy 默认把 `grp:%` 当参数绑定，
+    直接 str() 只会看到 `:key_1`，断言不出内容）。"""
+    return " ".join(str(c.compile(compile_kwargs={"literal_binds": True})) for c in conds).upper()
+
+
+def test_numeric_conds_exclude_group_priors_by_default(stats_mod: ModuleType) -> None:
+    """默认（entity）必须排除 `grp:` 组先验行 —— 它不是"某个 IP 的基线"。"""
+    sql = _sql(stats_mod._numeric_conds("", "", "entity"))
+    assert "NOT LIKE" in sql, sql
+    assert "GRP:" in sql, sql
+
+
+def test_numeric_conds_scope_group_only_priors(stats_mod: ModuleType) -> None:
+    """`group` 模式只看组先验行。"""
+    sql = _sql(stats_mod._numeric_conds("", "", "group"))
+    assert "NOT LIKE" not in sql, sql
+    assert "GRP:" in sql, sql
+
+
+def test_numeric_conds_scope_all_returns_both(stats_mod: ModuleType) -> None:
+    """`all` 两种行都返回（核对池化效果时用）。"""
+    assert stats_mod._numeric_conds("", "", "all") == []
+
+
+def test_numeric_conds_keeps_q_and_feature(stats_mod: ModuleType) -> None:
+    """scope 是**附加**过滤，不能把已有的 q / feature 条件挤掉。"""
+    conds = stats_mod._numeric_conds("10.1.2", "conn_count", "entity")
+    assert len(conds) == 3, "q + feature + scope 排除，三个条件都在"
+    # LIKE 里的 `_` 会被转义成 `\_`（否则它就成了通配符）—— 比较前先去掉反斜杠
+    sql = _sql(conds).replace("\\", "")
+    assert "10.1.2" in sql and "CONN_COUNT" in sql and "NOT LIKE" in sql
+
+
+def test_numeric_conds_unknown_scope_falls_back_to_entity(stats_mod: ModuleType) -> None:
+    """脏值（前端传错/老客户端）按 entity 处理，不能变成"什么都返回"。"""
+    sql = _sql(stats_mod._numeric_conds("", "", "随便"))
+    assert "NOT LIKE" in sql
+
+
+def test_numeric_route_passes_scope() -> None:
+    """接口要真的把 scope 透传给 list_stats（否则前端传了也没用）。"""
+    src = (ROOT / "ndr" / "backend" / "app" / "api" / "routes" / "baseline.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'scope: str = "entity"' in src
+    assert "scope=scope" in src

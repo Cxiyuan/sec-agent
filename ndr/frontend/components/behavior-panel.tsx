@@ -278,8 +278,11 @@ export function BehaviorPanel() {
     `/api/baseline/profiles?kind=${encodeURIComponent(kind)}` +
     `&q=${encodeURIComponent(pq)}&min_risk=${Number(minRisk) || 0}` +
     `&limit=${PAGE_SIZE}&offset=${ppage * PAGE_SIZE}`;
+  // `scope=entity` 显式钉死：只看「源IP:维度」的实体基线。后端另有 `group` 口径返回
+  // `grp:{网段}:维度` 的**组先验**（等组池化的内部统计，不是某个 IP 的基线）——混进这个
+  // 「按 IP 列」的列表里会让人以为那一行是这个 IP 自己的行为，所以显式带上而不是依赖默认。
   const numericUrl =
-    `/api/baseline/numeric?group=ip&q=${encodeURIComponent(nq)}` +
+    `/api/baseline/numeric?group=ip&scope=entity&q=${encodeURIComponent(nq)}` +
     `&feature=${encodeURIComponent(nfeature)}&sort=${nsort}` +
     `&limit=${PAGE_SIZE}&offset=${npage * PAGE_SIZE}`;
   const assetsUrl =
