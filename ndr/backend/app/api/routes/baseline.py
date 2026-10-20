@@ -56,7 +56,11 @@ def _detector_counters() -> dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
         return {"alive": False}
     out: dict[str, Any] = {"alive": bool(raw)}
-    for field, value in raw.items():
+    for raw_field, raw_value in raw.items():
+        # redis-py 的类型签名是 `bytes | str`（`decode_responses=True` 只是运行时行为，
+        # 类型上不收窄）—— 这里显式归一，既过类型检查，也顺手兼容没解码的连接。
+        field = raw_field.decode() if isinstance(raw_field, bytes) else str(raw_field)
+        value = raw_value.decode() if isinstance(raw_value, bytes) else raw_value
         # 改名前的歧义字段不往外吐（旧字段名叫 anomalies，实际是「上一轮的值」，
         # 被当成累计值读就会误判「没有异常」）。心跳键有 24h TTL，老进程写过的值会残留。
         if field in ("anomalies", "numeric_keys"):
