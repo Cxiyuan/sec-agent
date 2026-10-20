@@ -16,6 +16,7 @@ from app.api.deps import get_current_user
 from app.db.base import get_db
 from app.db.models import Rule, User
 from app.rules.engine import has_conditions, validate_rule_regexes
+from app.suricata import catalog
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
@@ -53,7 +54,11 @@ def _validate(body: RuleIn) -> list[dict[str, str]]:
     return errors
 
 
-_SOURCE_LABELS = {"feature_match": "特征匹配", "behavior_analysis": "行为分析", "baseline_deviation": "基线偏离"}
+_SOURCE_LABELS = {
+    "feature_match": "特征匹配",
+    "behavior_analysis": "行为分析",
+    "baseline_deviation": "基线偏离",
+}
 
 
 def _source_kind_of(r: Rule) -> str:
@@ -79,6 +84,9 @@ def _rule_dict(r: Rule) -> dict[str, Any]:
         "source_label": _SOURCE_LABELS.get(_source_kind_of(r), "行为分析"),
         "enabled": r.enabled,
         "priority": r.priority,
+        "scope": r.scope,
+        # 库里的规则可以改；签名规则（`source="signature"`）是只读的，带 readonly=True
+        "readonly": False,
     }
 
 
@@ -87,8 +95,18 @@ def list_rules(
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
 ):
+    """检测规则列表：**行为分析（库里可编辑）+ 特征匹配（签名规则，只读）**。
+
+    用户口径（2026-10）：不要再有独立的「签名规则集」功能 —— 特征匹配的规则就是检测规则
+    的一部分，一起列出来；它们随镜像发布（`suricata/rules/builtin/`），界面上只读。
+
+    返回**一个** items 数组（两类混在一条契约里，靠 `source_kind` / `source_label` 分组），
+    签名规则 id 形如 `sig-<sid>`：拿它调 PUT/DELETE 会 404（不是库里的行），这正是期望。
+    """
     rows = db.execute(select(Rule).order_by(Rule.priority)).scalars().all()
-    return {"items": [_rule_dict(r) for r in rows]}
+    behavior = [_rule_dict(r) for r in rows]
+    feature = [dict(item) for item in catalog.builtin_catalog()]
+    return {"items": behavior + feature}
 
 
 @router.post("")

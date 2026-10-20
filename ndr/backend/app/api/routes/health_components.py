@@ -436,14 +436,10 @@ def _thresholds_item(client: Any) -> dict[str, Any]:
     state = STATE_OK if level == "ok" else (STATE_DOWN if level == "crit" else STATE_DEGRADED)
     bad = [it for it in result.get("items") or [] if it.get("level") != "ok"]
     if bad:
-        detail = "；".join(
-            f"{it['key']}={it['value']}（阈值 {it['threshold']}）" for it in bad[:3]
-        )
+        detail = "；".join(f"{it['key']}={it['value']}（阈值 {it['threshold']}）" for it in bad[:3])
     else:
         detail = "全部在阈值内："
-        detail += "、".join(
-            f"{it['key']}={it['value']}" for it in (result.get("items") or [])[:4]
-        )
+        detail += "、".join(f"{it['key']}={it['value']}" for it in (result.get("items") or [])[:4])
     return {
         "key": "thresholds",
         "name": "运行阈值",

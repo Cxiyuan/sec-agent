@@ -381,35 +381,9 @@ def _seed() -> None:
     threading.Thread(target=_push_es_retention, name="es-retention", daemon=True).start()
 
 
-def _suricata_check_loop() -> None:
-    """签名引擎规则集的定时检查（默认每 12 小时）：只拉取 + 下载 + 容器校验，**不生效**。
-
-    生效必须人工在界面确认（规则属检测口径）。首次检查等一个完整间隔，避免重启风暴时集中外访。
-    """
-    from app.suricata import rules as suricata_rules
-
-    interval = max(60.0, float(settings.suricata_check_interval_hours) * 3600.0)
-    while True:
-        time.sleep(interval)
-        try:
-            with SessionLocal() as db:
-                result = suricata_rules.check_now(db, scheduled=True)
-            if result.get("has_update"):
-                logger.info(
-                    "签名规则有新版本待确认：%s（已校验：%s，%s）",
-                    result.get("version"),
-                    result.get("validated"),
-                    result.get("error") or "",
-                )
-        except Exception as exc:  # noqa: BLE001 — 定时任务不能因单次失败整体退出
-            logger.warning("签名规则定时检查失败：%s", exc)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _seed()
-    # 签名规则定时检查（只检查+校验，不生效）：daemon 线程，进程退出即结束
-    threading.Thread(target=_suricata_check_loop, name="suricata-rules", daemon=True).start()
     yield
 
 

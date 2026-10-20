@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **107 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **102 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 
 ## 一、通用约定
@@ -175,18 +175,6 @@
 | `POST` | `/api/rules` | — | — | body |
 | `PUT` | `/api/rules/{rule_id}` | — | `rule_id` | body |
 | `DELETE` | `/api/rules/{rule_id}` | — | `rule_id` | — |
-
-### 配置管理 — `/api/suricata`
-
-签名引擎：内置规则集查看/校验/生效/重置/在线源
-
-| 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
-| --- | --- | --- | --- | --- |
-| `GET` | `/api/suricata/rules` | — | — | — |
-| `POST` | `/api/suricata/rules/apply` | — | — | — |
-| `POST` | `/api/suricata/rules/check` | — | — | — |
-| `POST` | `/api/suricata/rules/reset` | — | — | — |
-| `PUT` | `/api/suricata/rules/source` | — | — | body |
 
 ### 配置管理 — `/api/zeek`
 

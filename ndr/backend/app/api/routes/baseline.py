@@ -336,9 +336,7 @@ def save_alert_disposition(
             select(EntityProfile).where(EntityProfile.entity_key == profile_id).limit(1)
         ).first()
     if row is None:
-        return JSONResponse(
-            status_code=404, content={"detail": f"画像不存在：{profile_id}"}
-        )
+        return JSONResponse(status_code=404, content={"detail": f"画像不存在：{profile_id}"})
     out = profiles.record_disposition(
         row.kind,
         row.entity_key,

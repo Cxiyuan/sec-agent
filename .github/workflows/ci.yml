@@ -66,7 +66,10 @@ jobs:
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
-          context: ./ndr/backend
+          # 上下文是 ndr/：镜像要同时带 app/ 与 suricata/rules/builtin/
+          # （检测规则页把签名规则与行为分析列在同一张表，见 app/suricata/catalog.py）
+          context: ./ndr
+          file: ./ndr/backend/Dockerfile
           push: true
           tags: ${{ steps.ns.outputs.name }}/shentong-ndr:latest
 

@@ -241,7 +241,11 @@ def _top_subjects_body(*, minutes: int, view: str, size: int) -> dict[str, Any]:
         },
         "aggs": {
             "subjects": {
-                "terms": {"field": f"{subject}.keyword", "size": size, "order": {"bytes_in": "desc"}},
+                "terms": {
+                    "field": f"{subject}.keyword",
+                    "size": size,
+                    "order": {"bytes_in": "desc"},
+                },
                 "aggs": {"bytes_in": {"sum": {"field": "bytes_in"}}},
             }
         },
@@ -264,9 +268,7 @@ def _pair_body(
     横向与外连就会长得一模一样（2026-10 QA 实测到的错）。
     按对聚出来后，每一对都能判方向，再按视角归类，数字才对。
     """
-    filters: list[dict[str, Any]] = [
-        {"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}
-    ]
+    filters: list[dict[str, Any]] = [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}]
     if subject_field and subjects:
         # 只在这些候选主语上做对聚合（候选是"流量最大的那批"，见 _top_subjects_body）
         filters.append({"terms": {f"{subject_field}.keyword": subjects[:500]}})
@@ -476,7 +478,9 @@ def traffic_ips(
         )
         candidates = [
             str(b.get("key"))
-            for b in ((((top.get("aggregations") or {}).get("subjects") or {}).get("buckets")) or [])
+            for b in (
+                (((top.get("aggregations") or {}).get("subjects") or {}).get("buckets")) or []
+            )
             if b.get("key")
         ]
         body = _pair_body(
@@ -568,7 +572,9 @@ def traffic_peers(
             }
         )
         # 边上带上下行：鼠标移到线路上要能提示"上行多少、下行多少"
-        edges.append({"source": ip, "target": peer_ip, "bytes": value, "bytes_out": up, "bytes_in": down})
+        edges.append(
+            {"source": ip, "target": peer_ip, "bytes": value, "bytes_out": up, "bytes_in": down}
+        )
         total += value
     nodes[0]["bytes"] = total
     return {

@@ -26,7 +26,6 @@ import {
 } from "@shentong/ui";
 
 import type { RuleItem } from "@/lib/api";
-import { SuricataRulesPanel } from "@/components/suricata-rules-panel";
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import {
   ConditionEditor,
@@ -46,7 +45,7 @@ import {
 import { highlightParts } from "@/lib/highlight";
 
 /**
- * 检测规则页：树型展开/收缩（检测规则 → 特征匹配 / 行为分析 / 基线偏离 / 签名规则集）。
+ * 检测规则页：树型展开/收缩（检测规则 → 特征匹配 / 行为分析 / 基线偏离）。
  *
  * 规则只有网络一侧：条件引用网络侧字段（http/ssl/dns/conn…）与签名引擎告警，
  * 检测器只在网络事件上求值。主机监控那条线已随对应日志源一起下线。
@@ -58,7 +57,8 @@ import { highlightParts } from "@/lib/highlight";
  * 2026-10 改版二（对齐后端 API 契约）：分组口径从「内置定义 / 自建规则」换成后端
  * `rules.py` 直出的**事件来源三类**（source_kind）—— 特征匹配 / 行为分析 / 基线偏离。
  * 「是不是内置」不再占一个分组，改在叶子行挂「内置」徽章（它决定可编辑性，不决定分组）。
- * 签名规则集（引擎规则文件）不是 /api/rules 的规则，仍单独一个节点。
+ * 2026-10 改版三（用户口径）：不再有独立的「签名规则集」功能 —— 签名规则（特征匹配）
+ * 由 /api/rules 一并返回（`source_kind=feature_match`、`readonly=true`），与行为分析同表展示。
  */
 
 const SRC = { list: "检测规则（/api/rules）" } as const;
@@ -319,7 +319,6 @@ export default function RulesPage() {
    * 签名分组例外：它不是规则列表，没有可匹配的叶子，放进搜索结果里会占掉半屏。
    */
   const isOpen = (id: string) => (needle ? !collapsed.current.has(id) : !!expanded[id]);
-  const isSignatureOpen = !!expanded["signature"];
   const rootOpen = isOpen("root");
   const groupOpen = (key: string) => isOpen(key);
 
@@ -798,7 +797,7 @@ export default function RulesPage() {
         )}
         <PanelError errors={errs} />
 
-        {/* 树型结构：顶层是「检测规则」，子节点按事件来源三类 + 签名规则集（引擎规则文件）。
+        {/* 树型结构：顶层是「检测规则」，子节点按事件来源三类（特征匹配 / 行为分析 / 基线偏离）。
             整棵树装在一张 Card 里：树的行要 hover 高亮（bg-brand-50），行必须落在
             surface-2（白）上才看得见；落在 canvas 上时 bg-brand-50 比它更亮，
             「高亮」会变成「变白」，层级倒挂。 */}
@@ -996,36 +995,6 @@ export default function RulesPage() {
                           ) : null,
                         )}
 
-                        {/* 签名规则集：不是规则列表，没有可匹配的叶子，所以不受 needle 的展开覆盖；
-                            展开时才 mount 面板并首次请求 /api/suricata/rules（按需加载）。 */}
-                        <TreeRow last mid={20}>
-                          <button
-                            type="button"
-                            id="tree-signature"
-                            aria-expanded={isSignatureOpen}
-                            aria-controls="tree-signature-children"
-                            className={cn(
-                              "flex h-10 w-full items-center gap-2 rounded-sm px-2 text-left transition-colors",
-                              "hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                            )}
-                            onClick={() => toggleNode("signature")}
-                          >
-                            <TreeChevron open={isSignatureOpen} />
-                            <span className="truncate text-13 font-medium text-foreground">
-                              签名规则集
-                            </span>
-                            <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
-                              规则文件由开发人员维护：在线 manifest（文件列表 + sha256）更新，
-                              校验通过后人工确认才生效
-                            </span>
-                          </button>
-                          <div
-                            id="tree-signature-children"
-                            className={cn("pl-5", !isSignatureOpen && "hidden")}
-                          >
-                            {isSignatureOpen ? <SuricataRulesPanel variant="inline" /> : null}
-                          </div>
-                        </TreeRow>
                       </>
                     ) : null}
                   </TreeChildren>

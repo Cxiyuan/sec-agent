@@ -112,6 +112,7 @@ def is_baseline_eligible(entry: UnifiedLog) -> bool:
         return False
     return is_detectable(entry)
 
+
 #: 事件类型的中文名（界面展示用；值仍是英文标识）。
 #: 放这里是为了让 **API 层与命中事件层共用同一张表** —— 两处各写一份必然走偏
 #: （2026-10 就出现过：事件中心直接显示 `signature_hit` 这种英文原始码）。

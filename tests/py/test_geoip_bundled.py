@@ -35,7 +35,7 @@ def test_fetch_script_downloads_and_decompresses() -> None:
 
 def test_dockerfile_fetches_at_build_time() -> None:
     dockerfile = (ROOT / "ndr" / "backend" / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY geoip ./geoip" in dockerfile, "要复制脚本进镜像"
+    assert "COPY backend/geoip ./geoip" in dockerfile, "要复制脚本进镜像（构建上下文是 ndr/）"
     assert "fetch.sh /app/geoip" in dockerfile, "构建时执行下载脚本"
     assert "ST_GEOIP_DB=/app/geoip/ip.mmdb" in dockerfile, "默认路径要设好"
 

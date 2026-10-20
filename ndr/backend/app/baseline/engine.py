@@ -61,7 +61,9 @@ def group_prefix(ip: str) -> str:
     return ""
 
 
-def pooled_lambda(own: dict[str, Any], group: dict[str, Any] | None, k: float) -> tuple[float, float]:
+def pooled_lambda(
+    own: dict[str, Any], group: dict[str, Any] | None, k: float
+) -> tuple[float, float]:
     """经验贝叶斯部分池化：自身样本少时向「等组」先验收缩。
 
     返回 `(均值, 方差)`。`own` / `group` 都是 `{count, mean, m2, std}` 形态。

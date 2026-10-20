@@ -26,7 +26,6 @@ from app.api.routes.chain import router as chain_router
 from app.api.routes.config_audit import router as config_audit_router
 from app.api.routes.health_components import router as health_components_router
 from app.api.routes.stats_overview import router as stats_overview_router
-from app.api.routes.suricata import router as suricata_router
 from app.api.routes.system_metrics import router as system_metrics_router
 from app.api.routes.topology import router as topology_router
 
@@ -46,7 +45,6 @@ api_router.include_router(zeek.router)
 api_router.include_router(files.router)
 api_router.include_router(mcp.router)
 api_router.include_router(agent_push.router)
-api_router.include_router(suricata_router)
 api_router.include_router(chain_router)
 api_router.include_router(topology_router)
 api_router.include_router(config_audit_router)

@@ -163,42 +163,7 @@ export interface SuricataStatus {
   suricata?: string;
 }
 
-/** 签名规则集：更新来源配置 */
-export interface SuricataRulesSource {
-  url: string;
-  token_set: boolean;
-  enabled: boolean;
-}
 
-/** 签名规则集：一次检查/更新的结果（也用于历史列表） */
-export interface SuricataRulesCheck {
-  at?: string;
-  version?: string;
-  has_update?: boolean;
-  validated?: boolean;
-  error?: string;
-  added?: string[];
-  updated?: string[];
-  removed?: string[];
-  scheduled?: boolean;
-}
-
-/** 签名规则集：界面状态（/api/suricata/rules） */
-export interface SuricataRulesStatus {
-  source: SuricataRulesSource;
-  active: { version: string; files: string[]; rule_count: number };
-  pending: {
-    version: string;
-    files: string[];
-    downloaded_at: string;
-    validated: boolean;
-    validation_error: string;
-  } | null;
-  runtime: SuricataStatus | Record<string, never>;
-  last_check: SuricataRulesCheck | null;
-  last_check_at: string;
-  history: SuricataRulesCheck[];
-}
 
 /**
  * ES 接入配置：`url` / `username` / `password_set` 是**只读展示**（连接信息由部署环境
