@@ -69,7 +69,8 @@ export interface DeliveryRef {
 /** 单条 item 的回执条目。 */
 export interface ReceiptEntry {
   readonly eventId: string
-  readonly analysisId: string
+  /** 构建过程中分两步填充（先建空条目、识别后再写），故不可 readonly。 */
+  analysisId: string
   reused: boolean
   reanalyzed: boolean
   occurrences: number
