@@ -272,6 +272,7 @@ describe.skipIf(!builtArtifactsExist)('dsh Web profile best-effort startup', () 
         '--profile', 'web',
         '--no-open',
         '--port', String(address.port),
+        '--host', '127.0.0.1',
       ], {
         cwd: root,
         env: {

@@ -252,32 +252,24 @@ jobs:
         with:
           node-version: "24"
 
-      # 暂时「只报告不拦截」的原因（2026-10-20）：
-      #   dsh 的 pnpm-lock.yaml 自相矛盾 —— `ERR_PNPM_INCONSISTENT_PATCH_HASH`
-      #   （锁文件里记录的 patch 哈希与它自己的 patchedDependencies 不一致，通常是手工改过
-      #   或合并冲突没修干净），pnpm 明确要求用 `pnpm install --no-frozen-lockfile` 修复。
-      #   这是 agent 侧的存量问题，且按约定不能在本地装依赖来修；本 job 也不产出交付物
-      #   （agent 已不走镜像分发），所以先不拦 main。**锁文件修好后必须去掉这里的
-      #   continue-on-error**，否则 agent 的类型/构建错误会一路放行。
+      # 严格拦截（2026-10-20 用户要求）：锁文件不一致 / 类型错 / lint 错 / 构建失败
+      # 都必须红。agent 由 workbuddy 开发、我们负责提交 —— 门禁是我们唯一的防线，
+      # 一旦"只报告"，坏代码会静默流进 main。
       - name: Install dependencies (frozen)
         working-directory: agent
-        continue-on-error: true
         run: pnpm install --frozen-lockfile
 
       # dsh 自带 typecheck / lint（TypeScript 侧）。agent 由 workbuddy 开发、我们负责提交，
       # 这两类错误必须在合并前暴露——`pnpm run build` 只保证构建产物能出，不保证类型干净。
       # 先「只报告不拦截」跑一轮：存量问题可能不少，清干净后再去掉 continue-on-error。
-      - name: Typecheck dsh (report only)
+      - name: Typecheck dsh
         working-directory: agent
-        continue-on-error: true
         run: pnpm run typecheck
 
-      - name: Lint dsh (report only)
+      - name: Lint dsh
         working-directory: agent
-        continue-on-error: true
         run: pnpm run lint
 
       - name: Build dsh (web)
         working-directory: agent
-        continue-on-error: true
         run: pnpm run build

@@ -113,7 +113,10 @@ function fixture() {
 }
 
 function start(f: ReturnType<typeof fixture>, extra: string[] = [], nodeArgs: string[] = []) {
-  const child = execa(process.execPath, [...nodeArgs, bin, '--profile', 'web', '--patch', f.watcher, ...extra, '--no-open', '--port', '0', '--host', '127.0.0.1'], {
+  // The default bind address is now this machine's LAN address; pin loopback
+  // so observers that hardcode 127.0.0.1 URLs stay honest. An explicit --host
+  // in `extra` still outranks it, because commander keeps the last value.
+  const child = execa(process.execPath, [...nodeArgs, bin, '--profile', 'web', '--patch', f.watcher, '--host', '127.0.0.1', ...extra, '--no-open', '--port', '0'], {
     cwd: f.root,
     env: { ...process.env, DSH_HOME: f.home, DSH_AGENTS_HOME: join(f.root, '.agents'), DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_API_KEY: 'keyless-matrix-no-call', NODE_NO_WARNINGS: '1' },
     input: '', reject: false, timeout: 110_000, killSignal: 'SIGKILL',
