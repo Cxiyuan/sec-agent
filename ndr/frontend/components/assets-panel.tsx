@@ -305,6 +305,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-10 select-none text-center">#</TableHead>
           <TableHead>主机名（IP）</TableHead>
           <TableHead>总流量</TableHead>
           <TableHead>连接数</TableHead>
@@ -317,8 +318,11 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((row) => (
+        {rows.map((row, i) => (
           <TableRow key={row.ip}>
+            <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+              {i + 1}
+            </TableCell>
             <TableCell className="whitespace-nowrap">
               <span className="font-medium">{row.hostname || "-"}</span>
               <span className="ml-1 font-mono text-xs text-muted-foreground">({row.ip})</span>
@@ -380,6 +384,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
       {mode === "discovery" ? (
         <Section
           title="资产发现（被动）"
+          help="从镜像流量被动发现的主机，不主动探测"
           description={
             <>
               已纳管 <span className="tabular-nums">{hosts?.managed ?? "—"}</span> / 未纳管{" "}
@@ -722,6 +727,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
           </Section>
           <Section
             title={`资产台账（${recordsTotal}）`}
+            help="纳入台账管理的资产清单"
             extra={
               <>
                 <Input
@@ -778,6 +784,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="w-10 select-none text-center">#</TableHead>
                         <TableHead>IP</TableHead>
                         <TableHead>主机名</TableHead>
                         <TableHead>分组</TableHead>
@@ -789,8 +796,11 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {records.map((row) => (
+                      {records.map((row, i) => (
                         <TableRow key={row.id}>
+                          <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                            {recordsPage * recordsSize + i + 1}
+                          </TableCell>
                           <TableCell className="font-mono text-xs">{row.ip}</TableCell>
                           <TableCell>{row.hostname || "-"}</TableCell>
                           <TableCell>{row.group_name || "未分组"}</TableCell>

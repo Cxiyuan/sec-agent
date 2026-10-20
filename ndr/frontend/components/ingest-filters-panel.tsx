@@ -14,6 +14,7 @@ import {
   FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -339,7 +340,7 @@ export function IngestFiltersPanel() {
                 <CardTitle>{editId ? "编辑过滤器" : "新建过滤器"}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <FieldGrid maxCols={4}>
+                <SettingsForm>
                   <Field label="名称" htmlFor="ingest-name" required>
                     <Input
                       id="ingest-name"
@@ -376,7 +377,7 @@ export function IngestFiltersPanel() {
                       启用
                     </label>
                   </div>
-                </FieldGrid>
+                </SettingsForm>
 
                 {examples.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">

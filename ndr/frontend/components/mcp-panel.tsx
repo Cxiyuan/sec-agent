@@ -21,9 +21,9 @@ import {
   Dialog,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -372,7 +372,7 @@ export function McpPanel() {
                     {msg}
                   </p>
                 ) : null}
-                <FieldGrid maxCols={2}>
+                <SettingsForm>
                   <Field label="新令牌名称（例如「智能体-生产」）" htmlFor="mcp-token-name">
                     <Input
                       id="mcp-token-name"
@@ -391,7 +391,7 @@ export function McpPanel() {
                       inputMode="numeric"
                     />
                   </Field>
-                </FieldGrid>
+                </SettingsForm>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={createToken} disabled={busy}>
                     生成令牌

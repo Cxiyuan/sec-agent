@@ -1,4 +1,5 @@
 import * as React from "react";
+import { HelpCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 /**
@@ -23,6 +24,7 @@ export function Section({
   title,
   description,
   extra,
+  help,
   children,
   className,
   divided = true,
@@ -34,6 +36,11 @@ export function Section({
   description?: React.ReactNode;
   /** 标题行右侧：筛选、时间范围、统计数、操作按钮 */
   extra?: React.ReactNode;
+  /**
+   * 标题右侧的「?」说明图标（深信服列表页都有）。传字符串 = 悬浮提示文案，
+   * 传节点 = 自定义内容（例如一个弹层触发器）。不传则不显示。
+   */
+  help?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
   /** 是否画标题底线（嵌套在卡片内部时不画） */
@@ -52,6 +59,16 @@ export function Section({
             {/* 深信服式分区标尺：3px 圆角竖条 + 标题。shrink-0 防长标题把竖条压扁 */}
             <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full bg-primary" />
             {title}
+            {help ? (
+              <button
+                type="button"
+                aria-label={typeof help === "string" ? help : "本区说明"}
+                title={typeof help === "string" ? help : undefined}
+                className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-surface-1 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <HelpCircle className="h-4 w-4" />
+              </button>
+            ) : null}
           </h2>
           {description ? (
             <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</p>

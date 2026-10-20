@@ -447,6 +447,7 @@ export function LogsPanel() {
       {/* 列表区块：标题 + 分页放到 Section 的 extra，表格只负责内容 */}
       <Section
         title="日志列表"
+        help="从 ES 检索的原始归一化日志"
         extra={
           <Pagination
             page={Math.floor(offset / size)}
@@ -470,6 +471,7 @@ export function LogsPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10 select-none text-center">#</TableHead>
                     {COLUMNS.map(([field, label]) => (
                       <TableHead key={field} className="whitespace-nowrap">
                         {label}
@@ -479,12 +481,15 @@ export function LogsPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {result.items.map((item) => (
+                  {result.items.map((item, i) => (
                     <TableRow
                       key={item.id}
                       className="cursor-pointer"
                       onClick={() => void openDetail(item)}
                     >
+                      <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                        {offset + i + 1}
+                      </TableCell>
                       {COLUMNS.map(([field]) => (
                         <TableCell
                           key={field}

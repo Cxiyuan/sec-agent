@@ -322,6 +322,7 @@ export function TrafficPanel({ view }: { view: View }) {
           </span>
         }
         description={`${meta.subject} ←→ ${meta.peer}`}
+        help="按 IP 统计的流量排行"
         extra={
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-xs text-muted-foreground">
@@ -396,6 +397,7 @@ export function TrafficPanel({ view }: { view: View }) {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10 select-none text-center">#</TableHead>
                     <TableHead className="whitespace-nowrap">主机名（IP）</TableHead>
                     <TableHead className="whitespace-nowrap">总流量</TableHead>
                     <TableHead className="whitespace-nowrap">上/下行</TableHead>
@@ -415,8 +417,11 @@ export function TrafficPanel({ view }: { view: View }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((row) => (
+                  {rows.map((row, i) => (
                     <TableRow key={row.ip}>
+                      <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                        {i + 1}
+                      </TableCell>
                       <TableCell className="whitespace-nowrap">
                         {/* 主机名(IP) 整块可点：点开右侧抽屉看连接拓扑（2026-10 用户要求，
                             不再单独给一列「拓扑」按钮） */}

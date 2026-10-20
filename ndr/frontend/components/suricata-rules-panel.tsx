@@ -19,8 +19,8 @@ import {
   Dialog,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -329,7 +329,7 @@ export function SuricataRulesPanel({ variant = "card" }: { variant?: "card" | "i
             <CardContent className={cn("space-y-3", bodyCls)}>
               {/* 长字段（URL）整行、短字段（令牌 + 两个开关）并排：
                   两列等宽会让 URL 输入框只剩一半，manifest 地址根本放不进去。 */}
-              <FieldGrid maxCols={2}>
+              <SettingsForm>
                 <Field
                   label="规则更新地址（manifest：文件列表 + sha256；可填目录，会自动补 manifest.json）"
                   htmlFor="suricata-url"
@@ -371,7 +371,7 @@ export function SuricataRulesPanel({ variant = "card" }: { variant?: "card" | "i
                     启用定时检查（每 12 小时）
                   </label>
                 </div>
-              </FieldGrid>
+              </SettingsForm>
 
               {msg && (
                 <p

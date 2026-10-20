@@ -252,6 +252,7 @@ export function BehaviorPanel() {
   const [apage, setApage] = React.useState(0);
   const [aq, setAq] = React.useState("");
   const [auto, setAuto] = React.useState(true);
+  const [timeRange, setTimeRange] = React.useState("24h");
   const [configOpen, setConfigOpen] = React.useState(false);
 
   // 画像筛选 / 分页
@@ -445,6 +446,19 @@ export function BehaviorPanel() {
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
           每 {REFRESH_SECONDS} 秒自动刷新
         </label>
+        <label className="text-xs text-muted-foreground">
+          时间范围
+          <select
+            value={timeRange}
+            onChange={(e) => setTimeRange(e.target.value)}
+            className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+          >
+            <option value="1h">近1小时</option>
+            <option value="6h">近6小时</option>
+            <option value="24h">近24小时</option>
+            <option value="7d">近7天</option>
+          </select>
+        </label>
         {overview?.cached ? (
           <span className="text-xs text-muted-foreground">（总览数据来自后端 30 秒缓存）</span>
         ) : null}
@@ -576,6 +590,7 @@ export function BehaviorPanel() {
       {/* ---------- 2. 数值基线 IP 列表（生效中 / 观测中） ---------- */}
       <Section
         title="数值基线 IP 列表"
+        help="按 IP 聚合的数值基线维度与偏离状态，点标签看均值/标准差"
         description={
           <>
             一行一个 IP，维度用标签列（悬停标签看均值/标准差/观测次数）；
@@ -636,14 +651,18 @@ export function BehaviorPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10 select-none text-center">#</TableHead>
                     <TableHead>IP</TableHead>
                     <TableHead>维度（悬停看均值/标准差）</TableHead>
                     <TableHead>首次观测</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {numeric.items.map((group) => (
+                  {numeric.items.map((group, i) => (
                     <TableRow key={group.ip}>
+                      <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                        {npage * PAGE_SIZE + i + 1}
+                      </TableCell>
                       <TableCell className="font-mono text-xs">{ipLabel(group.ip)}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
@@ -681,6 +700,7 @@ export function BehaviorPanel() {
       {/* ---------- 3. 画像列表（生效中 / 观测中） ---------- */}
       <Section
         title="账号 / 会话画像列表"
+        help="账号与会话的长期行为画像与风险分，点行展开细节"
         description={
           <>
             <span className="text-sev-ok-fg">生效中</span>=观测次数已达冷启动门槛（{minWindows}{" "}
@@ -739,6 +759,7 @@ export function BehaviorPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10 select-none text-center">#</TableHead>
                     <TableHead>实体</TableHead>
                     <TableHead>类型</TableHead>
                     <TableHead>状态</TableHead>
@@ -761,6 +782,9 @@ export function BehaviorPanel() {
                           className="cursor-pointer"
                           onClick={() => setExpanded(open ? "" : rowKey)}
                         >
+                          <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                            {ppage * PAGE_SIZE + i + 1}
+                          </TableCell>
                           <TableCell className="font-medium">
                             {open ? "▾ " : "▸ "}
                             {row.entity_display || row.entity_key}
@@ -848,6 +872,7 @@ export function BehaviorPanel() {
       {/* ---------- 4. 被访问方（内网源站 / 内网 DNS） ---------- */}
       <Section
         title="被访问方（内网源站 / 内网 DNS）"
+        help="按被访问方（内网源站 / DNS）建基线的波动情况，区分内网与公网目标"
         description={
           <>
             按「被访问方」建基线：看被访问次数 / 不同真实客户端数 / 不同目标数的区间间波动 ——
@@ -908,6 +933,7 @@ export function BehaviorPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10 select-none text-center">#</TableHead>
                     <TableHead>资产</TableHead>
                     <TableHead>类型</TableHead>
                     <TableHead>状态</TableHead>
@@ -919,8 +945,11 @@ export function BehaviorPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {assets.items.map((row) => (
+                  {assets.items.map((row, i) => (
                     <TableRow key={row.asset}>
+                      <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                        {apage * PAGE_SIZE + i + 1}
+                      </TableCell>
                       <TableCell className="font-mono text-xs">{row.asset}</TableCell>
                       <TableCell>
                         <Badge variant="outline">{row.role === "dns" ? "内网 DNS" : "站点"}</Badge>

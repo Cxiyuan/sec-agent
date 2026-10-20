@@ -45,7 +45,7 @@ export const TableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttribut
         // focus-visible 环：整行可点的表格（事件中心、日志检索）给行加了 tabIndex={0}，
         // 没有焦点环的话键盘用户 Tab 到行上看不出停在哪一行，tabIndex 反而变成陷阱。
         // 与 Input / Switch 同一款 ring；全站表格行一起受益。
-        "border-b border-border-subtle transition-colors hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset data-[state=selected]:bg-accent",
+        "border-b border-border transition-colors hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset data-[state=selected]:bg-accent",
         className
       )}
       {...props}
@@ -62,7 +62,7 @@ export const TableHead = React.forwardRef<
     ref={ref}
     className={cn(
       // border-r + last:border-r-0：竖线只画在列与列之间，最右一列不画（贴卡片描边）
-      "h-8 whitespace-nowrap border-r border-border-subtle bg-surface-1 px-3 text-left align-middle text-xs font-medium text-foreground last:border-r-0",
+      "h-8 whitespace-nowrap border-r border-border bg-surface-1 px-3 text-left align-middle text-xs font-medium text-foreground last:border-r-0",
       className
     )}
     {...props}
@@ -74,6 +74,6 @@ export const TableCell = React.forwardRef<
   HTMLTableCellElement,
   React.TdHTMLAttributes<HTMLTableCellElement>
 >(({ className, ...props }, ref) => (
-  <td ref={ref} className={cn("border-r border-border-subtle px-3 py-2 align-middle last:border-r-0", className)} {...props} />
+  <td ref={ref} className={cn("border-r border-border px-3 py-2 align-middle last:border-r-0", className)} {...props} />
 ));
 TableCell.displayName = "TableCell";

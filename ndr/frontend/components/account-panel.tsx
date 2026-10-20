@@ -20,6 +20,7 @@ import {
   FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -158,7 +159,7 @@ export function AccountPanel() {
                 <CardContent>
                   <form onSubmit={submit} className="space-y-3">
                     {/* 3 个密码框：2 列而不是 4 列 —— 4 列对 3 个框太散，第二行只剩一个孤零零的框 */}
-                    <FieldGrid maxCols={2}>
+                    <SettingsForm>
                       <Field label="原密码" htmlFor="account-old-pwd" required>
                         <Input
                           id="account-old-pwd"
@@ -192,7 +193,7 @@ export function AccountPanel() {
                           placeholder="两次要一致"
                         />
                       </Field>
-                    </FieldGrid>
+                    </SettingsForm>
 
                     {/* 结果提示固定在操作区上方：成功/失败都用一行提示条，不再是一串彩色小字 */}
                     {msg && (

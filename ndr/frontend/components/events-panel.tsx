@@ -854,6 +854,7 @@ export function EventsPanel() {
       {/* ---------- 三、事件列表（IP 中心聚合） ---------- */}
       <Section
         title="事件列表（按主机 IP 聚合）"
+        help="命中的安全事件与处置状态，点击行可展开详情"
         extra={
           <div className="flex flex-wrap items-center gap-3" aria-live="polite">
             <Pagination
@@ -880,6 +881,7 @@ export function EventsPanel() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10 select-none text-center">#</TableHead>
                       {IP_COLUMNS.map((col) => (
                         <TableHead key={col.key} scope="col" className={col.headCls}>
                           {col.label}
@@ -888,7 +890,7 @@ export function EventsPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {aggRows.map((row) => (
+                    {aggRows.map((row, i) => (
                       <TableRow
                         key={row.ip}
                         tabIndex={0}
@@ -902,6 +904,9 @@ export function EventsPanel() {
                         }}
                         aria-label={`主机 ${row.ip}，${severityText(row.maxSeverity)}，共 ${row.totalHits} 次命中、${row.eventCount} 个事件，点开看该 IP 的全部命中`}
                       >
+                        <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
+                          {offset + i + 1}
+                        </TableCell>
                         {IP_COLUMNS.map((col) => (
                           <TableCell key={col.key} className={col.cellCls}>
                             {renderIpCell(col.key, row)}

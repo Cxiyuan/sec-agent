@@ -17,9 +17,9 @@ import {
   CardTitle,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -322,7 +322,7 @@ export function EsPanel() {
                     <Skeleton className="h-8 w-40" />
                   </>
                 ) : (
-                  <FieldGrid maxCols={4}>
+                  <SettingsForm>
                     <Field label="索引模式（两类采集统一落这一族）" htmlFor="es-events-index">
                       <Input
                         id="es-events-index"
@@ -342,7 +342,7 @@ export function EsPanel() {
                         min={cfg?.retention_min_days ?? 7}
                       />
                     </Field>
-                  </FieldGrid>
+                  </SettingsForm>
                 )}
 
                 {msg && (

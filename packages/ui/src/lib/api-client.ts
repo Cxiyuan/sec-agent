@@ -76,9 +76,22 @@ async function parseError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, body);
 }
 
+export interface ApiFetchOptions {
+  /**
+   * 401 时是否强制跳回登录页。默认 true（动作请求：改配置、删资产等，失效就该重新登录）。
+   *
+   * 传 false 用于**页头 / 侧栏的被动轮询**（/api/auth/me、运行状态、推送状态）：
+   * 这类请求在每个页面挂载时都会自动发出，一旦令牌刚好过期，默认行为会在
+   * 用户点菜单切换页面的瞬间把整页 `location.replace('/login')` —— 表现出来就是
+   * 「菜单点了跳不过去」。被动读只应静默失败，把跳转留给用户真正发起的动作请求。
+   */
+  redirectOn401?: boolean;
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  apiOpts: ApiFetchOptions = {}
 ): Promise<T> {
   const token = getToken();
   const headers = new Headers({ "Content-Type": "application/json" });
@@ -90,6 +103,10 @@ export async function apiFetch<T = unknown>(
 
   const res = await fetch(path, { ...options, headers });
   if (res.status === 401) {
+    // 被动读：不清令牌、不跳转，只把失败交给调用方（调用方一般 catch 掉）
+    if (apiOpts.redirectOn401 === false) {
+      throw new ApiError(401, { detail: "未登录或凭证失效" });
+    }
     clearToken();
     redirectToLogin();
     throw new ApiError(401, { detail: "未登录或凭证失效" });

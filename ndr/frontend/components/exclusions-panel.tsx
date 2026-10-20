@@ -10,9 +10,9 @@ import {
   CardTitle,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -226,7 +226,7 @@ export function ExclusionsPanel() {
                 {msg && <p className="text-sm text-primary">{msg}</p>}
 
                 <div className="space-y-3 rounded-xs bg-surface-1 px-3 py-2">
-                  <FieldGrid maxCols={4}>
+                  <SettingsForm>
                     <Field label="名称" required span="lg">
                       <Input
                         value={name}
@@ -255,7 +255,7 @@ export function ExclusionsPanel() {
                         placeholder="为什么排除它（便于以后判断能不能删）"
                       />
                     </Field>
-                  </FieldGrid>
+                  </SettingsForm>
 
                   {nested && (
                     <p className="text-xs text-sev-critical-fg">

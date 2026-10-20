@@ -98,9 +98,11 @@ export function TopBar() {
 
   const load = React.useCallback(async () => {
     const [meRes, statsRes, pushRes] = await Promise.allSettled([
-      apiFetch<AuthMe>("/api/auth/me"),
-      apiFetch<DetectorStats>("/api/detector/stats"),
-      apiFetch<AgentPushPayload>("/api/agent-push"),
+      // 页头的三类数据都是**被动轮询**：401 时不要把人踢回登录页
+      // （否则切菜单的瞬间会被整页替换走，表现得像「菜单点不动」）。
+      apiFetch<AuthMe>("/api/auth/me", {}, { redirectOn401: false }),
+      apiFetch<DetectorStats>("/api/detector/stats", {}, { redirectOn401: false }),
+      apiFetch<AgentPushPayload>("/api/agent-push", {}, { redirectOn401: false }),
     ]);
     if (meRes.status === "fulfilled") setMe(meRes.value);
     if (statsRes.status === "fulfilled") setStats(statsRes.value);

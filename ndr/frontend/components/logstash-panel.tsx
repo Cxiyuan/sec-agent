@@ -14,6 +14,7 @@ import {
   FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -230,7 +231,7 @@ export function LogstashPanel() {
                   </FieldGrid>
                 ) : params ? (
                   <>
-                    <FieldGrid maxCols={4}>
+                    <SettingsForm>
                       <Field label="Elasticsearch 输出（历史归档）">
                         <p className="text-xs text-muted-foreground">
                           归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
@@ -251,7 +252,7 @@ export function LogstashPanel() {
                           onChange={(e) => set("events_index", e.target.value)}
                         />
                       </Field>
-                    </FieldGrid>
+                    </SettingsForm>
 
                     {noticeFor("params")}
 

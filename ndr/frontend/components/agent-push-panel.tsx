@@ -19,9 +19,9 @@ import {
   CardTitle,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -213,7 +213,7 @@ export function AgentPushPanel() {
                   </div>
                 ) : (
                   <>
-                    <FieldGrid maxCols={4}>
+                    <SettingsForm>
                       <Field
                         label="推送地址"
                         htmlFor="push-url"
@@ -277,7 +277,7 @@ export function AgentPushPanel() {
                           onChange={(e) => setMaxPerPush(Number(e.target.value) || 200)}
                         />
                       </Field>
-                    </FieldGrid>
+                    </SettingsForm>
 
                     <label className="flex items-start gap-2 text-xs">
                       <input

@@ -11,9 +11,9 @@ import {
   CardTitle,
   EmptyState,
   Field,
-  FieldGrid,
   Input,
   Section,
+  SettingsForm,
   SettingsGrid,
   SettingsMain,
   SettingsRail,
@@ -170,7 +170,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                       {section === "all" && <Skeleton className="h-14 w-full" />}
                     </div>
                   ) : (
-                    <FieldGrid maxCols={4}>
+                    <SettingsForm>
                       <Field
                         label={`监听网卡（${status ? `探测到 ${status.detected.length} 张` : "状态未读到"}）`}
                         htmlFor="zeek-iface"
@@ -223,7 +223,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                           />
                         </Field>
                       )}
-                    </FieldGrid>
+                    </SettingsForm>
                   )}
                 </CardContent>
               </Card>
@@ -238,7 +238,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                   {loading ? (
                     <Skeleton className="h-32 w-full" />
                   ) : (
-                    <FieldGrid maxCols={4}>
+                    <SettingsForm>
                       <Field
                         label="监控网段（一行一条，支持 CIDR 与单个 IP；也可用逗号分隔）"
                         htmlFor="zeek-networks"
@@ -316,7 +316,7 @@ export function ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "ne
                           placeholder="留空 = 沿用采集器默认的 HTTP 端口表"
                         />
                       </Field>
-                    </FieldGrid>
+                    </SettingsForm>
                   )}
                   {/* 两个上限字段的共同口径：跨字段的说明放网格外面，避免被当成某一个字段的 hint */}
                   <p className="text-xs text-muted-foreground">
