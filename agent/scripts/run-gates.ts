@@ -587,15 +587,15 @@ function ciWindowsBlockingGates(): Gate[] {
 }
 
 function ciWindowsCompleteGates(): Gate[] {
-  const coverage = coverageGates('win32').map(gate => gate.id === 'electron-install' ? gate : {
+  const coverage = coverageGates('win32').map(gate => ({
     ...gate,
     needs: [...new Set(['build', ...(gate.needs ?? [])])],
-  })
+  }))
   const coverageAfter = coverage.map(gate => gate.id)
   const observational = ciWindowsObservationalGates()
-    // Coverage owns Electron preparation. The required production site replaces
-    // the MPA build, which writes to the same output directory.
-    .filter(gate => gate.id !== 'build' && gate.id !== 'docs-site-build' && gate.id !== 'electron-install')
+    // The required production site replaces the MPA build, which writes to the
+    // same output directory.
+    .filter(gate => gate.id !== 'build' && gate.id !== 'docs-site-build')
     .map(gate => ({
       ...gate,
       allowFailure: true,
@@ -612,21 +612,9 @@ function ciWindowsCompleteGates(): Gate[] {
   ]
 }
 
-// Native Electron fixtures need the locked binary before Vitest removes ambient proxies.
-function electronInstallGate(): Gate {
-  return {
-    id: 'electron-install',
-    label: 'Electron binary',
-    displayCommand: 'pnpm --filter @deepseek-ai/dsh-desktop exec install-electron',
-    ...pnpmInvocation(['--filter', '@deepseek-ai/dsh-desktop', 'exec', 'install-electron']),
-    env: { ELECTRON_GET_USE_PROXY: '1' },
-  }
-}
-
 function ciWindowsObservationalGates(): Gate[] {
   const predecessors = [
     ...ciStaticGates({ ownsBuild: true }),
-    electronInstallGate(),
     // Linux owns required lint and snapshots; Windows omits those duplicates.
     pnpmScript('duplication', 'duplication'),
     pnpmScript('publint', 'publint', { needs: ['build'] }),
@@ -638,7 +626,7 @@ function ciWindowsObservationalGates(): Gate[] {
   return [
     ...predecessors,
     {
-      ...builtBinSmokeGate(['build', 'electron-install']),
+      ...builtBinSmokeGate(['build']),
       // This smoke starts real application children with bounded startup
       // deadlines. Let other Windows processes settle before measuring startup.
       after: predecessors.map(gate => gate.id),
@@ -694,7 +682,6 @@ function coverageWorkerArgs(): { instrumented: string[]; exempt: string[] } {
 }
 
 function coverageGates(platform: NodeJS.Platform = process.platform): Gate[] {
-  const electron = platform === 'win32' ? [electronInstallGate()] : []
   const workers = coverageWorkerArgs()
   const partitions = parseCoveragePartitionCount(process.env[COVERAGE_PARTITIONS_ENV])
   const instrumented = partitions === undefined
@@ -715,8 +702,7 @@ function coverageGates(platform: NodeJS.Platform = process.platform): Gate[] {
     })
   return [
     pnpmScript('native-system', 'build:native-system'),
-    ...electron,
-    { ...instrumented, needs: ['native-system', ...electron.map(gate => gate.id)] },
+    { ...instrumented, needs: ['native-system'] },
     pnpmExec('coverage-exempt-heavy', [
       'vitest',
       'run',
@@ -891,7 +877,6 @@ function builtBinSmokeGate(needs: string[] = ['build']): Gate {
     'apps/cli/tests/profiles/headless/tests/keyless-smoke.e2e.ts',
     'apps/cli/tests/profiles/headless/tests/source-tool.built.e2e.ts',
     'apps/cli/tests/built-bin.e2e.ts',
-    'apps/desktop/tests/acl-skill.built.e2e.ts',
     'packages/host/directory-picker-native/tests/built-worker.e2e.ts',
     'packages/sdk/server/tests/built-scope-carrier.e2e.ts',
     'packages/deliverables/tool-present/tests/built-errors.e2e.ts',

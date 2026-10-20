@@ -40,10 +40,8 @@ function fixture(): string {
   roots.push(root)
   write(root, 'tsconfig.base.json', { compilerOptions: { moduleResolution: 'bundler', paths: {} } })
   pkg(root, 'apps/cli', '@deepseek-ai/dsh')
-  pkg(root, 'apps/desktop', '@fixture/desktop')
   pkg(root, 'apps/web', '@fixture/web')
   write(root, 'apps/cli/src/bin.ts', 'export {}\n')
-  write(root, 'apps/desktop/src/main.ts', 'export {}\n')
   write(root, 'apps/web/src/main.ts', 'export {}\n')
   write(root, 'apps/web/index.html', '<script type="module" src="/src/main.ts"></script>')
   pkg(root, 'packages/bundle/base', base, { dsh: { bundle: { patch: './cordis.patch.yml' } } })
@@ -122,10 +120,10 @@ describe('product package use', () => {
     expect(failures(root)).toBe('')
   })
 
-  it.each(['apps/desktop/src/main.ts', 'apps/web/src/main.ts'])('reaches the %s entrypoint', (entry) => {
+  it('reaches the apps/web/src/main.ts entrypoint', () => {
     const root = fixture()
     pkg(root, candidateDir, candidate)
-    write(root, entry, `import '${candidate}'`)
+    write(root, 'apps/web/src/main.ts', `import '${candidate}'`)
     expect(failures(root)).toBe('')
   })
 

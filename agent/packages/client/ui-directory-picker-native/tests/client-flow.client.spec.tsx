@@ -9,23 +9,8 @@ import { apply, inject } from '../src/client/index.ts'
 import { NativeDirectoryFlow } from '../src/client/flow.ts'
 import { apply as nodeApply } from '../src/index.ts'
 
-const desktopIpc = await vi.hoisted(async () => {
-  const { createRequire } = await import('node:module')
-  const path = await import('node:path')
-  // Electron belongs to the Desktop app; resolve its mock from that workspace.
-  const electron = createRequire(path.resolve(import.meta.dirname, '../../../../apps/desktop/package.json')).resolve('electron')
-  return { invoke: vi.fn(), on: vi.fn(), electron }
-})
-vi.mock(desktopIpc.electron, () => ({
-  ipcRenderer: { invoke: desktopIpc.invoke, on: desktopIpc.on },
-  contextBridge: { exposeInMainWorld: (name: string, value: unknown) => { vi.stubGlobal(name, value) } },
-}))
-vi.mock('../../../../apps/desktop/src/preload-platform.ts', () => ({ markDocumentPlatform: vi.fn(), syncWindowFullscreen: vi.fn() }))
-vi.mock('../../../../apps/desktop/src/preload-theme.ts', () => ({ syncNativeTheme: vi.fn() }))
-vi.mock('../../../../apps/desktop/src/preload-windows.ts', () => ({ syncWindowsAppearance: vi.fn() }))
-vi.mock('../../../../apps/desktop/src/preload-mandatory-overlay.ts', () => ({ installMandatoryUpdateOverlay: vi.fn() }))
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); desktopIpc.invoke.mockReset(); desktopIpc.on.mockReset() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow'] as const
 
@@ -165,29 +150,6 @@ describe('directory-picker-native client half', () => {
     expect(b.pickDirectory).toHaveBeenCalledOnce()
   })
 
-  it.each(['win32', 'darwin'] as const)('consumes the actual Desktop preload directory bridge on %s', async (platform) => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-    vi.resetModules()
-    vi.stubGlobal('location', new URL('dsh-app://app/'))
-    // Desktop's preload is typechecked by its own compiler program.
-    const preload = '../../../../apps/desktop/src/preload-app.ts'
-    await import(/* @vite-ignore */ preload)
-    desktopIpc.invoke.mockResolvedValue('/desktop/workspace')
-    const b = await bench()
-    const dispose = b.declare()
-    const fiber = b.ctx.plugin({ inject: [...inject], apply })
-    try {
-      await fiber.await()
-      const entry = b.slots.entries(HOLES[0])[0]!
-      const injected = (entry.inject as () => { pick: () => Promise<string | null> })()
-      await expect(injected.pick()).resolves.toBe('/desktop/workspace')
-      expect(desktopIpc.invoke).toHaveBeenCalledExactlyOnceWith('dsh-desktop:directory-pick')
-      expect(b.pickDirectory).not.toHaveBeenCalled()
-    } finally {
-      await fiber.dispose()
-      dispose()
-    }
-  })
 
   it('uses the desktop bridge without calling the Host and preserves cancellation and errors', async () => {
     const pick = vi.fn<() => Promise<string | null>>().mockResolvedValue('/desktop/workspace')

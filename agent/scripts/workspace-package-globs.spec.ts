@@ -1,4 +1,4 @@
-/** Windows manifest paths still select the packages whose artifacts Desktop bundles. */
+/** Windows manifest paths still select the packages whose artifacts the build bundles. */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'

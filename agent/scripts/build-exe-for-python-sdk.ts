@@ -289,7 +289,7 @@ class SingleExeBuild {
       'deploy',
       '--legacy',
       '--prod',
-      // Production deployment omits workspace tooling such as Electron's patched signer.
+      // Production deployment omits workspace tooling such as patched signers.
       '--config.allow-unused-patches=true',
       '--config.node-linker=hoisted',
       '--config.auto-install-peers=false',

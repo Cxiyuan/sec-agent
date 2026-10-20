@@ -1,8 +1,7 @@
 """Opt-in native CUA check against an isolated Electron/Chromium application.
 
-Pass --electron /absolute/path/to/Electron.app/Contents/MacOS/Electron, or use
-an existing apps/desktop/node_modules/electron/dist installation. This check
-never downloads a runtime. It requires Accessibility and Screen Recording.
+Pass --electron /absolute/path/to/Electron.app/Contents/MacOS/Electron. This
+check never downloads a runtime. It requires Accessibility and Screen Recording.
 """
 import argparse
 import base64
@@ -23,12 +22,11 @@ def main():
     parser.add_argument('--artifacts', type=Path, help='Save fixture-only PNG and private protocol transcript')
     parser.add_argument("--hover-only", action="store_true", help="Exercise hover independently of text input")
     args = parser.parse_args()
-    repo = ROOT.parents[3]
-    executable = args.electron or repo / 'apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
+    executable = args.electron
     if os.uname().sysname != 'Darwin':
         raise RuntimeError('this opt-in check requires macOS')
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise RuntimeError('Electron runtime unavailable; pass --electron with an existing executable')
+        raise RuntimeError('pass --electron with an existing Electron executable')
     if args.artifacts:
         args.artifacts.mkdir(parents=True, exist_ok=True)
     transcript = []

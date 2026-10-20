@@ -14,7 +14,7 @@ import { pnpmCommand } from './release/process.ts'
 type CompilationMode = 'checked' | 'benchmark-emit'
 
 /** Identifier of one package-library build step. */
-export type LibraryStepId = 'host-src' | 'host-bundle' | 'host-typert' | 'desktop-bundle' | 'client-src' | 'client-bundle'
+export type LibraryStepId = 'host-src' | 'host-bundle' | 'host-typert' | 'client-src' | 'client-bundle'
 
 /** One package-library build step as a shell-free child-process invocation. */
 export interface LibraryStep {
@@ -165,10 +165,10 @@ function pnpmStep(id: LibraryStepId, label: string, args: readonly string[], nee
 }
 
 /**
- * List the package-library build steps in Host, Desktop, then Client dependency order.
+ * List the package-library build steps in Host, then Client dependency order.
  * Host bundling runs Typert, whose Remote declarations Client compilation imports.
  * @param root - Repository root containing the compiler and bundle configurations.
- * @param faces - `host` lists Host compilation and bundling, which produce the Typert outputs; `all` adds Desktop and Client.
+ * @param faces - `host` lists Host compilation and bundling, which produce the Typert outputs; `all` adds Client.
  * @param mode - Check package types by default; benchmark emission defers diagnostics to required full builds.
  * @returns The ordered steps; each step needs its predecessor.
  * @throws If an aggregate configuration is invalid.
@@ -181,8 +181,7 @@ export function libraryBuildSteps(root: string, faces: 'host' | 'all', mode: Com
   if (faces === 'host') return host
   return [
     ...host,
-    pnpmStep('desktop-bundle', 'Desktop bundle', ['--filter', '@deepseek-ai/dsh-desktop', 'run', 'bundle'], ['host-bundle']),
-    compilerStep(root, 'client', mode, ['desktop-bundle']),
+    compilerStep(root, 'client', mode, ['host-bundle']),
     pnpmStep('client-bundle', 'Client bundle', ['exec', 'tsdown', '--config-loader', 'native', '--env.DSH_BUILD_FACE', 'client'], ['client-src']),
   ]
 }
@@ -225,7 +224,7 @@ function stepFailure(step: LibraryStep, exit: number | NodeJS.Signals | null): E
 }
 
 /**
- * Emit package libraries serially in Host, Desktop, then Client dependency order.
+ * Emit package libraries serially in Host, then Client dependency order.
  * @param root - Repository root containing the compiler and bundle configurations.
  * @param hostOnly - Stop after Host compilation and bundling, which produce the Typert outputs.
  * @param mode - Check package types by default; benchmark emission defers diagnostics to required full builds.

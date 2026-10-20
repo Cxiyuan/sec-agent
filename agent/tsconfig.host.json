@@ -17,7 +17,6 @@
     "apps/web/tests/connection-recovery.e2e.ts",
     "apps/web/tests/server-restart.e2e.ts",
     "apps/web/tests/shortcuts.e2e.ts",
-    "apps/web/tests/shortcuts-desktop.e2e.ts",
     "apps/web/tests/shortcuts-workspace.e2e.ts",
     "apps/web/tests/shortcuts-panels.e2e.ts",
     "apps/web/tests/shortcuts-fixed.e2e.ts",
@@ -94,7 +93,6 @@
     "apps/web/tests/caption-overlays.e2e.ts",
     "apps/web/tests/settings-appearance.e2e.ts",
     "apps/web/tests/menu-material.e2e.ts",
-    "apps/web/tests/desktop-locale.e2e.ts",
     "apps/web/tests/window-controls.e2e.ts",
     "apps/web/tests/settings-import.e2e.ts",
     "apps/web/tests/models-settings.e2e.ts",
@@ -104,7 +102,6 @@
     "apps/web/tests/models-settings-recovery.e2e.ts",
     "apps/web/tests/onboarding-deepseek-config.e2e.ts",
     "apps/web/tests/onboarding-native.e2e.ts",
-    "apps/web/tests/desktop-onboarding.e2e.ts",
     "apps/web/tests/bonus-notice.e2e.ts",
     "apps/web/tests/account-login.e2e.ts",
     "apps/web/tests/onboarding-usable-provider.e2e.ts",
@@ -204,9 +201,6 @@
     "apps/web/stress-tests/reasoning-chunks.stress.ts",
     "apps/cli/tests/**/*.ts",
     "apps/plugin-market-generator/tests/**/*.ts",
-    "apps/desktop/scripts/**/*.ts",
-    "apps/desktop/tests/**/*.ts",
-    "apps/desktop-host/tests/**/*.ts",
     "benchmarks/**/*.ts",
     "packages/*/*/tests/**/*.ts",
     "packages/experimental/cua-macos/native/generate-protocol.ts",
@@ -222,7 +216,6 @@
   // suffixes are mutually exclusive, so each aggregate excludes the other's
   // and the package test glob above needs no per-file entry.
   "exclude": [
-    "apps/desktop/tests/keyboard.spec.ts",
     "packages/client/*/src/**",
     "benchmarks/**/*.client.ts",
     "benchmarks/**/*.client.tsx",
@@ -531,8 +524,6 @@
     { "path": "./packages/lsp/lsp-stdio" },
     { "path": "./packages/lsp/tool-lsp" },
     { "path": "./apps/cli" },
-    { "path": "./apps/plugin-market-generator" },
-    { "path": "./apps/desktop-host" },
-    { "path": "./apps/desktop/tsconfig.host.json" }
+    { "path": "./apps/plugin-market-generator" }
   ]
 }

@@ -131,7 +131,7 @@ describe('release families', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-release-version-'))
     roots.push(root)
     write(join(root, 'package.json'), '{"version":"0.0.1"}\n')
-    write(join(root, 'apps/desktop/package.json'), '{"version":"0.0.1","private":true}\n')
+    write(join(root, 'apps/web/package.json'), '{"version":"0.0.1","private":true}\n')
     write(join(root, 'packages/experimental/prototype/package.json'), '{"version":"0.0.1","private":true}\n')
     write(join(root, 'packages/core/unselected/package.json'), '{"version":"0.0.1"}\n')
 
@@ -142,7 +142,7 @@ describe('release families', () => {
     expect(planned.map(entry => ({ path: entry.manifestPath, tag: entry.tag }))).toEqual([
       { path: 'package.json', tag: undefined },
       { path: 'packages/core/published/package.json', tag: 'dsh-v0.0.2' },
-      { path: 'apps/desktop/package.json', tag: undefined },
+      { path: 'apps/web/package.json', tag: undefined },
       { path: 'packages/experimental/prototype/package.json', tag: undefined },
     ])
   })

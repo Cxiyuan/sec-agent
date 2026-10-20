@@ -449,9 +449,9 @@ const SERVICE_ROLES: ServiceRole[] = [
   {
     key: 'productAnalytics',
     pkg: 'client-product-analytics',
-    title: 'Desktop interaction collection',
+    title: 'Interaction collection',
     mode: 'service',
-    note: 'Accepts selected Desktop events, enriches available login identity, and observes live compaction under the live Host collection policy.',
+    note: 'Accepts selected client events, enriches available login identity, and observes live compaction under the live Host collection policy.',
   },
   {
     key: 'otel',

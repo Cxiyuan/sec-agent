@@ -21,7 +21,7 @@ office = download_office()
 primary_runtime = download_primary_runtime()
 ```
 
-`download_office()` 下载锁定版本的 npm Kit、目标引擎及完整依赖树，并准备运行 Kit CLI 的独立 Node。`download_primary_runtime()` 独立下载 CPython、锁定的 Python 库、Node、pnpm 和 Office skills。两者返回绝对资源目录，并复用完整缓存。创作下载会在返回前校验目标平台、解释器、库目录与 skills。现有本地 `installPrimaryRuntime()` 操作仍只复制已有载荷，不执行下载。 共享构建器采用 [NumPy/pandas 测试文件裁剪规则](../../apps/desktop/README.zh.md#bundled-workspace-dependencies)。
+`download_office()` 下载锁定版本的 npm Kit、目标引擎及完整依赖树，并准备运行 Kit CLI 的独立 Node。`download_primary_runtime()` 独立下载 CPython、锁定的 Python 库、Node、pnpm 和 Office skills。两者返回绝对资源目录，并复用完整缓存。创作下载会在返回前校验目标平台、解释器、库目录与 skills。现有本地 `installPrimaryRuntime()` 操作仍只复制已有载荷，不执行下载。 共享构建器采用上游文档记载的 NumPy/pandas 测试文件裁剪规则。
 
 `DSH_RESOURCE_CACHE` 指定绝对缓存根目录，默认为 `~/.cache/deepseek-harness/resources`。资源身份包含发布版本锁定的输入。下载会校验归档哈希和包身份、保留执行权限，并原子发布完整目录。下载失败后可重试。`DSH_RESOURCE_DOWNLOAD_TIMEOUT_MS` 限制每个归档的下载耗时，包含响应内容；默认值为 `300000`，接受 `1` 到 `2147483647` 的整数。下载遵循 Harness 代理环境策略。已安装的 wheel 文件不会被修改。不同发布版本使用独立缓存目录；不再使用的版本需手动删除。下载使用锁定的上游 URL，不提供 registry 或镜像覆盖。
 

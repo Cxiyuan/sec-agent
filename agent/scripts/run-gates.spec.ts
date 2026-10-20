@@ -495,7 +495,7 @@ describe('gate graph validation', () => {
   it('keeps native Windows coverage blocking and behind the complete build', () => {
     const complete = withPnpmEntrypoint(() => gatesForMode('ci-windows-complete'))
     const observational = withPnpmEntrypoint(() => gatesForMode('ci-windows-observational-ready'))
-      .filter(gate => gate.id !== 'docs-site-build' && gate.id !== 'electron-install')
+      .filter(gate => gate.id !== 'docs-site-build')
     const byId = new Map(complete.map(subject => [subject.id, subject]))
 
     expect(byId.get('coverage')?.allowFailure).not.toBe(true)
@@ -573,75 +573,6 @@ describe('gate graph validation', () => {
     expect(results.find(result => result.gate.id === 'built-bin-smoke')?.status).toBe('passed')
     expect(results.some(result => result.status === 'skipped')).toBe(false)
   })
-
-  it.each([undefined, '3'])('provisions Electron before Windows coverage with partition count %s', async (partitions) => {
-    const gates = withEnv('DSH_COVERAGE_PARTITIONS', partitions, () =>
-      withPnpmEntrypoint(() => gatesForMode('ci-windows-complete')))
-    const installers = gates.filter(gate => gate.id === 'electron-install')
-    expect(installers).toHaveLength(1)
-    expect(installers[0]?.allowFailure).not.toBe(true)
-    expect(installers[0]?.needs ?? []).not.toContain('build')
-    expect(gates.find(gate => gate.id === 'coverage')?.needs).toContain('electron-install')
-    let installed = false
-    await runGates(gates, 8, async (subject) => {
-      if (subject.id === 'electron-install') installed = true
-      if (subject.id === 'coverage') expect(installed).toBe(true)
-      return resultFor(subject, 'passed')
-    })
-  })
-
-  it.each(['ci-windows-complete', 'ci-windows-observational-ready'] as const)(
-    'provisions the locked Electron binary before built smoke in %s', (mode) => {
-      const gates = withPnpmEntrypoint(() => gatesForMode(mode))
-      const install = gates.find(gate => gate.id === 'electron-install')
-      expect(install).toMatchObject({
-        command: process.execPath,
-        args: ['/private/pnpm.cjs', '--filter', '@deepseek-ai/dsh-desktop', 'exec', 'install-electron'],
-        env: { ELECTRON_GET_USE_PROXY: '1' },
-      })
-      expect(gates.find(gate => gate.id === 'built-bin-smoke')?.needs).toContain('electron-install')
-      expect(gates.filter(gate => gate.id !== 'electron-install').every(gate => gate.env?.ELECTRON_GET_USE_PROXY === undefined)).toBe(true)
-    },
-  )
-
-  it.each(['ci-windows-complete', 'ci-windows-observational-ready'] as const)(
-    'keeps failed Electron provisioning visible without stopping unrelated diagnostics in %s', async (mode) => {
-      const gates = withPnpmEntrypoint(() => gatesForMode(mode))
-      const attempted: string[] = []
-      const results = await runGates(gates, 8, async (subject) => {
-        attempted.push(subject.id)
-        return resultFor(subject, subject.id === 'electron-install' ? 'failed' : 'passed')
-      })
-      expect(results.filter(result => result.status === 'failed').map(result => result.gate.id)).toEqual(['electron-install'])
-      expect(attempted).not.toContain('built-bin-smoke')
-      expect(results.find(result => result.gate.id === 'built-bin-smoke')?.status).toBe('skipped')
-      expect(results.find(result => result.gate.id === 'doc-graphs')?.status).toBe('passed')
-      if (mode === 'ci-windows-complete') {
-        expect(results.filter(result => result.status === 'failed' && !result.gate.allowFailure).map(result => result.gate.id))
-          .toEqual(['electron-install'])
-        expect(attempted).not.toContain('coverage')
-        expect(results.find(result => result.gate.id === 'coverage')?.status).toBe('skipped')
-        expect(results.find(result => result.gate.id === 'coverage-exempt-heavy')?.status).toBe('passed')
-      }
-    },
-  )
-
-  it.each(['ci-coverage', 'ci-artifacts', 'ci-windows-blocking'] as const)(
-    'only provisions Electron for native Windows coverage in %s', (mode) => {
-      const original = Object.getOwnPropertyDescriptor(process, 'platform')
-      for (const platform of ['linux', 'darwin', 'win32'] as const) {
-        const gates = withPlatform(platform, () => withPnpmEntrypoint(() => gatesForMode(mode)))
-        const needed = platform === 'win32' && mode === 'ci-coverage'
-        expect(gates.filter(gate => gate.id === 'electron-install')).toHaveLength(needed ? 1 : 0)
-        if (needed) {
-          expect(gates.find(gate => gate.id === 'coverage')?.needs).toContain('electron-install')
-          expect(gates.find(gate => gate.id === 'electron-install')?.env).toEqual({ ELECTRON_GET_USE_PROXY: '1' })
-          expect(gates.filter(gate => gate.id !== 'electron-install').every(gate => gate.env?.ELECTRON_GET_USE_PROXY === undefined)).toBe(true)
-        }
-      }
-      expect(Object.getOwnPropertyDescriptor(process, 'platform')).toEqual(original)
-    },
-  )
 
   it('restores the platform descriptor when coverage configuration is rejected', () => {
     const original = Object.getOwnPropertyDescriptor(process, 'platform')
@@ -972,7 +903,6 @@ describe('Node 24 lane ownership', () => {
     expect(subject.find(item => item.id === 'built-bin-smoke')?.args).toEqual(
       expect.arrayContaining([
         'apps/cli/tests/profiles/headless/tests/source-tool.built.e2e.ts',
-        'apps/desktop/tests/acl-skill.built.e2e.ts',
         'packages/subprocess/subprocess-local/tests/spawn-runner-built.e2e.ts',
         'packages/subagent/subagent-codex/tests/loader-composition.e2e.ts',
         'packages/subagent/subagent-claude-code/tests/loader-composition.e2e.ts',

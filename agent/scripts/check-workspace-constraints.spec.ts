@@ -39,7 +39,7 @@ describe('workspace dependency ranges', () => {
 
   describe.each([
     '.', 'packages/core/probe', 'packages/experimental/probe', 'apps/cli', 'apps/web',
-    'apps/desktop', 'apps/desktop-host', 'benchmarks', 'website', 'python/sdk-runtime', 'tools/probe',
+    'benchmarks', 'website', 'python/sdk-runtime', 'tools/probe',
     'vendor/loader', 'native/system', 'native/system/packages/entry',
   ])('consumer %s', (dir) => {
     it.each(['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const)(
@@ -82,7 +82,7 @@ describe('workspace manifest discovery', () => {
   it('checks root, app, runtime, tooling, and newly declared members while honoring exclusions', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-workspace-ranges-'))
     onTestFinished(() => { rmSync(root, { recursive: true, force: true }) })
-    const consumers = ['.', 'apps/cli', 'apps/web', 'apps/desktop', 'apps/desktop-host', 'benchmarks', 'website', 'python/sdk-runtime', 'tools/probe']
+    const consumers = ['.', 'apps/cli', 'apps/web', 'benchmarks', 'website', 'python/sdk-runtime', 'tools/probe']
     writeFileSync(join(root, 'pnpm-workspace.yaml'), [
       'packages:', '  - packages/*/*', '  - apps/*', '  - apps/cli', '  - benchmarks',
       '  - website', '  - python/sdk-runtime', '  - tools/*', '  - "!tools/excluded"',
