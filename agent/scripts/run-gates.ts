@@ -587,7 +587,7 @@ function ciWindowsBlockingGates(): Gate[] {
 }
 
 function ciWindowsCompleteGates(): Gate[] {
-  const coverage = coverageGates('win32').map(gate => ({
+  const coverage = coverageGates().map(gate => ({
     ...gate,
     needs: [...new Set(['build', ...(gate.needs ?? [])])],
   }))
@@ -681,7 +681,7 @@ function coverageWorkerArgs(): { instrumented: string[]; exempt: string[] } {
   }
 }
 
-function coverageGates(platform: NodeJS.Platform = process.platform): Gate[] {
+function coverageGates(): Gate[] {
   const workers = coverageWorkerArgs()
   const partitions = parseCoveragePartitionCount(process.env[COVERAGE_PARTITIONS_ENV])
   const instrumented = partitions === undefined
