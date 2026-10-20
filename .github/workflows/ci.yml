@@ -3,17 +3,35 @@ name: build
 on:
   push:
     branches: [main]
+  # 公共仓库会收到外部 PR：也要过同一套门禁（build 任务会推镜像，PR 时跳过）
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+# 连推几次时只保留最新一次：旧运行自动取消，避免并行跑同一套检查互相打架
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 顶层最小权限：默认只需要读代码。build 任务在自己的 permissions 里单独要 packages: write。
+# （仓库已转公共，PR 可能来自外部，权限要收窄到"够用就好"。）
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # PR（尤其 fork）拿不到 packages: write，推镜像必失败 —— 只在 push/手动时构建分发
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # 不把 GITHUB_TOKEN 留在 .git/config 里（避免随 artifact/缓存外泄）
+          persist-credentials: false
 
       # 语法/缩进冒烟：这类错误以前能过 CI 并上线（教训）
       # 2026-10-20：agent 侧已换成 dsh（TypeScript/pnpm），Python 冒烟只剩 NDR。
@@ -95,6 +113,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # 不把 GITHUB_TOKEN 留在 .git/config 里（避免随 artifact/缓存外泄）
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -128,6 +149,43 @@ jobs:
       - name: Pyright
         run: .venv/bin/pyright ndr/backend/app tests/py
 
+      # 接口文档必须与代码一致：`docs/api/README.md` 是从 OpenAPI 生成的，
+      # 改了接口却忘了重跑生成器 → 前端照着旧文档对接（2026-10 已漂移过两次）。
+      - name: API doc is up to date
+        run: |
+          .venv/bin/python scripts/gen_api_doc.py
+          if ! git diff --quiet -- docs/api/README.md; then
+            echo "::error::docs/api/README.md 与当前接口不一致，请本地跑 .venv/bin/python scripts/gen_api_doc.py 并提交"
+            git --no-pager diff --stat -- docs/api/README.md
+            exit 1
+          fi
+
+      # 部署编排文件写坏只有上线时才发现（改错过缩进/变量名）：这里只做语法校验，
+      # 不解析 .env、不拉镜像、不构建。
+      - name: Compose files parse
+        run: |
+          .venv/bin/python - <<'PY'
+          import pathlib, sys, yaml
+          bad = []
+          for path in ("ndr/docker-compose.yml", "ndr/docker-compose.deploy.yml"):
+              p = pathlib.Path(path)
+              if not p.exists():
+                  print(f"跳过（不存在）: {path}")
+                  continue
+              try:
+                  data = yaml.safe_load(p.read_text(encoding="utf-8"))
+              except Exception as exc:  # noqa: BLE001
+                  bad.append(f"{path}: {exc}")
+                  continue
+              if not isinstance(data, dict) or "services" not in data:
+                  bad.append(f"{path}: 缺少 services 段")
+              else:
+                  print(f"OK {path}（{len(data['services'])} 个服务）")
+          if bad:
+              print("::error::compose 文件有问题：" + "；".join(bad))
+              sys.exit(1)
+          PY
+
       - name: Pytest (NDR)
         run: .venv/bin/python -m pytest tests/py --stack=ndr -q
 
@@ -148,6 +206,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # 不把 GITHUB_TOKEN 留在 .git/config 里（避免随 artifact/缓存外泄）
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -171,6 +232,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # 不把 GITHUB_TOKEN 留在 .git/config 里（避免随 artifact/缓存外泄）
+          persist-credentials: false
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v5
@@ -185,6 +249,19 @@ jobs:
       - name: Install dependencies (frozen)
         working-directory: agent
         run: pnpm install --frozen-lockfile
+
+      # dsh 自带 typecheck / lint（TypeScript 侧）。agent 由 workbuddy 开发、我们负责提交，
+      # 这两类错误必须在合并前暴露——`pnpm run build` 只保证构建产物能出，不保证类型干净。
+      # 先「只报告不拦截」跑一轮：存量问题可能不少，清干净后再去掉 continue-on-error。
+      - name: Typecheck dsh (report only)
+        working-directory: agent
+        continue-on-error: true
+        run: pnpm run typecheck
+
+      - name: Lint dsh (report only)
+        working-directory: agent
+        continue-on-error: true
+        run: pnpm run lint
 
       - name: Build dsh (web)
         working-directory: agent

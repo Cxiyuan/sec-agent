@@ -4,11 +4,10 @@ WORKDIR /app
 ARG BACKEND_URL=http://backend:8000
 ENV BACKEND_URL=$BACKEND_URL
 
-# npm workspaces：根清单 + 共享包 + 两个前端应用（install 需所有 workspace 成员在场）
+# npm workspaces：根清单 + 共享包 + ndr 前端（install 需所有 workspace 成员在场）
 COPY package.json ./
 COPY packages/ui ./packages/ui
 COPY ndr/frontend ./ndr/frontend
-COPY agent/frontend ./agent/frontend
 RUN npm install --no-audit --no-fund
 
 WORKDIR /app/ndr/frontend
