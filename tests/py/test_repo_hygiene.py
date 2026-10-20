@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,26 @@ _ROOTS = ("ndr", "agent", "tests/py", "packages")
 _SKIP_PARTS = {"node_modules", ".next", ".git", "dist", "__pycache__"}
 _SKIP_NAMES = {"test_repo_hygiene.py"}
 _SUFFIXES = {".py", ".ts", ".tsx", ".yml", ".yaml", ".sh", ".json", ".md"}
+
+
+def _tracked_files() -> list[Path]:
+    """只返回 **git 跟踪**的文件。
+
+    为什么要这样：仓库目录里可能出现第三方克隆、构建产物、别的团队的临时检出
+    （2026-10 实测 `agent/` 被另一个项目整棵覆盖过）—— 那些不是我们的代码，
+    扫它们既会误报、也会把守卫的注意力带偏。守卫只对自己的代码负责。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [ROOT / rel for rel in proc.stdout.split("\0") if rel]
 
 
 def _iter_files() -> list[Path]:
@@ -146,7 +167,11 @@ def test_no_environment_specific_ipv4() -> None:
         base = ROOT / root
         if not base.exists():
             continue
-        targets = [base] if base.is_file() else list(base.rglob("*"))
+        targets = (
+            [base]
+            if base.is_file()
+            else [p for p in _tracked_files() if base == p or base in p.parents]
+        )
         for path in targets:
             if not path.is_file() or path.suffix in _IP_SKIP_EXT:
                 continue

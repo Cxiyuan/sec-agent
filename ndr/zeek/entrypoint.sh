@@ -46,7 +46,10 @@ auto_iface() {
 }
 
 IFACE_DEFAULT="${IFACE_ENV:-$(auto_iface)}"
-RETENTION_DAYS="${ZEEK_RETENTION_DAYS:-3}"
+# 日志保留期（分钟）：**默认 4 小时**，不对外开放配置（用户口径 2026-10）。
+# 为什么按分钟而不是按天：高流量环境一天能写几百 G，按天保留等于必然写满磁盘
+# （2026-10 实测：累积到 601G 把根盘 1005G 打满，容器连 exec 都起不来）。
+RETENTION_MINUTES="${ZEEK_RETENTION_MINUTES:-240}"
 WATCH_INTERVAL="${ZEEK_WATCH_INTERVAL:-10}"
 CLEAN_INTERVAL="${ZEEK_CLEAN_INTERVAL:-3600}"
 FILEBEAT_CHECK_INTERVAL="${ZEEK_FILEBEAT_CHECK_INTERVAL:-30}"
@@ -65,7 +68,10 @@ EXTRACT_HELPER="${ZEEK_EXTRACT_HELPER:-/usr/local/bin/extract_cleanup.py}"
 FILEBEAT_BIN="${ZEEK_FILEBEAT_BIN:-/usr/local/bin/filebeat}"
 
 # 保留天数必须能参与算术（find -mmin）；环境变量写坏了就回默认，别让清理循环静默死掉
-case "$RETENTION_DAYS" in ''|*[!0-9]*) RETENTION_DAYS=3 ;; esac
+case "$RETENTION_MINUTES" in ''|*[!0-9]*) RETENTION_MINUTES=240 ;; esac
+# 兜底硬上限：即使 Filebeat 挂了（清理被跳过），超过 6 倍保留期也必须删 ——
+# 否则"不删未上报归档"会变成"永远不删"，直接把磁盘写满（真实事故）。
+HARD_CAP_MINUTES=$((RETENTION_MINUTES * 6))
 
 log() { echo "[zeek-entry] $*"; }
 
@@ -295,10 +301,17 @@ cleanup_once() {
   # 子目录布局（历史/其它部署可能出现）也只清「轮转命名」的文件，不做无差别 -delete。
   # 用 -mmin 而不是 -mtime：-mtime +3 实际会把文件留到第 4 天以上，与「保留 3 天」的
   # 对外说法不符；-mmin +4320 才是字面的「超过 3 天就删」。
-  local age_min=$((RETENTION_DAYS * 1440))
+  local age_min="$RETENTION_MINUTES"
   local name_args=(-name "*.????-??-??-??-??-??.log" -o -name "*.????-??-??.log")
   find "$LOG_DIR" -xdev -maxdepth 1 -type f \( "${name_args[@]}" \) -mmin "+${age_min}" -delete 2>/dev/null || true
   find "$LOG_DIR" -xdev -mindepth 2 -type f \( "${name_args[@]}" \) -mmin "+${age_min}" -delete 2>/dev/null || true
+}
+
+# 兜底清理：不看 Filebeat 是否存活，只按时间硬删（超过 6 倍保留期）。
+cleanup_hard_cap() {
+  local name_args=(-name "*.????-??-??-??-??-??.log" -o -name "*.????-??-??.log")
+  find "$LOG_DIR" -xdev -maxdepth 1 -type f \( "${name_args[@]}" \) -mmin "+${HARD_CAP_MINUTES}" -delete 2>/dev/null || true
+  find "$LOG_DIR" -xdev -mindepth 2 -type f \( "${name_args[@]}" \) -mmin "+${HARD_CAP_MINUTES}" -delete 2>/dev/null || true
 }
 
 start_cleanup_loop() {
@@ -307,9 +320,11 @@ start_cleanup_loop() {
     while true; do
       sleep "$CLEAN_INTERVAL"
       cleanup_once
+      # 不管 Filebeat 是否存活，超硬上限一律删（防"跳过清理"变成"永不清理"）
+      cleanup_hard_cap
     done
   ) &
-  log "清理循环已启动（保留 ${RETENTION_DAYS} 天，且只在 Filebeat 存活时删）"
+  log "清理循环已启动（保留 ${RETENTION_MINUTES} 分钟；超 $((HARD_CAP_MINUTES / 60)) 小时强制删除）"
 }
 
 # ---------- 5) 提取件清理（批 4）----------

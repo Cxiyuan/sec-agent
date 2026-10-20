@@ -47,7 +47,9 @@ HEALTH_INTERVAL="${SURICATA_HEALTH_INTERVAL:-30}"
 ROTATE_INTERVAL="${SURICATA_ROTATE_INTERVAL:-300}"
 ROTATE_MAX_BYTES="${SURICATA_ROTATE_MAX_BYTES:-67108864}"
 ROTATE_MAX_AGE="${SURICATA_ROTATE_MAX_AGE:-86400}"
-RETENTION_DAYS="${SURICATA_RETENTION_DAYS:-3}"
+# eve 归档保留期（分钟）：**默认 4 小时**，不对外开放配置。
+# 高流量环境 eve.json 5 分钟就轮转一次（实测 3.5 天攒了 600G，把根盘写满）。
+RETENTION_MINUTES="${SURICATA_RETENTION_MINUTES:-240}"
 # 校验（suricata -T）超时：给大规则集留足时间，但绝不允许挂死
 VALIDATE_TIMEOUT="${SURICATA_VALIDATE_TIMEOUT:-300}"
 
@@ -55,7 +57,7 @@ VALIDATE_TIMEOUT="${SURICATA_VALIDATE_TIMEOUT:-300}"
 # 明文 HTTP 端口 = 这一集 - 共享配置里声明「按 TLS 解析」的端口（tls_ports）
 HTTP_PORT_BASE="80,81,88,8000,8008,8010,8011,8048,8080,8088,8888"
 
-case "$RETENTION_DAYS" in ''|*[!0-9]*) RETENTION_DAYS=3 ;; esac
+case "$RETENTION_MINUTES" in ''|*[!0-9]*) RETENTION_MINUTES=240 ;; esac
 
 log() { echo "[suricata-entry] $*"; }
 now_iso() { date -u +%FT%TZ; }
@@ -452,10 +454,11 @@ start_rotate_loop() {
     while true; do
       sleep "$ROTATE_INTERVAL"
       rotate_once || true
-      find "$ARCHIVE_DIR" -type f -name 'eve.*.json' -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+      # 用 -mmin（分钟级）：_-mtime +N_ 实际会留到第 N+1 天，与"保留 4 小时"不符
+      find "$ARCHIVE_DIR" -type f -name 'eve.*.json' -mmin "+${RETENTION_MINUTES}" -delete 2>/dev/null || true
     done
   ) &
-  log "轮转循环已启动（每 ${ROTATE_INTERVAL}s 检查，归档保留 ${RETENTION_DAYS} 天）"
+  log "轮转循环已启动（每 ${ROTATE_INTERVAL}s 检查，归档保留 ${RETENTION_MINUTES} 分钟）"
 }
 
 start_health_loop() {

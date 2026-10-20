@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 from app.workers.log import get_logger
@@ -30,6 +31,7 @@ DEFAULTS: dict[str, float] = {
     "redis_fragmentation": 1.8,  # 碎片率：>1.8 说明内存回收跟不上
     "freq_keys": 200000,  # 频率规则的键总数（含 dst）
     "handled_dropped": 0,  # 判重登记被丢弃条数：只要 >0 就说明去重已经失效
+    "disk_percent": 85.0,  # 根分区使用率（>85% 黄、>92% 红）
 }
 
 
@@ -86,6 +88,26 @@ def evaluate(client: Any, *, stats: dict[str, Any] | None = None) -> dict[str, A
                 "value": round(frag, 2),
                 "threshold": limit,
                 "detail": "Redis 内存碎片率（越高说明释放的内存回不去，容易 OOM）",
+            }
+        )
+
+    # 磁盘水位：2026-10 真实事故——Zeek/Suricata 原始日志把 1005G 根盘写满，
+    # 写满后 docker exec、健康检查全挂，连排查都进不去。必须在到线之前就变黄灯。
+    try:
+        usage = shutil.disk_usage("/")
+        disk_pct = round(usage.used / usage.total * 100, 1) if usage.total else 0.0
+    except OSError as exc:
+        log.debug("读取磁盘用量失败: %s", exc)
+        disk_pct = 0.0
+    if disk_pct:
+        limit = DEFAULTS["disk_percent"]
+        items.append(
+            {
+                "key": "disk_percent",
+                "level": CRIT if disk_pct >= limit + 7 else (WARN if disk_pct >= limit else OK),
+                "value": disk_pct,
+                "threshold": limit,
+                "detail": "根分区使用率（写满会让容器 exec / 健康检查全挂，必须提前处理）",
             }
         )
 

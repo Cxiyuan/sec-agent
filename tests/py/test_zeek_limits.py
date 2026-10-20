@@ -239,7 +239,7 @@ def _make_logs(tmp_path: Path) -> Path:
 
 
 def test_cleanup_once_deletes_only_old_rotated_files(tmp_path: Path) -> None:
-    """保留期按「N 天」字面执行（-mmin），只删轮转命名的归档，活动日志不动。"""
+    """保留期按分钟字面执行（-mmin），只删轮转命名的归档，活动日志不动。"""
     logs = _make_logs(tmp_path)
     _run_entrypoint(
         ["cleanup_once"],
@@ -247,13 +247,41 @@ def test_cleanup_once_deletes_only_old_rotated_files(tmp_path: Path) -> None:
             f'LOG_DIR="{logs}"',
             # 无 Filebeat 可执行文件 → 存活闸门不介入，只看保留期与命名匹配
             'FILEBEAT_BIN=""',
-            "RETENTION_DAYS=3",
+            "RETENTION_MINUTES=4320",
             "filebeat_alive() { return 0; }",
         ],
         ["cleanup_once"],
         tmp_path,
     )
     assert sorted(p.name for p in logs.iterdir()) == ["conn.log", "new.2026-10-01.log"]
+
+
+def test_cleanup_hard_cap_deletes_even_when_filebeat_down(tmp_path: Path) -> None:
+    """兜底：Filebeat 挂着时也要按硬上限删老归档。
+
+    2026-10 真实事故：Filebeat 死掉 → 清理被"不删未上报归档"跳过 → 日志无限增长
+    601G 把根盘写满，容器连 exec 都起不来。硬上限（6 倍保留期）就是为了打断这条链。
+    """
+    logs = _make_logs(tmp_path)
+    fake_fb = tmp_path / "filebeat"
+    fake_fb.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_fb.chmod(0o755)
+    _run_entrypoint(
+        ["cleanup_hard_cap"],
+        [
+            f'LOG_DIR="{logs}"',
+            f'FILEBEAT_BIN="{fake_fb}"',
+            "RETENTION_MINUTES=240",
+            "HARD_CAP_MINUTES=1440",
+            "filebeat_alive() { return 1; }",
+        ],
+        ["cleanup_hard_cap"],
+        tmp_path,
+    )
+    # 10 天前的那个必须删；1 天前的仍在硬上限（24h）之外但也超了 1440 分钟 → 一并删除
+    names = sorted(p.name for p in logs.iterdir())
+    assert "conn.log" in names, "活动日志永远不动"
+    assert all(".2026-09-" not in n for n in names), "超硬上限的老归档必须删掉"
 
 
 def test_cleanup_once_skips_when_filebeat_is_down(tmp_path: Path) -> None:
@@ -267,7 +295,7 @@ def test_cleanup_once_skips_when_filebeat_is_down(tmp_path: Path) -> None:
         [
             f'LOG_DIR="{logs}"',
             f'FILEBEAT_BIN="{fake_fb}"',
-            "RETENTION_DAYS=3",
+            "RETENTION_MINUTES=4320",
             "filebeat_alive() { return 1; }",
         ],
         ["cleanup_once"],
