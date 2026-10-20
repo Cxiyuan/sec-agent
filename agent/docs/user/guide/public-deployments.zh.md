@@ -2,7 +2,7 @@
 
 [English](public-deployments.md) | 中文
 
-`dsh --profile web` 在 loopback 端口上提供 GUI，因此其他机器上的浏览器无法访问它，进程也无从得知你实际使用的地址。它前面的反向代理拥有这条外部链路——公开主机名、TLS，以及转发到监听器之前剥离的路径前缀——`--public-url` 则告诉 DSH 浏览器使用的是哪个地址：
+`dsh --profile web` 默认在本机的 LAN 地址上提供 GUI，因此同一网络中的浏览器可以直接访问该地址；`--host` 改为绑定一个具体的本机地址，`DSH_WEB_HOST` 以同样的规则指名该默认值。但进程仍然无从得知你对外使用的地址：它前面的反向代理拥有这条公开链路——公开主机名、TLS，以及转发到监听器之前剥离的路径前缀——`--public-url` 则告诉 DSH 浏览器使用的是哪个地址：
 
 ```sh
 dsh --profile web --public-url https://app.example/ui/ --trusted-host app.example

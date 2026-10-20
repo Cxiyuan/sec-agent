@@ -2,7 +2,7 @@
 
 English | [中文](public-deployments.zh.md)
 
-`dsh --profile web` serves the GUI on a loopback port, so a browser on another machine cannot reach it, and the process knows nothing about the address you do use. A reverse proxy in front of it owns that external leg — the public host name, TLS, and the path prefix it strips before forwarding to the listener — and `--public-url` tells DSH which address browsers use:
+`dsh --profile web` serves the GUI on this machine's LAN address by default, so a browser on the same network reaches it directly at that address; `--host` binds one concrete local address instead, and `DSH_WEB_HOST` names that default with the same rules. The process still knows nothing about the address you do use for a public deployment: a reverse proxy in front of it owns that external leg — the public host name, TLS, and the path prefix it strips before forwarding to the listener — and `--public-url` tells DSH which address browsers use:
 
 ```sh
 dsh --profile web --public-url https://app.example/ui/ --trusted-host app.example
