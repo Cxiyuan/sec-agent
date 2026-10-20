@@ -16,10 +16,10 @@ jobs:
         uses: actions/checkout@v7
 
       # 语法/缩进冒烟：这类错误以前能过 CI 并上线（教训）
+      # 2026-10-20：agent 侧已换成 dsh（TypeScript/pnpm），Python 冒烟只剩 NDR。
       - name: Smoke check (syntax)
         run: |
           python -m compileall -q ndr/backend/app
-          python -m compileall -q agent/backend/app
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -50,17 +50,10 @@ jobs:
           push: true
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-ndr:latest
 
-      - name: Build & push agent backend
-        uses: docker/build-push-action@v7
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: ./agent/backend
-          push: true
-          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-agent:latest
-
       # 前端 Dockerfile 需 COPY 仓库根下共享包 packages/ui，
       # 故 context 用仓库根，file 指向各自 Dockerfile。
+      # 2026-10-20：agent 前端已换成 dsh web（见文末 agent-web job），
+      # shentong-agent / shentong-agent-frontend 镜像不再产出。
       - name: Build & push NDR frontend
         uses: docker/build-push-action@v7
         env:
@@ -70,16 +63,6 @@ jobs:
           file: ./ndr/frontend/Dockerfile
           push: true
           tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-ndr-frontend:latest
-
-      - name: Build & push agent frontend
-        uses: docker/build-push-action@v7
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: .
-          file: ./agent/frontend/Dockerfile
-          push: true
-          tags: ghcr.io/${{ steps.ns.outputs.name }}/shentong-agent-frontend:latest
 
       - name: Build & push zeek
         uses: docker/build-push-action@v7
@@ -105,6 +88,8 @@ jobs:
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
   # 反复出现（Zeek 的 BPF 过滤器被当文件名、Filebeat 配置键名、类型判定兜底成 conn）。
+  # 2026-10-20：agent 侧换成 dsh 后无 Python 后端，本 job 只覆盖 NDR 栈；
+  # agent（dsh）的质量门在文末 agent-web job（CI 内全量构建）。
   test:
     runs-on: ubuntu-latest
     steps:
@@ -116,10 +101,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 两个后端包的 import 名都是 app，不能把项目本身 pip install 进去；
-      # 但**第三方依赖必须装全**：pyright 在依赖缺失时会降级（导入解析不了 → 类型变 Any/None），
+      # 第三方依赖必须装全：pyright 在依赖缺失时会降级（导入解析不了 → 类型变 Any/None），
       # 报出的错与本地（.venv 装全了）不一致，甚至凭空多出假错。
-      # 依赖清单直接从两侧 pyproject.toml 读，免得手工维护两份。
+      # 依赖清单直接从 pyproject.toml 读，免得手工维护。
+      # （原先两侧各一个 pyproject，agent 侧换成 dsh 后只剩 NDR 一份。）
       - name: Create venv & install deps
         run: |
           python -m venv .venv
@@ -127,28 +112,24 @@ jobs:
           .venv/bin/python - <<'PY' > /tmp/deps.txt
           import pathlib, tomllib
           deps: list[str] = []
-          for path in ("ndr/backend/pyproject.toml", "agent/backend/pyproject.toml"):
+          for path in ("ndr/backend/pyproject.toml",):
               data = tomllib.loads(pathlib.Path(path).read_text(encoding="utf-8"))
               deps += data["project"]["dependencies"]
               deps += data["project"].get("optional-dependencies", {}).get("dev", [])
-          # pyyaml 不在两侧依赖里但测试要用；pyright 是检查器本身
+          # pyyaml 不在依赖里但测试要用；pyright 是检查器本身
           deps += ["pyyaml", "pyright"]
           print("\n".join(dict.fromkeys(deps)))
           PY
           .venv/bin/pip install -q -r /tmp/deps.txt
 
       - name: Ruff
-        run: .venv/bin/ruff check ndr/backend/app agent/backend/app tests/py
+        run: .venv/bin/ruff check ndr/backend/app tests/py
 
       - name: Pyright
-        run: .venv/bin/pyright ndr/backend/app agent/backend/app tests/py
+        run: .venv/bin/pyright ndr/backend/app tests/py
 
-      # 两个栈的包同名，只能分开跑（--stack）
       - name: Pytest (NDR)
         run: .venv/bin/python -m pytest tests/py --stack=ndr -q
-
-      - name: Pytest (agent)
-        run: .venv/bin/python -m pytest tests/py --stack=agent -q
 
       # Zeek 的 site 脚本是编译期加载的：语法/字段错误只有真跑一次才暴露。
       # 用官方镜像跑单测（与 ndr/zeek/Dockerfile 的 ZEEK_BASE 一致）。
@@ -160,7 +141,8 @@ jobs:
       - name: Suricata config & rules (self-test in container)
         run: sh tests/suricata/run.sh
 
-  # 前端类型检查（两侧 tsc --noEmit）。比 next build 快得多，且能挡住类型错。
+  # 前端类型检查（tsc --noEmit）。比 next build 快得多，且能挡住类型错。
+  # 2026-10-20：agent 前端换成 dsh 后由 agent-web job 构建，这里只剩 NDR。
   web:
     runs-on: ubuntu-latest
     steps:
@@ -180,6 +162,30 @@ jobs:
         working-directory: ndr/frontend
         run: npx tsc --noEmit
 
-      - name: Typecheck agent frontend
-        working-directory: agent/frontend
-        run: npx tsc --noEmit
+  # agent = dsh（DeepSeek Harness）网页版：独立 pnpm monorepo（agent/ 自带
+  # pnpm-workspace.yaml 与 pnpm-lock.yaml，与仓库根的 npm workspaces 互不干扰）。
+  # 按约定 agent 只在 CI 构建：冻结锁文件安装 + 全量构建
+  # （原生插件 → Host/Client 库 → apps/web 前端，即 `dsh web` 服务的产物）。
+  agent-web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.28.5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies (frozen)
+        working-directory: agent
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dsh (web)
+        working-directory: agent
+        run: pnpm run build
