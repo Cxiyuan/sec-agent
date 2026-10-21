@@ -14,8 +14,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
-    "lib/index.js",
-    "lib/types/**/*.d.ts",
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -46,6 +46,6 @@
     "@deepseek-ai/schemastery": "^3.18.5",
     "@types/node": "^24",
     "@types/pg": "^8.11.10",
-    "typescript": "^5.6.0"
+    "typescript": "^5.7.0"
   }
 }
