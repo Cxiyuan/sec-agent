@@ -403,28 +403,62 @@ jobs:
             -e XDR_INGEST_PG_URL=postgresql://shentong:shentong@127.0.0.1:5432/shentong \
             "ghcr.io/${GITHUB_REPOSITORY,,}/shentong-agent:latest"
 
-      - name: Wait for the ingest endpoint (plugin bundle loaded)
+      # 第一层：等 dsh web 本身就绪（根路径无需认证，任何状态码都算通）。
+      # 用状态码而非 curl -f——上一版把 401/404 和连不上混为一谈，白等 5 分钟。
+      - name: Wait for the web root (server listening)
         run: |
           for i in $(seq 1 100); do
-            if curl -fsS -H "Authorization: Bearer smoke-token" http://127.0.0.1:3080/xdr/ingest/ping 2>/dev/null | grep -q ok; then
-              echo "ingest endpoint up after $i attempt(s)"
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3080/ 2>/dev/null || echo 000)
+            if [ "$CODE" != "000" ]; then
+              echo "web root responded $CODE after $i attempt(s)"
               exit 0
             fi
             sleep 3
           done
-          echo "::error::ingest endpoint did not come up in time"
-          docker logs --tail 50 xdr-agent || true
+          echo "::error::dsh web never accepted a connection on 127.0.0.1:3080"
+          docker ps -a
+          docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' xdr-agent 2>/dev/null || true
+          docker logs --tail 100 xdr-agent || true
           exit 1
+
+      # 第二层：探 ingest 端点，逐次打状态码与响应体——路由未注册会停在 404，
+      # token 不匹配会停在 401，两者根因完全不同，必须可分辨。
+      - name: Wait for the ingest endpoint (plugin bundle loaded)
+        run: |
+          for i in $(seq 1 40); do
+            OUT=$(curl -s --max-time 5 -H "Authorization: Bearer smoke-token" -w '\n%{http_code}' http://127.0.0.1:3080/xdr/ingest/ping 2>/dev/null || printf '\n000')
+            CODE=$(printf '%s' "$OUT" | tail -1)
+            BODY=$(printf '%s' "$OUT" | head -1)
+            echo "ping attempt $i: code=$CODE body=$BODY"
+            if [ "$CODE" = "200" ]; then exit 0; fi
+            sleep 3
+          done
+          echo "::error::ingest endpoint did not become ready"
+          exit 1
+
+      - name: Dump profile wiring (only on failure)
+        if: failure()
+        run: |
+          echo '--- profile package.json ---'
+          docker exec xdr-agent sh -c 'cat /data/dsh/profiles/web/package.json' 2>&1 || true
+          echo '--- plugin module in profile node_modules ---'
+          docker exec xdr-agent sh -c 'ls -la /data/dsh/profiles/web/node_modules/@sec-agent/ 2>&1; ls /data/dsh/profiles/web/node_modules/@sec-agent/xdr-ingest/ 2>&1' || true
+          echo '--- plugin source in image ---'
+          docker exec xdr-agent sh -c 'ls /opt/agent/plugins/xdr-ingest/ && ls /opt/agent/plugins/xdr-ingest/lib/ 2>&1' || true
+          echo '--- recent container logs ---'
+          docker logs --tail 100 xdr-agent || true
 
       - name: Same digest twice; the second must be reused from the PG cold store
         run: |
           ITEM='{"items":[{"event_id":"smoke-1","fingerprint":"smoke-fp","digest":{"rule":"ET SCAN Portscan","src_ip":"203.0.113.7","dst_ips":["10.0.0.5"],"dst_ports":[22,80],"event_types":["alert"],"count":5}}]}'
-          FIRST=$(curl -fsS -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" http://127.0.0.1:3080/xdr/ingest/digests)
+          FIRST=$(curl -s --max-time 15 -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" -w '\n%{http_code}' http://127.0.0.1:3080/xdr/ingest/digests)
           echo "first: $FIRST"
-          echo "$FIRST" | grep -q '"analyzed":1'
-          SECOND=$(curl -fsS -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" http://127.0.0.1:3080/xdr/ingest/digests)
+          printf '%s' "$FIRST" | tail -1 | grep -qx 200
+          printf '%s' "$FIRST" | head -1 | grep -q '"analyzed":1'
+          SECOND=$(curl -s --max-time 15 -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" -w '\n%{http_code}' http://127.0.0.1:3080/xdr/ingest/digests)
           echo "second: $SECOND"
-          echo "$SECOND" | grep -q '"reused":1'
+          printf '%s' "$SECOND" | tail -1 | grep -qx 200
+          printf '%s' "$SECOND" | head -1 | grep -q '"reused":1'
 
       - name: Missing token is rejected with 401
         run: |
