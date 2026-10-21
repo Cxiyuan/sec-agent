@@ -18,8 +18,9 @@
 （install → typecheck → lint → build）与本目录的 workspace 配置。
 
 容器部署见 `agent/README.md`：镜像里已把插件 bake 进 web profile
-（`dsh plugin --profile web add link:/opt/agent/plugins/xdr-ingest`），
-卷首次启动时由 entrypoint 种入，无需手工挂载。
+（`dsh plugin --profile web add file:/opt/agent/plugins/xdr-ingest`——用 file:
+而非 link: 是因为 link: 的 symlink 按相对路径记录，profile 从 bake 目录
+种进运行卷后会悬空；file: 快照进 profile 自带 store，可整体搬迁）。
 
 ## 当前状态
 

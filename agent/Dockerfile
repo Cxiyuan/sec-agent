@@ -51,7 +51,10 @@ RUN chmod +x /usr/local/bin/xdr-agent-entrypoint
 ENV DSH_HOME=/opt/dsh-home
 RUN mkdir -p /opt/dsh-home /data/dsh && chown -R node:node /opt/dsh-home /data/dsh
 USER node
-RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add link:/opt/agent/plugins/xdr-ingest
+# file: 而非 link:：link: 的 symlink 按相对路径记录，bake 在 /opt/dsh-home、
+# 运行期卷在 /data/dsh，整体搬迁后相对解析会悬空（CI 冒烟实测过）。
+# file: 把插件快照进 profile 自带的 .pnpm store，随卷一起搬迁、自包含。
+RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ingest
 
 # 运行期：数据目录用卷持久化（dsh home：profile、会话历史、插件管理状态）
 ENV DSH_HOME=/data/dsh

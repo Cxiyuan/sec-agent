@@ -17,10 +17,12 @@ if [ ! -d "$DSH_HOME/profiles/web" ]; then
   cp -a "$BAKED_HOME/." "$DSH_HOME/"
 fi
 
-# 自愈：卷里有旧 profile 但插件依赖缺失（如手工清过 node_modules）时补装
-if ! grep -q '"@sec-agent/xdr-ingest"' "$PROFILE_PKG" 2>/dev/null; then
+# 自愈：卷里有旧 profile 但插件依赖缺失（如手工清过 node_modules）时补装。
+# file: 协议：快照进 profile 自带 store，不依赖 /opt 路径，卷可随意搬迁。
+if ! grep -q '"@sec-agent/xdr-ingest"' "$PROFILE_PKG" 2>/dev/null \
+  || [ ! -e "$DSH_HOME/profiles/web/node_modules/@sec-agent/xdr-ingest/package.json" ]; then
   echo "[xdr-agent] xdr-ingest missing from web profile, installing..."
-  node "$BIN" plugin --profile web add "link:$PLUGIN_DIR"
+  node "$BIN" plugin --profile web add "file:$PLUGIN_DIR"
 fi
 
 # 组装启动命令。dsh web 默认自动绑定容器内第一块非内部 IPv4（LAN 默认）；
