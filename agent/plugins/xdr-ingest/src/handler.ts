@@ -13,11 +13,10 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { AnalysisCache } from './cache.ts'
+import { TieredCache } from './cache.ts'
 import { analysisIdOf, normalizeDigest } from './identity.ts'
 import { triageDigest } from './analyzer.ts'
 import type { IngestReceipt, NdrDigestItem, ReceiptEntry } from './types.ts'
-
 const DEFAULT_DIGESTS_SUFFIX = '/digests'
 const PING_SUFFIX = '/ping'
 const STATS_SUFFIX = '/stats'
@@ -37,8 +36,8 @@ export interface IngestHandlerConfig {
   readonly token: string
   /** 请求体字节上限；超出按 413（NDR 判永久失败，属于批太大，不是我们的错）。 */
   readonly maxBodyBytes: number
-  /** 判重缓存（与插件其余部分共享同一实例）。 */
-  readonly cache: AnalysisCache
+  /** 判重缓存（两级：内存热层 + PG 冷层，与插件其余部分共享同一实例）。 */
+  readonly cache: TieredCache
   /** 可注入时钟（测试用）。 */
   readonly now?: () => number
 }
@@ -93,11 +92,11 @@ function boundedId(value: unknown): string {
 }
 
 /** 处理一批 item：生成分析 ID → 查缓存 → 命中复用计数，未命中分析入库。 */
-export function processItems(
+export async function processItems(
   items: readonly unknown[],
-  cache: AnalysisCache,
+  cache: TieredCache,
   now: () => number,
-): { receipt: IngestReceipt; internalFailure: boolean } {
+): Promise<{ receipt: IngestReceipt; internalFailure: boolean }> {
   const receipt: IngestReceipt = {
     accepted: 0, analyzed: 0, reused: 0, reanalyzed: 0, rejected: 0, results: [],
   }
@@ -119,7 +118,7 @@ export function processItems(
       } else {
         entry.analysisId = analysisIdOf(identity)
         const digest = raw.digest ?? {}
-        const outcome = cache.admit(entry.analysisId, identity, {
+        const outcome = await cache.admit(entry.analysisId, identity, {
           eventId: entry.eventId,
           fingerprint: String(raw.fingerprint ?? '').slice(0, MAX_DELIVERY_ID_LENGTH),
         }, candidate => triageDigest(candidate, digest))
@@ -161,7 +160,7 @@ export function createIngestHandler(
       }
       if (pathname === statsPath && request.method === 'GET') {
         requireAuth(request, config.token)
-        respondJson(response, 200, config.cache.stats())
+        respondJson(response, 200, await config.cache.stats())
         return
       }
       if (pathname === digestsPath) {
@@ -180,7 +179,7 @@ export function createIngestHandler(
         if (!Array.isArray(items)) {
           throw new WebhookHttpError(400, 'body must be {"items": [...]}')
         }
-        const { receipt, internalFailure } = processItems(items, config.cache, now)
+        const { receipt, internalFailure } = await processItems(items, config.cache, now)
         if (internalFailure) {
           respondJson(response, 500, receipt)
           return

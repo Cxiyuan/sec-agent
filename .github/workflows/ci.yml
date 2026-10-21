@@ -284,6 +284,23 @@ jobs:
   # 首个插件尚未提交锁文件，先 --no-frozen-lockfile；锁文件入库后改冻结安装。
   agent-plugins:
     runs-on: ubuntu-latest
+    services:
+      # xdr-ingest 的冷库是 PG（项目统一存储）：service 容器让 PG 集成测试
+      # （tests/pg-store.integration.test.ts）在 CI 真实跑，账号与库名对齐
+      # NDR 侧默认配置（shentong/shentong/shentong）。
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shentong
+          POSTGRES_PASSWORD: shentong
+          POSTGRES_DB: shentong
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U shentong"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -310,6 +327,8 @@ jobs:
 
       - name: Test plugins
         working-directory: agent/plugins
+        env:
+          XDR_TEST_PG_URL: postgresql://shentong:shentong@127.0.0.1:5432/shentong
         run: pnpm test
 
       - name: Build plugins

@@ -37,11 +37,15 @@
     "@deepseek-ai/dsh-host-webserver": "^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.5"
   },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
     "@deepseek-ai/dsh-host-webserver": "^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.5",
     "@types/node": "^24",
+    "@types/pg": "^8.11.10",
     "typescript": "^5.6.0"
   }
 }

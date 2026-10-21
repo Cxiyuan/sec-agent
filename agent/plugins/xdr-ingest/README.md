@@ -21,13 +21,43 @@ NDR 指纹   = sha256("{rule}|{src}|{桶起点}|{dsts}|{ports}|{etypes}")[:32]  
 - **复用有效期**：结果默认 24h（`resultTtlHours` 可调），过期重分析但累计
   occurrences/firstSeen 保留——「同类事件反复出现」这个信号永不丢失。
 
+## 两级缓存：热数据内存、冷数据 PG
+
+冷热分层按「出现频率」自动流转，应用层无感：
+
+```
+                 ┌──────────────── 热层（进程内存 LRU）────────────────┐
+                 │ 经常出现的 IP/事件模式；occurrences ≥ hotThreshold   │
+                 │ 才晋升进来；命中只动内存计数，不打 PG                 │
+                 └──────────────────────┬──────────────────────────────┘
+   事件进入 → 算分析 ID ──→ 热层未命中 ──→ ┌──────────────── 冷层（PostgreSQL）┐
+                                  冷层命中  │ 一切分析结果写穿落盘；           │
+                                  且够频繁  │ 「不长分析的 IP」待在库里不占内存；│
+                                  → 晋升    │ 热层淘汰 = 降级回写，不丢数据     │
+                                            └────────────────────────────────┘
+```
+
+- **写穿**：每次分析结果立即 upsert 进 PG——进程重启不丢判重能力，重启后
+  同类事件仍走复用（测试 `handler.test.ts` 的 restart 用例锁定该行为）。
+- **晋升**：冷命中使 occurrences 达到 `hotThreshold`（默认 2）才进内存；
+  首次出现（occurrences=1）只落 PG，不占内存。
+- **降级**：热层满时淘汰最久未见记录，回写后移除——淘汰 ≠ 丢弃。
+- **预热**：启动时按 occurrences 降序把冷库热数据装进热层（`warmupLimit`）。
+- **清理**：`pruneIntervalMinutes` 周期删除两层过期记录。
+- **PG 故障降级**：连接失败/查询报错只记日志，摄入不中断——热层继续在
+  内存里判重，PG 恢复后由后续写穿补数据；`/stats` 的 `storeKind` 可观测。
+- **PG 连接串**（`pgUrl`，默认读 `XDR_INGEST_PG_URL`）：Node 的 `pg` 不吃
+  SQLAlchemy 的 `+psycopg` 后缀，形如
+  `postgresql://shentong:shentong@localhost:5432/shentong`，与 NDR 侧
+  `pg_url` 同一实例同一套账号。留空 = 仅内存冷库（开发兜底，重启即丢）。
+
 ## HTTP 契约（对齐 ndr/backend/app/detector/push.py）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `{basePath}/digests` | POST | 批量接收 `{"items":[{event_id,fingerprint,digest}]}`，**2xx 即回执** |
 | `{basePath}/ping` | GET | NDR 连通性自检（把推送地址的 `/digests` 换成 `/ping` 即此端点） |
-| `{basePath}/stats` | GET | 缓存规模与计数（分析/复用/重分析次数） |
+| `{basePath}/stats` | GET | 分层规模与计数（热/冷条数、分析/复用/重分析、晋升/降级/预热） |
 
 响应语义与 NDR 重试分类对齐：
 
@@ -45,8 +75,12 @@ NDR 侧配置（`system_config` 键 `agent_push.params`）：URL 指向
 | `basePath` | `/xdr/ingest` | 路由基路径（刻意避开 dsh 的 `/api` 前缀） |
 | `token` | 必填 | Bearer token；留空插件**拒绝加载**（不收无鉴权的安全事件） |
 | `maxBodyBytes` | 4 MiB | 请求体上限 |
-| `resultTtlHours` | 24 | 分析结果有效期 |
-| `maxEntries` | 20000 | 缓存容量，超出淘汰最久未见的记录 |
+| `resultTtlHours` | 24 | 分析结果有效期（两层一致） |
+| `pgUrl` | `''`（读 `XDR_INGEST_PG_URL`） | 冷库 PG 连接串；留空 = 仅内存冷库 |
+| `hotMaxEntries` | 5000 | 热层容量上限，超出降级最久未见记录回冷库 |
+| `hotThreshold` | 2 | 晋升热层的出现次数门槛 |
+| `warmupLimit` | 1000 | 启动预热装入热层的条数 |
+| `pruneIntervalMinutes` | 60 | 过期清理周期 |
 
 ## 安装与挂载
 
@@ -56,15 +90,17 @@ dsh plugin install link:/path/to/agent/plugins/xdr-ingest
 ```
 
 token 默认从 `XDR_INGEST_TOKEN` 环境变量读取（bundle patch 里的 `!!js` 缝），
-也可在 profile patch / 设置页写定值。
+也可在 profile patch / 设置页写定值。PG 连接串默认从 `XDR_INGEST_PG_URL` 读，
+生产环境必须配置（否则退化为仅内存冷库，重启丢判重结果）。
 
 ## 当前限制与后续
 
 - **v0 分析器是启发式**（规则关键词 + 端口广度），P1 换 LLM 分析器（同签名替换）。
-- **缓存是进程内存**：重启丢结果与统计（NDR 重推自动重建）；P2 接 `ctx.storageDomain`。
 - **LLM 分析入口**：P1 经 dsh `webhookRuntime` 为缓存未命中的事件创建分析
   Session——运行时明确不做判重（"rules that need idempotency own it"），本插件的
   分析 ID 缓存正是那道 idempotency 闸门。
+- **冷库单表自管理**：DDL 内联在 `pg-store.ts`（`CREATE TABLE IF NOT EXISTS`），
+  未接入迁移工具；表结构变更时保持幂等修改即可。
 
 ## 开发
 
@@ -76,4 +112,7 @@ pnpm run build        # tsc 产出 lib/ 与 lib/types/
 ```
 
 本地不装依赖时，纯逻辑测试可直接跑：
-`node --experimental-strip-types --test tests/identity.test.ts tests/cache.test.ts tests/handler.test.ts`
+`node --experimental-strip-types --test tests/identity.test.ts tests/store.test.ts tests/tiered-cache.test.ts tests/handler.test.ts`
+
+PG 集成测试（`tests/pg-store.integration.test.ts`）需要真实数据库，设置
+`XDR_TEST_PG_URL` 后才会执行；CI 的 agent-plugins job 自带 postgres service。

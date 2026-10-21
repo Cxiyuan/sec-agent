@@ -3,6 +3,11 @@
 #
 # token 不能留空（插件加载时拒绝启动）：默认走 XDR_INGEST_TOKEN 环境变量缝，
 # 也可在部署 patch / web 设置页直接写定值，但注意 patch 明文不入库。
+#
+# pgUrl 留空 = 仅内存冷库（开发/测试兜底，重启丢判重结果）；生产必须指向
+# 项目统一 PG。默认走 XDR_INGEST_PG_URL 环境变量缝。Node 的 pg 驱动不吃
+# SQLAlchemy 的 +psycopg 后缀，连接串形如
+# postgresql://shentong:shentong@localhost:5432/shentong。
 
 - id: xdr-ingest
   config:
@@ -10,4 +15,8 @@
     token: !!js process.env.XDR_INGEST_TOKEN ?? ''
     maxBodyBytes: 4194304
     resultTtlHours: 24
-    maxEntries: 20000
+    pgUrl: !!js process.env.XDR_INGEST_PG_URL ?? ''
+    hotMaxEntries: 5000
+    hotThreshold: 2
+    warmupLimit: 1000
+    pruneIntervalMinutes: 60

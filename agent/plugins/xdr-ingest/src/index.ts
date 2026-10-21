@@ -2,25 +2,32 @@
  * xdr-ingest — NDR 摘要接收插件（dsh out-of-tree bundle）。
  *
  * 职责：在 dsh webServer 上注册 webhook 路由接收 NDR 推送；为每条摘要生成
- * 内容派生的「事件分析 ID」；命中分析缓存则复用结果并计数，未命中才进入
- * 分析（v0 启发式，P1 接 LLM）。重复事件不重复分析。
+ * 内容派生的「事件分析 ID」；两级缓存判重复用——热层（内存，经常出现的
+ * IP/事件模式）+ 冷层（PostgreSQL 落盘，一切分析结果写穿），重复事件不
+ * 重复分析。v0 分析器为启发式，P1 接 LLM。
  *
  * 挂载：插件经 plugin manager / profile 依赖安装后，由本包的 cordis.patch.yml
- * 声明默认配置；token 必须由部署层提供（patch 行默认从 XDR_INGEST_TOKEN 读）。
+ * 声明默认配置；token 与 PG 连接串必须由部署层提供（token 默认从
+ * XDR_INGEST_TOKEN、pgUrl 从 XDR_INGEST_PG_URL 读）。
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
-import { AnalysisCache } from './cache.ts'
+import { TieredCache } from './cache.ts'
 import { createIngestHandler } from './handler.ts'
+import { PostgresColdStore } from './pg-store.ts'
+import { MemoryColdStore } from './store.ts'
 
 export type * from './types.ts'
 export { analysisIdOf, identityKey, normalizeDigest, ANALYSIS_ID_PREFIX } from './identity.ts'
-export { AnalysisCache } from './cache.ts'
+export { TieredCache } from './cache.ts'
 export { triageDigest } from './analyzer.ts'
 export { processItems, createIngestHandler, WebhookHttpError } from './handler.ts'
+export { MemoryColdStore } from './store.ts'
+export { PostgresColdStore } from './pg-store.ts'
+export type { ColdEntry, ColdStore } from './store.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
 export const name = 'xdr-ingest'
@@ -36,10 +43,21 @@ export interface Config {
   readonly token: string
   /** 请求体字节上限。 */
   readonly maxBodyBytes: number
-  /** 分析结果有效期（小时），过期重分析。 */
+  /** 分析结果有效期（小时），两层一致，过期重分析。 */
   readonly resultTtlHours: number
-  /** 缓存容量上限（条），超出淘汰最久未见的记录。 */
-  readonly maxEntries: number
+  /**
+   * 冷库连接串（项目统一 PG）。留空 = 仅内存冷库（开发/测试兜底，
+   * 进程退出即丢判重结果，生产必须配置）。
+   */
+  readonly pgUrl: string
+  /** 热层容量上限（条）：超出淘汰最久未见记录，降级回冷库不丢数据。 */
+  readonly hotMaxEntries: number
+  /** 晋升热层的出现次数门槛：occurrences >= 此值才进内存。 */
+  readonly hotThreshold: number
+  /** 启动预热条数：按 occurrences 降序把冷库热数据装进热层。 */
+  readonly warmupLimit: number
+  /** 过期清理周期（分钟）。 */
+  readonly pruneIntervalMinutes: number
 }
 
 export const Config: z<Config> = z.object({
@@ -47,7 +65,11 @@ export const Config: z<Config> = z.object({
   token: z.string().default(''),
   maxBodyBytes: z.number().step(1).min(1024).max(64 * 1024 * 1024).default(4 * 1024 * 1024),
   resultTtlHours: z.number().min(0.1).max(24 * 30).default(24),
-  maxEntries: z.number().step(1).min(100).max(1_000_000).default(20_000),
+  pgUrl: z.string().default(''),
+  hotMaxEntries: z.number().step(1).min(1).max(1_000_000).default(5_000),
+  hotThreshold: z.number().step(1).min(1).max(1_000).default(2),
+  warmupLimit: z.number().step(1).min(0).max(100_000).default(1_000),
+  pruneIntervalMinutes: z.number().step(1).min(1).max(1_440).default(60),
 })
 
 /** Schemastery 表达不了的约束在这里校验，加载期即失败。 */
@@ -64,12 +86,23 @@ function assertConfig(config: Config): void {
   }
 }
 
-/** 注册 NDR 摘要接收路由。 */
+/** 注册 NDR 摘要接收路由，并管理两级缓存的生命周期。 */
 export function apply(ctx: Context, config: Config): void {
   assertConfig(config)
-  const cache = new AnalysisCache({
+  const store = config.pgUrl.trim() === ''
+    ? new MemoryColdStore()
+    : new PostgresColdStore({ connectionString: config.pgUrl.trim() })
+  if (store.kind === 'memory') {
+    console.warn(
+      '[xdr-ingest] pgUrl is empty: falling back to the in-memory cold store. '
+      + 'Dedup results are lost on restart; set pgUrl (or XDR_INGEST_PG_URL) in production.',
+    )
+  }
+  const cache = new TieredCache({
     ttlMs: config.resultTtlHours * 3_600_000,
-    maxEntries: config.maxEntries,
+    hotMaxEntries: config.hotMaxEntries,
+    hotThreshold: config.hotThreshold,
+    store,
   })
   const route: WebRoute = {
     kind: 'prefix',
@@ -81,7 +114,24 @@ export function apply(ctx: Context, config: Config): void {
     }),
   }
   ctx.effect(
-    () => ctx.webServer.register(route),
+    () => {
+      const disposeRoute = ctx.webServer.register(route)
+      // 预热失败不影响路由（冷库不可用时退化为纯内存判重）
+      void cache.warmup(config.warmupLimit).catch(error => {
+        console.warn('[xdr-ingest] warmup failed:', error instanceof Error ? error.message : String(error))
+      })
+      const timer = setInterval(() => {
+        void cache.pruneExpired().catch(error => {
+          console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
+        })
+      }, config.pruneIntervalMinutes * 60_000)
+      timer.unref()
+      return () => {
+        clearInterval(timer)
+        disposeRoute()
+        void store.close().catch(() => undefined)
+      }
+    },
     `xdr-ingest: ${config.basePath}/*`,
   )
 }

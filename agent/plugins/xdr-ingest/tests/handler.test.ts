@@ -3,20 +3,22 @@
 import { strict as assert } from 'node:assert'
 import { createServer, type Server } from 'node:http'
 import { test } from 'node:test'
-import { AnalysisCache } from '../src/cache.ts'
+import { TieredCache } from '../src/cache.ts'
 import { createIngestHandler } from '../src/handler.ts'
+import { MemoryColdStore } from '../src/store.ts'
 
 const BASE = '/xdr/ingest'
 const TOKEN = 'test-token-123'
 
-function makeApp(overrides: Partial<{ token: string; maxBodyBytes: number }> = {}) {
-  const cache = new AnalysisCache({ ttlMs: 3_600_000, maxEntries: 100 })
+function makeApp(overrides: Partial<{ token: string; maxBodyBytes: number; store: MemoryColdStore }> = {}) {
+  const store = overrides.store ?? new MemoryColdStore()
+  const cache = new TieredCache({ ttlMs: 3_600_000, hotMaxEntries: 100, hotThreshold: 2, store })
   const handler = createIngestHandler(BASE, {
     token: overrides.token ?? TOKEN,
     maxBodyBytes: overrides.maxBodyBytes ?? 64 * 1024,
     cache,
   })
-  return { server: createServer(handler), cache }
+  return { server: createServer(handler), cache, store }
 }
 
 async function listen(server: Server): Promise<string> {
@@ -146,13 +148,15 @@ test('a digest without any identity fields is rejected inside a 200 receipt', as
   })
 })
 
-test('GET stats reports cache counters; unknown path is 404; GET digests is 405', async () => {
+test('GET stats reports tier sizes and counters; unknown path is 404; GET digests is 405', async () => {
   await withServer(async base => {
     const headers = { authorization: `Bearer ${TOKEN}` }
     const stats = await fetch(`${base}${BASE}/stats`, { headers })
     assert.equal(stats.status, 200)
-    const body = await stats.json() as { size: number; analyzed: number; reused: number; reanalyzed: number }
-    assert.equal(body.size, 0)
+    const body = await stats.json() as { hotSize: number; coldSize: number; storeKind: string; analyzed: number; reused: number; reanalyzed: number }
+    assert.equal(body.hotSize, 0)
+    assert.equal(body.coldSize, 0)
+    assert.equal(body.storeKind, 'memory')
 
     const missing = await fetch(`${base}/nope`, { headers })
     assert.equal(missing.status, 404)
@@ -160,4 +164,31 @@ test('GET stats reports cache counters; unknown path is 404; GET digests is 405'
     const wrongMethod = await fetch(`${base}${BASE}/digests`, { headers })
     assert.equal(wrongMethod.status, 405)
   })
+})
+
+test('cold store survives a "restart": a fresh app over the same store reuses without re-analysis', async () => {
+  const store = new MemoryColdStore()
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }
+
+  const first = makeApp({ store })
+  const firstBase = await listen(first.server)
+  try {
+    const response = await fetch(`${firstBase}${BASE}/digests`, { method: 'POST', headers, body: itemsPayload() })
+    assert.equal(response.status, 200)
+  } finally {
+    first.server.close()
+  }
+
+  // 模拟重启：全新 app（热层空），冷库（PG）不变
+  const second = makeApp({ store })
+  const secondBase = await listen(second.server)
+  try {
+    const response = await fetch(`${secondBase}${BASE}/digests`, { method: 'POST', headers, body: itemsPayload() })
+    const receipt = await response.json() as { analyzed: number; reused: number; results: Array<{ occurrences: number }> }
+    assert.equal(receipt.analyzed, 0, 'restart must not re-analyze persisted events')
+    assert.equal(receipt.reused, 1)
+    assert.equal(receipt.results[0]?.occurrences, 2)
+  } finally {
+    second.server.close()
+  }
 })
