@@ -351,3 +351,83 @@ jobs:
       - name: Build plugins
         working-directory: agent/plugins
         run: pnpm run build
+
+  # 智能体镜像运行时冒烟：把 build job 刚推的镜像跑起来，验证整条链——
+  # 镜像能起、dsh home 能种、插件 bundle 能在 Loader 里加载（路由存在即
+  # 证明，pnpm 的 link: peer 警告不会咬到运行时）、PG 冷库能连、判重
+  # 能复用、token 围栏有效。这是「上线不炸」的最后一道闸。
+  # host 网络：容器与 postgres service 共用 runner 的 127.0.0.1。
+  agent-image-smoke:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shentong
+          POSTGRES_PASSWORD: shentong
+          POSTGRES_DB: shentong
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U shentong"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # DSH_WEB_HOST=127.0.0.1：冒烟只验证摄入链，loopback 绑定即可被
+      # 本 job 的 curl 触达（LAN 自动绑定有单测覆盖）。
+      - name: Start agent container
+        run: |
+          docker run -d --network host --name xdr-agent \
+            -e XDR_INGEST_TOKEN=smoke-token \
+            -e DSH_WEB_HOST=127.0.0.1 \
+            -e XDR_INGEST_PG_URL=postgresql://shentong:shentong@127.0.0.1:5432/shentong \
+            "ghcr.io/${GITHUB_REPOSITORY,,}/shentong-agent:latest"
+
+      - name: Wait for the ingest endpoint (plugin bundle loaded)
+        run: |
+          for i in $(seq 1 100); do
+            if curl -fsS -H "Authorization: Bearer smoke-token" http://127.0.0.1:3080/xdr/ingest/ping 2>/dev/null | grep -q ok; then
+              echo "ingest endpoint up after $i attempt(s)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::ingest endpoint did not come up in time"
+          docker logs --tail 50 xdr-agent || true
+          exit 1
+
+      - name: Same digest twice; the second must be reused from the PG cold store
+        run: |
+          ITEM='{"items":[{"event_id":"smoke-1","fingerprint":"smoke-fp","digest":{"rule":"ET SCAN Portscan","src_ip":"203.0.113.7","dst_ips":["10.0.0.5"],"dst_ports":[22,80],"event_types":["alert"],"count":5}}]}'
+          FIRST=$(curl -fsS -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" http://127.0.0.1:3080/xdr/ingest/digests)
+          echo "first: $FIRST"
+          echo "$FIRST" | grep -q '"analyzed":1'
+          SECOND=$(curl -fsS -H "Authorization: Bearer smoke-token" -H "content-type: application/json" -d "$ITEM" http://127.0.0.1:3080/xdr/ingest/digests)
+          echo "second: $SECOND"
+          echo "$SECOND" | grep -q '"reused":1'
+
+      - name: Missing token is rejected with 401
+        run: |
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "content-type: application/json" -d '{"items":[]}' http://127.0.0.1:3080/xdr/ingest/digests)
+          if [ "$CODE" != "401" ]; then echo "::error::expected 401, got $CODE"; exit 1; fi
+
+      - name: Dump logs and stop the container
+        if: always()
+        run: |
+          docker logs --tail 30 xdr-agent || true
+          docker rm -f xdr-agent || true
