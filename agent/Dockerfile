@@ -48,6 +48,7 @@ RUN chmod +x /usr/local/bin/xdr-agent-entrypoint
 # bake：以 node 用户把插件装进 web profile，产物归 node 所有，
 # 之后 entrypoint 种入卷时运行时用户可直接写（HMR / 插件管理需要）
 ENV DSH_HOME=/opt/dsh-home
+RUN mkdir -p /opt/dsh-home && chown node:node /opt/dsh-home
 USER node
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add link:/opt/agent/plugins/xdr-ingest
 
