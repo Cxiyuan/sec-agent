@@ -6,9 +6,10 @@
 # 多阶段：
 #   builder — 与 CI agent-web / agent-plugins job 完全同命令：
 #             dsh monorepo 冻结锁文件安装 + 全量构建；插件不冻结安装 + 构建
-#   runtime — 只带产物；把 xdr-ingest bake 进 web profile（link: 绝对路径
-#             固定在 /opt/agent/plugins/xdr-ingest）；卷空时由 entrypoint
-#             把 bake 好的 profile 种进 DSH_HOME，运行期无需联网装依赖
+#   runtime — 只带产物；把 xdr-ingest bake 进 web profile（file: 快照进
+#             profile 自带 store，路径固定在 /opt/agent/plugins/xdr-ingest）；
+#             卷空时由 entrypoint 把 bake 好的 profile 种进 DSH_HOME，
+#             运行期无需联网装依赖
 FROM node:24-bookworm AS builder
 
 RUN corepack enable && corepack prepare pnpm@11.28.5 --activate

@@ -445,6 +445,16 @@ jobs:
           docker exec xdr-agent sh -c 'ls -la /data/dsh/profiles/web/node_modules/@sec-agent/ 2>&1; ls /data/dsh/profiles/web/node_modules/@sec-agent/xdr-ingest/ 2>&1' || true
           echo '--- plugin source in image ---'
           docker exec xdr-agent sh -c 'ls /opt/agent/plugins/xdr-ingest/ && ls /opt/agent/plugins/xdr-ingest/lib/ 2>&1' || true
+          # 组合后的 profile 树（免启动）：xdr-ingest 行在不在，直接区分
+          # 「bundle 被跳过/补丁空操作」与「模块 import 失败」两种根因。
+          echo '--- composed profile tree ---'
+          docker exec xdr-agent sh -c 'node /opt/agent/dsh/apps/cli/lib/bin.js --profile web --dump-default-config 2>&1' > /tmp/profile-dump.txt || true
+          if grep -q 'xdr-ingest' /tmp/profile-dump.txt; then
+            echo 'xdr-ingest row PRESENT in composed profile:'
+            grep -n -A 14 'id: xdr-ingest' /tmp/profile-dump.txt || true
+          else
+            echo '::error::xdr-ingest row ABSENT from composed profile (bundle skipped or patch was a no-op)'
+          fi
           echo '--- recent container logs ---'
           docker logs --tail 100 xdr-agent || true
 

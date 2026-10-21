@@ -85,9 +85,16 @@ NDR 侧配置（`system_config` 键 `agent_push.params`）：URL 指向
 ## 安装与挂载
 
 ```sh
-dsh plugin install link:/path/to/agent/plugins/xdr-ingest
-# 或在 profile 依赖里声明 link: 路径；bundle patch（cordis.patch.yml）自动生效
+dsh plugin install file:/path/to/agent/plugins/xdr-ingest
+# 或在 profile 依赖里声明 file: 路径；bundle patch（cordis.patch.yml）自动生效
 ```
+
+- `file:` 会把包快照进 profile 自带 store，profile 目录可随意搬迁（容器
+  bake → 卷即此形态）；`link:` 按相对路径建 symlink，profile 一搬家就悬空，
+  仅适合同机原位开发。
+- patch 行必须是 `- insert:` + `name`（可解析包名）才能真正把插件挂进
+  Loader；只有 `id` + `config` 的补丁只能改「已存在行」的配置，没有行可改时
+  整个补丁是空操作——路由不注册，且无任何报错。
 
 token 默认从 `XDR_INGEST_TOKEN` 环境变量读取（bundle patch 里的 `!!js` 缝），
 也可在 profile patch / 设置页写定值。PG 连接串默认从 `XDR_INGEST_PG_URL` 读，

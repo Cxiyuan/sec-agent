@@ -11,7 +11,7 @@ PROFILE_PKG="$DSH_HOME/profiles/web/package.json"
 mkdir -p "$DSH_HOME"
 
 # 首次运行（卷为空）：把镜像里 bake 好的 profile 种进去。
-# bake 时 link: 依赖已按镜像内绝对路径装好，种入后无需联网。
+# bake 时 file: 依赖已快照进 profile 自带 store，种入后无需联网。
 if [ ! -d "$DSH_HOME/profiles/web" ]; then
   echo "[xdr-agent] seeding dsh home from image..."
   cp -a "$BAKED_HOME/." "$DSH_HOME/"

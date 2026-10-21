@@ -1,5 +1,12 @@
-# xdr-ingest bundle patch：NDR 摘要接收插件的默认配置。
-# 行会整体替换同名 id 的 config，改值请在部署层 profile patch 里整行复述。
+# xdr-ingest bundle patch：插入 NDR 摘要接收插件的 Loader 行并给出默认配置。
+#
+# 行格式与 dsh in-tree bundle 一致：`insert` + `name` 才真正把插件挂进
+# Loader（name 是可解析的包名，这里指向本包自身，exports["."] → lib/index.js）。
+# 只有 `id` + `config` 的补丁只能改写「已存在行」的配置——没有任何层插入过
+# 这个 id 的行时，整个补丁是空操作，路由根本不注册（容器里 404 的根因）。
+#
+# 之后部署层（profile 自己的 cordis.patch.yml / --patch overlay）仍可按
+# `id: xdr-ingest` 整行复述配置做覆盖，后写覆盖先写。
 #
 # token 不能留空（插件加载时拒绝启动）：默认走 XDR_INGEST_TOKEN 环境变量缝，
 # 也可在部署 patch / web 设置页直接写定值，但注意 patch 明文不入库。
@@ -9,14 +16,16 @@
 # SQLAlchemy 的 +psycopg 后缀，连接串形如
 # postgresql://shentong:shentong@localhost:5432/shentong。
 
-- id: xdr-ingest
-  config:
-    basePath: /xdr/ingest
-    token: !!js process.env.XDR_INGEST_TOKEN ?? ''
-    maxBodyBytes: 4194304
-    resultTtlHours: 24
-    pgUrl: !!js process.env.XDR_INGEST_PG_URL ?? ''
-    hotMaxEntries: 5000
-    hotThreshold: 2
-    warmupLimit: 1000
-    pruneIntervalMinutes: 60
+- insert:
+    - id: xdr-ingest
+      name: '@sec-agent/xdr-ingest'
+      config:
+        basePath: /xdr/ingest
+        token: !!js process.env.XDR_INGEST_TOKEN ?? ''
+        maxBodyBytes: 4194304
+        resultTtlHours: 24
+        pgUrl: !!js process.env.XDR_INGEST_PG_URL ?? ''
+        hotMaxEntries: 5000
+        hotThreshold: 2
+        warmupLimit: 1000
+        pruneIntervalMinutes: 60

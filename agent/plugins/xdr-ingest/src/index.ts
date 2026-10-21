@@ -32,6 +32,11 @@ export type { ColdEntry, ColdStore } from './store.ts'
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
 export const name = 'xdr-ingest'
 
+// 生命周期可见性：模块被 Loader import、apply() 真正激活，各留一条日志。
+// 路由 404 排查时，docker logs 里这两行在不在直接区分「行没插进去」
+// 「模块没 import」「apply 没跑」三种根因。
+console.log('[xdr-ingest] module loaded')
+
 /** 路由注册需要宿主 webServer。 */
 export const inject = ['webServer']
 
@@ -98,6 +103,7 @@ export function apply(ctx: Context, config: Config): void {
       + 'Dedup results are lost on restart; set pgUrl (or XDR_INGEST_PG_URL) in production.',
     )
   }
+  console.log(`[xdr-ingest] apply(): routes at ${config.basePath}/*, cold store: ${store.kind}`)
   const cache = new TieredCache({
     ttlMs: config.resultTtlHours * 3_600_000,
     hotMaxEntries: config.hotMaxEntries,
