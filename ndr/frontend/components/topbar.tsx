@@ -139,10 +139,10 @@ export function TopBar() {
   const notices = noticesOf(stats, push);
 
   return (
-    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-sidebar-border bg-sidebar-bg px-4">
+    <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-border bg-card px-4">
       <div className="flex items-center gap-2 px-1">
-        <Shield className="h-6 w-6 text-sidebar-bar" />
-        <span className="whitespace-nowrap text-base font-semibold tracking-tight text-white">深瞳 · NDR</span>
+        <Shield className="h-6 w-6 text-primary" />
+        <span className="whitespace-nowrap text-base font-semibold tracking-tight">深瞳 · NDR</span>
       </div>
 
       {/* 一级菜单：分析中心鼠标停留展开二级菜单，其余直接进默认子页 */}
@@ -157,8 +157,8 @@ export function TopBar() {
                 className={cn(
                   "flex items-center gap-1 rounded-sm px-3 py-1.5 text-sm transition-colors",
                   active
-                    ? "bg-white/10 font-medium text-white"
-                    : "text-sidebar-fg hover:bg-sidebar-hover hover:text-white",
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
               >
                 {section.label}
@@ -199,7 +199,7 @@ export function TopBar() {
             aria-label={notices.length ? `告警 ${notices.length} 条` : "告警"}
             title={notices.length ? "有需要处理的事项" : "暂无告警"}
             onClick={() => setOpen((v) => !v)}
-            className="relative rounded-sm p-2 text-sidebar-fg hover:bg-sidebar-hover hover:text-white"
+            className="relative rounded-sm p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <Bell className="h-5 w-5" />
             {notices.length > 0 && (
@@ -230,13 +230,13 @@ export function TopBar() {
           )}
         </div>
 
-        <span className="hidden text-sm text-sidebar-fg sm:inline" title="当前登录用户">
+        <span className="hidden text-sm text-muted-foreground sm:inline" title="当前登录用户">
           {me?.username ?? "—"}
         </span>
 
         <button
           type="button"
-          className="rounded-sm px-2 py-1 text-sm text-sidebar-fg hover:bg-sidebar-hover hover:text-white"
+          className="rounded-sm px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={() => {
             clearToken();
             router.push("/login");

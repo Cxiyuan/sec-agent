@@ -4,20 +4,14 @@ import * as React from "react";
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Dialog,
   EmptyState,
   Field,
   FieldGrid,
   Input,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   SettingsForm,
-  SettingsGrid,
-  SettingsMain,
-  SettingsRail,
   Skeleton,
   Stat,
   StatSkeleton,
@@ -203,179 +197,162 @@ export function LogstashPanel() {
   return (
     <div className="space-y-4">
       <PanelError errors={errs} />
-      <Section
-        title="采集侧 · Logstash 管道"
-        description={
-          <>
-            保存后写入共享卷，Logstash 约 <b>10 秒</b> 内自动重载（无需重启容器）。
-            每次保存自动备份上一版，可一键回滚。
-          </>
-        }
-      >
-        {/* 能改的只有「常用参数」表单，放主列；运行状态是只读指标，放右侧侧栏。
-            侧栏只有 19rem，指标格压成 2 列，4 列会把标签挤成竖排。
-            管道全文是代码块，需要整幅宽度，放成 Grid 的兄弟节点。 */}
-        <SettingsGrid>
-          <SettingsMain>
-            <Card>
-              <CardHeader>
-                <CardTitle>常用参数</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {loading ? (
-                  /* 加载完是「说明块 + ES 地址 + 索引名」三项，骨架照三项画（原来是一整块 h-24） */
-                  <FieldGrid maxCols={4}>
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                  </FieldGrid>
-                ) : params ? (
-                  <>
-                    <SettingsForm>
-                      <Field label="Elasticsearch 输出（历史归档）">
-                        <p className="text-xs text-muted-foreground">
-                          归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
-                        </p>
-                      </Field>
-                      <Field label="ES 地址（由部署环境固定）">
-                        <p className="flex h-9 items-center truncate rounded-sm border border-border-subtle bg-surface-1 px-3 font-mono text-xs">
-                          {params.es_host}
-                        </p>
-                      </Field>
-                      <Field
-                        label="索引名（两类采集统一落这一族，支持 %{...} 占位）"
-                        htmlFor="ls-events-index"
-                      >
-                        <Input
-                          id="ls-events-index"
-                          value={params.events_index}
-                          onChange={(e) => set("events_index", e.target.value)}
-                        />
-                      </Field>
-                    </SettingsForm>
-
-                    {noticeFor("params")}
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirm({
-                            title: "保存参数并下发？",
-                            body: "保存参数会用生成的管道覆盖「全文编辑」的内容。",
-                            confirmLabel: "覆盖并下发",
-                            onConfirm: () => {
-                              setConfirm(null);
-                              void saveParams();
-                            },
-                          })
-                        }
-                      >
-                        保存参数并下发
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={doPreview} disabled={busy}>
-                        预览生成的管道
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
-                        刷新状态
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirm({
-                            title: "回滚到上一版管道？",
-                            body: "当前编辑框里的内容会被上一版覆盖（未保存的改动会丢失）。",
-                            confirmLabel: "回滚",
-                            onConfirm: () => {
-                              setConfirm(null);
-                              void rollback();
-                            },
-                          })
-                        }
-                      >
-                        回滚上一版
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <EmptyState
-                    size="compact"
-                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到参数"}
-                    hint="参数来自 /api/logstash；读不到时不显示表单，避免空值覆盖现有配置。"
+      {/* 一块铺满正文区的底板：参数表单占主列，运行状态是只读指标，作为同一分区的右列
+          （一条竖线分隔，不再是第二张卡）；运行明细与管道全文各占一段通栏。 */}
+      <SettingsBoard>
+        <SettingsBlock
+          title="常用参数"
+          description={
+            <>
+              保存后写入共享卷，Logstash 约 <b>10 秒</b> 内自动重载（无需重启容器）。
+              每次保存自动备份上一版，可一键回滚。
+            </>
+          }
+          bodyClassName="space-y-3"
+          rail={
+            <div className="space-y-3">
+              {/* rail 没有独立标题条：原来「运行状态」那张卡的标题与徽标排在这一列顶部。
+                  指标格压成 2 列，4 列会把标签挤成竖排。 */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-medium text-foreground">运行状态</span>
+                {data ? (
+                  <Badge variant={ls?.alive ? "success" : "critical"}>
+                    {ls?.alive ? "运行中" : "不可达"}
+                  </Badge>
+                ) : null}
+              </div>
+              {loading ? (
+                <StatSkeleton count={4} className="grid-cols-2" />
+              ) : data ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <Stat size="sm" label="入队" value={ls?.events_in ?? "-"} />
+                  <Stat size="sm" label="出队" value={ls?.events_out ?? "-"} />
+                  <Stat
+                    size="sm"
+                    label="待归一化积压"
+                    value={data.queue_depth ?? "-"}
+                    tone={(data.queue_depth ?? 0) > 0 ? "medium" : "default"}
                   />
-                )}
-              </CardContent>
-            </Card>
-          </SettingsMain>
-
-          <SettingsRail>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-                <CardTitle>运行状态</CardTitle>
-                <div className="flex flex-wrap items-center gap-2">
-                  {data ? (
-                    <>
-                      <Badge variant={ls?.alive ? "success" : "critical"}>
-                        {ls?.alive ? "运行中" : "不可达"}
-                      </Badge>
-                    </>
-                  ) : null}
+                  <Stat
+                    size="sm"
+                    label="重载"
+                    value={`${ls?.reloads_successes ?? "-"} / ${ls?.reloads_failures ?? "-"}`}
+                    hint="成功 / 失败"
+                    tone={ls?.reloads_failures ? "critical" : "default"}
+                  />
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {loading ? (
-                  <StatSkeleton count={4} className="grid-cols-2" />
-                ) : data ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <Stat size="sm" label="入队" value={ls?.events_in ?? "-"} />
-                    <Stat size="sm" label="出队" value={ls?.events_out ?? "-"} />
-                    <Stat
-                      size="sm"
-                      label="待归一化积压"
-                      value={data.queue_depth ?? "-"}
-                      tone={(data.queue_depth ?? 0) > 0 ? "medium" : "default"}
-                    />
-                    <Stat
-                      size="sm"
-                      label="重载"
-                      value={`${ls?.reloads_successes ?? "-"} / ${ls?.reloads_failures ?? "-"}`}
-                      hint="成功 / 失败"
-                      tone={ls?.reloads_failures ? "critical" : "default"}
-                    />
-                  </div>
-                ) : (
-                  <EmptyState
-                    size="compact"
-                    tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
-                    title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到管道状态"}
-                    action={
-                      <Button size="sm" variant="outline" onClick={() => void load()}>
-                        重新读取
-                      </Button>
-                    }
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </SettingsRail>
-        </SettingsGrid>
+              ) : (
+                <EmptyState
+                  size="compact"
+                  tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+                  title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到管道状态"}
+                  action={
+                    <Button size="sm" variant="outline" onClick={() => void load()}>
+                      重新读取
+                    </Button>
+                  }
+                />
+              )}
+            </div>
+          }
+        >
+          {loading ? (
+            /* 加载完是「说明块 + ES 地址 + 索引名」三项，骨架照三项画（原来是一整块 h-24） */
+            <FieldGrid maxCols={4}>
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
+            </FieldGrid>
+          ) : params ? (
+            <>
+              <SettingsForm>
+              <Field label="Elasticsearch 输出（历史归档）">
+                <p className="text-xs text-muted-foreground">
+                  归一化后的文档只有 ES 一个去处，不可停用；原始日志走 Redis 采集队列。
+                </p>
+              </Field>
+              <Field label="ES 地址（由部署环境固定）">
+                <p className="flex h-9 items-center truncate rounded-sm border border-border-subtle bg-surface-1 px-3 font-mono text-xs">
+                  {params.es_host}
+                </p>
+              </Field>
+              <Field
+                label="索引名（两类采集统一落这一族，支持 %{...} 占位）"
+                htmlFor="ls-events-index"
+                controlWidth="md"
+              >
+                <Input
+                  id="ls-events-index"
+                  value={params.events_index}
+                  onChange={(e) => set("events_index", e.target.value)}
+                />
+              </Field>
+            </SettingsForm>
+
+              {noticeFor("params")}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    setConfirm({
+                      title: "保存参数并下发？",
+                      body: "保存参数会用生成的管道覆盖「全文编辑」的内容。",
+                      confirmLabel: "覆盖并下发",
+                      onConfirm: () => {
+                        setConfirm(null);
+                        void saveParams();
+                      },
+                    })
+                  }
+                >
+                  保存参数并下发
+                </Button>
+                <Button size="sm" variant="outline" onClick={doPreview} disabled={busy}>
+                  预览生成的管道
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
+                  刷新状态
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    setConfirm({
+                      title: "回滚到上一版管道？",
+                      body: "当前编辑框里的内容会被上一版覆盖（未保存的改动会丢失）。",
+                      confirmLabel: "回滚",
+                      onConfirm: () => {
+                        setConfirm(null);
+                        void rollback();
+                      },
+                    })
+                  }
+                >
+                  回滚上一版
+                </Button>
+              </div>
+            </>
+          ) : (
+            <EmptyState
+              size="compact"
+              tone={errs.isFailed(SRC.main) ? "danger" : "muted"}
+              title={errs.isFailed(SRC.main) ? "读取失败（见上方错误条）" : "还没有读到参数"}
+              hint="参数来自 /api/logstash；读不到时不显示表单，避免空值覆盖现有配置。"
+            />
+          )}
+        </SettingsBlock>
 
         {/* 运行明细：数字之外的长句（五段速率、判重口径、Redis 告警）单独通栏放。
             塞进 19rem 侧栏会变成一条又高又窄的文字墙 —— 告警句和正常口径一样长，
             挤在窄栏里就分不出哪条要处理。 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>运行明细</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* 运行明细是 4–6 行文本，实高约 130px；原来给 64px，内容到达时会跳 66px */}
-            {loading ? (
-              <Skeleton className="h-32 w-full" />
-            ) : data ? (
+        <SettingsBlock title="运行明细">
+          {/* 运行明细是 4–6 行文本，实高约 130px；原来给 64px，内容到达时会跳 66px */}
+          {loading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : data ? (
             <div className="space-y-1 rounded-xs bg-surface-1 px-3 py-2 text-xs tabular-nums">
               <p className="text-muted-foreground">
                 最近下发：{data.updated_at ? formatDateTime(data.updated_at) : "—"}
@@ -497,61 +474,56 @@ export function LogstashPanel() {
                 </p>
               )}
             </div>
-            ) : null}
-          </CardContent>
-        </Card>
+          ) : null}
+        </SettingsBlock>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>管道全文（高级）</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Field
-              label="保存前会做静态校验：非空 / 含 input 与 output / 括号配平 / 至少一个输出"
-              htmlFor="ls-pipeline-text"
-              span="full"
-            >
-              {/* rows=14 的 textarea：`text-xs leading-relaxed` 行高 19.5px × 14 + p-2(16) + 边框 2 ≈ 291px，
-                  骨架给 288（h-72）；原来给 224，内容到达时会跳 67px */}
-              {loading ? (
-                <Skeleton className="h-72 w-full" />
-              ) : (
-                <textarea
-                  id="ls-pipeline-text"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  rows={14}
-                  className={AREA_CLS}
-                  spellCheck={false}
-                />
-              )}
-            </Field>
-            {noticeFor("pipeline")}
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" onClick={savePipeline} disabled={busy || loading}>
-                保存管道全文
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setText(data?.default_pipeline || "")}
-              >
-                填入默认模板
-              </Button>
-            </div>
-
-            {preview && (
-              <div>
-                <p className="mb-1 text-xs font-medium text-muted-foreground">
-                  参数生成的管道预览（未保存）
-                </p>
-                <pre className="max-h-64 overflow-auto rounded-sm border border-border-subtle bg-surface-1 p-2 text-xs">
-                  {preview}
-                </pre>
-              </div>
+        <SettingsBlock title="管道全文（高级）" bodyClassName="space-y-3">
+          <Field
+            label="保存前会做静态校验：非空 / 含 input 与 output / 括号配平 / 至少一个输出"
+            htmlFor="ls-pipeline-text"
+            span="full"
+          >
+            {/* rows=14 的 textarea：`text-xs leading-relaxed` 行高 19.5px × 14 + p-2(16) + 边框 2 ≈ 291px，
+                骨架给 288（h-72）；原来给 224，内容到达时会跳 67px */}
+            {loading ? (
+              <Skeleton className="h-72 w-full" />
+            ) : (
+              <textarea
+                id="ls-pipeline-text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={14}
+                className={AREA_CLS}
+                spellCheck={false}
+              />
             )}
-          </CardContent>
-        </Card>
+          </Field>
+          {noticeFor("pipeline")}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" onClick={savePipeline} disabled={busy || loading}>
+              保存管道全文
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setText(data?.default_pipeline || "")}
+            >
+              填入默认模板
+            </Button>
+          </div>
+
+          {preview && (
+            <div>
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                参数生成的管道预览（未保存）
+              </p>
+              <pre className="max-h-64 overflow-auto rounded-sm border border-border-subtle bg-surface-1 p-2 text-xs">
+                {preview}
+              </pre>
+            </div>
+          )}
+        </SettingsBlock>
+      </SettingsBoard>
 
         <Dialog
           open={confirm !== null}
@@ -570,7 +542,6 @@ export function LogstashPanel() {
         >
           <p className="text-xs leading-relaxed text-muted-foreground">{confirm?.body}</p>
         </Dialog>
-      </Section>
     </div>
   );
 }

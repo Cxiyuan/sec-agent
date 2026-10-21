@@ -4,8 +4,8 @@
 # 文件名称    : 15-非HTTP通道与扫描器痕迹.rules
 # 攻击类型    : WebSocket C2 / 扫描器缓存残留 / Syslog 探测 / MQTT 发布
 # ATT&CK     : TA0011 命令与控制 / TA0043 侦察
-# 规则数量    : 7 条
-# SID 段     : 9115001 - 9115007
+# 规则数量    : 6 条
+# SID 段     : 9115001 - 9115004, 9115006 - 9115007
 #
 # 检测原理
 #   WebSocket 已成为主流 C2 载体(规避 HTTP 日志审计)。演练实证：
@@ -20,6 +20,10 @@
 #   WebSocket 规则在存在合法长连接业务(在线客服、推送)的环境会命中,
 #   需结合目标地址信誉与流量基线抑制。
 #   扫描器残留规则依赖应用层解析,需开启对应协议解析。
+#   [2026-10-21 精简] 原 "Syslog 端口探测"(9115005) 已删除:
+#   判据仅为 UDP/514 端口 + 10 次/分钟频率,无应用载荷,合法日志
+#   汇聚设备(Linux rsyslog、网络设备)必然误报。Syslog 流量异常
+#   建议由 Zeek 的 conn.log 分析端口分布承担。
 # ==============================================================================
 
 alert http any any -> any any ( \
@@ -58,13 +62,6 @@ alert tcp any any -> any 5432 ( \
     metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity High, created_at 2026_10_18; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     sid:9115004; rev:2;)
-
-alert udp any any -> any 514 ( \
-    msg:"[C2通道-05] Syslog 端口探测"; \
-    detection_filter:track by_src, count 10, seconds 60; \
-    classtype:attempted-recon; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
-    sid:9115005; rev:1;)
 
 alert tcp any any -> any 1883 ( \
     msg:"[C2通道-06] MQTT 通配符订阅全部主题(信息窃听或侦察)"; \

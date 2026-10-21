@@ -4,14 +4,18 @@
 # 文件名称    : 08-隧道与代理.rules
 # 攻击类型    : 隧道与代理
 # ATT&CK     : TA0011 命令与控制 / T1090 代理
-# 规则数量    : 6
-# SID 段     : 9108001 - 9108006
+# 规则数量    : 5
+# SID 段     : 9108001 - 9108005
 #
 # 检测原理
-#   识别 SOCKS4/5 代理、HTTP CONNECT 隧道、GRE 封装等流量转发行为。
+#   识别 SOCKS4/5 代理、HTTP CONNECT 隧道等流量转发行为(均以应用载荷为判据)。
 #
 # 误报与适配提示
-#   存在合法代理或 GRE VPN 的环境须禁用对应条目。
+#   存在合法代理的环境须禁用对应条目。
+#   [2026-10-21 精简] 原 "IP 层隧道封装 (GRE)"(9108006) 已删除:
+#   其判据是 ip_proto:47 协议号 + 每分钟一次的限流,无任何应用载荷,
+#   属"协议号即告警"的频率类规则——GRE VPN 与合法封装必然误报。
+#   GRE 流量统计建议由 Zeek 的 conn.log 协议分布分析承担。
 # ============================================================================
 
 # 提示: 误报: 部分二进制私有协议可能巧合命中前 3 字节
@@ -61,12 +65,3 @@ alert http any any -> any any ( \
     metadata:attack_tactic TA0011, attack_technique T1572, confidence Medium, severity Medium, created_at 2026_10_18; \
     threshold: type limit, track by_src, count 1, seconds 60; \
     sid:9108005; rev:2;)
-
-# 提示: 误报高: 存在 GRE VPN 的环境应禁用本条
-alert ip any any -> any any ( \
-    msg:"[隧道-06] IP 层隧道封装 (GRE)"; \
-    ip_proto:47; \
-    classtype:non-standard-protocol; \
-    metadata:attack_tactic TA0011, attack_technique T1572, confidence Low, severity Low, created_at 2026_10_18; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
-    sid:9108006; rev:2;)

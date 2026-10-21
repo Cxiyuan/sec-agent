@@ -4,8 +4,8 @@
 # 文件名称    : 12-攻击链关联检测.rules
 # 攻击类型    : 攻击链 / 战役级关联判定
 # ATT&CK     : 全链路（侦察 → 探测 → 利用 → 凭据 → 横移 → C2）
-# 规则数量    : 14 条（7 条阶段标记 + 7 条关联判定）
-# SID 段     : 9112001 - 9112014
+# 规则数量    : 11 条（5 条阶段标记 + 6 条关联判定）
+# SID 段     : 9112001 - 9112014（9112004/05/11 已于 2026-10-21 删除，段内不连续）
 #
 # 检测原理
 #   单条规则只能证明"发生过某个动作",无法证明"这是一次有组织的攻击"。
@@ -15,14 +15,19 @@
 #
 #   阶段记忆窗口默认 3600 秒,可按客户环境在 xbits 的 expire 参数调整。
 #
+#   [2026-10-21 精简] M4(9112004)/M5(9112005)/CHAIN-04(9112011) 已删除:
+#   三者的判据均为 flags:S + detection_filter 的纯协议栈频率(凭据/横移
+#   端口 SYN 计数),不含应用载荷——正常批量运维、监控拨测、漏洞扫描平台
+#   都会误标阶段状态并触发关联误报。删除后攻击链覆盖
+#   "侦察 → 探测 → 利用 → C2 → 隧道" 五个阶段,全部由 http.uri /
+#   http.user_agent / SOCKS 载荷规则置位与判定,无纯频率环节。
+#   CHAIN-07(9112014) 保留:其四个前置阶段(M1/M2/M3/M6)均为载荷规则,
+#   且 threshold 仅为每小时限流去重、不是频率检测判据。
+#
 # 误报与适配提示
 #   标记规则使用 flowbits:noalert,本身不产生告警,仅置位。
 #   关联规则的置信度显著高于单条规则,建议产品侧对 CHAIN 类告警提升处置优先级。
 #   若客户环境存在常态漏扫器,应先用 threshold.config 抑制该源,避免污染阶段状态。
-#   [2026-10-19 生产调优] M4(9112004)/M5(9112005) 原用 flow:to_server,established + detection_filter,
-#   会把单条会话的数据包计为高频访问,导致阶段状态被正常连接误标、并连带触发 CHAIN-04 关联误报。
-#   已改为 flow:to_server; flags:S; 仅统计 SYN(连接请求)次数。CHAIN-01~07 因依赖 http.uri/content 匹配,
-#   保持 established 不变(改 SYN 会破坏内容解析,属误修)。
 #
 # 性能说明
 #   标记规则为宽匹配正则,会带来额外开销。本文件适用于 1G 以下链路;
@@ -65,26 +70,6 @@ alert http any any -> any any ( \
     classtype:misc-activity; \
     metadata:attack_tactic TA0001, attack_technique T1190, confidence High, severity Info, created_at 2026_10_18; \
     sid:9112003; rev:1;)
-
-alert tcp any any -> any [22,3389,3306,1433,5432,6379,27017,1521,23,5900,5985] ( \
-    msg:"[攻击链-M4] 阶段标记 - 凭据服务高频访问"; \
-    flow:to_server; flags:S; \
-    detection_filter:track by_src, count 20, seconds 60; \
-    xbits:set, apt.stage.cred, track ip_src, expire 3600; \
-    flowbits:noalert; \
-    classtype:misc-activity; \
-    metadata:attack_tactic TA0006, attack_technique T1110, confidence Medium, severity Info, created_at 2026_10_18; \
-    sid:9112004; rev:1;)
-
-alert tcp any any -> any [445,139,5985,5986,88,389] ( \
-    msg:"[攻击链-M5] 阶段标记 - 横向移动与域内侦察"; \
-    flow:to_server; flags:S; \
-    detection_filter:track by_src, count 20, seconds 60; \
-    xbits:set, apt.stage.lateral, track ip_src, expire 3600; \
-    flowbits:noalert; \
-    classtype:misc-activity; \
-    metadata:attack_tactic TA0008, attack_technique T1021, confidence Medium, severity Info, created_at 2026_10_18; \
-    sid:9112005; rev:1;)
 
 alert http any any -> any any ( \
     msg:"[攻击链-M6] 阶段标记 - C2 信标与控制面板"; \
@@ -143,16 +128,6 @@ alert http any any -> any any ( \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence High, severity Critical, created_at 2026_10_18; \
     sid:9112010; rev:1;)
-
-alert tcp any any -> any any ( \
-    msg:"[攻击链-04] 攻击链 - 凭据攻击后出现横向移动"; \
-    flow:established; \
-    xbits:isset, apt.stage.cred, track ip_src; \
-    xbits:isset, apt.stage.lateral, track ip_src; \
-    threshold: type limit, track by_src, count 1, seconds 600; \
-    classtype:trojan-activity; \
-    metadata:attack_tactic TA0008, attack_technique T1021, confidence High, severity Critical, created_at 2026_10_18; \
-    sid:9112011; rev:1;)
 
 alert tcp any any -> any any ( \
     msg:"[攻击链-05] 攻击链 - 攻击流量经代理隧道转发"; \

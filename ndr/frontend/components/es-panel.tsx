@@ -11,18 +11,12 @@ import {
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   EmptyState,
   Field,
   Input,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   SettingsForm,
-  SettingsGrid,
-  SettingsMain,
-  SettingsRail,
   Skeleton,
   Stat,
   StatSkeleton,
@@ -289,111 +283,103 @@ export function EsPanel() {
   return (
     <div className="space-y-4">
       <PanelError errors={errs} />
-      <Section
-        title="Elasticsearch（接入 / 保留 / 状态）"
-        description={
-          <>
-            Elasticsearch 随本项目一起部署，<b>连接信息由部署环境固定</b>
-            （`.env` 的 `ES_URL` / `ES_USER` / `ES_PASSWORD` → 后台的 `ST_ES_*`），
-            这里只显示现在连的是哪台、没有填写入口；要换 ES 就改 `.env` 再
-            `docker compose up -d backend` 重建容器。
-            保留期通过 ILM 策略自动下发给 ES，让索引自动 rollover 与删除；
-            <b>不得小于回溯封顶（{cfg?.retention_min_days ?? 7} 天）</b>，否则回溯会查不到日志。
-          </>
-        }
-      >
-        {/* 这一页能改的只有「索引与保留」，放主列；连接是部署环境固定的事实，放右侧。
-            集群状态带一张 4 列索引表，19rem 的侧栏装不下，按整幅排在 Grid 之后。 */}
-        <SettingsGrid>
-          <SettingsMain>
-            <Card>
-              <CardHeader>
-                <CardTitle>索引与保留</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {loading ? (
-                  /* 原来这块没有骨架（接口没回来时是一片空白，先闪一下再出内容）。
-                     加载完是 2 个字段 + 3 个按钮，骨架照这个形状画。 */
-                  <>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Skeleton className="h-14 w-full" />
-                      <Skeleton className="h-14 w-full" />
-                    </div>
-                    <Skeleton className="h-8 w-40" />
-                  </>
-                ) : (
-                  <SettingsForm>
-                    <Field label="索引模式（两类采集统一落这一族）" htmlFor="es-events-index">
-                      <Input
-                        id="es-events-index"
-                        value={eventsIndex}
-                        disabled={!cfg}
-                        onChange={(e) => setEventsIndex(e.target.value)}
-                      />
-                    </Field>
-                    <Field label={`保留天数（≥${cfg?.retention_min_days ?? 7}）`} htmlFor="es-retention">
-                      <Input
-                        id="es-retention"
-                        type="number"
-                        className="tabular-nums"
-                        value={retention}
-                        disabled={!cfg}
-                        onChange={(e) => setRetention(e.target.value)}
-                        min={cfg?.retention_min_days ?? 7}
-                      />
-                    </Field>
-                  </SettingsForm>
-                )}
+      <SettingsBoard>
+        {/* 能改的只有「索引与保留」，占主列；「连接」是部署环境固定的只读事实，
+            作为同一分区的右列（一条竖线分隔，不再是第二张卡）。 */}
+        <SettingsBlock
+          title="索引与保留"
+          description={
+            <>
+              Elasticsearch 随本项目一起部署，<b>连接信息由部署环境固定</b>
+              （`.env` 的 `ES_URL` / `ES_USER` / `ES_PASSWORD` → 后台的 `ST_ES_*`），
+              这里只显示现在连的是哪台、没有填写入口；要换 ES 就改 `.env` 再
+              `docker compose up -d backend` 重建容器。
+              保留期通过 ILM 策略自动下发给 ES，让索引自动 rollover 与删除；
+              <b>不得小于回溯封顶（{cfg?.retention_min_days ?? 7} 天）</b>，否则回溯会查不到日志。
+            </>
+          }
+          bodyClassName="space-y-3"
+          rail={
+            <div className="space-y-2">
+              {/* rail 没有独立标题条：原来「连接」那张卡的标题写成右列顶部的小标签 */}
+              <span className="text-xs font-medium text-foreground">连接（部署环境固定）</span>
+              {connectionBody()}
+            </div>
+          }
+        >
+          {loading ? (
+            /* 原来这块没有骨架（接口没回来时是一片空白，先闪一下再出内容）。
+               加载完是 2 个字段 + 3 个按钮，骨架照这个形状画。 */
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Skeleton className="h-14 w-full" />
+                <Skeleton className="h-14 w-full" />
+              </div>
+              <Skeleton className="h-8 w-40" />
+            </>
+          ) : (
+            <SettingsForm>
+              <Field label="索引模式（两类采集统一落这一族）" htmlFor="es-events-index" controlWidth="md">
+                <Input
+                  id="es-events-index"
+                  value={eventsIndex}
+                  disabled={!cfg}
+                  onChange={(e) => setEventsIndex(e.target.value)}
+                />
+              </Field>
+              <Field label={`保留天数（≥${cfg?.retention_min_days ?? 7}）`} htmlFor="es-retention" controlWidth="xs">
+                <Input
+                  id="es-retention"
+                  type="number"
+                  className="tabular-nums"
+                  value={retention}
+                  disabled={!cfg}
+                  onChange={(e) => setRetention(e.target.value)}
+                  min={cfg?.retention_min_days ?? 7}
+                />
+              </Field>
+            </SettingsForm>
+          )}
 
-                {msg && (
-                  <p
-                    role={msgKind === "err" ? "alert" : "status"}
-                    className={cn(
-                      "rounded-xs border px-3 py-2 text-xs",
-                      msgKind === "err"
-                        ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
-                        : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
-                    )}
-                  >
-                    {msg}
-                  </p>
-                )}
+          {msg && (
+            <p
+              role={msgKind === "err" ? "alert" : "status"}
+              className={cn(
+                "rounded-xs border px-3 py-2 text-xs",
+                msgKind === "err"
+                  ? "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg"
+                  : "border-sev-ok-bd bg-sev-ok-bg text-sev-ok-fg"
+              )}
+            >
+              {msg}
+            </p>
+          )}
 
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* 配置没读到就禁止保存：空表单点保存会把索引模式/保留期覆盖掉 */}
-                  <Button size="sm" onClick={save} disabled={busy || !cfg}>
-                    保存索引模式与保留期
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={applyRetention} disabled={busy}>
-                    下发保留策略（ILM）
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
-                    刷新状态
-                  </Button>
-                  {!cfg && !loading && (
-                    <span className="self-center text-xs text-sev-critical-fg">
-                      配置未读到，已禁用保存（避免空表单覆盖现有配置）
-                    </span>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </SettingsMain>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 配置没读到就禁止保存：空表单点保存会把索引模式/保留期覆盖掉 */}
+            <Button size="sm" onClick={save} disabled={busy || !cfg}>
+              保存索引模式与保留期
+            </Button>
+            <Button size="sm" variant="outline" onClick={applyRetention} disabled={busy}>
+              下发保留策略（ILM）
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
+              刷新状态
+            </Button>
+            {!cfg && !loading && (
+              <span className="self-center text-xs text-sev-critical-fg">
+                配置未读到，已禁用保存（避免空表单覆盖现有配置）
+              </span>
+            )}
+          </div>
+        </SettingsBlock>
 
-          <SettingsRail>
-            <Card>
-              <CardHeader>
-                <CardTitle>连接（部署环境固定）</CardTitle>
-              </CardHeader>
-              <CardContent>{connectionBody()}</CardContent>
-            </Card>
-          </SettingsRail>
-        </SettingsGrid>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle>集群状态</CardTitle>
-            {status ? (
+        {/* 集群状态带一张 4 列索引表，19rem 的右列装不下，单独成一段占满整幅 */}
+        <SettingsBlock
+          title="集群状态"
+          bodyClassName="space-y-3"
+          extra={
+            status ? (
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={healthVariant(status.health.status)}>
                   {status.health.status ?? "unknown"}
@@ -402,13 +388,12 @@ export function EsPanel() {
                   ILM {status.ilm.exists ? "已下发" : "未下发"}
                 </Badge>
               </div>
-            ) : null}
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {clusterBody()}
-          </CardContent>
-        </Card>
-      </Section>
+            ) : null
+          }
+        >
+          {clusterBody()}
+        </SettingsBlock>
+      </SettingsBoard>
     </div>
   );
 }

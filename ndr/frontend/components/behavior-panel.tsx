@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardContent,
+  Dialog,
   Drawer,
   EmptyState,
   Input,
@@ -30,12 +31,14 @@ import {
 import { PanelError, emptyOrFailed, loadInto, usePanelErrors } from "@/components/panel-error";
 import { displayName, useAliases } from "@/lib/aliases";
 import type {
+  AlertDisposition,
   AssetListPayload,
   BaselineConfigItem,
   BaselineConfigPayload,
   BaselinePayload,
   BaselineProfile,
   BaselineProfilesPayload,
+  DispositionListPayload,
   NumericGroupedPayload,
   NumericStat,
 } from "@/lib/api";
@@ -189,7 +192,13 @@ function Pager({
 }
 
 /** 画像展开后的细节：理由 / 来源 IP / 服务端 IP / UA / 接口路径 / 时段分布。 */
-function ProfileDetail({ row }: { row: BaselineProfile }) {
+function ProfileDetail({
+  row,
+  onDispose,
+}: {
+  row: BaselineProfile;
+  onDispose: (row: BaselineProfile) => void;
+}) {
   const reasons = row.anomalies || [];
   return (
     <div className="space-y-2 py-1 text-xs">
@@ -234,6 +243,15 @@ function ProfileDetail({ row }: { row: BaselineProfile }) {
         {row.error_count ?? 0} 次 · 观测 {row.obs_count ?? 0} 条事件 / {row.window_count ?? 0} 个窗口 ·
         首次 {formatDateTime(row.first_seen)} · 最近 {formatDateTime(row.last_seen)}
       </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+        <span className="text-muted-foreground">处置：</span>
+        <Button size="sm" variant="outline" onClick={() => onDispose(row)}>
+          标记误报 / 确认
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          判误报后该实体在 suppress 天内不再参与打分（理由仍保留展示）
+        </span>
+      </div>
     </div>
   );
 }
@@ -274,6 +292,17 @@ export function BehaviorPanel() {
   const [msg, setMsg] = React.useState("");
   const [fieldErrs, setFieldErrs] = React.useState<Record<string, string>>({});
 
+  // 告警处置（disposition）：单条画像打「误报 / 确认」，以及最近的处置记录
+  const [dispOpen, setDispOpen] = React.useState(false);
+  const [dispTarget, setDispTarget] = React.useState<BaselineProfile | null>(null);
+  const [dispVerdict, setDispVerdict] = React.useState<"false_positive" | "confirm">("false_positive");
+  const [dispNote, setDispNote] = React.useState("");
+  const [dispBusy, setDispBusy] = React.useState(false);
+  const [dispMsg, setDispMsg] = React.useState("");
+  const [dispList, setDispList] = React.useState<DispositionListPayload | null>(null);
+  const [dispListOpen, setDispListOpen] = React.useState(false);
+  const [dispListBusy, setDispListBusy] = React.useState(false);
+
   const profilesUrl =
     `/api/baseline/profiles?kind=${encodeURIComponent(kind)}` +
     `&q=${encodeURIComponent(pq)}&min_risk=${Number(minRisk) || 0}` +
@@ -309,6 +338,59 @@ export function BehaviorPanel() {
 
   async function loadConfig() {
     await loadInto(errs, SRC.config, "/api/baseline/config", applyConfig);
+  }
+
+  // ---------- 告警处置（disposition） ----------
+  function openDisposition(row: BaselineProfile) {
+    setDispTarget(row);
+    setDispVerdict("false_positive");
+    setDispNote("");
+    setDispMsg("");
+    setDispOpen(true);
+  }
+
+  async function submitDisposition() {
+    if (!dispTarget) return;
+    const id = dispTarget.entity_key ?? dispTarget.id ?? "";
+    if (!id) {
+      setDispMsg("缺少实体标识，无法处置");
+      return;
+    }
+    setDispBusy(true);
+    setDispMsg("");
+    try {
+      await apiFetch(`/api/baseline/alerts/${encodeURIComponent(id)}/disposition`, {
+        method: "POST",
+        body: JSON.stringify({ verdict: dispVerdict, note: dispNote }),
+      });
+      setDispOpen(false);
+      // 误报后该实体在 suppress 天内不再参与打分，风险可能归零 —— 重拉画像与总览
+      void loadInto(errs, SRC.profiles, profilesUrl, setProfiles);
+      void loadInto(errs, SRC.overview, "/api/baseline", setOverview);
+    } catch (e) {
+      setDispMsg(e instanceof ApiError ? errorText(e.body) : "处置失败");
+    } finally {
+      setDispBusy(false);
+    }
+  }
+
+  async function openDispositionList() {
+    setDispListOpen(true);
+    setDispListBusy(true);
+    try {
+      const data = await apiFetch<DispositionListPayload>(
+        "/api/baseline/alerts/dispositions?limit=50",
+      );
+      setDispList(data);
+    } catch (e) {
+      setDispList({
+        items: [],
+        limit: 50,
+        error: e instanceof ApiError ? errorText(e.body) : "读取失败",
+      });
+    } finally {
+      setDispListBusy(false);
+    }
   }
 
   React.useEffect(() => {
@@ -755,6 +837,14 @@ export function BehaviorPanel() {
               <span className="text-xs tabular-nums text-muted-foreground">
                 共 {profiles?.total ?? 0} 条
               </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto"
+                onClick={openDispositionList}
+              >
+                处置记录
+              </Button>
             </div>
             {!profiles && !errs.has ? (
               <TableSkeleton rows={6} cols={6} />
@@ -767,6 +857,11 @@ export function BehaviorPanel() {
                     <TableHead>类型</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead>风险</TableHead>
+                    <TableHead
+                      title="似然比后验概率（0~1）；llr 打分时列表按它排序"
+                    >
+                      后验
+                    </TableHead>
                     <TableHead>判定时间</TableHead>
                     <TableHead>最近出现</TableHead>
                     <TableHead>观测</TableHead>
@@ -819,6 +914,9 @@ export function BehaviorPanel() {
                               <span className="tabular-nums text-muted-foreground">0</span>
                             )}
                           </TableCell>
+                          <TableCell className="tabular-nums text-muted-foreground">
+                            {row.posterior != null ? row.posterior.toFixed(3) : "-"}
+                          </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                             {formatDateTime(row.risk_at)}
                           </TableCell>
@@ -846,8 +944,8 @@ export function BehaviorPanel() {
                         {open ? (
                           <TableRow>
                             {/* 展开行的底：L1 内联底（原来 bg-muted/30 是半透明叠色，暗色端发灰） */}
-                            <TableCell colSpan={9} className="bg-surface-1">
-                              <ProfileDetail row={row} />
+                            <TableCell colSpan={10} className="bg-surface-1">
+                              <ProfileDetail row={row} onDispose={openDisposition} />
                             </TableCell>
                           </TableRow>
                         ) : null}
@@ -1121,6 +1219,103 @@ export function BehaviorPanel() {
           })}
         </div>
       </Drawer>
+
+      {/* 单条画像处置：标记误报（降权）/ 确认（留档） */}
+      <Dialog
+        open={dispOpen}
+        title={`处置告警 · ${dispTarget?.entity_display || dispTarget?.entity_key || ""}`}
+        onClose={() => setDispOpen(false)}
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setDispOpen(false)}>
+              取消
+            </Button>
+            <Button size="sm" disabled={dispBusy} onClick={submitDisposition}>
+              {dispBusy ? "提交中…" : "提交处置"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            给这条画像告警打上结论，用于后续自动降权。判为误报后，该实体在 suppress
+            天内不再参与打分（理由仍会保留展示）。
+          </p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={dispVerdict === "false_positive" ? "default" : "outline"}
+              onClick={() => setDispVerdict("false_positive")}
+            >
+              误报（降权）
+            </Button>
+            <Button
+              size="sm"
+              variant={dispVerdict === "confirm" ? "default" : "outline"}
+              onClick={() => setDispVerdict("confirm")}
+            >
+              确认（留档）
+            </Button>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">备注（可选）</label>
+            <textarea
+              className="h-20 w-full resize-none rounded-sm border border-input bg-surface-1 p-2 text-sm text-foreground"
+              value={dispNote}
+              onChange={(e) => setDispNote(e.target.value)}
+              placeholder="补充说明这次处置的原因"
+            />
+          </div>
+          {dispMsg ? <p className="text-xs text-sev-critical-fg">{dispMsg}</p> : null}
+        </div>
+      </Dialog>
+
+      {/* 处置记录：最近的处置结论（核对降权是否生效） */}
+      <Dialog
+        open={dispListOpen}
+        title="处置记录"
+        widthClass="w-[560px] max-w-[94vw]"
+        onClose={() => setDispListOpen(false)}
+        footer={
+          <Button variant="ghost" size="sm" onClick={() => setDispListOpen(false)}>
+            关闭
+          </Button>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          {dispListBusy ? (
+            <p className="text-muted-foreground">读取中…</p>
+          ) : dispList?.error ? (
+            <p className="text-sev-critical-fg">{dispList.error}</p>
+          ) : dispList?.items?.length ? (
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+              {dispList.items.map((d: AlertDisposition) => (
+                <div
+                  key={d.id}
+                  className="rounded-xs border border-border bg-surface-1 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{d.entity_key}</span>
+                    <Badge variant={d.verdict === "false_positive" ? "secondary" : "outline"}>
+                      {d.verdict === "false_positive" ? "误报·降权" : "确认·留档"}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {d.kind} · 操作人 {d.operator || "-"}
+                    {d.signal ? ` · 信号 ${d.signal}` : ""} ·{" "}
+                    {d.created_at ? formatDateTime(d.created_at) : "-"}
+                  </div>
+                  {d.note ? (
+                    <p className="mt-1 break-all text-xs text-muted-foreground">备注：{d.note}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground">还没有处置记录。</p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }

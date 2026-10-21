@@ -3,68 +3,58 @@
 # ----------------------------------------------------------------------------
 # 文件名称    : 02-端口与主机扫描.rules
 # 攻击类型    : 端口与主机扫描
-# ATT&CK     : TA0043 侦察 / T1046 网络服务发现
-# 规则数量    : 7
-# SID 段     : 9102001 - 9102007
+# ATT&CK     : TA0043 侦察 / T1046 网络服务发现 / T1595 主动扫描
+# 规则数量    : 3
+# SID 段     : 9102010 - 9102012
 #
-# 检测原理
-#   基于 TCP 标志位与连接频次的扫描行为检测,不依赖任何载荷特征,可覆盖未知扫描器。
+# 检测原理（2026-10-21 二次重构：只保留应用载荷可识别的扫描器指纹）
+#   2026-10-21 第一版曾把本类扩成 16 条三层结构（指纹 / 行为 / 频率），
+#   但经复核确认：纯频率规则（SYN 高频、UDP 高频、ICMP/RST 风暴、ACK/NULL/
+#   FIN/XMAS 特征计数）与纯 TCP 包头规则（masscan/zmap 的 window=1024/
+#   65535 + 无选项指纹，本质是 tcp.hdr 数据偏移字段匹配）均不满足
+#   "应用载荷精准命中"标准——正常业务（负载均衡健康检查、监控拨测、
+#   CDN 回源、内网漏扫平台）同样会产生这些包头特征与频率，误报率高
+#   （生产实测 63.5% 告警来自旧频率扫描规则族），已全部删除。
 #
-# 误报与适配提示
-#   负载均衡、健康检查、CDN 回源会产生大量新建连接,需按网段校准频次阈值。
+#   保留的 3 条均以应用层载荷为唯一判据：
+#     - nmap NSE 脚本引擎：User-Agent 含 "Nmap Scripting Engine"，
+#       NSE 脚本默认 UA，浏览器与正常客户端不会携带（HTTP 载荷）。
+#     - nmap -sV 服务探测：DNS version.bind CHAOS TXT 查询
+#       （TCP/UDP 53），nmap-service-probes 的 DNSVersionBindReq
+#       固定载荷，正常业务极少查询（DNS 载荷）。
+#
+#   能力边界说明（重要）：
+#     删除后，Suricata 侧不再直接检测"纯协议栈扫描行为"（SYN 半连接
+#     扫描、FIN/NULL/XMAS、UDP 端口清扫、ACK 防火墙探测）。这类行为
+#     在单包载荷上无法与正常业务区分，属于行为分析范畴，应由 Zeek
+#     连接日志（conn.log / 扫描统计）或 NDR 平台的行为检测模块承担，
+#     不应由签名规则用频率硬凑。扫描器识别请配合 01 类工具指纹
+#     （ffuf/gobuster/sqlmap/Nuclei/AWVS/Nikto/WPScan/masscan/zgrab/
+#     Nessus 等 User-Agent 载荷指纹）使用。
 # ============================================================================
 
-alert tcp $HOME_NET any -> $EXTERNAL_NET any ( \
-    msg:"[扫描-01] 端口扫描 - 出向高频 SYN(masscan/zmap 特征)"; \
-    flags:S; flow:stateless; \
-    detection_filter:track by_src, count 100, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
-    sid:9102001; rev:1;)
+alert http any any -> any any ( \
+    msg:"[扫描-10] nmap NSE 脚本引擎 User-Agent"; \
+    flow:established,to_server; \
+    http.user_agent; content:"Nmap Scripting Engine"; nocase; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity High, created_at 2026_10_21; \
+    sid:9102010; rev:2;)
 
-alert tcp $EXTERNAL_NET any -> $HOME_NET any ( \
-    msg:"[扫描-02] 端口扫描 - 入向高频 SYN"; \
-    flags:S; flow:stateless; \
-    detection_filter:track by_src, count 100, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
-    sid:9102002; rev:1;)
+alert tcp any any -> any 53 ( \
+    msg:"[扫描-11] nmap 服务探测 - DNS version.bind(TCP)"; \
+    flow:established,to_server; \
+    content:"|07|version|04|bind"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1595, confidence High, severity High, created_at 2026_10_21; \
+    sid:9102011; rev:2;)
 
-alert tcp $HOME_NET any -> $EXTERNAL_NET any ( \
-    msg:"[扫描-03] 密集探测 - 单源短时大量新建连接"; \
-    flags:S; flow:stateless; \
-    detection_filter:track by_src, count 300, seconds 30; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence Medium, severity Medium, created_at 2026_10_18; \
-    sid:9102003; rev:1;)
-
-alert tcp any any -> any any ( \
-    msg:"[扫描-04] TCP NULL 扫描"; \
-    flags:0; flow:stateless; \
-    detection_filter:track by_src, count 10, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102004; rev:2;)
-
-alert tcp any any -> any any ( \
-    msg:"[扫描-05] TCP FIN 扫描"; \
-    flags:F; flow:stateless; \
-    detection_filter:track by_src, count 20, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102005; rev:2;)
-
-alert tcp any any -> any any ( \
-    msg:"[扫描-06] TCP XMAS 扫描"; \
-    flags:FPU; flow:stateless; \
-    detection_filter:track by_src, count 10, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence High, severity Medium, created_at 2026_10_18; \
-    sid:9102006; rev:2;)
-
-alert udp $HOME_NET any -> $EXTERNAL_NET ![53,123,443,161,514,5353,67,68,69,1900] ( \
-    msg:"[扫描-07] UDP 端口扫描 - 出向高频"; \
-    detection_filter:track by_src, count 200, seconds 60; \
-    classtype:network-scan; \
-    metadata:attack_tactic TA0043, attack_technique T1046, confidence Low, severity Low, created_at 2026_10_18; \
-    sid:9102007; rev:2;)
+alert udp any any -> any 53 ( \
+    msg:"[扫描-12] nmap 服务探测 - DNS version.bind(UDP)"; \
+    content:"|07|version|04|bind"; \
+    threshold: type limit, track by_src, count 1, seconds 60; \
+    classtype:attempted-recon; \
+    metadata:attack_tactic TA0043, attack_technique T1595, confidence Medium, severity Medium, created_at 2026_10_21; \
+    sid:9102012; rev:2;)

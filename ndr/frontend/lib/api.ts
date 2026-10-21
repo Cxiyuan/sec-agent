@@ -456,6 +456,8 @@ export interface BaselineProfile {
   entity_display?: string;
   obs_count?: number;
   risk_score?: number;
+  /** 似然比**后验概率**（0~1）：llr 打分方式下列表按它排序；加和分（risk_score）回滚口径下也返回 */
+  posterior?: number;
   /** 风险分的**判定时间**（本轮落库时间）。本轮无异常时 risk_score 归零、这里为 null */
   risk_at?: string | null;
   /** 服务端 IP（被访问的监控资产）：界面展示「账号 · 服务端IP」靠它 */
@@ -873,6 +875,30 @@ export interface BaselineConfigPayload {
 export interface BaselineProfilesPayload {
   total: number;
   items: BaselineProfile[];
+  error?: string;
+}
+
+/** 告警处置结论（`POST /api/baseline/alerts/{profile_id}/disposition` 写入）。
+ * `false_positive` = 误报，降权；`confirm` = 确认，仅留档。 */
+export type DispositionVerdict = "false_positive" | "confirm";
+
+/** 单条处置记录（`GET /api/baseline/alerts/dispositions` 返回） */
+export interface AlertDisposition {
+  id: string;
+  kind: string;
+  entity_key: string;
+  /** 空 = 整条告警级别；非空 = 只降权那一路证据（如 `new_src_ip`） */
+  signal: string;
+  verdict: DispositionVerdict;
+  operator: string;
+  note: string;
+  created_at: string | null;
+}
+
+/** `GET /api/baseline/alerts/dispositions`：最近的处置记录 */
+export interface DispositionListPayload {
+  items: AlertDisposition[];
+  limit: number;
   error?: string;
 }
 

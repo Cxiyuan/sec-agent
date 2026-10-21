@@ -21,6 +21,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # PR（尤其 fork）拿不到 packages: write，推镜像必失败 —— 只在 push/手动时构建分发
     if: github.event_name != 'pull_request'
     permissions:
@@ -123,7 +124,11 @@ jobs:
           # dsh 构建要盖 commit 哈希（上下文无 .git），把本次 SHA 传进去
           build-args: |
             DSH_CLIENT_COMMIT_HASH=${{ github.sha }}
-          tags: ${{ steps.ns.outputs.name }}/shentong-agent:latest
+          # 除 latest 外再打一个本次 commit 的**不可变** tag：下面的冒烟任务用它拉镜像，
+          # 否则连推两次时 latest 会被覆盖，冒烟可能在测另一份产物。
+          tags: |
+            ${{ steps.ns.outputs.name }}/shentong-agent:latest
+            ${{ steps.ns.outputs.name }}/shentong-agent:${{ github.sha }}
 
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
@@ -132,6 +137,7 @@ jobs:
   # agent（dsh）的质量门在文末 agent-web job（CI 内全量构建）。
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -229,6 +235,7 @@ jobs:
   # 2026-10-20：agent 前端换成 dsh 后由 agent-web job 构建，这里只剩 NDR。
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -257,6 +264,7 @@ jobs:
   # （原生插件 → Host/Client 库 → apps/web 前端，即 `dsh web` 服务的产物）。
   agent-web:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -283,7 +291,7 @@ jobs:
 
       # dsh 自带 typecheck / lint（TypeScript 侧）。agent 由 workbuddy 开发、我们负责提交，
       # 这两类错误必须在合并前暴露——`pnpm run build` 只保证构建产物能出，不保证类型干净。
-      # 先「只报告不拦截」跑一轮：存量问题可能不少，清干净后再去掉 continue-on-error。
+      # 严格拦截（2026-10 用户要求）：类型/规范错误必须红，不放行。
       - name: Typecheck dsh
         working-directory: agent/dsh
         run: pnpm run typecheck
@@ -301,6 +309,7 @@ jobs:
   # 首个插件尚未提交锁文件，先 --no-frozen-lockfile；锁文件入库后改冻结安装。
   agent-plugins:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       # xdr-ingest 的冷库是 PG（项目统一存储）：service 容器让 PG 集成测试
       # （tests/pg-store.integration.test.ts）在 CI 真实跑，账号与库名对齐
@@ -359,6 +368,7 @@ jobs:
   # host 网络：容器与 postgres service 共用 runner 的 127.0.0.1。
   agent-image-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: build
     if: github.event_name != 'pull_request'
     # 从 GHCR 拉镜像需要 packages: read（顶层默认只有 contents: read，
@@ -401,7 +411,7 @@ jobs:
             -e XDR_INGEST_TOKEN=smoke-token \
             -e DSH_WEB_HOST=127.0.0.1 \
             -e XDR_INGEST_PG_URL=postgresql://shentong:shentong@127.0.0.1:5432/shentong \
-            "ghcr.io/${GITHUB_REPOSITORY,,}/shentong-agent:latest"
+            "ghcr.io/${GITHUB_REPOSITORY,,}/shentong-agent:${GITHUB_SHA}"
 
       # 第一层：等 dsh web 本身就绪（根路径无需认证，任何状态码都算通）。
       # 用状态码而非 curl -f——上一版把 401/404 和连不上混为一谈，白等 5 分钟。

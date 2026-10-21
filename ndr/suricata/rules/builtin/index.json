@@ -1,19 +1,19 @@
 {
-  "source": "开发者按攻击类型分好文件的规则包（2026-10）",
-  "total": 180,
+  "source": "开发者按攻击类型分好文件的规则包（2026-10-21 载荷优先精简：删除全部纯频率/纯包头规则）",
+  "total": 167,
   "categories": [
     {
       "category": "01-recon-tools",
       "label": "侦察与攻击工具指纹",
       "file": "01-recon-tools.rules",
-      "rules": 29,
+      "rules": 28,
       "classtypes": {}
     },
     {
       "category": "02-port-scan",
       "label": "端口与主机扫描",
       "file": "02-port-scan.rules",
-      "rules": 7,
+      "rules": 3,
       "classtypes": {}
     },
     {
@@ -41,14 +41,14 @@
       "category": "06-credential",
       "label": "凭据攻击",
       "file": "06-credential.rules",
-      "rules": 7,
+      "rules": 5,
       "classtypes": {}
     },
     {
       "category": "08-tunnel-proxy",
       "label": "隧道与代理",
       "file": "08-tunnel-proxy.rules",
-      "rules": 6,
+      "rules": 5,
       "classtypes": {}
     },
     {
@@ -76,14 +76,14 @@
       "category": "12-attack-chain",
       "label": "攻击链关联检测",
       "file": "12-attack-chain.rules",
-      "rules": 14,
+      "rules": 11,
       "classtypes": {}
     },
     {
       "category": "13-non-http",
       "label": "非 HTTP 协议攻击",
       "file": "13-non-http.rules",
-      "rules": 8,
+      "rules": 7,
       "classtypes": {}
     },
     {
@@ -97,7 +97,7 @@
       "category": "15-non-http-scan",
       "label": "非 HTTP 通道与扫描器痕迹",
       "file": "15-non-http-scan.rules",
-      "rules": 7,
+      "rules": 6,
       "classtypes": {}
     }
   ]

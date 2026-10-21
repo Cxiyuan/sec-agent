@@ -46,6 +46,16 @@ export interface FieldProps {
   span?: "sm" | "md" | "lg" | "full";
   /** row 模式下标签列的宽度：短标签 sm / 常规 md / 长标签 lg */
   labelWidth?: "sm" | "md" | "lg";
+  /**
+   * row 模式下**控件区**的宽度档位：控件只占自己需要的宽度，不铺满剩余空间。
+   *
+   * 深信服设置页的做法：标签钉在一条竖线上，控件按内容取宽（端口框就一柞宽，
+   * URL 框才拉长），剩下的空白留给下一行 —— 而不是每个输入框都横跨整块板。
+   * 不传（或 `full`）= 铺满，给 textarea / 代码编辑器这类确实需要横向空间的内容。
+   *
+   * 提示与报错文案**不受这个宽度影响**，仍占满标签之后的剩余宽度（见 row 模式实现）。
+   */
+  controlWidth?: "xs" | "sm" | "md" | "lg" | "full";
   className?: string;
   children: React.ReactNode;
 }
@@ -54,6 +64,24 @@ const LABEL_W = {
   sm: "w-20", // 80px
   md: "w-[6.5rem]", // 104px
   lg: "w-32", // 128px
+} as const;
+
+/**
+ * row 模式控件区宽度档位：按**内容需要**取宽，不铺满。
+ *
+ * 取值标尺（控件内文字约 14px）：
+ *   xs 96px   端口 / 小数字（1~1024 这种四位数）
+ *   sm 144px  端口组 / KB 数 / 枚举下拉
+ *   md 256px  IP / 网段 / 主机名（`192.168.0.0/16` 约 15 字符 ≈ 130px，留余量）
+ *   lg 416px  URL / 令牌 / ES 地址（`http://host:9200` 起）
+ *   full      铺满：textarea / 代码编辑器 / 条件编辑器
+ */
+const CONTROL_W = {
+  xs: "w-24",
+  sm: "w-36",
+  md: "w-64",
+  lg: "w-[26rem]",
+  full: "w-full",
 } as const;
 
 function FieldMessage({ error, hint }: { error?: React.ReactNode; hint?: React.ReactNode }) {
@@ -78,6 +106,7 @@ export function Field({
   required,
   span = "sm",
   labelWidth = "md",
+  controlWidth,
   className,
   children,
 }: FieldProps) {
@@ -111,7 +140,11 @@ export function Field({
           {labelNode}
         </label>
         <div className="min-w-0 flex-1">
-          {children}
+          {/* 控件按需取宽（`controlWidth`），提示/报错仍占满标签之后的剩余宽度。
+              窄控件 + 宽提示不会互相挤压：两者各占一行内各自的区域。 */}
+          <div className={cn(controlWidth ? CONTROL_W[controlWidth] : "w-full")}>
+            {children}
+          </div>
           <FieldMessage error={error} hint={hint} />
         </div>
       </div>

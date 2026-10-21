@@ -138,7 +138,7 @@ export default function RulesPage() {
   const [rules, setRules] = React.useState<RuleItem[]>([]);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({
     root: true,
-    // 行为分析是最大的一组（内置 19 条），默认展开；其余收起来，需要时自己点开
+    // 行为分析是实际生效的一组（源码定义 19 条，其中 7 条已收敛到特征匹配、实际生效 12 条），默认展开；其余收起来，需要时自己点开
     "kind:behavior_analysis": true,
   });
   const [openIds, setOpenIds] = React.useState<Record<string, boolean>>({});

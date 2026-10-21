@@ -4,20 +4,14 @@ import * as React from "react";
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Dialog,
   EmptyState,
   Field,
   FieldGrid,
   Input,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   SettingsForm,
-  SettingsGrid,
-  SettingsMain,
-  SettingsRail,
   Skeleton,
   Table,
   TableBody,
@@ -318,172 +312,28 @@ export function IngestFiltersPanel() {
   return (
     <div className="space-y-4">
       <PanelError errors={errs} />
-      <Section
-        title="降噪过滤（命中不进检测器，但仍进事件库）"
-        description={
-          <>
+      <SettingsBoard>
+        <SettingsBlock title="降噪过滤（命中不进检测器，但仍进事件库）">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             命中的事件<b>照样完整落进 Elasticsearch</b>（事件列表里查得到、可回溯），只是
             <b>不再投给检测器</b>，因此不会产生告警与报告。适合挡掉扫描器日常噪声、监控探活、心跳域名这类
             “看着像攻击、其实每天都有”的流量。条件只能引用地址/端口与协议内容字段，不允许拿 raw 全字段匹配。
             保存前请先<b>试运行</b>：它会拿最近的历史事件跑一遍，告你这个条件会挡下多少条、分别是哪些。
-          </>
-        }
-      >
-        {hint && !msg && <p className="text-xs text-muted-foreground">{hint}</p>}
+          </p>
+          {hint && !msg && <p className="text-xs text-muted-foreground">{hint}</p>}
+        </SettingsBlock>
 
-        {/* 主列＝表单（唯一能改的）；侧栏＝被挡下的样例（只读）。已配置过滤器 5 列，
-            19rem 侧栏放不下，整幅排在 grid 之后，避免把表单区推走。 */}
-        <SettingsGrid>
-          <SettingsMain>
-            <Card>
-              <CardHeader>
-                <CardTitle>{editId ? "编辑过滤器" : "新建过滤器"}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <SettingsForm>
-                  <Field label="名称" htmlFor="ingest-name" required>
-                    <Input
-                      id="ingest-name"
-                      value={name}
-                      aria-required="true"
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="如：挡掉内网漏洞扫描噪声"
-                    />
-                  </Field>
-                  <Field label="优先级（越小越先匹配）" htmlFor="ingest-priority">
-                    <Input
-                      id="ingest-priority"
-                      className="tabular-nums"
-                      value={priority}
-                      onChange={(e) => setPriority(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="说明（可选）" htmlFor="ingest-desc">
-                    <Input
-                      id="ingest-desc"
-                      value={desc}
-                      onChange={(e) => setDesc(e.target.value)}
-                      placeholder="为什么挡它（便于以后判断能不能删）"
-                    />
-                  </Field>
-                  <div className="flex items-end pb-2">
-                    <label className="flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={enabled}
-                        onChange={(e) => setEnabled(e.target.checked)}
-                      />
-                      启用
-                    </label>
-                  </div>
-                </SettingsForm>
-
-                {examples.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-muted-foreground">现成示例：</span>
-                    {examples.map((ex) => (
-                      <Button
-                        key={ex.name}
-                        size="sm"
-                        variant="outline"
-                        title={ex.description || ""}
-                        onClick={() => applyExample(ex)}
-                      >
-                        {ex.name}
-                      </Button>
-                    ))}
-                  </div>
-                )}
-
-                {nested && (
-                  <p className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
-                    该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
-                  </p>
-                )}
-
-                <ConditionEditor
-                  fields={fields}
-                  conds={conds}
-                  logic={logic}
-                  onLogic={setLogic}
-                  onChange={setCond}
-                  onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
-                  onAdd={() => setConds((cs) => [...cs, { field: "src_ip", op: "eq", value: "" }])}
-                />
-
-                {notice}
-
-                <div className="flex flex-wrap items-end gap-2">
-                  <Button size="sm" onClick={save}>
-                    {editId ? "保存修改" : "添加"}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={dryRun} disabled={dryBusy}>
-                    {dryBusy ? "试运行中…" : "试运行（不保存）"}
-                  </Button>
-                  <FieldGrid maxCols={4} className="items-end">
-                    <Field label="回看小时" htmlFor="ingest-hours">
-                      <Input
-                        id="ingest-hours"
-                        className="tabular-nums"
-                        value={hours}
-                        onChange={(e) => setHours(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="最多取样" htmlFor="ingest-limit">
-                      <Input
-                        id="ingest-limit"
-                        className="tabular-nums"
-                        value={limit}
-                        onChange={(e) => setLimit(e.target.value)}
-                      />
-                    </Field>
-                  </FieldGrid>
-                  {editId && (
-                    <Button size="sm" variant="outline" onClick={reset}>
-                      取消编辑
-                    </Button>
-                  )}
-                </div>
-
-                {dry && (
-                  <div className="space-y-2 rounded-xs bg-surface-1 p-3">
-                    <p className="text-sm">
-                      试运行结果：取样自{" "}
-                      <b>{SOURCE_TEXT[String(dry.source || "none")] || String(dry.source || "-")}</b>
-                      {typeof dry.scanned === "number" && (
-                        <>
-                          ，共看了 <b className="tabular-nums">{dry.scanned}</b> 条，命中{" "}
-                          <b className="tabular-nums">{dry.matched ?? 0}</b> 条
-                          {dry.ratio !== undefined && (
-                            <span className="tabular-nums">
-                              （{(Number(dry.ratio) * 100).toFixed(1)}%）
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </p>
-                    {dry.hint && <p className="text-xs text-muted-foreground">{dry.hint}</p>}
-                    {dry.errors?.length ? (
-                      <p className="text-xs text-sev-critical-fg">{dry.errors.join("；")}</p>
-                    ) : null}
-                    {(dry.samples || []).map((s, i) => (
-                      <SampleLine key={i} s={s} />
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </SettingsMain>
-
-          <SettingsRail>
-            <Card>
-              <CardHeader>
-                <CardTitle>最近被挡下的事件（每条例最多留 3 条）</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
+        {/* 能改的只有这份表单，占主区；被挡下的样例与汇总只读，挂在同一段的 rail 右侧一列。
+            已配置过滤器 5 列，不适合塞进窄列，单独占下面一整幅。 */}
+        <SettingsBlock
+          title={editId ? "编辑过滤器" : "新建过滤器"}
+          bodyClassName="space-y-3"
+          rail={
+            <>
+              <p className="mb-2 text-xs text-muted-foreground">最近被挡下的事件（每条例最多留 3 条）</p>
+              <div className="space-y-2">
                 {/* 汇总三行（生效条数 / 累计挡下 / 最近命中）：样例行只回答"挡的是不是想挡的"，
-                    这几行回答"到底挡了多少" —— 两者都是只读事实，都放侧栏。 */}
+                    这几行回答"到底挡了多少" —— 两者都是只读事实，都放右侧只读列。 */}
                 {!loading && (
                   <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
                     <p className="pb-1">
@@ -540,134 +390,268 @@ export function IngestFiltersPanel() {
                     hint="过滤器命中后会在这里留一条样例，便于确认它挡的是不是想挡的东西。"
                   />
                 )}
-              </CardContent>
-            </Card>
-          </SettingsRail>
-        </SettingsGrid>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle>已配置过滤器</CardTitle>
-            <Badge variant="outline">
-              共 <span className="tabular-nums">{items.length}</span> 条
-            </Badge>
-          </CardHeader>
-          <CardContent>
-            {/* 列表的骨架：原来只在上方的表单卡里画了骨架，这张表的位置是空白 ——
-                接口慢的时候会先看到「暂无降噪过滤」的错觉位置。 */}
-            {loading ? (
-              <TableSkeleton rows={5} cols={5} />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>名称</TableHead>
-                    <TableHead>条件</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>已挡下</TableHead>
-                    <TableHead>操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((f) => (
-                    <TableRow key={f.id}>
-                      <TableCell className="max-w-[200px] truncate" title={f.description || f.name}>
-                        {f.name}
-                        <span className="ml-2 text-xs tabular-nums text-muted-foreground">
-                          #{f.priority}
-                        </span>
-                      </TableCell>
-                      <TableCell
-                        className="max-w-[380px] truncate font-mono text-xs"
-                        title={condSummary(f.conditions)}
-                      >
-                        {condSummary(f.conditions)}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={f.enabled ? "success" : "outline"}>
-                          {f.enabled ? "启用" : "禁用"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="tabular-nums">{f.hit_count ?? 0}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
-                            编辑
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              f.enabled
-                                ? setPending({ item: f, action: "disable" })
-                                : void toggle(f)
-                            }
-                          >
-                            {f.enabled ? "禁用" : "启用"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => setPending({ item: f, action: "delete" })}
-                          >
-                            删除
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!items.length && (
-                    <TableRow>
-                      <TableCell colSpan={5} className="p-0">
-                        <EmptyState
-                          size="compact"
-                          tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
-                          title={emptyOrFailed(errs, SRC.list, "暂无降噪过滤（检测器会看到全部事件）")}
-                          hint="上面填好条件后点「添加」，最多 30 秒生效。"
-                        />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-
-        <Dialog
-          open={pending !== null}
-          title={pending?.action === "disable" ? "禁用这条降噪过滤？" : "删除这条降噪过滤？"}
-          onClose={() => setPending(null)}
-          footer={
-            <div className="flex items-center justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => setPending(null)}>
-                取消
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => {
-                  const p = pending;
-                  setPending(null);
-                  if (!p) return;
-                  if (p.action === "delete") void remove(p.item);
-                  else void toggle(p.item);
-                }}
-              >
-                {pending?.action === "disable" ? "禁用" : "删除"}
-              </Button>
-            </div>
+              </div>
+            </>
           }
         >
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {pending?.action === "disable" ? (
-              <>「{pending.item.name}」禁用后不再挡下事件，命中的事件会重新投给检测器（可随时再启用）。</>
-            ) : (
-              <>「{pending?.item.name}」删除后，命中它的事件会重新投给检测器。</>
+          <SettingsForm>
+            <Field label="名称" htmlFor="ingest-name" required controlWidth="md">
+              <Input
+                id="ingest-name"
+                value={name}
+                aria-required="true"
+                onChange={(e) => setName(e.target.value)}
+                placeholder="如：挡掉内网漏洞扫描噪声"
+              />
+            </Field>
+            <Field label="优先级（越小越先匹配）" htmlFor="ingest-priority" controlWidth="xs">
+              <Input
+                id="ingest-priority"
+                className="tabular-nums"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+              />
+            </Field>
+            <Field label="说明（可选）" htmlFor="ingest-desc" controlWidth="lg">
+              <Input
+                id="ingest-desc"
+                value={desc}
+                onChange={(e) => setDesc(e.target.value)}
+                placeholder="为什么挡它（便于以后判断能不能删）"
+              />
+            </Field>
+            <div className="flex items-end pb-2">
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={enabled}
+                  onChange={(e) => setEnabled(e.target.checked)}
+                />
+                启用
+              </label>
+            </div>
+          </SettingsForm>
+
+          {examples.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">现成示例：</span>
+              {examples.map((ex) => (
+                <Button
+                  key={ex.name}
+                  size="sm"
+                  variant="outline"
+                  title={ex.description || ""}
+                  onClick={() => applyExample(ex)}
+                >
+                  {ex.name}
+                </Button>
+              ))}
+            </div>
+          )}
+
+          {nested && (
+            <p className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg">
+              该过滤器含<b>嵌套条件组</b>，界面只支持编辑顶层条件。请先在上方补齐条件再保存；直接保存会丢失嵌套部分。
+            </p>
+          )}
+
+          <ConditionEditor
+            fields={fields}
+            conds={conds}
+            logic={logic}
+            onLogic={setLogic}
+            onChange={setCond}
+            onRemove={(i) => setConds((cs) => cs.filter((_, idx) => idx !== i))}
+            onAdd={() => setConds((cs) => [...cs, { field: "src_ip", op: "eq", value: "" }])}
+          />
+
+          {notice}
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Button size="sm" onClick={save}>
+              {editId ? "保存修改" : "添加"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={dryRun} disabled={dryBusy}>
+              {dryBusy ? "试运行中…" : "试运行（不保存）"}
+            </Button>
+            <FieldGrid maxCols={4} className="items-end">
+              <Field label="回看小时" htmlFor="ingest-hours" controlWidth="xs">
+                <Input
+                  id="ingest-hours"
+                  className="tabular-nums"
+                  value={hours}
+                  onChange={(e) => setHours(e.target.value)}
+                />
+              </Field>
+              <Field label="最多取样" htmlFor="ingest-limit" controlWidth="xs">
+                <Input
+                  id="ingest-limit"
+                  className="tabular-nums"
+                  value={limit}
+                  onChange={(e) => setLimit(e.target.value)}
+                />
+              </Field>
+            </FieldGrid>
+            {editId && (
+              <Button size="sm" variant="outline" onClick={reset}>
+                取消编辑
+              </Button>
             )}
-          </p>
-        </Dialog>
-      </Section>
+          </div>
+
+          {dry && (
+            <div className="space-y-2 rounded-xs bg-surface-1 p-3">
+              <p className="text-sm">
+                试运行结果：取样自{" "}
+                <b>{SOURCE_TEXT[String(dry.source || "none")] || String(dry.source || "-")}</b>
+                {typeof dry.scanned === "number" && (
+                  <>
+                    ，共看了 <b className="tabular-nums">{dry.scanned}</b> 条，命中{" "}
+                    <b className="tabular-nums">{dry.matched ?? 0}</b> 条
+                    {dry.ratio !== undefined && (
+                      <span className="tabular-nums">
+                        （{(Number(dry.ratio) * 100).toFixed(1)}%）
+                      </span>
+                    )}
+                  </>
+                )}
+              </p>
+              {dry.hint && <p className="text-xs text-muted-foreground">{dry.hint}</p>}
+              {dry.errors?.length ? (
+                <p className="text-xs text-sev-critical-fg">{dry.errors.join("；")}</p>
+              ) : null}
+              {(dry.samples || []).map((s, i) => (
+                <SampleLine key={i} s={s} />
+              ))}
+            </div>
+          )}
+        </SettingsBlock>
+
+        <SettingsBlock
+          title="已配置过滤器"
+          extra={
+            <>
+              <Badge variant="outline">
+                共 <span className="tabular-nums">{items.length}</span> 条
+              </Badge>
+            </>
+          }
+        >
+          {/* 列表的骨架：原来只在上方的表单卡里画了骨架，这张表的位置是空白 ——
+              接口慢的时候会先看到「暂无降噪过滤」的错觉位置。 */}
+          {loading ? (
+            <TableSkeleton rows={5} cols={5} />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>名称</TableHead>
+                  <TableHead>条件</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>已挡下</TableHead>
+                  <TableHead>操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell className="max-w-[200px] truncate" title={f.description || f.name}>
+                      {f.name}
+                      <span className="ml-2 text-xs tabular-nums text-muted-foreground">
+                        #{f.priority}
+                      </span>
+                    </TableCell>
+                    <TableCell
+                      className="max-w-[380px] truncate font-mono text-xs"
+                      title={condSummary(f.conditions)}
+                    >
+                      {condSummary(f.conditions)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={f.enabled ? "success" : "outline"}>
+                        {f.enabled ? "启用" : "禁用"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="tabular-nums">{f.hit_count ?? 0}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
+                          编辑
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            f.enabled
+                              ? setPending({ item: f, action: "disable" })
+                              : void toggle(f)
+                          }
+                        >
+                          {f.enabled ? "禁用" : "启用"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => setPending({ item: f, action: "delete" })}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!items.length && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="p-0">
+                      <EmptyState
+                        size="compact"
+                        tone={errs.isFailed(SRC.list) ? "danger" : "muted"}
+                        title={emptyOrFailed(errs, SRC.list, "暂无降噪过滤（检测器会看到全部事件）")}
+                        hint="上面填好条件后点「添加」，最多 30 秒生效。"
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </SettingsBlock>
+      </SettingsBoard>
+
+    <Dialog
+      open={pending !== null}
+        title={pending?.action === "disable" ? "禁用这条降噪过滤？" : "删除这条降噪过滤？"}
+        onClose={() => setPending(null)}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setPending(null)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                const p = pending;
+                setPending(null);
+                if (!p) return;
+                if (p.action === "delete") void remove(p.item);
+                else void toggle(p.item);
+              }}
+            >
+              {pending?.action === "disable" ? "禁用" : "删除"}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {pending?.action === "disable" ? (
+            <>「{pending.item.name}」禁用后不再挡下事件，命中的事件会重新投给检测器（可随时再启用）。</>
+          ) : (
+            <>「{pending?.item.name}」删除后，命中它的事件会重新投给检测器。</>
+          )}
+        </p>
+    </Dialog>
     </div>
   );
 }

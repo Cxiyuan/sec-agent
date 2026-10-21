@@ -14,19 +14,13 @@ import {
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Dialog,
   EmptyState,
   Field,
   Input,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   SettingsForm,
-  SettingsGrid,
-  SettingsMain,
-  SettingsRail,
   Skeleton,
   Table,
   TableBody,
@@ -80,8 +74,8 @@ function daysLeft(iso: string | undefined): string {
  * MCP 接入：令牌（生成 / 吊销）、最近调用、写回的结论、暴露的工具。
  *
  * 版式（2026-10 统一到设计体系）：
- * - 区块标题与说明走 `Section`（L1），内容是一张 `Card`（L2），三张表落在 `surface-1`
- *   的内联块（L3）里，不再用 `CardTitle` 当区块标题；
+ * - 整页是一块 `SettingsBoard` 铺满正文区，各段都是嵌在板里的 `SettingsBlock`（没有独立描边盒子）；
+ *   「签发新令牌」把只读的「服务状态」挂在自己的 `rail` 右侧一列，三张表各自占满整幅一段；
  * - 令牌前缀 / 工具名 / 事件 ID / 时间戳保留 `font-mono text-xs`（等宽是为了对位），
  *   其余单元格吃 `Table` 内置的 13px；
  * - 首屏（status 还没回来且无失败）画骨架 —— 「正在读」不能渲染成「还没有令牌」。
@@ -275,71 +269,58 @@ export function McpPanel() {
   if (!ready && !errs.has) {
     return (
       <div className="space-y-4" aria-busy="true">
-        <Section
-          title="MCP 接入（智能体取数入口）"
-          description="智能体分析事件时的查询、调查、写回结论都走这个服务；令牌在这里生成、轮换与吊销。"
-        >
-          {/* 骨架与加载完的结构同形：主列表单、侧栏服务状态、下面四张整幅表，避免出数时跳版 */}
-          <SettingsGrid>
-            <SettingsMain>
-              <Card>
-                <CardHeader>
-                  <CardTitle>签发新令牌</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Skeleton className="h-14" />
-                    <Skeleton className="h-14" />
-                  </div>
-                  <Skeleton className="h-8 w-28" />
-                </CardContent>
-              </Card>
-            </SettingsMain>
+        <SettingsBoard>
+          <SettingsBlock title="MCP 接入（智能体取数入口）">
+            <div className="space-y-2">
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-2/3" />
+            </div>
+          </SettingsBlock>
 
-            <SettingsRail>
-              <Card>
-                <CardHeader>
-                  <CardTitle>服务状态</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
+          {/* 骨架与加载完的结构同形：说明一段、签发令牌（右侧 rail 挂服务状态）、下面四张整幅表 */}
+          <SettingsBlock
+            title="签发新令牌"
+            bodyClassName="space-y-3"
+            rail={
+              <>
+                <p className="mb-2 text-xs text-muted-foreground">服务状态</p>
+                <div className="space-y-2">
                   <Skeleton className="h-5 w-20" />
                   <Skeleton className="h-3 w-full" />
                   <Skeleton className="h-3 w-2/3" />
-                </CardContent>
-              </Card>
-            </SettingsRail>
-          </SettingsGrid>
+                </div>
+              </>
+            }
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Skeleton className="h-14" />
+              <Skeleton className="h-14" />
+            </div>
+            <Skeleton className="h-8 w-28" />
+          </SettingsBlock>
 
-          <Card>
-            <CardContent className="space-y-2">
-              <Skeleton className="h-3 w-24" />
-              <TableSkeleton rows={3} cols={7} />
-            </CardContent>
-          </Card>
+          <SettingsBlock bodyClassName="space-y-2">
+            <Skeleton className="h-3 w-24" />
+            <TableSkeleton rows={3} cols={7} />
+          </SettingsBlock>
 
-          <Card>
-            <CardContent className="space-y-2">
-              <Skeleton className="h-3 w-20" />
-              <TableSkeleton rows={4} cols={6} />
-            </CardContent>
-          </Card>
+          <SettingsBlock bodyClassName="space-y-2">
+            <Skeleton className="h-3 w-20" />
+            <TableSkeleton rows={4} cols={6} />
+          </SettingsBlock>
 
           {/* 后面还有两张整幅卡（写回结论 5 列、工具清单）：骨架只画前两张的话，
               内容到达时页面会往下长一截，正在读的位置跟着跳。 */}
-          <Card>
-            <CardContent className="space-y-2">
-              <Skeleton className="h-3 w-24" />
-              <TableSkeleton rows={3} cols={5} />
-            </CardContent>
-          </Card>
+          <SettingsBlock bodyClassName="space-y-2">
+            <Skeleton className="h-3 w-24" />
+            <TableSkeleton rows={3} cols={5} />
+          </SettingsBlock>
 
-          <Card>
-            <CardContent className="space-y-2">
-              <Skeleton className="h-3 w-40" />
-              <Skeleton className="h-8 w-16" />
-            </CardContent>
-          </Card>
-        </Section>
+          <SettingsBlock bodyClassName="space-y-2">
+            <Skeleton className="h-3 w-40" />
+            <Skeleton className="h-8 w-16" />
+          </SettingsBlock>
+        </SettingsBoard>
       </div>
     );
   }
@@ -348,90 +329,24 @@ export function McpPanel() {
     <div className="space-y-4">
       <PanelError errors={errs} />
 
-      <Section
-        title="MCP 接入（智能体取数入口）"
-        description={
-          <>
+      <SettingsBoard>
+        <SettingsBlock title="MCP 接入（智能体取数入口）">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             智能体分析事件时的查询、调查、写回结论都走这个服务，<b>不再直连 ES</b>。
             令牌在这里生成、轮换与吊销，明文只显示一次（库里只存哈希）；忘了或怀疑泄露就轮换。
-          </>
-        }
-      >
-        {/* 能改的只有「签发新令牌」这一张表单，放主列；服务状态只读，放右侧。
-            已签发令牌（7 列）、最近调用（6 列）、写回结论（5 列）、工具清单 —— 四张都在
-            Grid 之外整幅竖排：它们并排后每张不足 3 列宽，挤在主列里会触发横向滚动。 */}
-        <SettingsGrid>
-          <SettingsMain>
-            <Card>
-              <CardHeader>
-                <CardTitle>签发新令牌</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {msg ? (
-                  <p className="text-13 text-muted-foreground" aria-live="polite">
-                    {msg}
-                  </p>
-                ) : null}
-                <SettingsForm>
-                  <Field label="新令牌名称（例如「智能体-生产」）" htmlFor="mcp-token-name">
-                    <Input
-                      id="mcp-token-name"
-                      ref={nameRef}
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="留空也行，只是界面里不好认"
-                    />
-                  </Field>
-                  <Field label="有效期（天，留空 = 永不过期）" htmlFor="mcp-token-days">
-                    <Input
-                      id="mcp-token-days"
-                      value={expiresDays}
-                      onChange={(e) => setExpiresDays(e.target.value)}
-                      placeholder="例如 90；1~3650"
-                      inputMode="numeric"
-                    />
-                  </Field>
-                </SettingsForm>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={createToken} disabled={busy}>
-                    生成令牌
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => load()} disabled={busy}>
-                    刷新
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={clearCalls} disabled={busy}>
-                    清空调用记录
-                  </Button>
-                </div>
-                {fresh && (
-                  <div className="space-y-2 rounded-md border border-primary/40 bg-surface-1 p-3 text-xs">
-                    <p className="font-medium text-foreground">新令牌明文（只显示这一次）</p>
-                    <p className="break-all font-mono text-foreground">{fresh}</p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={copyFresh}>
-                        复制
-                      </Button>
-                      <Button size="sm" variant="secondary" onClick={() => setFresh("")}>
-                        我已保存，隐藏
-                      </Button>
-                    </div>
-                    <p className="text-muted-foreground">
-                      填进智能体配置：地址{" "}
-                      <span className="font-mono">{status?.service.url ?? ""}</span>， 请求头{" "}
-                      <span className="font-mono">Authorization: Bearer &lt;令牌&gt;</span>。
-                    </p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </SettingsMain>
+          </p>
+        </SettingsBlock>
 
-          <SettingsRail>
-            <Card>
-              <CardHeader>
-                <CardTitle>服务状态</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
+        {/* 能改的只有「签发新令牌」这一段；服务状态只读，挂在它右侧的 rail 列里。
+            后面四段（已签发令牌 7 列、最近调用 6 列、写回结论 5 列、工具清单）各自占满整幅 ——
+            它们放进窄列不足 3 列宽，会挤成两行并触发横向滚动。 */}
+        <SettingsBlock
+          title="签发新令牌"
+          bodyClassName="space-y-3"
+          rail={
+            <>
+              <p className="mb-2 text-xs text-muted-foreground">服务状态</p>
+              <div className="space-y-2">
                 {/* 补两行：服务不可达时给出 HTTP 码（排障时第一个要的字段）与最近调用时间。
                     空值一律有文案，不留空白行。 */}
                 {status ? (
@@ -494,380 +409,424 @@ export function McpPanel() {
                     }
                   />
                 )}
-              </CardContent>
-            </Card>
-          </SettingsRail>
-        </SettingsGrid>
-
-        {/* 已签发令牌：7 列表格（名称/前缀/调用次数/最近使用/到期/状态/操作）整幅排。
-            它留在主列会让「操作」那一列的三个按钮在 758px 里挤成两行并触发横向滚动，
-            而这是本页最常用的表 —— 轮换与吊销都在这里按。 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>已签发令牌</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
-              <p className="text-xs text-muted-foreground">
-                令牌列表（只显示前缀与用量）；过期令牌的调用会被直接拒绝，请先轮换或改到期时间
+              </div>
+            </>
+          }
+        >
+          {msg ? (
+            <p className="text-13 text-muted-foreground" aria-live="polite">
+              {msg}
+            </p>
+          ) : null}
+          <SettingsForm>
+            <Field label="新令牌名称（例如「智能体-生产」）" htmlFor="mcp-token-name" controlWidth="md">
+              <Input
+                id="mcp-token-name"
+                ref={nameRef}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="留空也行，只是界面里不好认"
+              />
+            </Field>
+            <Field label="有效期（天，留空 = 永不过期）" htmlFor="mcp-token-days" controlWidth="xs">
+              <Input
+                id="mcp-token-days"
+                value={expiresDays}
+                onChange={(e) => setExpiresDays(e.target.value)}
+                placeholder="例如 90；1~3650"
+                inputMode="numeric"
+              />
+            </Field>
+          </SettingsForm>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={createToken} disabled={busy}>
+              生成令牌
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => load()} disabled={busy}>
+              刷新
+            </Button>
+            <Button size="sm" variant="destructive" onClick={clearCalls} disabled={busy}>
+              清空调用记录
+            </Button>
+          </div>
+          {fresh && (
+            <div className="space-y-2 rounded-md border border-primary/40 bg-surface-1 p-3 text-xs">
+              <p className="font-medium text-foreground">新令牌明文（只显示这一次）</p>
+              <p className="break-all font-mono text-foreground">{fresh}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={copyFresh}>
+                  复制
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setFresh("")}>
+                  我已保存，隐藏
+                </Button>
+              </div>
+              <p className="text-muted-foreground">
+                填进智能体配置：地址{" "}
+                <span className="font-mono">{status?.service.url ?? ""}</span>， 请求头{" "}
+                <span className="font-mono">Authorization: Bearer &lt;令牌&gt;</span>。
               </p>
-              {!ready ? (
-                <TableSkeleton rows={3} cols={5} />
-              ) : tokens.length === 0 ? (
-                <EmptyState
-                  size="compact"
-                  title={emptyOrFailed(
-                    errs,
-                    SRC.tokens,
-                    "还没有令牌 —— 智能体现在连不上（先在上面生成一个）",
-                  )}
-                  hint={
-                    errs.isFailed(SRC.tokens)
-                      ? "令牌列表读取失败，不是「一个都没有」"
-                      : "生成后把明文填进智能体配置，明文只显示这一次"
-                  }
-                  tone={errs.isFailed(SRC.tokens) ? "danger" : "muted"}
-                  action={
-                    errs.isFailed(SRC.tokens) ? (
-                      <Button size="sm" variant="outline" onClick={() => void load()}>
-                        重新读取
-                      </Button>
-                    ) : (
-                      <Button size="sm" variant="outline" onClick={() => nameRef.current?.focus()}>
-                        去生成令牌
-                      </Button>
-                    )
-                  }
-                />
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>名称</TableHead>
-                      <TableHead>前缀</TableHead>
-                      <TableHead className="text-right">调用次数</TableHead>
-                      <TableHead>最近使用</TableHead>
-                      <TableHead>到期</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tokens.map((t) => (
-                      <React.Fragment key={t.id}>
-                        <TableRow className={t.expired ? "bg-sev-critical-bg" : undefined}>
-                          <TableCell
-                            className={t.expired ? "font-medium text-sev-critical-fg" : "font-medium"}
-                          >
-                            {t.name || "-"}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs text-muted-foreground">
-                            {prefix}
-                            {t.prefix}…
-                          </TableCell>
-                          <TableCell className="text-right tabular-nums">{t.call_count}</TableCell>
-                          <TableCell className="whitespace-nowrap font-mono text-xs">
-                            {t.last_used_at ? formatDateTime(t.last_used_at) : "-"}
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap">
-                            {t.expired ? (
-                              <Badge variant="high">已过期</Badge>
-                            ) : t.expires_at ? (
-                              <span>
-                                <span className="font-mono text-xs">
-                                  {fmtExpiry(t.expires_at)}
-                                </span>
-                                {daysLeft(t.expires_at) && (
-                                  <span className="ml-1 text-xs tabular-nums text-muted-foreground">
-                                    （{daysLeft(t.expires_at)}）
-                                  </span>
-                                )}
+            </div>
+          )}
+        </SettingsBlock>
+
+        {/* 已签发令牌：7 列表格（名称/前缀/调用次数/最近使用/到期/状态/操作）单独占一段整幅排。
+            放进窄列会让「操作」那一列的四个按钮挤成两行并触发横向滚动，
+            而这是本页最常用的表 —— 轮换与吊销都在这里按。 */}
+        <SettingsBlock title="已签发令牌">
+          <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
+            <p className="text-xs text-muted-foreground">
+              令牌列表（只显示前缀与用量）；过期令牌的调用会被直接拒绝，请先轮换或改到期时间
+            </p>
+            {!ready ? (
+              <TableSkeleton rows={3} cols={5} />
+            ) : tokens.length === 0 ? (
+              <EmptyState
+                size="compact"
+                title={emptyOrFailed(
+                  errs,
+                  SRC.tokens,
+                  "还没有令牌 —— 智能体现在连不上（先在上面生成一个）",
+                )}
+                hint={
+                  errs.isFailed(SRC.tokens)
+                    ? "令牌列表读取失败，不是「一个都没有」"
+                    : "生成后把明文填进智能体配置，明文只显示这一次"
+                }
+                tone={errs.isFailed(SRC.tokens) ? "danger" : "muted"}
+                action={
+                  errs.isFailed(SRC.tokens) ? (
+                    <Button size="sm" variant="outline" onClick={() => void load()}>
+                      重新读取
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => nameRef.current?.focus()}>
+                      去生成令牌
+                    </Button>
+                  )
+                }
+              />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>名称</TableHead>
+                    <TableHead>前缀</TableHead>
+                    <TableHead className="text-right">调用次数</TableHead>
+                    <TableHead>最近使用</TableHead>
+                    <TableHead>到期</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tokens.map((t) => (
+                    <React.Fragment key={t.id}>
+                      <TableRow className={t.expired ? "bg-sev-critical-bg" : undefined}>
+                        <TableCell
+                          className={t.expired ? "font-medium text-sev-critical-fg" : "font-medium"}
+                        >
+                          {t.name || "-"}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          {prefix}
+                          {t.prefix}…
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{t.call_count}</TableCell>
+                        <TableCell className="whitespace-nowrap font-mono text-xs">
+                          {t.last_used_at ? formatDateTime(t.last_used_at) : "-"}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {t.expired ? (
+                            <Badge variant="high">已过期</Badge>
+                          ) : t.expires_at ? (
+                            <span>
+                              <span className="font-mono text-xs">
+                                {fmtExpiry(t.expires_at)}
                               </span>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">永不过期</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={t.enabled ? "success" : "critical"}>
-                              {t.enabled ? "启用" : "已吊销"}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-1.5">
+                              {daysLeft(t.expires_at) && (
+                                <span className="ml-1 text-xs tabular-nums text-muted-foreground">
+                                  （{daysLeft(t.expires_at)}）
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">永不过期</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={t.enabled ? "success" : "critical"}>
+                            {t.enabled ? "启用" : "已吊销"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setRotateAsk(t)}
+                              disabled={busy}
+                            >
+                              轮换
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setExpiryFor(expiryFor === t.id ? "" : t.id);
+                                setExpiryDays("");
+                                setMsg("");
+                              }}
+                              disabled={busy}
+                            >
+                              设到期
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => toggleToken(t)}
+                              disabled={busy}
+                            >
+                              {t.enabled ? "吊销" : "启用"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => removeToken(t)}
+                              disabled={busy}
+                            >
+                              删除
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {expiryFor === t.id && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="bg-surface-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-muted-foreground">
+                                「{t.name || t.prefix}」的到期时间：
+                              </span>
+                              <Input
+                                aria-label={`「${t.name || t.prefix}」的到期天数`}
+                                className="h-8 w-28"
+                                value={expiryDays}
+                                onChange={(e) => setExpiryDays(e.target.value)}
+                                placeholder="天数，如 90"
+                                inputMode="numeric"
+                              />
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => setRotateAsk(t)}
                                 disabled={busy}
-                              >
-                                轮换
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
                                 onClick={() => {
-                                  setExpiryFor(expiryFor === t.id ? "" : t.id);
-                                  setExpiryDays("");
-                                  setMsg("");
+                                  const d = daysFromInput(expiryDays);
+                                  if (d === undefined) {
+                                    setMsg(`有效期要填 1~${MAX_TOKEN_DAYS} 的整数天数`);
+                                    return;
+                                  }
+                                  if (d === null) {
+                                    setMsg("要「永不过期」请点右边那个按钮（留空不表示不改动）");
+                                    return;
+                                  }
+                                  void saveExpiry(t, d);
                                 }}
-                                disabled={busy}
                               >
-                                设到期
+                                设为该天数后过期
                               </Button>
                               <Button
                                 size="sm"
-                                variant="outline"
-                                onClick={() => toggleToken(t)}
+                                variant="secondary"
                                 disabled={busy}
+                                onClick={() => void saveExpiry(t, null)}
                               >
-                                {t.enabled ? "吊销" : "启用"}
+                                永不过期
                               </Button>
                               <Button
                                 size="sm"
-                                variant="destructive"
-                                onClick={() => removeToken(t)}
+                                variant="ghost"
+                                onClick={() => setExpiryFor("")}
                                 disabled={busy}
                               >
-                                删除
+                                取消
                               </Button>
                             </div>
                           </TableCell>
                         </TableRow>
-                        {expiryFor === t.id && (
-                          <TableRow>
-                            <TableCell colSpan={7} className="bg-surface-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-xs text-muted-foreground">
-                                  「{t.name || t.prefix}」的到期时间：
-                                </span>
-                                <Input
-                                  aria-label={`「${t.name || t.prefix}」的到期天数`}
-                                  className="h-8 w-28"
-                                  value={expiryDays}
-                                  onChange={(e) => setExpiryDays(e.target.value)}
-                                  placeholder="天数，如 90"
-                                  inputMode="numeric"
-                                />
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={busy}
-                                  onClick={() => {
-                                    const d = daysFromInput(expiryDays);
-                                    if (d === undefined) {
-                                      setMsg(`有效期要填 1~${MAX_TOKEN_DAYS} 的整数天数`);
-                                      return;
-                                    }
-                                    if (d === null) {
-                                      setMsg("要「永不过期」请点右边那个按钮（留空不表示不改动）");
-                                      return;
-                                    }
-                                    void saveExpiry(t, d);
-                                  }}
-                                >
-                                  设为该天数后过期
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  disabled={busy}
-                                  onClick={() => void saveExpiry(t, null)}
-                                >
-                                  永不过期
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => setExpiryFor("")}
-                                  disabled={busy}
-                                >
-                                  取消
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </SettingsBlock>
 
-        <Card>
-          <CardContent className="space-y-2">
-            <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
-              <p className="text-xs text-muted-foreground">
-                最近调用（新的在前；记录放 Redis，重启即清，只作运维可见性）
-              </p>
-              {!ready ? (
-                <TableSkeleton rows={4} cols={5} />
-              ) : calls.length === 0 ? (
+        <SettingsBlock bodyClassName="space-y-2">
+          <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
+            <p className="text-xs text-muted-foreground">
+              最近调用（新的在前；记录放 Redis，重启即清，只作运维可见性）
+            </p>
+            {!ready ? (
+              <TableSkeleton rows={4} cols={5} />
+            ) : calls.length === 0 ? (
+              <EmptyState
+                size="compact"
+                title={emptyOrFailed(
+                  errs,
+                  SRC.calls,
+                  "最近没有调用（智能体还没查过数据，或刚重启过）",
+                )}
+                tone={errs.isFailed(SRC.calls) ? "danger" : "muted"}
+                action={
+                  errs.isFailed(SRC.calls) ? (
+                    <Button size="sm" variant="outline" onClick={() => void load()}>
+                      重新读取
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>时间</TableHead>
+                    <TableHead>工具</TableHead>
+                    <TableHead>令牌</TableHead>
+                    <TableHead className="text-right">耗时</TableHead>
+                    <TableHead>结果</TableHead>
+                    <TableHead>参数摘录 / 错误</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {calls.map((c, i) => (
+                    <TableRow key={`${c.ts}-${i}`}>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
+                        {c.time || "-"}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{c.tool}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {c.token || "-"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right tabular-nums">
+                        {c.duration_ms} ms
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={c.ok ? "success" : "critical"}>
+                          {c.ok ? "成功" : "失败"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="max-w-md truncate">
+                        {c.ok ? c.detail || "-" : c.error || "未知错误"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </SettingsBlock>
+
+        <SettingsBlock bodyClassName="space-y-2">
+          <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
+            <p className="text-xs text-muted-foreground">
+              智能体写回的结论（判重仍由智能体侧负责，这里只是镜像，过期自动清理）
+            </p>
+            {!ready ? (
+              <TableSkeleton rows={3} cols={5} />
+            ) : conclusions.length === 0 ? (
+              <EmptyState
+                size="compact"
+                title={emptyOrFailed(errs, SRC.conclusions, "还没有结论写回")}
+                tone={errs.isFailed(SRC.conclusions) ? "danger" : "muted"}
+                action={
+                  errs.isFailed(SRC.conclusions) ? (
+                    <Button size="sm" variant="outline" onClick={() => void load()}>
+                      重新读取
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>更新时间</TableHead>
+                    <TableHead>事件</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>等级</TableHead>
+                    <TableHead>结论</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {conclusions.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
+                        {c.updated_at ? formatDateTime(c.updated_at) : "-"}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {c.event_id || c.fingerprint || "-"}
+                      </TableCell>
+                      <TableCell>{c.status || "-"}</TableCell>
+                      <TableCell>
+                        <Badge variant={severityVariant(c.severity)}>{c.severity || "-"}</Badge>
+                      </TableCell>
+                      <TableCell className="max-w-md truncate text-muted-foreground">
+                        {c.summary || "-"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </SettingsBlock>
+
+        <SettingsBlock bodyClassName="space-y-2">
+          <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {errs.isFailed(SRC.tools)
+                  ? "工具清单读取失败（见上方错误条）"
+                  : `暴露给智能体的工具（${tools.length} 个，参数说明以服务端为准）`}
+              </span>
+              <Button size="sm" variant="outline" onClick={() => setShowTools((v) => !v)}>
+                {showTools ? "收起" : "展开"}
+              </Button>
+            </div>
+            {showTools &&
+              (tools.length === 0 ? (
                 <EmptyState
                   size="compact"
-                  title={emptyOrFailed(
-                    errs,
-                    SRC.calls,
-                    "最近没有调用（智能体还没查过数据，或刚重启过）",
-                  )}
-                  tone={errs.isFailed(SRC.calls) ? "danger" : "muted"}
-                  action={
-                    errs.isFailed(SRC.calls) ? (
-                      <Button size="sm" variant="outline" onClick={() => void load()}>
-                        重新读取
-                      </Button>
-                    ) : undefined
-                  }
+                  title={emptyOrFailed(errs, SRC.tools, "工具清单为空")}
+                  tone={errs.isFailed(SRC.tools) ? "danger" : "muted"}
                 />
               ) : (
                 <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>时间</TableHead>
-                      <TableHead>工具</TableHead>
-                      <TableHead>令牌</TableHead>
-                      <TableHead className="text-right">耗时</TableHead>
-                      <TableHead>结果</TableHead>
-                      <TableHead>参数摘录 / 错误</TableHead>
-                    </TableRow>
-                  </TableHeader>
                   <TableBody>
-                    {calls.map((c, i) => (
-                      <TableRow key={`${c.ts}-${i}`}>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">
-                          {c.time || "-"}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">{c.tool}</TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {c.token || "-"}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right tabular-nums">
-                          {c.duration_ms} ms
+                    {tools.map((t) => (
+                      <TableRow key={t.name}>
+                        <TableCell className="w-48 align-top font-mono text-xs">
+                          {t.name}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={c.ok ? "success" : "critical"}>
-                            {c.ok ? "成功" : "失败"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="max-w-md truncate">
-                          {c.ok ? c.detail || "-" : c.error || "未知错误"}
+                          {t.desc}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            （
+                            {Object.entries(t.params)
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join("；")}
+                            ）
+                          </span>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-2">
-            <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
-              <p className="text-xs text-muted-foreground">
-                智能体写回的结论（判重仍由智能体侧负责，这里只是镜像，过期自动清理）
-              </p>
-              {!ready ? (
-                <TableSkeleton rows={3} cols={5} />
-              ) : conclusions.length === 0 ? (
-                <EmptyState
-                  size="compact"
-                  title={emptyOrFailed(errs, SRC.conclusions, "还没有结论写回")}
-                  tone={errs.isFailed(SRC.conclusions) ? "danger" : "muted"}
-                  action={
-                    errs.isFailed(SRC.conclusions) ? (
-                      <Button size="sm" variant="outline" onClick={() => void load()}>
-                        重新读取
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>更新时间</TableHead>
-                      <TableHead>事件</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>等级</TableHead>
-                      <TableHead>结论</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {conclusions.map((c) => (
-                      <TableRow key={c.id}>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">
-                          {c.updated_at ? formatDateTime(c.updated_at) : "-"}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {c.event_id || c.fingerprint || "-"}
-                        </TableCell>
-                        <TableCell>{c.status || "-"}</TableCell>
-                        <TableCell>
-                          <Badge variant={severityVariant(c.severity)}>{c.severity || "-"}</Badge>
-                        </TableCell>
-                        <TableCell className="max-w-md truncate text-muted-foreground">
-                          {c.summary || "-"}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-2">
-            <div className="space-y-2 rounded-xs bg-surface-1 px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {errs.isFailed(SRC.tools)
-                    ? "工具清单读取失败（见上方错误条）"
-                    : `暴露给智能体的工具（${tools.length} 个，参数说明以服务端为准）`}
-                </span>
-                <Button size="sm" variant="outline" onClick={() => setShowTools((v) => !v)}>
-                  {showTools ? "收起" : "展开"}
-                </Button>
-              </div>
-              {showTools &&
-                (tools.length === 0 ? (
-                  <EmptyState
-                    size="compact"
-                    title={emptyOrFailed(errs, SRC.tools, "工具清单为空")}
-                    tone={errs.isFailed(SRC.tools) ? "danger" : "muted"}
-                  />
-                ) : (
-                  <Table>
-                    <TableBody>
-                      {tools.map((t) => (
-                        <TableRow key={t.name}>
-                          <TableCell className="w-48 align-top font-mono text-xs">
-                            {t.name}
-                          </TableCell>
-                          <TableCell>
-                            {t.desc}
-                            <span className="ml-1 text-xs text-muted-foreground">
-                              （
-                              {Object.entries(t.params)
-                                .map(([k, v]) => `${k}: ${v}`)
-                                .join("；")}
-                              ）
-                            </span>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-
-      </Section>
+              ))}
+          </div>
+        </SettingsBlock>
+      </SettingsBoard>
 
       <Dialog
         open={rotateAsk !== null}

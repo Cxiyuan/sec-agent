@@ -11,19 +11,13 @@ import {
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   EmptyState,
   Field,
   FieldGrid,
   Input,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   SettingsForm,
-  SettingsGrid,
-  SettingsMain,
-  SettingsRail,
   Skeleton,
 } from "@shentong/ui";
 import { emptyOrFailed, loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
@@ -113,54 +107,91 @@ export function AccountPanel() {
     }
   }
 
+  /** 原 `Section` 的整页说明：外层 Section 撤掉后原样搬到分区标题下，文案不变。 */
+  const intro = (
+    <>
+      系统只有一个管理员账号；出厂口令是 <span className="font-mono">admin123</span>
+      ，只要没改过，这里和启动日志都会一直提醒。
+    </>
+  );
+
   return (
     <div className="space-y-4">
       <PanelError errors={errs} />
-      <Section
-        title="账号与口令"
-        description={
-          <>
-            系统只有一个管理员账号；出厂口令是 <span className="font-mono">admin123</span>
-            ，只要没改过，这里和启动日志都会一直提醒。
-          </>
-        }
-      >
+      {/* 一块铺满正文区的底板：改密表单占主列，「当前账号」是只读事实，作为同一分区的右列
+          （一条竖线分隔，不再是第二张卡）。 */}
+      <SettingsBoard>
         {loading ? (
-          <SettingsGrid>
-            <SettingsMain>
-              <Card>
-                <CardContent className="space-y-3 pt-4">
-                  {/* 3 个密码框（2 列 → 2 行）+ 提交按钮：骨架要和加载完的形状一致 */}
-                  <FieldGrid maxCols={2}>
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                    <Skeleton className="h-14 w-full" />
-                  </FieldGrid>
-                  <Skeleton className="h-8 w-28" />
-                </CardContent>
-              </Card>
-            </SettingsMain>
-            <SettingsRail>
-              <Card>
-                <CardContent className="space-y-2 pt-4">
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-9 w-full" />
-                </CardContent>
-              </Card>
-            </SettingsRail>
-          </SettingsGrid>
+          <SettingsBlock
+            title="修改口令"
+            description={intro}
+            bodyClassName="space-y-3"
+            rail={
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-16" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            }
+          >
+            {/* 3 个密码框（2 列 → 2 行）+ 提交按钮：骨架要和加载完的形状一致 */}
+            <FieldGrid maxCols={2}>
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-14 w-full" />
+            </FieldGrid>
+            <Skeleton className="h-8 w-28" />
+          </SettingsBlock>
         ) : (
-          <SettingsGrid>
-            <SettingsMain>
-              <Card>
-                <CardHeader>
-                  <CardTitle>修改口令</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={submit} className="space-y-3">
+          <SettingsBlock
+            title="修改口令"
+            description={intro}
+            rail={
+              <div className="space-y-2">
+                {/* rail 没有独立标题条：原来那张「当前账号」的标题在这里写成一行小标签，徽标仍在右侧 */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-foreground">当前账号</span>
+                  {me ? (
+                    <Badge variant={me.default_password_in_use ? "high" : "low"}>
+                      {me.default_password_in_use ? "仍在使用出厂口令" : "口令已修改"}
+                    </Badge>
+                  ) : null}
+                </div>
+                {me ? (
+                  // 补两行：新口令最短长度（填表单时最想知道的口径）+ 后端说明
+                  <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                    <p className="flex flex-wrap items-center gap-2 pb-1">
+                      <span className="font-medium text-foreground">{me.username}</span>
+                      <Badge variant="outline">{me.role || "admin"}</Badge>
+                    </p>
+                    <p className="py-1 text-muted-foreground">
+                      新口令最短 <span className="tabular-nums">{min}</span> 位
+                    </p>
+                    {me.note ? <p className="pt-1 text-muted-foreground">{me.note}</p> : null}
+                  </div>
+                ) : (
+                  <EmptyState
+                    size="compact"
+                    tone={errs.isFailed(SRC.me) ? "danger" : "muted"}
+                    title={emptyOrFailed(errs, SRC.me, "还没有读到账号信息")}
+                    hint="左边照样可以改密（改密本身会校验原口令）。"
+                  />
+                )}
+                {me?.default_password_in_use && (
+                  <p
+                    role="alert"
+                    className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
+                  >
+                    仍在使用出厂口令 admin123，请立即修改 —— 只要知道部署地址就能登录，
+                    日志、配置、推送令牌都归它管。
+                  </p>
+                )}
+              </div>
+            }
+          >
+            <form onSubmit={submit} className="space-y-3">
                     {/* 3 个密码框：2 列而不是 4 列 —— 4 列对 3 个框太散，第二行只剩一个孤零零的框 */}
                     <SettingsForm>
-                      <Field label="原密码" htmlFor="account-old-pwd" required>
+                      <Field label="原密码" htmlFor="account-old-pwd" required controlWidth="md">
                         <Input
                           id="account-old-pwd"
                           type="password"
@@ -171,7 +202,7 @@ export function AccountPanel() {
                           placeholder="当前口令"
                         />
                       </Field>
-                      <Field label={`新密码（至少 ${min} 个字符）`} htmlFor="account-new-pwd" required>
+                      <Field label={`新密码（至少 ${min} 个字符）`} htmlFor="account-new-pwd" required controlWidth="md">
                         <Input
                           id="account-new-pwd"
                           type="password"
@@ -182,7 +213,7 @@ export function AccountPanel() {
                           placeholder={`至少 ${min} 位，别再用 admin123`}
                         />
                       </Field>
-                      <Field label="再输一遍新密码" htmlFor="account-confirm-pwd" required>
+                      <Field label="再输一遍新密码" htmlFor="account-confirm-pwd" required controlWidth="md">
                         <Input
                           id="account-confirm-pwd"
                           type="password"
@@ -223,57 +254,10 @@ export function AccountPanel() {
                       改完这一次就要用新口令登录；当前浏览器里已签发的令牌仍然有效到它自己过期
                       （无状态 JWT，服务端不做吊销），要立刻全部失效需要更换 ST_JWT_SECRET 并重启后端。
                     </p>
-                  </form>
-                </CardContent>
-              </Card>
-            </SettingsMain>
-
-            <SettingsRail>
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-                  <CardTitle>当前账号</CardTitle>
-                  {me ? (
-                    <Badge variant={me.default_password_in_use ? "high" : "low"}>
-                      {me.default_password_in_use ? "仍在使用出厂口令" : "口令已修改"}
-                    </Badge>
-                  ) : null}
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {me ? (
-                    // 补两行：新口令最短长度（填表单时最想知道的口径）+ 后端说明
-                    <div className="divide-y divide-border-subtle rounded-xs bg-surface-1 px-3 py-2 text-xs">
-                      <p className="flex flex-wrap items-center gap-2 pb-1">
-                        <span className="font-medium text-foreground">{me.username}</span>
-                        <Badge variant="outline">{me.role || "admin"}</Badge>
-                      </p>
-                      <p className="py-1 text-muted-foreground">
-                        新口令最短 <span className="tabular-nums">{min}</span> 位
-                      </p>
-                      {me.note ? <p className="pt-1 text-muted-foreground">{me.note}</p> : null}
-                    </div>
-                  ) : (
-                    <EmptyState
-                      size="compact"
-                      tone={errs.isFailed(SRC.me) ? "danger" : "muted"}
-                      title={emptyOrFailed(errs, SRC.me, "还没有读到账号信息")}
-                      hint="左边照样可以改密（改密本身会校验原口令）。"
-                    />
-                  )}
-                  {me?.default_password_in_use && (
-                    <p
-                      role="alert"
-                      className="rounded-xs border border-sev-critical-bd bg-sev-critical-bg px-3 py-2 text-xs text-sev-critical-fg"
-                    >
-                      仍在使用出厂口令 admin123，请立即修改 —— 只要知道部署地址就能登录，
-                      日志、配置、推送令牌都归它管。
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            </SettingsRail>
-          </SettingsGrid>
+            </form>
+          </SettingsBlock>
         )}
-      </Section>
+      </SettingsBoard>
     </div>
   );
 }
