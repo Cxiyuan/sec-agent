@@ -45,16 +45,16 @@ COPY --from=builder /build/plugins ./plugins
 COPY docker/entrypoint.sh /usr/local/bin/xdr-agent-entrypoint
 RUN chmod +x /usr/local/bin/xdr-agent-entrypoint
 
-# bake：以 node 用户把插件装进 web profile，产物归 node 所有，
-# 之后 entrypoint 种入卷时运行时用户可直接写（HMR / 插件管理需要）
+# 目录准备（必须在切用户之前：/opt 与 / 都归 root，node 用户建不了）：
+#   /opt/dsh-home — bake 用的默认 profile 家目录
+#   /data/dsh    — 运行期 DSH_HOME 卷挂载点（命名卷首次初始化会继承镜像里的属权）
 ENV DSH_HOME=/opt/dsh-home
-RUN mkdir -p /opt/dsh-home && chown node:node /opt/dsh-home
+RUN mkdir -p /opt/dsh-home /data/dsh && chown -R node:node /opt/dsh-home /data/dsh
 USER node
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add link:/opt/agent/plugins/xdr-ingest
 
 # 运行期：数据目录用卷持久化（dsh home：profile、会话历史、插件管理状态）
 ENV DSH_HOME=/data/dsh
-RUN mkdir -p /data/dsh && chown node:node /data/dsh
 VOLUME /data/dsh
 EXPOSE 3080
 
