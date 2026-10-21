@@ -361,6 +361,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name != 'pull_request'
+    # 从 GHCR 拉镜像需要 packages: read（顶层默认只有 contents: read，
+    # 与 build job 单独要 packages: write 同一套最小权限思路）
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres:
         image: postgres:16
