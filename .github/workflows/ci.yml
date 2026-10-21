@@ -120,6 +120,9 @@ jobs:
           context: ./agent
           file: ./agent/Dockerfile
           push: true
+          # dsh 构建要盖 commit 哈希（上下文无 .git），把本次 SHA 传进去
+          build-args: |
+            DSH_CLIENT_COMMIT_HASH=${{ github.sha }}
           tags: ${{ steps.ns.outputs.name }}/shentong-agent:latest
 
   # 回归测试 + 质量门。为什么要有这一层：

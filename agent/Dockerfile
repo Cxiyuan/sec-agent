@@ -17,6 +17,10 @@ RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 WORKDIR /build/dsh
 COPY dsh/ ./
 RUN pnpm install --frozen-lockfile
+# dsh 构建脚本要把 commit 哈希盖进客户端构建环境（DSH_CLIENT_COMMIT_HASH），
+# 默认读 git rev-parse——docker 上下文里没有 .git，必须经 build-arg 注入。
+# CI 传 ${{ github.sha }}；本地构建不传时用全零占位（合法 hex，标记无版本信息）。
+ARG DSH_CLIENT_COMMIT_HASH=0000000000000000000000000000000000000000
 RUN pnpm run build
 
 # ---- 自研插件（out-of-tree，与上游物理分离；锁文件尚未入库故不冻结）----
