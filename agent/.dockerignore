@@ -1,0 +1,9 @@
+# agent/ 镜像构建上下文裁剪：仓库里没有提交任何 node_modules/dist/lib，
+# 这里只排除本地开发残留，缩小 build context。
+**/node_modules
+**/.pnpm-store
+**/dist
+**/*.tsbuildinfo
+**/coverage
+**/.DS_Store
+.workbuddy

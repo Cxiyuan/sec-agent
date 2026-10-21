@@ -108,6 +108,20 @@ jobs:
           push: true
           tags: ${{ steps.ns.outputs.name }}/shentong-suricata:latest
 
+      # 智能体镜像：dsh Web 版 + agent/plugins 自研插件（多阶段：builder 全量
+      # 构建 dsh monorepo 与插件，runtime bake web profile 后只带产物）。
+      # 构建命令与 agent-web / agent-plugins job 完全一致（frozen install +
+      # build），保证推出的镜像就是门禁验证过的那份代码。
+      - name: Build & push agent
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: ./agent
+          file: ./agent/Dockerfile
+          push: true
+          tags: ${{ steps.ns.outputs.name }}/shentong-agent:latest
+
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
   # 反复出现（Zeek 的 BPF 过滤器被当文件名、Filebeat 配置键名、类型判定兜底成 conn）。

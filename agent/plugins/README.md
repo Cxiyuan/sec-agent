@@ -11,11 +11,15 @@
   `ctx.storageDomain`、定时任务 `ctx.schedule`/`ctx.jobs`、Web UI `client-ui` 等），
   **不改 `agent/dsh/` 内的任何上游文件**。
 
-## 挂载方式（首个插件落地时接线）
+## 挂载方式
 
 以 dsh 的 out-of-tree plugin 形态安装：经 plugin manager 安装，或在项目 profile
 的 `cordis.patch.yml` 里以 bundle 行挂载。届时同步补 CI 任务
 （install → typecheck → lint → build）与本目录的 workspace 配置。
+
+容器部署见 `agent/README.md`：镜像里已把插件 bake 进 web profile
+（`dsh plugin --profile web add link:/opt/agent/plugins/xdr-ingest`），
+卷首次启动时由 entrypoint 种入，无需手工挂载。
 
 ## 当前状态
 
