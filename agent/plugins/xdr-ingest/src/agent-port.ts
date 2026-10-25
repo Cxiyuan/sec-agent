@@ -40,12 +40,32 @@ export interface AgentsServiceLike {
   create(options: AgentCreateOptions): Promise<AgentHandleLike>
 }
 
-/** 从 cordis Context 上取 agents 服务；没装 `dsh-agent` 时返回 null（插件降级而不是崩）。 */
+/**
+ * 从 cordis Context 上取 agents 服务；没装 `dsh-agent` 时返回 null（插件降级而不是崩）。
+ *
+ * **必须走 `ctx.reflect.get(name, false)`，不能直接读 `ctx.agents`**：
+ * cordis 的 context 是 Proxy，读一个没在 `inject` 里声明的服务属性会抛
+ * `cannot get property "agents" without inject`（2026-10 冒烟实测，插件整条加载失败）。
+ * 而不声明 inject 又不行 —— `inject` 在这个版本里是"必需服务"语义，声明了
+ * `agents` 就意味着宿主没有该服务时**插件根本不激活**（连门铃都收不了）。
+ * `reflect.get(name, strict=false)` 才是"没有就返回 undefined"的那个口子。
+ */
 export function agentsOf(context: unknown): AgentsServiceLike | null {
   if (typeof context !== 'object' || context === null) {
     return null
   }
-  const service = (context as { agents?: unknown }).agents
+  let service: unknown
+  try {
+    const reflect = (context as { reflect?: { get?: (name: string, strict?: boolean) => unknown } })
+      .reflect
+    if (typeof reflect?.get !== 'function') {
+      return null
+    }
+    service = reflect.get('agents', false)
+  } catch {
+    // 宿主没提供反射层或服务未就绪：按"没有 agents 服务"处理，插件仍收门铃
+    return null
+  }
   if (typeof service !== 'object' || service === null) {
     return null
   }
