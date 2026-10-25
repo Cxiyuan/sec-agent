@@ -70,10 +70,14 @@ sh tests/suricata/run.sh       # 构建 ndr/suricata 镜像并跑配置/规则�
 ## 4. 质量门（CI 与本地同一套）
 
 ```sh
-.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py
-.venv/bin/pyright ndr/backend/app agent/backend/app tests/py
-cd ndr/frontend   && npx tsc --noEmit
-cd agent/frontend && npx tsc --noEmit
+# NDR 栈（唯一还有 Python 后端的栈：agent 已换成 dsh）
+.venv/bin/ruff check ndr/backend/app tests/py
+.venv/bin/pyright ndr/backend/app tests/py
+.venv/bin/python -m pytest tests/py --stack=ndr -q
+cd ndr/frontend && npx tsc --noEmit
+
+# agent（dsh）侧的质量门在它自己目录里跑，由 CI 的 agent-web / agent-plugins 作业执行
+cd agent && pnpm install --frozen-lockfile && pnpm run typecheck && pnpm run lint && pnpm run build
 ```
 
 `.venv` 需要 `pytest`、`pyyaml`、`ruff`、`pyright`、`pydantic`、`pydantic-settings`、`sqlalchemy`

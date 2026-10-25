@@ -427,7 +427,7 @@ NDR 线路（采集与检测）：
 - 边缘模型：**连接信息全部由部署环境给**（`ST_EDGE_API_KEY` / `ST_EDGE_MODEL_NAME` / `ST_EDGE_PORT` / `ST_EDGE_BASE_PATH`，默认与环境无关：空 / 8080 / `/v1`），
   地址在界面「边缘模型」填（默认回环）。**代码里不放客户环境的密钥、模型文件路径、内网 IP** —— 这是通用产品，
   客户网络环境产生的内容属于部署配置/用户数据（2026-10 硬编码审计）
-- 云端模型：模型名固化（`agent/backend/app/models/registry.py`），API Key 在界面录入、存数据库
+- 云端模型：模型名固化在智能体（dsh）侧配置里，API Key 在界面录入、存数据库
 
 ---
 
@@ -442,14 +442,16 @@ NDR 线路（采集与检测）：
   为什么需要：`.venv` 不能跨平台搬（Linux 上建的 `pyvenv.cfg` 指向的 home 在 macOS 不存在，
   整份 venv 直接作废）；项目要求 Python `>=3.11,<3.13`，而 macOS 自带是 3.9。
   脚本会优先用 `uv` 拉一个独立 CPython 3.11（没有 uv 就用 `python3.11/3.12`），
-  依赖清单**直接从两个 `pyproject.toml` 读**（与 CI 同一口径，不手工维护第二份）。
+  依赖清单**从 `pyproject.toml` 读**（与 CI 同一口径，不手工维护第二份）。
+  2026-10-20 起 agent 侧换成 **dsh（TypeScript/pnpm）**，不再有 Python 后端，所以本地
+  Python 门禁只覆盖 NDR；agent 的检查在 `agent/` 里用 pnpm 跑（CI 的 `agent-web`/`agent-plugins` 作业）。
   Intel Mac 上 `cryptography` 新版没有预编译包（要 Rust），脚本会自动钉一个带 wheel 的版本。
 - 本地质量门（仓库根执行；**都不需要 Docker、也不产生构建产物**）：
-  - `.venv/bin/ruff check ndr/backend/app agent/backend/app tests/py`
-  - `.venv/bin/pyright ndr/backend/app agent/backend/app tests/py`
-  - `.venv/bin/python -m pytest tests/py --stack=ndr -q` 与 `--stack=agent -q`
-    （两个后端包的 import 名都是 `app`，只能分开跑；一致性用例会比对两侧归一化输出）
-  - 前端在 `ndr/frontend` / `agent/frontend` 下 `npx tsc --noEmit`
+  - `.venv/bin/ruff check ndr/backend/app tests/py`
+  - `.venv/bin/pyright ndr/backend/app tests/py`
+  - `.venv/bin/python -m pytest tests/py --stack=ndr -q`
+  - 前端在 `ndr/frontend` 下 `npx tsc --noEmit`
+  - agent（dsh）侧：`cd agent && pnpm run typecheck && pnpm run lint`（由 CI 执行）
   - **`sh tests/zeek/run.sh` 不在本地跑**：它会拉 `zeek/zeek:9.0` 并在容器里编译脚本，
     已列入 CI 的 `test` 作业（与 AGENTS.md 的「禁止本地拉镜像/起容器」一致）
   测试怎么加、覆盖什么见 `tests/README.md`

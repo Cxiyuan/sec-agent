@@ -15,27 +15,27 @@
 # ============================================================================
 
 # 提示: 源自实证样本 ws_windows_amd64.exe 二进制还原,零误报
-alert http any any -> any any ( \
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[C2信标-01] C2 信标 - 极简 HTTP GET 信标 (/?a=&f=&t=&p=) 与固定 UA"; \
     flow:to_server,established; \
     http.method; content:"GET"; \
     http.uri; pcre:"/^\/\?a=[^&]*&f=[^&]*&t=[^&]*&p=[0-9]+/"; \
     http.user_agent; content:"Mozilla/5.0 (Windows NT 6.1|3b| rv:48.0) Gecko/20100101 Firefox/48.0"; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
+    threshold: type limit, track by_src, count 3, seconds 300; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence High, severity Critical, created_at 2026_10_18; \
     sid:9110001; rev:1;)
 
-alert http any any -> any any ( \
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[C2信标-02] C2 信标 - 信标 URI 结构命中(UA 无关,覆盖变种)"; \
     flow:to_server,established; \
     http.uri; pcre:"/^\/\?a=[^&]*&f=[^&]*&t=[^&]*&p=[0-9]+/"; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
+    threshold: type limit, track by_src, count 3, seconds 300; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity High, created_at 2026_10_18; \
     sid:9110002; rev:1;)
 
-alert http any any -> any any ( \
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[C2信标-03] C2 信标 - 陈旧矛盾浏览器 UA (Win7 + Firefox 48)"; \
     flow:to_server,established; \
     http.user_agent; pcre:"/Windows NT 6\.1.*rv:48\.0/"; \
@@ -45,17 +45,40 @@ alert http any any -> any any ( \
     sid:9110003; rev:1;)
 
 # 提示: 误报偏高,建议仅在高价值网段启用
-alert http any any -> any any ( \
-    msg:"[C2信标-04] C2 信标 - HTTP 请求头异常精简(缺失 Accept 头)"; \
+#
+# 2026-10 强化（起因：现场一次误报——手机浏览器 GET 请求不带 Accept 头，
+#   被这条规则打成「木马与后门活动 / high」，同类噪声已成主要来源）。
+#   原判据只有「缺 Accept + UA 含 Mozilla」，命中面太宽。
+#   现在同时要求：
+#     1) 缺 Accept / Accept-Language / Referer / Accept-Encoding（真实浏览器必带）；
+#     2) 缺 Sec-Fetch-Mode（2020 年后主流浏览器全部发送，信标实现基本不带）；
+#     3) UA 里**没有任何浏览器引擎标识**（AppleWebKit/Chrome/Safari/Firefox/Gecko/
+#        Trident/Edg/OPR），即 UA 只是 "Mozilla/5.0" 这类残桩；
+#     4) 同一源 IP 300 秒内出现 3 次才算（单次请求放行）。
+#   移动端浏览器 UA 一定含 AppleWebKit/Mobile，因此不会再命中。
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"[C2信标-04] C2 信标 - 请求头异常精简且 UA 非主流浏览器"; \
     flow:to_server,established; \
     http.method; content:"GET"; \
     http.protocol; content:"HTTP/1.1"; \
     http.user_agent; content:"Mozilla"; \
+    http.user_agent; content:!"AppleWebKit"; nocase; \
+    http.user_agent; content:!"Chrome"; nocase; \
+    http.user_agent; content:!"Safari"; nocase; \
+    http.user_agent; content:!"Firefox"; nocase; \
+    http.user_agent; content:!"Gecko"; nocase; \
+    http.user_agent; content:!"Trident"; nocase; \
+    http.user_agent; content:!"Edg"; nocase; \
+    http.user_agent; content:!"OPR"; nocase; \
     http.header_names; content:!"Accept"; nocase; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
-    classtype:trojan-activity; \
+    http.header_names; content:!"Accept-Language"; nocase; \
+    http.header_names; content:!"Accept-Encoding"; nocase; \
+    http.header_names; content:!"Referer"; nocase; \
+    http.header_names; content:!"Sec-Fetch"; nocase; \
+    threshold: type limit, track by_src, count 3, seconds 300; \
+    classtype:misc-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Low, severity Low, created_at 2026_10_18; \
-    sid:9110004; rev:1;)
+    sid:9110004; rev:3;)
 
 # 提示: 误报: 正常业务若存在 /api/client/list 类接口需加入抑制名单
 alert http $EXTERNAL_NET any -> $HOME_NET any ( \
@@ -68,11 +91,11 @@ alert http $EXTERNAL_NET any -> $HOME_NET any ( \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity Critical, created_at 2026_10_18; \
     sid:9110005; rev:2;)
 
-alert http any any -> any any ( \
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
     msg:"[C2信标-06] 信标式极简查询串 - 全单字母参数名"; \
     flow:to_server,established; \
     http.uri; pcre:"/^\/\?([a-z]=[^&]*&){3,}[a-z]=/i"; \
-    threshold: type limit, track by_src, count 1, seconds 60; \
+    threshold: type limit, track by_src, count 3, seconds 300; \
     classtype:trojan-activity; \
     metadata:attack_tactic TA0011, attack_technique T1071.001, confidence Medium, severity High, created_at 2026_10_18; \
     sid:9110006; rev:2;)
