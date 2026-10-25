@@ -40,6 +40,7 @@ jobs:
         run: |
           python -m compileall -q ndr/backend/app
 
+      # 与 build 作业同一个 action 版本（SHA 固定，不接受浮动 tag）
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
@@ -109,26 +110,10 @@ jobs:
           push: true
           tags: ${{ steps.ns.outputs.name }}/shentong-suricata:latest
 
-      # 智能体镜像：dsh Web 版 + agent/plugins 自研插件（多阶段：builder 全量
-      # 构建 dsh monorepo 与插件，runtime bake web profile 后只带产物）。
-      # 构建命令与 agent-web / agent-plugins job 完全一致（frozen install +
-      # build），保证推出的镜像就是门禁验证过的那份代码。
-      - name: Build & push agent
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: ./agent
-          file: ./agent/Dockerfile
-          push: true
-          # dsh 构建要盖 commit 哈希（上下文无 .git），把本次 SHA 传进去
-          build-args: |
-            DSH_CLIENT_COMMIT_HASH=${{ github.sha }}
-          # 除 latest 外再打一个本次 commit 的**不可变** tag：下面的冒烟任务用它拉镜像，
-          # 否则连推两次时 latest 会被覆盖，冒烟可能在测另一份产物。
-          tags: |
-            ${{ steps.ns.outputs.name }}/shentong-agent:latest
-            ${{ steps.ns.outputs.name }}/shentong-agent:${{ github.sha }}
+      # 智能体镜像已拆成独立 job `agent-build`（2026-10）：
+      # 它 needs [agent-web, agent-plugins]，插件类型检查/单测不过就不出镜像。
+      # 以前它挂在本 job 里，而本 job 没有对那两道门的 needs ——
+      # 于是"插件编译失败但镜像照样推"是可能的，正属于"能过 CI 却上线才炸"那一类。
 
   # 回归测试 + 质量门。为什么要有这一层：
   # 以前 CI 只做 compileall 冒烟，语法过了就发镜像 —— 结果"能过 CI 却上线才炸"的错
@@ -361,6 +346,57 @@ jobs:
         working-directory: agent/plugins
         run: pnpm run build
 
+  # 智能体镜像：dsh 基座 + agent/plugins 自研插件（多阶段：builder 全量构建
+  # dsh monorepo 与插件，runtime bake web profile 后只带产物）。
+  #
+  # 为什么单独一个 job 而不是挂在 build 里：它必须 **needs** 那两道质量门 ——
+  # 插件 typecheck / 单测不过就不该产出镜像。挂在 build 里做不到（build 没有、
+  # 也不该有对这些 job 的依赖，否则 NDR 镜像要等 agent 的门禁）。
+  agent-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [agent-web, agent-plugins]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+
+      - name: Lowercase image namespace
+        id: ns
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push agent
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: ./agent
+          file: ./agent/Dockerfile
+          push: true
+          # dsh 构建要盖 commit 哈希（上下文无 .git），把本次 SHA 传进去
+          build-args: |
+            DSH_CLIENT_COMMIT_HASH=${{ github.sha }}
+          # 除 latest 外再打一个本次 commit 的**不可变** tag：下面的冒烟任务用它拉镜像，
+          # 否则连推两次时 latest 会被覆盖，冒烟可能在测另一份产物。
+          tags: |
+            ${{ steps.ns.outputs.name }}/shentong-agent:latest
+            ${{ steps.ns.outputs.name }}/shentong-agent:${{ github.sha }}
+
   # 智能体镜像运行时冒烟：把 build job 刚推的镜像跑起来，验证整条链——
   # 镜像能起、dsh home 能种、插件 bundle 能在 Loader 里加载（路由存在即
   # 证明，pnpm 的 link: peer 警告不会咬到运行时）、PG 冷库能连、判重
@@ -369,7 +405,7 @@ jobs:
   agent-image-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: build
+    needs: agent-build
     if: github.event_name != 'pull_request'
     # 从 GHCR 拉镜像需要 packages: read（顶层默认只有 contents: read，
     # 与 build job 单独要 packages: write 同一套最小权限思路）
@@ -479,6 +515,67 @@ jobs:
           echo "second: $SECOND"
           printf '%s' "$SECOND" | tail -1 | grep -qx 200
           printf '%s' "$SECOND" | head -1 | grep -q '"reused":1'
+
+      # ---- 新架构：门铃 + 状态端点（这两条以前没有任何门禁覆盖）----
+      # 门铃是 2026-10 改造后的**主路径**：NDR 只发「有新线索了」，不再推摘要。
+      # 不验它，等于把新的主链路放上线才第一次跑。
+      - name: Doorbell is acknowledged
+        run: |
+          cat > /tmp/bell.json <<'JSON'
+          {"doorbell": {"queue_len": 3, "top_kind": "shift",
+            "max_strength": 0.81, "watermark": "2026-10-25T10:00:00Z",
+            "ts": "2026-10-25T10:00:05Z"}}
+          JSON
+          OUT=$(curl -s --max-time 10 -w '\n%{http_code}' \
+            -H "Authorization: Bearer smoke-token" \
+            -H "content-type: application/json" \
+            --data @/tmp/bell.json \
+            http://127.0.0.1:3080/xdr/ingest/digests)
+          echo "doorbell: $OUT"
+          printf '%s' "$OUT" | tail -1 | grep -qx 200
+          printf '%s' "$OUT" | head -1 | grep -q '"accepted":"doorbell"'
+
+      # 坏门铃必须 400：若回 2xx，NDR 会以为叫醒成功，线索静默积压。
+      - name: Malformed doorbell is rejected with 400
+        run: |
+          BAD='{"doorbell":{"queue_len":"many"}}'
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            -H "Authorization: Bearer smoke-token" \
+            -H "content-type: application/json" -d "$BAD" \
+            http://127.0.0.1:3080/xdr/ingest/digests)
+          if [ "$CODE" != "400" ]; then
+            echo "::error::expected 400 for a malformed doorbell, got $CODE"
+            exit 1
+          fi
+
+      # /status 是运维看"分析到底有没有在跑"的唯一入口。
+      # 本 job 没给 XDR_NDR_MCP_TOKEN，所以必须是 disabled —— 这也顺带证明
+      # "没配令牌时不假装在分析"（会显式告警，而不是静默）。
+      - name: Status endpoint reports the analysis loop state
+        run: |
+          OUT=$(curl -s --max-time 10 -w '\n%{http_code}' \
+            -H "Authorization: Bearer smoke-token" \
+            http://127.0.0.1:3080/xdr/ingest/status)
+          echo "status: $OUT"
+          printf '%s' "$OUT" | tail -1 | grep -qx 200
+          printf '%s' "$OUT" | head -1 | grep -q '"analysis":"disabled"'
+
+      # mcp-ndr 行必须真的进了组合后的 profile：只有 id+config 的补丁是空操作。
+      # 插件自己的 MCP 客户端能跑，但**模型**拿不到 mcp__ndr__* 工具，
+      # 分析会话就无从取证。
+      - name: MCP client row is present in the composed profile
+        run: |
+          BIN=/opt/agent/dsh/apps/cli/lib/bin.js
+          docker exec xdr-agent sh -c \
+            "node $BIN --profile web --dump-default-config" \
+            > /tmp/profile-ok.txt 2>&1 || true
+          if ! grep -q 'id: mcp-ndr' /tmp/profile-ok.txt; then
+            echo '::error::mcp-ndr row ABSENT (the model would have no ndr tools)'
+            grep -n -A 12 'id: xdr-ingest' /tmp/profile-ok.txt || true
+            exit 1
+          fi
+          echo 'mcp-ndr row PRESENT:'
+          grep -n -A 10 'id: mcp-ndr' /tmp/profile-ok.txt || true
 
       - name: Missing token is rejected with 401
         run: |
