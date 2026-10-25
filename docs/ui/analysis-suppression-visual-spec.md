@@ -213,7 +213,7 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 `结论(badge)` → `对象` → `类型` → `置信度(0.82 tabular)` → `摘要(truncate+title)` → `工具·耗时（4 工具 · 12.4s）` → `交回（claimed_by，mono 12）` → `时间` → `关联任务（"查看"打开任务详情抽屉）`。
 
 - 筛选只有三个：**结论分段(verdict) + 对象精确输入(subject) + 任务 ID(`task_id`)**。**不要放关键词搜索框**（`/api/analysis/results` 只接受 `task_id/subject/verdict/limit/offset`，无 `q`，见坑 6）。
-- `subject` 是**精确匹配**（`==`，非 ILIKE）→ 输入框 label 必须写「对象（精确）」，占位符给一个完整示例（`10.20.3.14`），不要写「搜索」。
+- `subject` 是**精确匹配**（`==`，非 ILIKE）→ 输入框 label 必须写「对象（精确）」，占位符给一个完整示例（`10.1.2.3`），不要写「搜索」。
 - 后端固定 `created_at DESC`，无排序参数。
 
 ### 4.5 覆盖率与盲区（④）

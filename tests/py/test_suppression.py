@@ -373,7 +373,7 @@ def test_segment_dimension_derives_from_src(
     row = _Row(match=_tree(("segment", "eq", "10.1.2.0/24"), ("dst_port", "eq", 80)))
     monkeypatch.setattr(sup, "_active_rows", lambda: (row,))
     assert sup.decide(_entry()) is not None
-    assert sup.decide(_entry(src_ip="10.2.3.4")) is None
+    assert sup.decide(_entry(src_ip="10.2.0.4")) is None
 
 
 # ===== ⑥ 记账、熔断、到期、回弹 =====
