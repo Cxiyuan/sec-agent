@@ -1203,3 +1203,443 @@ export interface TrafficMinutes {
   note?: string;
   error?: string;
 }
+
+// ---------- 分析机制（/api/analysis，派工队列） ----------
+
+/**
+ * 一个可调参数（**analysis 与 suppressions 共用**，形状与 `/api/baseline/config` 相近但不完全一致）。
+ *
+ * 关键差异（2026-10 实测，别踩）：**这里没有 `value`** —— 当前生效值在响应的顶层
+ * `effective[item.key]`。`/api/baseline/config` 的 item 才带 `value`，所以**不要复用
+ * `BaselineConfigItem`**，也不要照抄 `behavior-panel.tsx` 里 `item.value` 的读法。
+ */
+export interface KnobItem {
+  key: string;
+  label: string;
+  /** analysis 多一个 `text`（如 `analysis.candidate_kinds` 的逗号串）；两个模块都没有 `regex` */
+  kind: "bool" | "int" | "float" | "text";
+  default: string | number | boolean;
+  low: number | null;
+  high: number | null;
+  unit: string;
+  note: string;
+  /** true = 后台改过（不等于当前值，当前值看 `effective`） */
+  overridden: boolean;
+}
+
+/** 参数读写的公共回包形状（GET / PUT / POST reset 三处共用） */
+export interface KnobConfigPayload {
+  items: KnobItem[];
+  effective: Record<string, string | number | boolean>;
+  /** 保存 / 恢复默认时才回带的两个额外字段 */
+  written?: number;
+  removed?: number;
+}
+
+/** `GET /api/analysis/config`：参数清单 + 生效值 + 线索类型/结论词表（界面下拉的唯一来源） */
+export interface AnalysisConfigPayload extends KnobConfigPayload {
+  kinds: string[];
+  verdicts: string[];
+  hint: string;
+}
+
+/** 队列状态：后端 `queue.py` 只有这 6 个，没有第 7 种（超容量不是状态，是计数器） */
+export type AnalysisTaskState =
+  | "pending"
+  | "claimed"
+  | "deferred"
+  | "done"
+  | "stuck"
+  | "expired";
+
+/** 线索类型（`params.KINDS`） */
+export type AnalysisTaskKind = "novelty" | "shift" | "structure" | "coverage" | "hit";
+
+/** 任务结论（`analysis/verdicts.py` 的结论态；`pending`/`done` 是流程态不算判定） */
+export type AnalysisVerdict =
+  | "true_positive"
+  | "false_positive"
+  | "benign"
+  | "suspicious"
+  | "inconclusive";
+
+/**
+ * 一条客观线索（`queue.py::_task_dict`）。
+ *
+ * 注意：**没有 `note` / `claimed_by` / `updated_at`** —— 虽然库里 `AnalysisTask.note`
+ * 有值（"为什么被挤掉/延后"），但列表与详情都不返回它，界面不要设计"结束原因"区块。
+ * `lease_until` 在列表/详情里恒为 `""`（只有 MCP `claim_tasks` 那条路径会带）。
+ */
+export interface AnalysisTaskItem {
+  id: string;
+  kind: string;
+  /** 客观强度 0~1（三位小数），队列排序与首列都靠它 */
+  strength: number;
+  priority: number;
+  subject_kind: string;
+  subject: string;
+  /** 建议分析窗口，可能为空串 */
+  window_start: string;
+  window_end: string;
+  /** 客观线索：**恒含 `suggested_tools: string[]`**，其余键由候选生成器决定，不含严重度与结论 */
+  hint: Record<string, unknown>;
+  coalesced: number;
+  attempts: number;
+  depth: number;
+  parent_id: string;
+  state: string;
+  lease_until: string;
+  created_at: string;
+}
+
+/** `GET /api/analysis/tasks`：失败时也返回 200，形状变成 `{error, items:[], total:0}` */
+export interface AnalysisTaskList {
+  total: number;
+  returned: number;
+  items: AnalysisTaskItem[];
+  error?: string;
+}
+
+/** 任务结论（任务级，带成本口径：`tools_used` / `duration_ms`） */
+export interface AnalysisResultItem {
+  id: string;
+  task_id: string;
+  kind: string;
+  subject_kind: string;
+  subject: string;
+  verdict: string;
+  confidence: number;
+  summary: string;
+  findings: Record<string, unknown>;
+  evidence_refs: string[];
+  tools_used: number;
+  duration_ms: number;
+  claimed_by: string;
+  created_at: string | null;
+}
+
+/** 详情抽屉里的历史结论（`task_detail.results`，最近 10 条，字段比 `/results` 少） */
+export interface AnalysisResultBrief {
+  verdict: string;
+  confidence: number;
+  summary: string;
+  tools_used: number;
+  duration_ms: number;
+  claimed_by: string;
+  created_at: string;
+}
+
+/** `GET /api/analysis/tasks/{id}`：不存在时是 **200 + `{error}`**，不是 404 */
+export interface AnalysisTaskDetail extends AnalysisTaskItem {
+  results?: AnalysisResultBrief[];
+  error?: string;
+}
+
+/** `GET /api/analysis/results`：`task_id`/`subject`/`verdict` 都是**精确等值**（无模糊、无 kind 过滤） */
+export interface AnalysisResultList {
+  total: number;
+  returned: number;
+  items: AnalysisResultItem[];
+  error?: string;
+}
+
+export interface AnalysisKindCount {
+  kind: string;
+  count: number;
+}
+
+export interface AnalysisVerdictCount {
+  verdict: string;
+  count: number;
+}
+
+/** `stats.budget`：当前预算（也用于容量压力条的分母 `queue_capacity`） */
+export interface AnalysisBudget {
+  rate_per_token_hour: number;
+  rate_total_hour: number;
+  max_inflight: number;
+  reserved_slots: number;
+  reserved_min_strength: number;
+  lease_seconds: number;
+  queue_capacity: number;
+  pending_ttl_hours: number;
+}
+
+/**
+ * `GET /api/analysis/stats`：总览。
+ *
+ * `counters` 来自 Redis（`shentong:analysis:stats`），Redis 不可用时是 `{}` 而不是报错。
+ * 会出现的键：`enqueued / merged / superseded / dropped_overflow / claimed / done /
+ * deferred / expired / reclaimed / stuck / candidate_error / followup_accepted /
+ * suppression_rebound`（**没有 `doorbell_*`**，那是 `/api/detector/stats` 的口径）。
+ */
+export interface AnalysisStats {
+  enabled: boolean;
+  by_state: Record<string, number>;
+  pending: number;
+  deferred: number;
+  claimed: number;
+  stuck: number;
+  /** 只统计 pending+deferred，按条数降序 */
+  by_kind: AnalysisKindCount[];
+  by_verdict: AnalysisVerdictCount[];
+  results_total: number;
+  avg_tools_used: number;
+  avg_duration_ms: number;
+  counters: Record<string, number>;
+  budget: AnalysisBudget;
+  generated_at: string;
+  error?: string;
+}
+
+/** 盲区清单的一行。**`kind` 恒为 `"asset"`（后端硬编码），真实类别看 `subject_kind`** */
+export interface AnalysisCoverageItem {
+  kind: string;
+  subject: string;
+  subject_kind: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  seen_count: number;
+  analyzed_count: number;
+  last_analyzed_at: string;
+  /** `从未分析` / `久未分析` */
+  why: string;
+}
+
+/**
+ * `GET /api/analysis/coverage`：覆盖率与盲区。
+ *
+ * 两个坑：① `items` 是 `never(≤limit) + stale(≤limit)` 再切片 `[:limit]`，所以「久未分析」
+ * 常被切掉；② `returned` 是**切片前**长度（可能 200 而 `items.length` 只有 100）。
+ * → 界面所有计数**一律用 `items.length`**，不要用 `returned`。
+ * 失败时形状是 `{error, days, items:[]}`（没有下面这些统计键）。
+ */
+export interface AnalysisCoverage {
+  days: number;
+  subjects_total?: number;
+  analyzed?: number;
+  coverage_ratio?: number;
+  never_analyzed?: number;
+  stale?: number;
+  returned?: number;
+  items: AnalysisCoverageItem[];
+  error?: string;
+}
+
+export interface AnalysisInventoryRow {
+  value: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  seen_count: number;
+  analyzed_count: number;
+}
+
+export interface AnalysisInventoryKind {
+  /** 该类全量条数（`items` 只是本次取的样本） */
+  count: number;
+  items: AnalysisInventoryRow[];
+}
+
+/**
+ * `GET /api/analysis/inventory`：对象清单（数据地图）。
+ * **空类别整条不出现**（后端 `if not rows: continue`），不要假设六类齐全。
+ */
+export interface AnalysisInventory {
+  generated_at: string;
+  kinds: Record<string, AnalysisInventoryKind>;
+  known_kinds: string[];
+  error?: string;
+}
+
+/** 人工派工请求体（`subject` 空白 → 400 `{detail}`，**不是** field_errors） */
+export interface ManualTaskIn {
+  subject: string;
+  subject_kind?: string;
+  kind?: string;
+  note?: string;
+  /** 0~1，默认 0.6 */
+  strength?: number;
+}
+
+/**
+ * 人工派工回包：**HTTP 200 恒定**，成败看 `ok` / `result`。
+ * - `new` 入队 / `merged` 并入同族（这两个 `ok=true`）
+ * - `dropped` 队列满且不比队尾强 / `skipped` 队列关闭或该类型未开启 / `error` 异常
+ */
+export interface ManualTaskOut {
+  ok: boolean;
+  result: "new" | "merged" | "superseded" | "dropped" | "skipped" | "error";
+  subject: string;
+  error?: string;
+}
+
+// ---------- 精准抑制（/api/suppressions） ----------
+
+/**
+ * 抑制匹配条件树（与规则引擎同一套语法，引擎见 `rules/engine.py`）。
+ * `rules` 里可以嵌 `{logic, rules}` 子组，也支持 `{not: …}`；界面只做扁平顶层。
+ */
+export type SuppressionMatch = RuleConditions;
+
+/**
+ * 抑制档位（后端 `suppression.MODE_*` 只有这两个值）。
+ *
+ * **不是请求参数**：`SuppressionIn` 里没有 `mode` —— 新建/改条件时由后端
+ * `choose_mode(trial)` 按试算结果自己判（影响面过大或自动生效关闭 → `record_only`），
+ * 前端只能读、不能写。这个联合类型只用于前端本地的短标签 map。
+ */
+export type SuppressionMode = "suppress" | "record_only";
+
+/**
+ * 抑制条目（**26 字段**，`detector/suppression.py::_item`）。
+ *
+ * 要点：界面建抑制（`origin="ui"`）**不受**证据条数/工具种类/置信度/新现象保护期门槛约束；
+ * `hits` 是内存攒批、每 30 秒才落库 → 命中数最多滞后约 30 秒，别标"实时"。
+ */
+export interface SuppressionItem {
+  id: string;
+  name: string;
+  match: SuppressionMatch;
+  /** 条件树里出现的字段（去重保序） */
+  fields: string[];
+  /** = `fields.length`，界面显示「N 维」 */
+  dims: number;
+  /** `suppress` = 事件不再生成；`record_only` = 事件仍生成、只不派工不推送 */
+  mode: string;
+  /** 后端原值只有两句：`完全不生成事件` / `只不派工（事件保留）`（窄列请用本地短标签） */
+  mode_label: string;
+  /** 申请时的爆炸半径试算快照；试算失败时是 `{days, error, events:-1, srcs:-1, segments:-1}` */
+  trial: Record<string, unknown>;
+  reason_code: string;
+  reason_label: string;
+  note: string;
+  evidence_refs: string[];
+  evidence_tools: number;
+  confidence: number;
+  source_task_id: string;
+  created_by: string;
+  origin: string;
+  enabled: boolean;
+  hits: number;
+  last_hit_at: string | null;
+  expires_at: string | null;
+  /** 动态判定（`expires_at <= now`），过期**不会**把 `enabled` 置 false（两者正交） */
+  expired: boolean;
+  revoked_at: string | null;
+  /** 成因靠前缀解析：`被真实事件推翻（` / `熔断：` / `超出活跃上限 ` / 其余=人工 */
+  revoke_reason: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 列表响应的门槛（`limits.hit_cap` 是命中列 80% 预警的数据源） */
+export interface SuppressionLimits {
+  max_active: number;
+  min_match_dims: number;
+  min_refs: number;
+  min_tools: number;
+  min_confidence: number;
+  default_ttl_days: number;
+  hit_cap: number;
+}
+
+/**
+ * `GET /api/suppressions`：清单（按命中数降序）。
+ *
+ * 计数口径：`total` **含过期项**，而 `include_expired=false` 是"分页之后再过滤" →
+ * 会出现「共 30 条、本页 12 行」。界面固定显式传 `include_expired=true`，
+ * 分页文案用 `total`、行数用 `items.length`。
+ */
+export interface SuppressionListPayload {
+  total: number;
+  returned: number;
+  items: SuppressionItem[];
+  limits?: SuppressionLimits;
+  error?: string;
+}
+
+/**
+ * `GET /api/suppressions/stats`：总览。
+ * `by_mode` 是**裸计数且只统计 active 条目**（`enabled && !expired`）→ 两项之和 = `active`，
+ * **不等于 `total`**；`expired` 与 `revoked` 可重叠，不能相加当总数。
+ */
+export interface SuppressionStats {
+  enabled: boolean;
+  auto_apply: boolean;
+  active: number;
+  expired: number;
+  revoked: number;
+  total: number;
+  suppressed_total: number;
+  by_mode: Record<string, number>;
+  limits?: SuppressionLimits & {
+    trial_days?: number;
+    trial_max_srcs?: number;
+    trial_max_hits?: number;
+    trial_max_segments?: number;
+    newcomer_hours?: number;
+  };
+  /** 理由码 → 中文（chip 的唯一来源） */
+  reason_codes?: Record<string, string>;
+  /** 允许的匹配字段 → 中文标签（条件树字段下拉的唯一来源） */
+  allowed_fields?: Record<string, string>;
+  error?: string;
+}
+
+/** `GET /api/suppressions/config`：参数 + 理由码 + 允许字段（界面表单全靠它渲染） */
+export interface SuppressionConfigPayload extends KnobConfigPayload {
+  reason_codes: Record<string, string>;
+  allowed_fields: Record<string, string>;
+  hint: string;
+}
+
+/** 试算结果（`estimate_trial`）：成功时带 `max_*`；**失败时只有 `days/error` 与三个 -1** */
+export interface SuppressionTrial {
+  days: number;
+  phenomenon?: string;
+  events: number;
+  srcs: number;
+  segments: number;
+  max_events?: number;
+  max_srcs?: number;
+  max_segments?: number;
+  error?: string;
+}
+
+/**
+ * `POST /api/suppressions/preview` 的回包。
+ *
+ * `thresholds` 的键名是 **`max_hits` / `max_srcs` / `max_segments` / `trial_days`**，
+ * 不是 `trial_max_*`（那是 knob 名）。degraded 时 `trial` 没有 `max_*`，要回退到这里。
+ */
+export interface SuppressionPreviewOut {
+  trial: SuppressionTrial;
+  mode: string;
+  mode_label: string;
+  thresholds: {
+    trial_days: number;
+    max_hits: number;
+    max_srcs: number;
+    max_segments: number;
+    min_match_dims: number;
+  };
+}
+
+/**
+ * 新建 / 修改抑制的请求体。
+ *
+ * ⚠️ `PUT /api/suppressions/{id}` **只落 4 个字段**（`match` / `reason_code` /
+ * `evidence_refs` / `expires_at`(ttl_days)），`name` / `note` / `confidence` 会被静默丢弃
+ * → 编辑态这些字段只读（前端规避，2026-10 拍板）。
+ */
+export interface SuppressionIn {
+  name?: string;
+  match: SuppressionMatch;
+  reason_code?: string;
+  note?: string;
+  evidence_refs?: string[];
+  /** 0~1（不是 0~100） */
+  confidence?: number;
+  /** 1~30，缺省用 `default_ttl_days`（默认 14） */
+  ttl_days?: number | null;
+}

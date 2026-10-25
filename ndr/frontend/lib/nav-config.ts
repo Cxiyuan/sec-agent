@@ -16,6 +16,7 @@ import {
   Search,
   Settings,
   Share2,
+  ShieldOff,
   Siren,
   SlidersHorizontal,
   UserRound,
@@ -102,6 +103,13 @@ const CONFIG_ITEMS: NavItem[] = [
   { href: "/config/networks", label: "监控网段", desc: "抓哪些网段 · 中继节点", icon: Network, group: "接入与范围" },
   { href: "/config/rules", label: "检测规则", desc: "内置与自定义规则", icon: SlidersHorizontal, group: "检测与过滤" },
   { href: "/config/filters", label: "过滤规则", desc: "降噪过滤与排除", icon: Filter, group: "检测与过滤" },
+  {
+    href: "/config/suppressions",
+    label: "精准抑制",
+    desc: "误报抑制 · 影响面试算 · 撤销",
+    icon: ShieldOff,
+    group: "检测与过滤",
+  },
   { href: "/config/storage", label: "数据存储", desc: "Elasticsearch 与入库管道", icon: Database, group: "存储与对接" },
   { href: "/config/agent", label: "智能体对接", desc: "MCP 取数与摘要推送", icon: BarChart3, group: "存储与对接" },
   { href: "/config/health", label: "配置体检", desc: "逐项核对当前生效值", icon: Settings, group: "诊断与账号" },
@@ -132,6 +140,14 @@ export const NAV_SECTIONS: NavSection[] = [
         // 三个视角共用一份侧边栏：按 `/traffic` 前缀匹配，切到横向/外连也不会丢
         sidebarMatch: "/traffic",
         sidebar: TRAFFIC_ITEMS,
+      },
+      // 派工队列：单页 + 三个浮层，**无侧边栏**（宽表要整幅）。
+      // 归属靠这条 dropdown 的 href 判定（`sectionOf` 会检查下拉项），不需要额外的 `match`。
+      {
+        href: "/analysis",
+        label: "派工队列",
+        desc: "客观线索队列 · 结论 · 覆盖率 · 预算",
+        icon: ClipboardList,
       },
     ],
   },
