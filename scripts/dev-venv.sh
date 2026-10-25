@@ -61,15 +61,17 @@ else
   PY="$VENV/bin/python"
 fi
 
-# ---------- 3. 装依赖（清单从两个 pyproject 读，口径与 CI 一致） ----------
+# ---------- 3. 装依赖（清单从 pyproject 读，口径与 CI 一致） ----------
+# 2026-10-20 起 agent 侧换成 dsh（TypeScript/pnpm），**不再有 Python 后端**，
+# 所以这里只剩 NDR 一份 pyproject；agent 的质量门在它自己目录里用 pnpm 跑。
 "$PY" - <<'PY' > /tmp/dev-deps.txt
 import pathlib, tomllib
 deps: list[str] = []
-for path in ("ndr/backend/pyproject.toml", "agent/backend/pyproject.toml"):
+for path in ("ndr/backend/pyproject.toml",):
     data = tomllib.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     deps += data["project"]["dependencies"]
     deps += data["project"].get("optional-dependencies", {}).get("dev", [])
-# pyyaml 两侧依赖里没有但测试要用；pyright/ruff 是检查器本身
+# pyyaml 不在依赖里但测试要用；pyright/ruff 是检查器本身
 deps += ["pyyaml", "pyright", "ruff"]
 print("\n".join(dict.fromkeys(deps)))
 PY
@@ -96,6 +98,6 @@ fi
 "$PY" -c "import fastapi, sqlalchemy, elasticsearch, redis, pydantic, geoip2, mcp, jwt; print('✔ 依赖导入正常')"
 echo "✔ 完成：$("$PY" -V 2>&1)"
 echo "  跑门禁："
-echo "    .venv/bin/ruff check ndr/backend/app agent/backend/app tests/py"
-echo "    .venv/bin/pyright ndr/backend/app agent/backend/app tests/py"
+echo "    .venv/bin/ruff check ndr/backend/app tests/py"
+echo "    .venv/bin/pyright ndr/backend/app tests/py"
 echo "    .venv/bin/python -m pytest tests/py --stack=ndr -q"

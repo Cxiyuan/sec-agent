@@ -422,6 +422,8 @@ class Settings(BaseSettings):
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 8090
     mcp_path: str = "/mcp"
+    #: 全量工具档位（智能体默认走 `mcp_path` 的 analyst 档；排查/运维用这一档）
+    mcp_full_path: str = "/mcp/full"
     # 智能体连的地址（服务名，不是 0.0.0.0）：界面展示 + 探活都用它
     mcp_public_url: str = "http://ndr-mcp:8090"
     mcp_token_prefix: str = "stmcp_"  # 便于人一眼认出这是深瞳的 MCP 令牌

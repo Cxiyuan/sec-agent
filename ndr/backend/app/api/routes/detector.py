@@ -104,6 +104,31 @@ def detector_coverage(
     out["delivered_window_est"] = (
         round(delivered_window, 1) if delivered_window is not None else None
     )
+    # 分子必须与投递模式无关（2026-10 发现的口径冲突）：
+    # 派工模式（`analysis.enabled`）下摘要不再推给智能体，`delivered` 恒为 0，
+    # 再拿它当分子就会给运营中心一个「大批事件没进分析」的**恒假红灯**。
+    # 现在：派工模式用窗口内生成的命中事件数（复用 `hits_stats` 同一份口径），
+    # 回滚到推送模式时仍然看投递数（那才是当时「进入分析」的定义）。
+    try:
+        from app.analysis import params as analysis_params
+
+        dispatch_mode = analysis_params.enabled()
+    except Exception:  # noqa: BLE001 — 读不到参数就按推送模式算（保持旧行为）
+        dispatch_mode = False
+    events_window: float | None = None
+    if dispatch_mode:
+        window_stats = hits.hits_stats(minutes=window_minutes)
+        if "error" not in window_stats:
+            events_window = float(window_stats.get("total") or 0)
+        else:
+            out["events_error"] = str(window_stats.get("error"))[:160]
+    out["mode"] = "dispatch" if dispatch_mode else "push"
+    out["events_window"] = int(events_window) if events_window is not None else None
+    entered = events_window if dispatch_mode else delivered_window
+    out["entered_window_est"] = round(entered, 1) if entered is not None else None
+    out["entered_basis"] = (
+        "派工模式：窗口内生成的命中事件数" if dispatch_mode else "推送模式：窗口内已投递摘要数"
+    )
     es_docs: int | None = None
     try:
         from app.ingestion import es_config
@@ -119,11 +144,12 @@ def detector_coverage(
     except Exception as exc:  # noqa: BLE001
         out["es_error"] = str(exc)[:200]
     out["es_docs"] = es_docs
-    if es_docs and delivered_window is not None and not stale:
-        ratio = float(delivered_window) / float(es_docs)
+    # 统计快照过期只会让**投递计数**不可信；派工模式的分子来自 PG，不受此影响
+    if es_docs and entered is not None and (dispatch_mode or not stale):
+        ratio = float(entered) / float(es_docs)
         out["coverage_ratio"] = round(ratio, 3)
         out["warn"] = ratio < float(settings.detector_coverage_warn_ratio)
-    elif stale:
+    elif stale and not dispatch_mode:
         # 快照过期时旧口径会算出 ratio≈0 的假警，这里明确说「不判警」而不是发一个假告警
         out["coverage_ratio"] = None
         out["warn"] = False

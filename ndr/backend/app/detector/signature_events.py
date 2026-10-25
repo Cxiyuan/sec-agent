@@ -37,6 +37,17 @@ SOURCE = "signature"
 FALLBACK_LABEL = "其它可疑活动"
 
 _SEVERITY_BY_LEVEL = {1: "high", 2: "medium"}
+#: 规则作者在 `metadata: severity X` 里的标注 → 内部三级严重度。
+#: Critical/informational 这类第四级归到相邻级（系统只有 high/medium/low）。
+_SEVERITY_MAP = {
+    "critical": "high",
+    "high": "high",
+    "medium": "medium",
+    "moderate": "medium",
+    "low": "low",
+    "info": "low",
+    "informational": "low",
+}
 
 
 def is_signature_alert(entry: Any) -> bool:
@@ -64,11 +75,43 @@ def type_label_of(entry: Any) -> str:
     return signature_category_label(_category_of(entry)) or FALLBACK_LABEL
 
 
+def _metadata_severity(alert: Any) -> str:
+    """规则作者在 `metadata: severity X` 里的标注（EVE 会原样带出来）。
+
+    EVE 的两种形态都要认：`{"metadata": {"severity": ["Low"]}}`（字典）
+    与 `{"metadata": ["severity Low", ...]}`（列表，老版本/部分版本）。
+    """
+    if not isinstance(alert, dict):
+        return ""
+    meta = alert.get("metadata")
+    raw: Any = None
+    if isinstance(meta, dict):
+        raw = meta.get("severity")
+    elif isinstance(meta, list):
+        for item in meta:
+            text = str(item or "").strip()
+            if text.lower().startswith("severity "):
+                raw = text.split(" ", 1)[1]
+                break
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else None
+    return _SEVERITY_MAP.get(str(raw or "").strip().lower(), "")
+
+
 def severity_of(entry: Any) -> str:
-    """事件严重度：沿用 Suricata 的 alert.severity（1/2/其它）。"""
+    """事件严重度：**优先规则作者标注的 `metadata.severity`**，其次 `alert.severity`。
+
+    为什么要改（2026-10 实测）：`alert.severity` 是 Suricata 按 **classtype 优先级**
+    推出来的（trojan-activity → 1），而规则作者在 metadata 里明明写着 `severity Low`
+    —— 于是"缺 Accept 头"这种低置信判据被展示成 high + 「木马与后门活动」，
+    一条弱规则能刷出 200+ 高危事件。作者标注更贴近判据本身的强弱。
+    """
     raw = getattr(entry, "raw", None)
     digest = raw if isinstance(raw, dict) else {}
     alert = digest.get("alert") if isinstance(digest, dict) else None
+    from_meta = _metadata_severity(alert)
+    if from_meta:
+        return from_meta
     level = alert.get("severity") if isinstance(alert, dict) else None
     if level is None:
         level = getattr(entry, "signature_severity", None)

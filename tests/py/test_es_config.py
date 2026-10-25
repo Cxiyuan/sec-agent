@@ -31,6 +31,21 @@ def es_config(request: pytest.FixtureRequest) -> ModuleType:
     return importlib.import_module("app.ingestion.es_config")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_es_cache(es_config: ModuleType) -> Any:
+    """每个用例前后都清一次模块级缓存。
+
+    为什么必须有：`current()` 带 30 秒 TTL 的**进程内**缓存。其他文件的用例（例如
+    `test_analysis_mechanism.py` 里调 `describe_data`）会先把缓存填成“当时的配置”；
+    本文件的用例 monkeypatch 了 `settings` 再读 `auth_pair()`，拿到的仍是旧缓存，
+    于是一全量跑就挂、单跑却过（2026-10 实测）。这不是产品缺陷：真实进程里
+    缓存本来就该有，缺的是测试隔离。
+    """
+    es_config.invalidate()
+    yield
+    es_config.invalidate()
+
+
 @pytest.fixture(scope="module")
 def es_admin(request: pytest.FixtureRequest) -> ModuleType:
     if request.config.getoption("--stack") != "ndr":

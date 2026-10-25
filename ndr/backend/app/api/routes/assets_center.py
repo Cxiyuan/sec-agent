@@ -201,15 +201,17 @@ def _groups_map(db: Any) -> dict[str, str]:
     return {r.id: r.name for r in db.scalars(select(AssetGroup)).all()}
 
 
-@router.get("/records")
-def list_records(
-    _: Annotated[User, Depends(get_current_user)],
+def records(
+    *,
     q: str = "",
     group_id: str = "",
     criticality: str = "",
-    limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    limit: int = 200,
+    offset: int = 0,
 ) -> dict[str, Any]:
+    """台账查询（**无鉴权的版本**：界面路由与智能体工具共用一份实现）。"""
+    cap = max(1, min(int(limit or 200), 1000))
+    start = max(0, int(offset or 0))
     with SessionLocal() as db:
         conds = []
         if (q or "").strip():
@@ -221,10 +223,43 @@ def list_records(
             conds.append(AssetRecord.criticality == criticality.strip())
         total = int(db.scalar(select(func.count()).select_from(AssetRecord).where(*conds)) or 0)
         rows = db.scalars(
-            select(AssetRecord).where(*conds).order_by(AssetRecord.ip).limit(limit).offset(offset)
+            select(AssetRecord).where(*conds).order_by(AssetRecord.ip).limit(cap).offset(start)
         ).all()
         groups = _groups_map(db)
     return {"total": total, "items": [_asset_dict(r, groups) for r in rows]}
+
+
+def records_by_ips(ips: list[str]) -> dict[str, Any]:
+    """按 IP 精确取台账（智能体判"这台重不重要"的主用法）。
+
+    返回里带 `known` / `unknown_ips`：**没进台账不等于不重要**，
+    这个区分必须显式给出去，否则智能体会把"没登记"读成"无所谓"。
+    """
+    wanted = [str(x).strip()[:64] for x in (ips or []) if str(x).strip()][:200]
+    if not wanted:
+        return {"error": "要 ips（IP 清单）", "items": [], "known": 0, "unknown_ips": []}
+    with SessionLocal() as db:
+        rows = db.scalars(select(AssetRecord).where(AssetRecord.ip.in_(wanted))).all()
+        groups = _groups_map(db)
+    found = {str(r.ip): _asset_dict(r, groups) for r in rows}
+    return {
+        "items": [found[ip] for ip in wanted if ip in found],
+        "known": len(found),
+        "unknown_ips": [ip for ip in wanted if ip not in found],
+        "note": "unknown_ips 是**没进资产台账**的地址（不代表不重要，只代表没登记）",
+    }
+
+
+@router.get("/records")
+def list_records(
+    _: Annotated[User, Depends(get_current_user)],
+    q: str = "",
+    group_id: str = "",
+    criticality: str = "",
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    return records(q=q, group_id=group_id, criticality=criticality, limit=limit, offset=offset)
 
 
 @router.post("/records")

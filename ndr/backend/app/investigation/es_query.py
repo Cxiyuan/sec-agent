@@ -572,11 +572,21 @@ def time_bounds(source: str) -> dict[str, Any]:
     """
     _ = source
     index = index_pattern()
+    # 一次查询同时给出：物理时间边界 + 总量 + 近 24h 增量 + 按来源分布。
+    # 为什么合并：`describe_data` 是智能体规划前的**第一件事**，每个来源一次 ES 往返
+    # 就变成了好几次；这些数字同源同索引，一个聚合请求全拿得到。
     body = {
         "size": 0,
+        # 不设就是 1 万封顶（ES 7+ 的 hits.total 会被截断成 relation=gte），量级会失真
+        "track_total_hits": True,
         "aggs": {
             "min_ts": {"min": {"field": "@timestamp"}},
             "max_ts": {"max": {"field": "@timestamp"}},
+            "by_source": {"terms": {"field": "source_system", "size": 20}},
+            "last_24h": {
+                "filter": {"range": {"@timestamp": {"gte": "now-24h"}}},
+                "aggs": {"by_source": {"terms": {"field": "source_system", "size": 20}}},
+            },
         },
     }
     try:
@@ -584,12 +594,32 @@ def time_bounds(source: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"source": source, "index": index, "error": str(exc)[:200]}
     aggs = resp.get("aggregations") or {}
-    return {
+    total = ((resp.get("hits") or {}).get("total")) or {}
+    by_source = {
+        str(b.get("key")): int(b.get("doc_count") or 0)
+        for b in ((aggs.get("by_source") or {}).get("buckets") or [])
+    }
+    last_day = aggs.get("last_24h") or {}
+    by_source_day = {
+        str(b.get("key")): int(b.get("doc_count") or 0)
+        for b in (last_day.get("by_source") or {}).get("buckets") or []
+    }
+    day_total = int(last_day.get("doc_count") or 0)
+    bounds = {
         "source": source,
         "index": index,
         "earliest": (aggs.get("min_ts") or {}).get("value_as_string"),
         "latest": (aggs.get("max_ts") or {}).get("value_as_string"),
+        # 量级与新鲜度：智能体据此决定"先看哪个来源、窗口取多长"，不含任何判断结论
+        "docs_total": int(total.get("value") or 0) if isinstance(total, dict) else int(total or 0),
+        "docs_last_24h": day_total,
     }
+    # 只看自己那个来源的数（同索引多来源时避免互相串数）
+    if source in by_source:
+        bounds["docs_total_of_source"] = by_source[source]
+    if source in by_source_day:
+        bounds["docs_last_24h_of_source"] = by_source_day[source]
+    return bounds
 
 
 def describe_sources() -> list[dict[str, Any]]:

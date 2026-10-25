@@ -37,6 +37,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
     # 命中事件来源类别（特征匹配 / 行为分析 / 基线偏离）
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS source_kind VARCHAR(24) DEFAULT 'behavior_analysis'",
+    # 精准抑制：按「启用+到期」筛活跃条目、按命中数排序找最需要复核的条目
+    "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_enabled_expiry ON analysis_suppressions (enabled, expires_at)",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_hits ON analysis_suppressions (hits)",
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(24) DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS ix_hit_events_cluster_id ON hit_events (cluster_id)",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
@@ -46,12 +49,54 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS posterior DOUBLE PRECISION NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_alert_dispositions_entity ON alert_dispositions (kind, entity_key)",
     "CREATE INDEX IF NOT EXISTS ix_alert_dispositions_created_at ON alert_dispositions (created_at)",
+    # 派工队列：领取只扫 pending/deferred；局部索引让"队列再长也只索引可领的那部分"
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_tasks_claimable "
+        "ON analysis_tasks (priority DESC, created_at) "
+        "WHERE state IN ('pending','deferred')"
+    ),
+    # 租约回收只扫"已领取且有租约"的行
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_tasks_lease_open "
+        "ON analysis_tasks (lease_until) WHERE state = 'claimed'"
+    ),
+    # 盲区清单只扫"见过但没分析过 / 分析过但很久"的行
+    (
+        "CREATE INDEX IF NOT EXISTS ix_observed_subjects_unanalyzed "
+        "ON observed_subjects (kind, last_analyzed_at) WHERE last_analyzed_at IS NULL"
+    ),
     "CREATE INDEX IF NOT EXISTS ix_asset_stats_scope ON asset_stats (scope)",
     # 数值基线的两个过滤列索引（快照的预热计数、保留期清理）——以前都是全表扫描
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_first_seen ON baseline_stats (first_seen)",
     "CREATE INDEX IF NOT EXISTS ix_baseline_stats_updated_at ON baseline_stats (updated_at)",
     # 规则适用范围（network/host）：内置规则播种时按条件自动判定（见 rules/builtin.py::rule_scope），
     # 自定义规则由界面选择；检测器按事件的 source_system 过滤
+    #
+    # ---- 2026-10 智能体闭环（锚点 / 冷摘要 / 过程轨迹 / 终态原因）----
+    # 结论的“为什么结束”：只有 verdict 时 inconclusive 分不清“没查到”还是“超时”
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS terminal_reason VARCHAR(24) DEFAULT ''",
+    # 冷摘要回标：非空 = 明细已进 analysis_digests（行本身永不删除）
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ",
+    # 冷摘要候选只扫“还没被摘要过的旧行”，且有 created_at 范围
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_results_oldest "
+        "ON analysis_results (digested_at, created_at)"
+    ),
+    # 锚点：从资产反查结论（“对这台机器我们知道什么”）只走这个索引
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_anchors_asset "
+        "ON analysis_anchors (asset_kind, asset_value)"
+    ),
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_analysis_anchors_unique "
+        "ON analysis_anchors (result_id, asset_kind, asset_value)"
+    ),
+    # 轨迹：按任务取步骤（get_trace）与按对象/时间撮合（search_traces）
+    ("CREATE INDEX IF NOT EXISTS ix_analysis_traces_task ON analysis_traces (task_id, step_index)"),
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_traces_subject "
+        "ON analysis_traces (subject_kind, subject, created_at)"
+    ),
 )
 
 #: 被访问方基线的**口径版本**：

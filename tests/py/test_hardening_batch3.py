@@ -173,7 +173,12 @@ def test_disposition_endpoints_registered() -> None:
     )
     assert '@router.post("/alerts/{profile_id}/disposition")' in src
     assert '@router.get("/alerts/dispositions")' in src
-    assert "record_disposition" in src
+    # 处置的解析与写入都收在服务层（界面与智能体共用一份实现），
+    # 路由里不该再留一份 UUID/实体键 查询逻辑（2026-10 收敛：MCP 的 record_disposition 也走它）
+    assert "profiles.disposition_for(" in src
+    assert "EntityProfile.entity_key ==" not in src
+    svc = (ROOT / "ndr" / "backend" / "app" / "baseline" / "profile.py").read_text(encoding="utf-8")
+    assert "def disposition_for(" in svc
 
 
 # ===== ③ 新颖度 / 高基数 / 共享出口（item 4）=====

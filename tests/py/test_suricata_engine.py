@@ -122,6 +122,30 @@ def test_signature_events_unknown_category_falls_back() -> None:
     assert mod.severity_of(entry) == "low"
 
 
+def test_signature_severity_prefers_metadata() -> None:
+    """严重度取**规则作者标注**（metadata.severity），而不是 classtype 推出来的 alert.severity。
+
+    2026-10 实测：`缺失 Accept 头` 这种低置信判据被 classtype trojan-activity
+    推成 severity=1（high），一条弱规则能刷出 200+ 高危事件。
+    """
+    from types import SimpleNamespace
+
+    mod = importlib.import_module("app.detector.signature_events")
+
+    def entry(metadata):
+        alert = {"category": "trojan-activity", "severity": 1}
+        if metadata is not None:
+            alert["metadata"] = metadata
+        return SimpleNamespace(event_type="signature_hit", signature_category="trojan-activity", raw={"alert": alert})
+
+    # EVE 两种形态都要认
+    assert mod.severity_of(entry({"severity": ["Low"]})) == "low"
+    assert mod.severity_of(entry(["severity Low"])) == "low"
+    assert mod.severity_of(entry({"severity": ["Critical"]})) == "high"
+    # 没有标注时退回 alert.severity
+    assert mod.severity_of(entry(None)) == "high"
+
+
 def test_signature_alerts_are_not_baseline_eligible() -> None:
     """签名告警是派生产物，不进基线（顺带确认归类改动没动这条闸门）。"""
     entry = normalize("suricata", samples.DOCS["suricata_alert"])

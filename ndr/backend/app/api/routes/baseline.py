@@ -30,7 +30,7 @@ from app.baseline.asset import (
 )
 from app.config import settings
 from app.db.base import get_db
-from app.db.models import AlertDisposition, EntityProfile, User
+from app.db.models import AlertDisposition, User
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -330,26 +330,21 @@ def save_alert_disposition(
     降权口径：判成误报后，该实体（或该信号）在 `profile.false_positive_suppress_days`
     天内不再参与打分；只影响打分，理由仍会展示，运维能看到"当初为什么报"。
     """
-    row = db.get(EntityProfile, profile_id)
-    if row is None:
-        row = db.scalars(
-            select(EntityProfile).where(EntityProfile.entity_key == profile_id).limit(1)
-        ).first()
-    if row is None:
-        return JSONResponse(status_code=404, content={"detail": f"画像不存在：{profile_id}"})
-    out = profiles.record_disposition(
-        row.kind,
-        row.entity_key,
+    # 解析与写入都在服务层（`disposition_for`）：界面与智能体走同一条路径
+    out = profiles.disposition_for(
+        profile_id,
         payload.verdict,
         signal=payload.signal,
-        operator=getattr(user, "username", "") or "",
         note=payload.note,
+        operator=getattr(user, "username", "") or "",
     )
+    if "error" in out:
+        return JSONResponse(status_code=404, content={"detail": out["error"]})
     _invalidate_overview_cache()
     log.info(
         "告警处置：%s %s → %s（signal=%s）",
-        row.kind,
-        row.entity_key[:12],
+        out.get("kind", ""),
+        str(out.get("entity_key", ""))[:12],
         out["verdict"],
         out["signal"] or "整条",
     )

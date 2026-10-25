@@ -22,11 +22,20 @@ UTC = timezone.utc
 from typing import Any
 
 from app import triage_policy
+from app.analysis import (
+    candidates,
+    params as analysis_params,
+    queue as analysis_queue,
+    subjects as analysis_subjects,
+)
+from app.analysis.anchors import purge_old as purge_old_anchors
+from app.analysis.digests import run_digest_round
+from app.analysis.traces import purge_old as purge_old_traces
 from app.baseline.engine import BaselineEngine
 from app.baseline.sampler import WindowSampler
 from app.config import settings
 from app.db.base import SessionLocal
-from app.detector import health, hits, push, signature_events
+from app.detector import health, hits, push, signature_events, suppression
 from app.detector.aggregate import Aggregator
 from app.detector.fingerprint import digest_age
 from app.detector.frequency import FreqWindow
@@ -160,6 +169,10 @@ def run() -> None:
     # 数值基线的独立采样通道（2026-10 误报治理）：聚合摘要是「已命中规则的流量」，拿它学基线
     # = 拿异常当常态（幸存者偏差）。这里在规则匹配**之前**按窗口给每个源 IP 计数，窗口对齐聚合窗口。
     sampler = WindowSampler(settings.detector_agg_seconds)
+    # 派工队列的候选收集器（**每事件只进内存 set，零 I/O**；窗口到期才落库与入队）
+    collector = candidates.Collector()
+    # 分析机制的节拍状态：多久生成线索 / 多久查一次盲区 / 多久按一次门铃
+    analysis_state = {"last_round": 0.0, "last_coverage": 0.0, "last_sweep": 0.0}
     # 中继角色推算：按实际流量自动判定清单里的地址是「反代/WAF」还是「内网 DNS 转发器」，
     # 周期回写 PG（界面只读展示）；见 detector/relay_roles.py
     relay_roles = RelayRoleDetector()
@@ -273,6 +286,7 @@ def run() -> None:
                     sampler,
                     relay_roles,
                     relay_dedup,
+                    collector,
                 )
             except Exception:
                 # 原来这里 except 后无条件 ack：单条异常即永久丢且不计错误（QA 必修 2）。
@@ -290,6 +304,13 @@ def run() -> None:
             hit_id = hits.save_from_digest(digest)
             if hit_id:
                 digest["event_id"] = hit_id
+                if analysis_params.enabled():
+                    # 规则命中作为线索进队列（kind=hit）：强度只用规模与首见，不读严重度
+                    stats["candidate_hit"] += (
+                        1
+                        if candidates.enqueue_hit(digest, hit_id, client) in ("new", "merged")
+                        else 0
+                    )
             # 基线打标（第 8 期）：2σ 偏离 + 账号/会话画像异常随摘要一起推给智能体；
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):
@@ -300,15 +321,29 @@ def run() -> None:
                     if hit_ids:
                         digest["baseline_event_ids"] = hit_ids
             _apply_routine_policy(digest, client, stats)
+            if analysis_params.enabled():
+                # 派工模式（2026-10 改造）：摘要**不再推给智能体**，改成门铃 + 智能体按预算
+                # 主动领取（`claim_tasks`）。命中事件已经落 PG，界面与追溯不受影响。
+                # 关掉 analysis.enabled 就回到老的推送契约（这是本次改动的回滚开关）。
+                continue
             digest_q.push(json.dumps(digest, ensure_ascii=False))
             stats["digest"] += 1
             # 历史采样的原料：按严重度累计 + 按规则计本区间数（进下一次统计块的采样点）
             mark_digest(stats, digest)
         # 采样窗口到期 → 每 IP 一条样本：先判异、再学进基线（全量流量口径，见 baseline/sampler.py）
+        deviations: list[dict[str, Any]] = []
         for sample in sampler.pop_ready():
-            engine.observe_window(sample)
+            found = engine.observe_window(sample)
+            deviations.extend(found)
+        if deviations and analysis_params.enabled():
+            # 自身基线偏离 → shift 线索（判异结果与基线同源，不重算第二把尺子）
+            stats["candidate_shift"] += candidates.enqueue_shift(deviations, client)
+        # 派工机制的一轮：生成线索 / 盲区 / 清理 / 门铃（各自有节拍，不是每轮都做）
+        _analysis_round(client, collector, analysis_state, stats)
         # 基线落库：画像观测 + 数值统计攒到这里一次性写（节奏由 baseline_flush_seconds 控制）
         engine.maybe_flush()
+        # 抑制命中数攒批落库（热路径只做内存累加）
+        suppression.maybe_flush()
 
         # raw 队列持续封顶：采集速率（实测几万条/分钟）远高于检测器处理能力，
         # 不封顶就会把 Redis 撑满 → noeviction 拒写 → 检测器与 Celery 全线卡死（真实事故）。
@@ -358,7 +393,8 @@ def run() -> None:
                 except Exception as exc:  # noqa: BLE001
                     log.debug("登记丢弃计数写入失败: %s", exc)
             log.info(
-                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d / 摘要 %d "
+                "检测器统计（主实例 %s）：扫描 %d / 命中 %d / 频率触发 %d / 重复跳过 %d / 排除 %d "
+                "/ 已抑制 %d / 摘要 %d "
                 "/ 投递 %d / 未投递 %d / 处理失败 %d / 聚合满丢弃 %d / 限流 %d / 回队 %d "
                 "/ 丢弃(超龄 %d / 裁剪 %d / raw裁剪 %d) "
                 "/ 策略跳过(内网常规 %d) / 类型跳过(运维 %d / 未知 %d) / 登记丢弃 %d "
@@ -369,6 +405,7 @@ def run() -> None:
                 stats["freq_hit"],
                 stats["duplicate"],
                 stats["excluded"],
+                stats["suppressed"],
                 stats["digest"],
                 stats["delivered"],
                 stats["dropped_undelivered"],
@@ -790,6 +827,69 @@ def _trim_queue(
             log.debug("记录裁剪时段失败: %s", exc)
 
 
+def _analysis_round(
+    client: Any, collector: candidates.Collector, state: dict[str, float], stats: Counter[str]
+) -> None:
+    """派工机制的一轮：生成线索、查盲区、回收租约、按门铃。
+
+    整体包在 `try` 里：机制出任何问题只计数（`candidate_error`），
+    **绝不影响检测、聚合与推送**（这是当初把候选生成放进程内而不是新容器的前提）。
+    """
+    now = time.time()
+    gap = max(10, analysis_params.flush_seconds())
+    if not analysis_params.enabled():
+        return
+    if now - float(state.get("last_round") or 0.0) < gap:
+        return
+    state["last_round"] = now
+    try:
+        made = candidates.flush(collector, client, stats=stats)
+        stats["candidate_novelty"] += int(made.get("novelty") or 0)
+        stats["candidate_structure"] += int(made.get("structure") or 0)
+        if now - float(state.get("last_coverage") or 0.0) >= 6 * 3600:
+            state["last_coverage"] = now
+            stats["candidate_coverage"] += candidates.enqueue_coverage(client)
+        # 复测与冷摘要：低频（6 小时一次）的"回头看"任务。
+        # 放在这里而不是新容器里，理由与候选生成相同：零新增部署单元。
+        if now - float(state.get("last_retest") or 0.0) >= 6 * 3600:
+            state["last_retest"] = now
+            stats["candidate_retest"] += candidates.enqueue_retest(client)
+            if analysis_params.digest_enabled():
+                folded = run_digest_round()
+                stats["results_digested"] += int(folded.get("results") or 0)
+        if now - float(state.get("last_sweep") or 0.0) >= max(300, gap * 5):
+            state["last_sweep"] = now
+            done = analysis_queue.sweep(client)
+            stats["task_expired"] += int(done.get("expired") or 0)
+            stats["task_stuck"] += int(done.get("stuck") or 0)
+            cleaned = analysis_subjects.cleanup()
+            stats["subject_pruned"] += int(cleaned.get("deleted") or 0)
+            # 轨迹与锚点是**派生线索**：过期就该退场，否则会把后来的判断带偏
+            stats["trace_pruned"] += purge_old_traces(analysis_params.trace_retention_days())
+            stats["anchor_pruned"] += purge_old_anchors(180)
+        # 门铃：只在有新线索、且过冷却时按一次；载荷不含任何事件数据
+        cfg = push.load_config()
+        if push.is_on(cfg):
+            payload = analysis_queue.doorbell_payload(client)
+            if analysis_queue.should_ring(client, payload):
+                ok, err = push.send_doorbell(cfg, payload)
+                if ok:
+                    stats["doorbell_sent"] += 1
+                    push.record(client, "sent", 1)
+                    log.info(
+                        "已按门铃：队列 %s 条线索（top=%s 强度 %s）",
+                        payload.get("queue_len"),
+                        payload.get("top_kind"),
+                        payload.get("max_strength"),
+                    )
+                else:
+                    stats["doorbell_failed"] += 1
+                    push.record(client, "retry_failed", 1, err)
+    except Exception as exc:  # noqa: BLE001 — 派工机制异常不能影响检测
+        stats["candidate_error"] += 1
+        log.warning("派工机制本轮失败（不影响检测与推送）：%s", exc)
+
+
 def _handle(
     payload: str,
     rules: dict[str, list[dict[str, Any]]],
@@ -802,6 +902,7 @@ def _handle(
     sampler: WindowSampler,
     relay_roles: RelayRoleDetector,
     relay_dedup: RelayDedup,
+    collector: candidates.Collector,
 ) -> None:
     """处理单条队列消息。"""
     try:
@@ -866,6 +967,8 @@ def _handle(
         engine.observe(entry)
         # 数值基线的窗口计数：和画像同一道闸门（签名命中是派生产物，不能当正常行为学）
         sampler.observe(entry)
+        # 派工线索的候选累积：同一道闸门，纯内存 set 操作，不做任何 I/O
+        collector.observe(entry)
 
     # ⑤ 只跑与本期日志类型相关的规则（+ 通配规则）；rules_evaluated 用于量化提速
     if signature_events.is_signature_alert(entry):
@@ -883,6 +986,28 @@ def _handle(
         hit = next((r for r in candidates if match_rule(r, entry)), None)
     if hit is not None:
         stats["hit"] += 1
+        # 精准抑制（智能体给出可核验证据后自动生效）：命中就**不再派工、不再推送**。
+        # 条件树可以按 `rule` 维度匹配，所以要把命中的规则名传进去。
+        # mode=suppress 直接返回（不落 hit_events，只累加抑制条目的命中数）；
+        # mode=record_only 是"影响面积过大 / 自动生效已关闭"的降级档 ——
+        # 事件仍生成，但不投递、不进基线。
+        blocked = suppression.decide(entry, rule=str(hit.get("name") or ""))
+        if blocked is not None:
+            suppression.note_hit(blocked.id)
+            stats["suppressed"] += 1
+            if blocked.mode == suppression.MODE_SUPPRESS:
+                return
+            _aggregate(
+                agg,
+                entry,
+                hit,
+                entry.raw,
+                source,
+                stats=stats,
+                excluded=True,
+                exclude_reason=f"已抑制（{blocked.name}）",
+            )
+            return
         _aggregate(
             agg, entry, hit, entry.raw, source, stats=stats, **_exclusion_of(entry, hit, stats)
         )

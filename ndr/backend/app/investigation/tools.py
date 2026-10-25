@@ -222,21 +222,36 @@ def _describe_data(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
     _check_unknown(args, (), "describe_data")
     sources = []
     for item in es_query.describe_sources():
+        bounds = item.get("bounds") or {}
         sources.append(
             {
                 "source": item["source"],
                 "index": item["index"],
-                "earliest": (item.get("bounds") or {}).get("earliest"),
-                "latest": (item.get("bounds") or {}).get("latest"),
+                "earliest": bounds.get("earliest"),
+                "latest": bounds.get("latest"),
+                # 量级与新鲜度：用来决定"先看哪个来源、窗口取多长"（不含任何判断结论）
+                "docs_total": bounds.get("docs_total"),
+                "docs_last_24h": bounds.get("docs_last_24h"),
+                "docs_total_of_source": bounds.get("docs_total_of_source"),
+                "docs_last_24h_of_source": bounds.get("docs_last_24h_of_source"),
                 "fields": item.get("fields"),
                 "agg_fields": item.get("agg_fields"),
-                "bounds_error": (item.get("bounds") or {}).get("error"),
+                "field_count": len(item.get("fields") or []),
+                "bounds_error": bounds.get("error"),
             }
         )
     return {
         "sources": sources,
         "lookback_limit_days": es_query.max_lookback_days(),
-        "hint": "时间参数用 ISO 格式；字段用 fields 里的统一字段名；未知字段会被拒绝并回传可用清单。",
+        "hint": (
+            "时间参数用 ISO 格式；字段用 fields 里的统一字段名；未知字段会被拒绝并回传可用清单。\n"
+            "查不到 ≠ 没发生：入库过滤/排除过滤会先把一部分事件挡在分析链外，"
+            "规划前先 list_filters 看一眼现状；能聚合的字段只有 agg_fields。"
+        ),
+        "planning_note": (
+            "docs_last_24h 为 0 说明采集或入库这一段没数据（先怀疑链路，不是怀疑没攻击）；"
+            "earliest 晚于你关心的时间窗说明索引已被保留期清掉，只能查更近的窗口。"
+        ),
     }
 
 

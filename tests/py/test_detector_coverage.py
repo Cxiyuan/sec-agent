@@ -43,6 +43,18 @@ class _FakeES:
         return {"count": self.count_value}
 
 
+@pytest.fixture(autouse=True)
+def _push_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本模块的用例验的是「推送模式下按投递增量算覆盖率」。
+
+    派工模式（`analysis.enabled`）下分子会换成窗口内命中事件数，不钉住模式的话
+    同一批断言会随默认值漂移，而且派工模式下本地无 PG 会算不出分子。
+    """
+    from app.analysis import params as analysis_params
+
+    monkeypatch.setattr(analysis_params, "enabled", lambda: False)
+
+
 def _patch_redis(monkeypatch: pytest.MonkeyPatch, client: Any) -> None:
     import redis
 
@@ -131,3 +143,66 @@ def test_coverage_stale_snapshot_does_not_false_alarm(
     assert out["warn"] is False
     assert out["warn_reason"]
     assert out["es_docs"] == 55251
+
+
+def test_dispatch_mode_uses_event_count_not_delivered(
+    detector_route: Any, fakes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """派工模式：摘要不再投递，分子必须换成命中事件数，否则是恒假红灯。"""
+    from app.analysis import params as analysis_params
+    from app.detector import hits as hits_mod
+
+    client = fakes.FakeRedis()
+    client.hset(
+        "shentong:detector:rates",
+        mapping={
+            "delivered": "0",  # 派工模式下恒 0：这正是旧口径会误判的场景
+            "d_delivered": "0",
+            "interval_seconds": "300",
+            "ts": str(datetime.now(UTC).timestamp()),
+        },
+    )
+    _patch_redis(monkeypatch, client)
+    _patch_es(monkeypatch, 1000)
+    monkeypatch.setattr(analysis_params, "enabled", lambda: True)
+    monkeypatch.setattr(
+        hits_mod, "hits_stats", lambda *, minutes: {"total": 800, "minutes": minutes}
+    )
+
+    out = detector_route.detector_coverage(_=None, minutes=60)
+
+    assert out["mode"] == "dispatch"
+    assert out["events_window"] == 800
+    assert out["entered_window_est"] == 800.0
+    assert out["entered_basis"].startswith("派工模式")
+    assert out["coverage_ratio"] == 0.8
+    assert out["warn"] is False
+
+
+def test_dispatch_mode_survives_stale_snapshot(
+    detector_route: Any, fakes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """派工模式的分子来自 PG，统计快照过期不该让它失明（也不该给"投递不可信"的说明）。"""
+    from app.analysis import params as analysis_params
+    from app.detector import hits as hits_mod
+
+    client = fakes.FakeRedis()
+    client.hset(
+        "shentong:detector:rates",
+        mapping={
+            "delivered": "0",
+            "d_delivered": "0",
+            "interval_seconds": "300",
+            "ts": str(time.time() - 4000),  # 过期
+        },
+    )
+    _patch_redis(monkeypatch, client)
+    _patch_es(monkeypatch, 500)
+    monkeypatch.setattr(analysis_params, "enabled", lambda: True)
+    monkeypatch.setattr(hits_mod, "hits_stats", lambda *, minutes: {"total": 450})
+
+    out = detector_route.detector_coverage(_=None, minutes=60)
+
+    assert out["stale"] is True
+    assert out["coverage_ratio"] == 0.9, "派工模式不因投递快照过期而放弃计算"
+    assert "warn_reason" not in out, "不该给出'投递计数不可信'这种与本次口径无关的说明"

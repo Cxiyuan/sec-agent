@@ -137,7 +137,7 @@ class BaselineEngine:
 
     # ---------- 窗口：判异 + 学习（全量流量口径） ----------
 
-    def observe_window(self, sample: dict[str, Any]) -> None:
+    def observe_window(self, sample: dict[str, Any]) -> list[dict[str, Any]]:
         """把「一个窗口、一个源 IP」的计数样本**先判异、再并入**基线。
 
         为什么单开一条通道：聚合摘要只包含**命中规则**的流量，拿它当学习源等于拿异常当常态
@@ -149,10 +149,10 @@ class BaselineEngine:
         由 `_numeric()` 取走挂上去 —— 只有摘才能落成命中事件，偏离必须搭这趟车。
         """
         if not params.baseline_enabled():
-            return
+            return []
         src = str(sample.get("src_ip") or "")
         if not src or src == "-":
-            return
+            return []
         values = {feature: _num(sample.get(feature)) for feature in _FEATURES}
         # 顺序很重要：先用**旧**基线判异，再把本窗口样本学进去（否则拿自己跟自己比）
         found, warmed = self._judge(src, values)
@@ -175,6 +175,8 @@ class BaselineEngine:
         self.stats["baseline_sampled"] += added
         if len(self._wanted) >= _WANT_BATCH:
             self._load_wanted()
+        # 交出去：派工队列按这些偏离生成 shift 线索（同一份判异结果，不重算第二把尺子）
+        return found
 
     def _dev_keep_seconds(self) -> float:
         """偏离/窗口结果的生命期：摘要按聚合窗口产出，比两个窗口更旧的没人要。"""

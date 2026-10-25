@@ -680,6 +680,41 @@ def record_disposition(
     return out
 
 
+def disposition_for(
+    profile_ref: str,
+    verdict: str,
+    *,
+    signal: str = "",
+    note: str = "",
+    operator: str = "",
+) -> dict[str, Any]:
+    """按画像 UUID **或实体键**处置一条画像告警（界面与智能体共用同一份解析）。
+
+    为什么两个都收：界面手里是 UUID，智能体手里往往只有 `entity_profile` 返回的实体键
+    （账号名 / 设备哈希），不该逼它先查一次库再写。
+    找不到时返回 `{"error": ...}`，由调用方决定回 404 还是报错给模型。
+    """
+    ref = str(profile_ref or "").strip()
+    if not ref:
+        return {"error": "要 profile_id 或实体键"}
+    with SessionLocal() as db:
+        row = db.get(EntityProfile, ref)
+        if row is None:
+            row = db.scalars(
+                select(EntityProfile).where(EntityProfile.entity_key == ref).limit(1)
+            ).first()
+        if row is None:
+            return {"error": f"画像不存在：{ref[:64]}"}
+        kind = str(row.kind or "")
+        entity_key = str(row.entity_key or "")
+    out = record_disposition(
+        kind, entity_key, verdict, signal=signal, operator=operator, note=note
+    )
+    out["kind"] = out.get("kind") or kind
+    out["entity_key"] = out.get("entity_key") or entity_key
+    return out
+
+
 def detect(kind: str, obs: dict[str, Any], profile: EntityProfile | None) -> dict[str, Any]:
     """与长期基线比对，返回 {reasons, risk, posterior, codes, alerted, cold_start}。
 

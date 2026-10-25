@@ -90,6 +90,18 @@ def _rule_dict(r: Rule) -> dict[str, Any]:
     }
 
 
+def all_rules(db: Session) -> list[dict[str, Any]]:
+    """全部检测规则（**无鉴权版本**）：行为分析（库里可编辑）+ 特征匹配（签名只读）。
+
+    抽出来是为了让界面与智能体工具读**同一份**口径：两处各拼一次的话，
+    加了新来源类别一定会漏一处（2026-10 已踩过同类漂移）。
+    """
+    rows = db.execute(select(Rule).order_by(Rule.priority)).scalars().all()
+    behavior = [_rule_dict(r) for r in rows]
+    feature = [dict(item) for item in catalog.builtin_catalog()]
+    return behavior + feature
+
+
 @router.get("")
 def list_rules(
     db: Annotated[Session, Depends(get_db)],
@@ -103,10 +115,7 @@ def list_rules(
     返回**一个** items 数组（两类混在一条契约里，靠 `source_kind` / `source_label` 分组），
     签名规则 id 形如 `sig-<sid>`：拿它调 PUT/DELETE 会 404（不是库里的行），这正是期望。
     """
-    rows = db.execute(select(Rule).order_by(Rule.priority)).scalars().all()
-    behavior = [_rule_dict(r) for r in rows]
-    feature = [dict(item) for item in catalog.builtin_catalog()]
-    return {"items": behavior + feature}
+    return {"items": all_rules(db)}
 
 
 @router.post("")

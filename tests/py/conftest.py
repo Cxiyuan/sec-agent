@@ -1,6 +1,6 @@
 """pytest 配置：一次只绑一个栈（ndr / agent），用 ``--stack`` 选择。
 
-两个栈的后端包都叫 ``app``（``ndr/backend/app``、``agent/backend/app``），同一个进程里
+历史上两个栈的后端包都叫 ``app``（``ndr/backend/app``、``agent/backend/app``），同一个进程里
 没法同时 import。所以分工是：
 
 - 断言**某一个栈**行为的测试：用 ``--stack`` 指定，CI 里两个栈各跑一遍；
@@ -37,7 +37,11 @@ def pytest_configure(config: pytest.Config) -> None:
     stack = str(config.getoption("--stack"))
     backend = ROOT / stack / "backend"
     if not (backend / "app").is_dir():
-        raise pytest.UsageError(f"找不到后端包：{backend}/app")
+        raise pytest.UsageError(
+            f"找不到后端包：{backend}/app"
+            "（2026-10-20 起 agent 侧已换成 dsh / TypeScript，没有 Python 后端；"
+            "本地与 CI 都只跑 --stack=ndr）"
+        )
     # 放在最前面，确保 `import app` 命中的是被测栈
     sys.path.insert(0, str(backend))
 

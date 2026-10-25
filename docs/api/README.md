@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **102 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **122 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 
 ## 一、通用约定
@@ -165,6 +165,23 @@
 | `GET` | `/api/baseline/profiles` | `kind,q,min_risk,limit,offset` | — | — |
 | `GET` | `/api/baseline/stats` | `ip,key,limit` | — | — |
 
+### 分析机制 — `/api/analysis`
+
+派工队列（客观线索）、智能体结论、覆盖率与对象清单（数据地图）、预算参数读写、人工派工
+
+| 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/analysis/config` | — | — | — |
+| `PUT` | `/api/analysis/config` | — | — | body |
+| `POST` | `/api/analysis/config/reset` | — | — | body |
+| `GET` | `/api/analysis/coverage` | `days,kind,limit` | — | — |
+| `GET` | `/api/analysis/inventory` | `limit,kind` | — | — |
+| `GET` | `/api/analysis/results` | `task_id,subject,verdict,limit,offset` | — | — |
+| `GET` | `/api/analysis/stats` | — | — | — |
+| `GET` | `/api/analysis/tasks` | `state,kind,subject,q,limit,offset` | — | — |
+| `POST` | `/api/analysis/tasks` | — | — | body |
+| `GET` | `/api/analysis/tasks/{task_id}` | — | `task_id` | — |
+
 ### 配置管理 — `/api/rules`
 
 检测规则 CRUD（每条带 `source_kind`/`source_label` 三类来源）
@@ -175,6 +192,23 @@
 | `POST` | `/api/rules` | — | — | body |
 | `PUT` | `/api/rules/{rule_id}` | — | `rule_id` | body |
 | `DELETE` | `/api/rules/{rule_id}` | — | `rule_id` | — |
+
+### 配置管理 — `/api/suppressions`
+
+精准抑制：智能体判过的误报四元组合（源IP + 目的IP:端口 + 协议 + payload），命中即不再派工、不再推送；含清单/统计/参数读写/影响面积试算/撤销恢复
+
+| 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/suppressions` | `q,enabled_only,include_expired,limit,offset` | — | — |
+| `POST` | `/api/suppressions` | — | — | body |
+| `GET` | `/api/suppressions/config` | — | — | — |
+| `PUT` | `/api/suppressions/config` | — | — | body |
+| `POST` | `/api/suppressions/config/reset` | — | — | body |
+| `POST` | `/api/suppressions/preview` | — | — | body |
+| `GET` | `/api/suppressions/stats` | — | — | — |
+| `PUT` | `/api/suppressions/{item_id}` | — | `item_id` | body |
+| `POST` | `/api/suppressions/{item_id}/restore` | — | `item_id` | — |
+| `POST` | `/api/suppressions/{item_id}/revoke` | — | `item_id` | body |
 
 ### 配置管理 — `/api/zeek`
 
@@ -305,7 +339,54 @@ MCP 令牌与工具清单
 - **可视化流量**：`/api/traffic/ips?view=outbound|lateral|egress` → `/api/traffic/peers?ip=…`
 - **资产中心**：`/api/assets/discover|scan|groups|records`
 - **行为画像**：`/api/baseline`、`/api/baseline/profiles`、`/api/baseline/numeric`、`/api/baseline/config`
-- **配置管理**：`/api/rules`、`/api/suricata/rules`、`/api/zeek/*`、`/api/es/*`、`/api/config/audit`
+- **配置管理**：`/api/rules`、`/api/suppressions/*`、`/api/zeek/*`、`/api/es/*`、`/api/config/audit`
+  （`/api/suricata/*` 那组「签名规则集」管理端点已随功能删除 —— 签名规则现在直接出现在 `/api/rules` 里，只读）
+
+### 分析机制（`/api/analysis`，派工队列）
+
+- 队列浏览：`GET /api/analysis/tasks?state=&kind=&subject=&q=&limit=&offset=`（按客观强度降序）；
+  详情 `GET /api/analysis/tasks/{id}` 含 `hint` 全量与该任务的历史结论
+- 结论：`GET /api/analysis/results?task_id=&subject=&verdict=`
+- 验收指标：`GET /api/analysis/stats`（各状态条数、按类型/结论分布、平均成本，以及
+  `counters` 里的 `merged / superseded / dropped_overflow / stuck / expired / doorbell_*`）、
+  `GET /api/analysis/coverage`（覆盖率与盲区）、`GET /api/analysis/inventory`（对象清单）
+- 人工派工：`POST /api/analysis/tasks`，body `{subject, subject_kind, kind, note, strength}`；
+  与自动线索同一套去重/容量/配额，**不插队**
+- 预算参数：`GET/PUT /api/analysis/config`、`POST /api/analysis/config/reset`
+  （全部 `analysis.*` 参数都以 `GET /api/analysis/config` 返回的 `items` 为准，形状与 `/api/baseline/config` 一致，可复用同一套表单渲染）
+- **界面不提供「领取任务」入口**：领取是智能体通道（MCP `claim_tasks`），带令牌身份与配额；
+  界面绕过配额去领活会把成本上限打穿
+
+### 智能体侧 MCP 新工具（不是 REST，但契约要一起看）
+
+`claim_tasks` / `complete_task` / `defer_task` / `task_stats` / `asset_map` / `coverage_report`。
+
+- NDR 不再推摘要，改为只发一次「门铃」（载荷只有队列状况）；智能体按自己预算 `claim_tasks` 领取；
+- 领到的任务只含客观事实（偏离倍数 / 是否首见 / 涉及对象数），**不含严重度与结论**；
+- `complete_task` 可内联 `next_tasks` 追问（受深度上限）与 `suppression` 提交精准抑制：
+  后者只在 `verdict=false_positive` 时允许，且 `evidence_refs` 必须是**本次会话真取回过**的引用。
+
+### 精准抑制（`/api/suppressions`）
+
+匹配口径是**结构化条件树**（与规则引擎同一套语法）：
+`{"logic": "and", "rules": [{"field": "signature_id", "op": "eq", "value": "9110004"}, ...]}`。
+可用字段见 `GET /api/suppressions/config` 的 `allowed_fields`（**不含正文类字段**——
+正文能被投毒，不能当判据）。
+
+- 清单：`GET /api/suppressions?q=&enabled_only=&include_expired=&limit=&offset=`（按命中数降序）
+- 新建前试算：`POST /api/suppressions/preview`，body `{"match": {...}}`
+  → `{trial:{events,srcs,segments}, mode, thresholds}`；
+  `mode=record_only` 表示影响面过大，会降级成「事件仍生成、只不派工」
+- 提交：`POST /api/suppressions`，body `{name, match, reason_code, evidence_refs, confidence, ttl_days}`
+  （**至少 2 个独立维度**、证据 ≥3 条且来自 ≥2 种取数工具、置信度达标，否则 400 + `field_errors`）
+- 修改：`PUT /api/suppressions/{id}`（改了 `match` 会重新试算并按结果调整 mode）
+- 撤销/恢复：`POST /api/suppressions/{id}/revoke`（带 `reason`）、`POST /api/suppressions/{id}/restore`
+- 总览：`GET /api/suppressions/stats`（活跃/过期/已撤销、累计抑制量、两种 mode 分布、全部门槛与允许字段）
+- 参数：`GET/PUT /api/suppressions/config`、`POST /api/suppressions/config/reset`
+  （`suppression.*` 参数，形状与 `/api/baseline/config` 一致，可复用同一套表单渲染）
+
+**两种 mode 的语义**（界面必须显示清楚）：`suppress`＝该类现象不再生成事件、不再派工；
+`record_only`＝事件仍生成、只是不派工不推送（影响面过大或自动生效关闭时的降级档）。
 
 ## 三·补、近期字段变化（端点没变，字段有增）
 
@@ -320,6 +401,8 @@ MCP 令牌与工具清单
 | `GET /api/detector/hits`、`/hits/{id}` | `cluster_id` | 告警簇 ID：同一事件归类 + 同一 /24（v6 /64）+ 同一小时归为一簇，界面可把同簇收成一行 |
 | `GET /api/baseline/numeric` | **新参数** `scope` | `entity`（默认，只看 `源IP:维度`）／`group`（只看 `grp:{网段}:维度` 组先验）／`all`。组先验是等组池化的内部统计（稀疏实体向 /24 先验收缩），不是"某个 IP 的基线"，默认不返回，免得列表里混进 `grp:10.0.0.0/24` 这种像网段的键 |
 | `GET /api/rules` | **规则数变化** | 三条「签名命中(高/中/低危)」分流包装规则已删除（见 `DELETED_RULES`）。规则条数三档口径：**源码定义 19 条** → 其中 **7 条已收敛到特征匹配**（登记删除、播种跳过） → **实际生效 12 条**行为分析规则。签名告警**不走规则表**，事件类型直接取签名归类（classtype） |
+| `GET /api/rules` | `readonly` | 特征匹配（签名）规则是**只读**条目：随镜像发布，界面不给编辑/删除入口 |
+| 新表 `analysis_suppressions` | 字段见下 | `match`（结构化条件树）+ `mode`（suppress 不生成事件 / record_only 只不派工）+ `trial`（申请时爆炸半径试算）+ `reason_code`/`evidence_refs`/`evidence_tools`/`confidence`/`source_task_id`（**审计四件套**）+ `hits`/`last_hit_at`（命中数）+ `expires_at`/`revoked_at` |
 | `hit_events.evidence`（事件证据） | `p` / `alpha` / `var` / `pooled_with` | 泊松判据下的偏离证据：上尾概率、校正后阈值、方差、是否用了组池化；回滚到 zscore 时仍是 `z` / `std` / `std_raw` |
 
 ## 四、前端必读的坑

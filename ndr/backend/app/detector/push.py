@@ -157,6 +157,38 @@ def is_on(cfg: dict[str, Any]) -> bool:
     return bool(cfg.get("enabled")) and bool(str(cfg.get("url") or "").strip())
 
 
+def send_doorbell(cfg: dict[str, Any], payload: dict[str, Any]) -> tuple[bool, str]:
+    """按一次门铃：**只带队列状况，不带任何事件数据**。
+
+    为什么不再推摘要（2026-10 改造，见 `docs/ndr-analysis-mechanism.md`）：
+    原来是"命中即推整条摘要"，智能体退化成规则结果解释器、而且没有成本上限。
+    现在 NDR 只负责"有新线索了"这一声，看什么、查多深由智能体自己领（`claim_tasks`）。
+
+    走的是原来那套 HTTP 通道（地址、令牌、超时、重试队列与 `sent/queued/undelivered`
+    指标全部沿用），所以运维界面不需要重学一套东西；`max_per_push` 对门铃无意义，
+    已由 `analysis.*` 预算参数取代。
+    """
+    url = str(cfg.get("url") or "").strip()
+    if not url:
+        return False, "未配置推送地址"
+    headers = {"Content-Type": "application/json"}
+    token = str(cfg.get("token") or "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = httpx.post(
+            url,
+            json={"doorbell": payload},
+            headers=headers,
+            timeout=float(cfg.get("timeout_seconds") or 10.0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:200]
+    if 200 <= resp.status_code < 300:
+        return True, ""
+    return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+
+
 def ping_url(url: str) -> str:
     """由推送地址推出连通性自检地址（``/api/push/digests`` → ``/api/push/ping``）。"""
     base = str(url or "").strip()

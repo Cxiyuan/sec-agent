@@ -79,3 +79,55 @@ def test_backend_image_ships_rules_for_catalog() -> None:
     assert "COPY suricata/rules/builtin" in dockerfile
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "context: ./ndr" in ci, "上下文必须是 ndr/（要带 suricata/rules/builtin）"
+
+
+# ===== C2 信标规则强化（2026-10 误报治理，用户要求"规则强加强"）=====
+
+
+def _c2_rules_text() -> str:
+    return (ROOT / "ndr" / "suricata" / "rules" / "builtin" / "10-c2-beacon.rules").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_c2_rules_are_direction_bound() -> None:
+    """C2 信标只会「内网主机 → 外网」：不能再用 any -> any（否则把"外网访问我们网站"也算进去）。"""
+    text = _c2_rules_text()
+    assert "any any -> any any" not in text, "C2 信标规则必须限定方向"
+    assert "$HOME_NET any -> $EXTERNAL_NET any" in text
+
+
+def test_signature_9110004_is_hardened() -> None:
+    """9110004（缺 Accept 头）实测占了 204/285 条「木马与后门活动」事件 —— 必须多条件 + 高阈值 + 降级。"""
+    text = _c2_rules_text()
+    rev = re.search(r"sid:9110004; rev:(\d+);", text)
+    assert rev and int(rev.group(1)) >= 2, "这条规则强化后要升 rev"
+    seg_start = text.index("sid:9110004;")
+    seg = text[max(0, seg_start - 1600) : seg_start]
+    assert 'content:!"Accept";' in seg
+    assert 'content:!"Accept-Language";' in seg, "只靠一个头缺失太弱，要三个头同时缺"
+    assert 'content:!"Referer";' in seg
+    assert "count 3, seconds 300" in seg, "阈值要从 1 次/60 秒抬到 3 次/300 秒"
+    assert "classtype:misc-activity" in seg, "低置信判据不该归类成「木马与后门活动」"
+
+
+def test_weak_beacon_rules_raise_threshold() -> None:
+    """同类弱判据（极简查询串/信标 URI）也不该一次就报。"""
+    text = _c2_rules_text()
+    for sid in ("9110001", "9110002", "9110006"):
+        idx = text.index(f"sid:{sid};")
+        seg = text[max(0, idx - 900) : idx]
+        assert "count 3, seconds 300" in seg, f"{sid} 阈值仍是 1 次/60 秒"
+
+
+def test_severity_prefers_rule_metadata() -> None:
+    """事件严重度取规则作者标注的 metadata.severity（低置信判据不该展示成 high）。"""
+    from types import SimpleNamespace
+
+    se = _mod("app.detector.signature_events")
+    low_dict = SimpleNamespace(raw={"alert": {"severity": 1, "metadata": {"severity": ["Low"]}}})
+    low_list = SimpleNamespace(raw={"alert": {"severity": 1, "metadata": ["severity Low"]}})
+    no_meta = SimpleNamespace(raw={"alert": {"severity": 1}})
+    assert se.severity_of(low_dict) == "low"
+    assert se.severity_of(low_list) == "low"
+    assert se.severity_of(no_meta) == "high", "没有作者标注时才回落 classtype 推导"

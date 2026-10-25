@@ -51,6 +51,27 @@ _CTX_MAX_SESSIONS = 64
 #: 单个会话最多记多少条 ref；超出就清空重来（宁可让模型重查，也不无界吃内存）
 _CTX_MAX_REFS = 20000
 _ctx_cache: dict[str, tuple[float, Any]] = {}
+#: 会话内"工具名 → 产生过的证据引用数"。证据多样性门槛（≥2 种取数工具）靠它判定：
+#: 只看一段被投毒的正文就下结论，是这个机制最怕的投毒方式。
+_usage: dict[str, tuple[float, dict[str, int]]] = {}
+
+
+def _usage_for(token_id: str) -> dict[str, int]:
+    """取该会话的工具使用计数（新会话返回空表）。"""
+    entry = _usage.get(token_id)
+    return dict(entry[1]) if entry else {}
+
+
+def _note_usage(token_id: str, tool: str, added: int) -> None:
+    """记一笔：这个工具本次新增了 `added` 条证据引用。"""
+    if added <= 0:
+        return
+    now = time.time()
+    for stale_key in [k for k, (ts, _) in _usage.items() if now - ts > 6 * 3600]:
+        _usage.pop(stale_key, None)
+    _, counts = _usage.get(token_id, (now, {}))
+    counts[tool] = counts.get(tool, 0) + added
+    _usage[token_id] = (now, counts)
 
 
 def _ctx_for(token_id: str) -> Any:
@@ -96,7 +117,9 @@ def _run(name: str, args: dict[str, Any], *, native: bool = False) -> str:
     # 在**唯一入口**登记本次结果里的证据引用：`fetch_window` 这类 native 工具同样会带
     # `ref`，不在这里登记的话，随后的 raw_evidence 会把它们当成「凭空引用」拒掉。
     # （取数层工具内部也会登记一次 —— set 幂等，保留是为了它们能脱离 MCP 层直接单测。）
+    before = len(ctx.valid_refs)
     ctx.register_refs(result)
+    _note_usage(_current_token_id.get() or "anonymous", name, len(ctx.valid_refs) - before)
     if len(ctx.valid_refs) > _CTX_MAX_REFS:
         ctx.valid_refs.clear()
     elapsed = int((time.perf_counter() - started) * 1000)
@@ -345,6 +368,297 @@ def file_content(fuid: str = "", encoding: str = "", max_bytes: int = 0) -> str:
     )
 
 
+# ---------- 派工队列与数据地图 ----------
+
+
+def _with_ctx(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """注入两样模型不该自己填的东西：令牌名、本会话真取回过的证据引用。
+
+    - `_token`：任务要记"谁领的"（租约与配额都按令牌算）；
+    - `_valid_refs`：只有本会话真取回过的 `es:/ev:` 引用才能作为抑制的证据，
+      否则随便编几条引用就能换到一条永久抑制（这是全自动抑制的关键防线）。
+    """
+    ctx = _ctx_for(_current_token_id.get() or "anonymous")
+    out = dict(args)
+    out["_token"] = _current_token.get() or "?"
+    if name in ("complete_task", "submit_suppression"):
+        out["_valid_refs"] = sorted(ctx.valid_refs)
+        out["_tool_usage"] = _usage_for(_current_token_id.get() or "anonymous")
+    return out
+
+
+def claim_tasks(
+    limit: int = 0, kinds: str = "", min_strength: float = 0.0, wait_seconds: int = 0
+) -> str:
+    """领取待分析的客观线索（服务端按令牌强制预算，响应回剩余额度）。"""
+    return _run(
+        "claim_tasks",
+        _clean(limit=limit, kinds=kinds, min_strength=min_strength, wait_seconds=wait_seconds),
+        native=True,
+    )
+
+
+def complete_task(
+    task_id: str = "",
+    verdict: str = "",
+    summary: str = "",
+    confidence: float = 0.0,
+    findings: dict[str, Any] | None = None,
+    evidence_refs: list[str] | None = None,
+    next_tasks: list[dict[str, Any]] | None = None,
+    suppression: dict[str, Any] | None = None,
+    anchors: list[dict[str, Any]] | None = None,
+    terminal_reason: str = "",
+    tools_used: int = 0,
+    duration_ms: int = 0,
+) -> str:
+    """交回结论；可追加追问（受深度上限）、提交精准抑制（仅误报、证据须真取过）、锚定资产。
+
+    `anchors` 决定这条结论**影响哪些资产**（如一条"这台是反向代理"要挂到它后面的后端）；
+    `terminal_reason` 说明是怎么结束的（查清了 / 预算用尽 / 取数失败 / 超时 / 中断），
+    否则 `inconclusive` 无法区分"查了没证据"和"根本没查完"。
+    """
+    return _run(
+        "complete_task",
+        _with_ctx(
+            "complete_task",
+            _clean(
+                task_id=task_id,
+                verdict=verdict,
+                summary=summary,
+                confidence=confidence,
+                findings=findings,
+                evidence_refs=evidence_refs,
+                next_tasks=next_tasks,
+                suppression=suppression,
+                anchors=anchors,
+                terminal_reason=terminal_reason,
+                tools_used=tools_used,
+                duration_ms=duration_ms,
+            ),
+        ),
+        native=True,
+    )
+
+
+def defer_task(task_id: str = "", reason: str = "", retry_after_seconds: int = 0) -> str:
+    """延后再领（数据没入齐或暂不深挖），释放租约。"""
+    return _run(
+        "defer_task",
+        _with_ctx(
+            "defer_task",
+            _clean(task_id=task_id, reason=reason, retry_after_seconds=retry_after_seconds),
+        ),
+        native=True,
+    )
+
+
+def task_state(task_id: str = "") -> str:
+    """查单条任务的状态与结论：会话结束前用它确认"到底交回没有"。"""
+    return _run("task_state", _clean(task_id=task_id), native=True)
+
+
+def log_step(task_id: str = "", tool: str = "", summary: str = "", detail: str = "") -> str:
+    """记一条过程观察（别人以后能检索到，省掉重复取数）。"""
+    return _run(
+        "log_step",
+        _clean(task_id=task_id, tool=tool, summary=summary, detail=detail),
+        native=True,
+    )
+
+
+def search_traces(q: str = "", exclude_task: str = "", subject: str = "", limit: int = 0) -> str:
+    """在别的任务的过程记录里检索（结果是"未经核实的观察"，只能当线索）。"""
+    return _run(
+        "search_traces",
+        _with_ctx(
+            "search_traces",
+            _clean(q=q, exclude_task=exclude_task, subject=subject, limit=limit),
+        ),
+        native=True,
+    )
+
+
+def get_trace(task_id: str = "", limit: int = 0) -> str:
+    """取某个任务的全部过程步骤。"""
+    return _run("get_trace", _clean(task_id=task_id, limit=limit), native=True)
+
+
+def task_stats(days: int = 0, kind: str = "", limit: int = 0) -> str:
+    """队列与成本总览：积压、按类型/结论分布、平均成本、覆盖率、预算配置。"""
+    return _run("task_stats", _clean(days=days, kind=kind, limit=limit), native=True)
+
+
+def asset_map(kind: str = "", limit: int = 0) -> str:
+    """数据地图：见过的资产/服务端口/外部对端/协议/签名清单（自主挑目标用）。"""
+    return _run("asset_map", _clean(kind=kind, limit=limit), native=True)
+
+
+def coverage_report(days: int = 0, kind: str = "", limit: int = 0, by: str = "") -> str:
+    """覆盖率与盲区：哪些对象从来没看过、哪些久未看。
+
+    `by="asset"` 改走锚点口径：统计"近 N 天有多少资产被结论覆盖过"，
+    而不是只统计对象自己有没有被分析过。
+    """
+    return _run(
+        "coverage_report", _clean(days=days, kind=kind, limit=limit, by=by), native=True
+    )
+
+
+def submit_suppression(
+    match: dict[str, Any] | None = None,
+    reason_code: str = "",
+    evidence_refs: list[str] | None = None,
+    confidence: float = 0.0,
+    name: str = "",
+    note: str = "",
+    ttl_days: int = 0,
+    task_id: str = "",
+) -> str:
+    """申请自动抑制（证据够硬就不再派工、不再生成该类事件）。"""
+    return _run(
+        "submit_suppression",
+        _with_ctx(
+            "submit_suppression",
+            _clean(
+                match=match,
+                reason_code=reason_code,
+                evidence_refs=evidence_refs,
+                confidence=confidence,
+                name=name,
+                note=note,
+                ttl_days=ttl_days,
+                task_id=task_id,
+            ),
+        ),
+        native=True,
+    )
+
+
+# ---------- 事件、既往结论、抑制与主动登记 ----------
+
+
+def search_hits(
+    ip: str = "", source_kinds: str = "", cluster_id: str = "", minutes: int = 0, limit: int = 0
+) -> str:
+    """查命中事件清单（新架构下没有推送，事件靠这里自己捞；返回带告警簇）。"""
+    return _run(
+        "search_hits",
+        _clean(
+            ip=ip, source_kinds=source_kinds, cluster_id=cluster_id, minutes=minutes, limit=limit
+        ),
+        native=True,
+    )
+
+
+def get_event_detail(event_id: str = "") -> str:
+    """取单条事件完整内容（含证据、三类来源、簇 ID 与已有结论）。"""
+    return _run("get_event_detail", _clean(event_id=event_id), native=True)
+
+
+def prior_findings(
+    subject: str = "",
+    kind: str = "",
+    verdict: str = "",
+    limit: int = 0,
+    detail: bool = False,
+    via_asset: bool = False,
+) -> str:
+    """查该对象的既往结论：开工前先问"看过没有"，避免重复分析白烧预算。
+
+    `detail=true` 连已折叠进摘要的原始判定一起给；`via_asset=true` 把锚到同一批资产的
+    结论也带出来（一条"这台是反代"因此能解释它后面那些后端的历史）。
+    """
+    return _run(
+        "prior_findings",
+        _clean(
+            subject=subject,
+            kind=kind,
+            verdict=verdict,
+            limit=limit,
+            detail=detail,
+            via_asset=via_asset,
+        ),
+        native=True,
+    )
+
+
+def list_suppressions(
+    q: str = "", enabled_only: bool = False, include_expired: bool = False, limit: int = 0
+) -> str:
+    """看当前精准抑制（含命中数与到期时间）。"""
+    return _run(
+        "list_suppressions",
+        _clean(q=q, enabled_only=enabled_only, include_expired=include_expired, limit=limit),
+        native=True,
+    )
+
+
+def revoke_suppression(suppression_id: str = "", reason: str = "") -> str:
+    """撤销一条精准抑制（必须写原因，放开也要留审计）。"""
+    return _run(
+        "revoke_suppression", _clean(suppression_id=suppression_id, reason=reason), native=True
+    )
+
+
+def add_task(
+    subject: str = "",
+    subject_kind: str = "",
+    kind: str = "",
+    note: str = "",
+    strength: float = 0.0,
+) -> str:
+    """主动登记一条线索（外部情报或巡逻发现时用；同一套去重与配额，不插队）。"""
+    return _run(
+        "add_task",
+        _clean(subject=subject, subject_kind=subject_kind, kind=kind, note=note, strength=strength),
+        native=True,
+    )
+
+
+# ---------- 资产上下文、簇、规则与中继（M1-M6） ----------
+
+
+def asset_context(ips: list[str] | None = None, q: str = "", criticality: str = "", limit: int = 0) -> str:
+    """查资产台账上下文（主机名/重要级别/责任人/分组）：判严重度前先查它。"""
+    return _run("asset_context", _clean(ips=ips, q=q, criticality=criticality, limit=limit), native=True)
+
+
+def hit_clusters(minutes: int = 0, source_kind: str = "", limit: int = 0, include_ignored: bool = False) -> str:
+    """按告警簇看事件：一次扫描的几十个地址折成一件事（含事件数、源数、最高级别）。"""
+    return _run(
+        "hit_clusters",
+        _clean(minutes=minutes, source_kind=source_kind, limit=limit, include_ignored=include_ignored),
+        native=True,
+    )
+
+
+def hit_stats(minutes: int = 0) -> str:
+    """事件面统计：总量、按来源/级别分布、TOP 事件归类、趋势。"""
+    return _run("hit_stats", _clean(minutes=minutes), native=True)
+
+
+def list_rules(source_kind: str = "", limit: int = 0) -> str:
+    """列出 NDR 现在在检测什么（防「没事件」被误读成「没攻击」）。"""
+    return _run("list_rules", _clean(source_kind=source_kind, limit=limit), native=True)
+
+
+def relay_nodes() -> str:
+    """中继清单与角色（判横向/外联前必查：经过反代时 src_ip 是代理本身）。"""
+    return _run("relay_nodes", {}, native=True)
+
+
+def record_disposition(profile_id: str = "", verdict: str = "", signal: str = "", note: str = "") -> str:
+    """画像级处置（误报→按时间窗降权该实体或某一路证据；确认→仅留档）。"""
+    return _run(
+        "record_disposition",
+        _with_ctx(
+            "record_disposition", _clean(profile_id=profile_id, verdict=verdict, signal=signal, note=note)
+        ),
+        native=True,
+    )
+
+
 _ES_TOOL_FUNCS = (
     describe_data,
     search_events,
@@ -368,29 +682,126 @@ _NDR_TOOL_FUNCS = (
     baseline_lookup,
     entity_profile,
     file_content,
+    claim_tasks,
+    complete_task,
+    defer_task,
+    task_state,
+    log_step,
+    search_traces,
+    get_trace,
+    task_stats,
+    asset_map,
+    coverage_report,
+    search_hits,
+    get_event_detail,
+    prior_findings,
+    list_suppressions,
+    revoke_suppression,
+    add_task,
+    asset_context,
+    hit_clusters,
+    hit_stats,
+    list_rules,
+    relay_nodes,
+    record_disposition,
+    submit_suppression,
 )
 
 
-def build_server() -> MCPServer:
-    """建 MCP 服务并注册全部工具。"""
+#: **工具档位**：按能力收窄工具面。
+#:
+#: 为什么不是"延迟加载"（artex 那套 deferred 提示块）：dsh 是把 MCP 工具作为结构化
+#: 工具定义下发的，不存在"提示词里铺一堆名字"的成本，所以那套机制在这里没有落点。
+#: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
+#: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
+#:
+#: `analyst` 是智能体分析闭环够用的最小集（15 个）；排查/运维/复现用 `/mcp/full`（全部）。
+_TOOL_PROFILES: dict[str, tuple[str, ...]] = {
+    "analyst": (
+        # 取数（最小必要集：先看数据地图，再按需检索与聚合）
+        "describe_data",
+        "search_events",
+        "aggregate_events",
+        "raw_evidence",
+        # 事件面与历史
+        "search_hits",
+        "get_event_detail",
+        "prior_findings",
+        # 资产上下文与全局态势
+        "asset_context",
+        "asset_map",
+        "coverage_report",
+        # 派工闭环
+        "claim_tasks",
+        "complete_task",
+        "defer_task",
+        "task_state",
+        # 抑制（申请与查看；撤销留给人在界面或 full 档上做）
+        "submit_suppression",
+        "list_suppressions",
+    ),
+}
+
+
+def build_server(profile: str = "full") -> MCPServer:
+    """建 MCP 服务并注册工具（`profile` 决定工具面，见 `_TOOL_PROFILES`）。"""
+    key = str(profile or "full").strip().lower()
+    if key == "full":
+        allowed: tuple[str, ...] | None = None  # 全量档：不裁剪
+    elif key in _TOOL_PROFILES:
+        allowed = _TOOL_PROFILES[key]
+    else:
+        # 档位名写错**必须报错**：悄悄退回全量等于把权限放开
+        raise ValueError(
+            f"未知工具档位：{profile!r}（可用：full、{'、'.join(_TOOL_PROFILES)}）"
+        )
     server = MCPServer(
         name="shentong-ndr",
         title="深瞳 NDR",
         instructions=(
             "已归一化成统一字段）只能通过这里查——本服务是数据的看门人。\n"
-            "先调 describe_data 拿字段清单与真实时间范围，再按需 search_events /"
+            "先调 describe_data 拿字段清单、真实时间范围与各来源量级，再按需 search_events /"
             " aggregate_events / timeline / net_flows / dns_queries / tls_fingerprints /"
             " web_requests / file_hashes 取证，raw_evidence 取原始文档。\n"
-            "事件ID 与指纹来自推送载荷，可用 get_event 回查已有结论；"
+            "**分析任务靠自己领**（新架构不再把摘要推给你）：asset_map / coverage_report "
+            "看全局与盲区，claim_tasks 按预算领取客观线索（只含事实与客观强度，"
+            "不含严重度与结论），complete_task 交回结论（可 next_tasks 追问、可提精准抑制），"
+            " defer_task 延后，task_stats 看剩余额度。\n"
+            "**开工前先查历史**：prior_findings(subject) 问过看过没有、结论是什么"
+            "（默认给折叠后的概览；detail=true 下钻原始判定；via_asset=true 连锚到同一批资产的结论一起看）；"
+            "**关键发现用 log_step 记一句**（别人以后 search_traces 就不用重复取数）——"
+            "轨迹是「他人未经核实的观察」，只能当线索，**绝不能当抑制证据**；"
+            "search_hits(ip=...) 按对象捞事件（cluster_id 把一次扫描的几十个地址折成一件事），"
+            "get_event / get_event_detail 看单条事件的结论与完整证据；"
+            "list_suppressions 看哪些现象已被精准抑制（会挡派工），判错了用 revoke_suppression 收回；"
+            "画像级误报用 record_disposition 降权（与事件流抑制分工不同）；"
+            "确认某类现象是误报且证据够硬时用 submit_suppression 申请自动抑制"
+            "（服务端六道机械门槛：结构化匹配、≥2 维度、引用真实性、≥2 种工具、置信度、"
+            "新现象保护期；影响面过大自动降级为只不派工）；"
+            "判严重度前用 asset_context 查台账（这台是什么机器、多重要、归谁管）；"
+            "hit_clusters 按簇看（一次扫描是一件事）；hit_stats 看整体分布与 TOP 归类；"
+            "list_rules 知道 NDR 在检测什么（没事件不等于没攻击）；"
+            "relay_nodes 知道哪些地址是反代/DNS 转发（否则会把代理访问误判成内网主动外联）；"
+            "巡逻或外部情报得到的值得看的对象用 add_task 登记。\n"
+            "**交回前先 task_state 确认到底交回没有**（会话结束不等于任务完成），"
+            "complete_task 里用 anchors 说明这条结论影响哪些资产（如一条「这台是反代」"
+            "要挂到它后面的后端），用 terminal_reason 说明是怎么结束的"
+            "（concluded / budget_exhausted / tool_error / timeout / aborted）——"
+            "否则 inconclusive 分不清「查了没证据」和「根本没查完」。\n"
             "get_rule 取规则原文；detector_status / list_networks / list_filters 看 NDR 现状；"
             "要整批拉一段时间窗的条目自己筛（回溯）用 fetch_window；"
             "事件里有 extracted/fuid 字段时用 file_content 取提取件内容（有界）。\n"
-            "除 record_conclusion（写回结论）外全部只读，不提供任何管理动作。"
+            "除四个写动作（record_conclusion / complete_task / add_task / revoke_suppression）外"
+            "全部只读；不提供任何主动探测或系统管理动作。精准抑制有护栏："
+            "至少 2 个匹配维度、证据引用必须是本会话真取回过的，影响面过大自动降级。"
         ),
         version="0.1.0",
     )
+    wanted = None if allowed is None else set(allowed)
     for fn in _ES_TOOL_FUNCS + _NDR_TOOL_FUNCS:
         name = fn.__name__
+        if wanted is not None and name not in wanted:
+            continue
         spec = es_tools.TOOLS.get(name) or ndr_tools.TOOLS.get(name) or {}
         server.add_tool(fn, name=name, description=_describe(name, spec))
     return server
@@ -446,24 +857,83 @@ class BearerAuth:
             _current_token.reset(reset)
 
 
+class TieredMCP:
+    """按路径前缀把请求分给不同**工具档位**的 FastMCP 应用，并同时跑两者的生命周期。
+
+    为什么两个应用而不是"一个应用里按令牌过滤工具"：FastMCP 的工具表是**服务级**的，
+    没有按连接/按令牌过滤的官方口子。两个应用共用同一份工具实现、同一层 Bearer 鉴权，
+    比在网关里做字符串过滤可查、可测（`tests/py/test_mcp_profiles.py` 直接数工具数）。
+
+    前缀匹配必须**最长优先**：`/mcp/full` 要先于 `/mcp` 命中，否则完整档永远进不去。
+    """
+
+    def __init__(self, tiers: list[tuple[str, ASGIApp]]) -> None:
+        self.tiers = tiers
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self._lifespan(scope, receive, send)
+            return
+        if scope["type"] != "http":
+            return
+        path = scope.get("path") or ""
+        for prefix, app in sorted(self.tiers, key=lambda kv: -len(kv[0])):
+            if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+                inner = dict(scope)
+                stripped = path[len(prefix) :] or "/"
+                inner["path"] = stripped
+                inner["root_path"] = (scope.get("root_path") or "") + prefix
+                await app(inner, receive, send)
+                return
+        await JSONResponse({"error": "not_found"}, status_code=404)(scope, receive, send)
+
+    async def _lifespan(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """两个档位都要启动（streamable-http 的会话管理器在 lifespan 里建）。"""
+        from contextlib import AsyncExitStack
+
+        async with AsyncExitStack() as stack:
+            for _prefix, app in self.tiers:
+                router = getattr(app, "router", None)
+                lifespan = getattr(router, "lifespan_context", None)
+                if lifespan is not None:
+                    await stack.enter_async_context(lifespan(app))
+            first = await receive()
+            if first["type"] != "lifespan.startup":
+                return
+            await send({"type": "lifespan.startup.complete"})
+            nxt = await receive()
+            if nxt["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+
+
 def build_app() -> ASGIApp:
-    """MCP 的 ASGI 应用（外面套一层令牌校验）。"""
-    server = build_server()
-    app = server.streamable_http_app(
-        streamable_http_path=settings.mcp_path,
+    """MCP 的 ASGI 应用（外面套一层令牌校验，里面按档位分路径）。"""
+    tiers: list[tuple[str, ASGIApp]] = [
+        # 完整档先注册：前缀匹配最长优先，但列表顺序也保持"更具体在前"以免依赖排序
+        (settings.mcp_full_path, _tier_app("full", "/")),
+        (settings.mcp_path, _tier_app("analyst", "/")),
+    ]
+    return BearerAuth(TieredMCP(tiers))
+
+
+def _tier_app(profile: str, path: str) -> ASGIApp:
+    server = build_server(profile)
+    return server.streamable_http_app(
+        streamable_http_path=path,
         # 传 host 不是「监听地址」，而是关掉一份默认的 DNS-rebinding 白名单：不传它会
         # 按 127.0.0.1 限制 Host 头，容器之间用服务名互访（Host: ndr-mcp:8090）会被 421 拒掉。
         host=settings.mcp_host,
     )
-    return BearerAuth(app)
 
 
 def main() -> None:
     log.info(
-        "MCP 服务启动：http://%s:%s%s（工具 %d 个，令牌前缀 %s）",
+        "MCP 服务启动：http://%s:%s%s（analyst 档 %d 个工具）/ %s（全量 %d 个），令牌前缀 %s",
         settings.mcp_host,
         settings.mcp_port,
         settings.mcp_path,
+        len(_TOOL_PROFILES["analyst"]),
+        settings.mcp_full_path,
         len(_ES_TOOL_FUNCS) + len(_NDR_TOOL_FUNCS),
         settings.mcp_token_prefix,
     )
