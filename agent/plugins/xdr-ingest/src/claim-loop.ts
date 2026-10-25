@@ -1,0 +1,196 @@
+/**
+ * 领取循环：门铃/定时唤醒 → `claim_tasks` 领活 → 起分析会话 → 结束判定。
+ *
+ * 设计取舍：
+ * - **门铃会丢**（重启、网络），所以必须有定时自轮询兜底（默认 15 分钟）；
+ * - **门铃会连着来**，所以唤醒要**去抖**（默认 3 秒合并），否则一串门铃会开出十几个会话；
+ * - **失败要退避**：NDR 短暂不可用时不要每 15 分钟还按原速去撞，指数退避到封顶；
+ * - 预算**由服务端强制**，这里只按 `maxConcurrent` 限制本进程并发，不做本地配额计算
+ *   （两处各算一套必然不一致）。
+ */
+
+export interface ClaimedTask {
+  readonly id: string
+  readonly kind: string
+  readonly strength: number
+  readonly priority?: number
+  readonly subject_kind: string
+  readonly subject: string
+  readonly window_start?: string | null
+  readonly window_end?: string | null
+  readonly hint?: unknown
+  readonly coalesced?: number
+  readonly attempts?: number
+}
+
+export interface ClaimReply {
+  readonly tasks?: readonly ClaimedTask[]
+  /** NDR 的正常回执：queue_empty / budget_exhausted / inflight_full —— 都不是错误 */
+  readonly reason?: string
+  readonly error?: string
+}
+
+/** NDR 侧最小端口（测试里替换成假实现，不碰网络）。 */
+export interface NdrPort {
+  claimTasks(limit: number): Promise<ClaimReply>
+}
+
+export interface ClaimLoopOptions {
+  /** 定时自轮询间隔（秒） */
+  readonly pollSeconds: number
+  /** 本进程最多同时跑几个分析会话 */
+  readonly maxConcurrent: number
+  /** 单次领取条数上限 */
+  readonly claimLimit: number
+  /** 门铃去抖窗口（毫秒） */
+  readonly doorbellDebounceMs: number
+  /** 退避上限（毫秒） */
+  readonly backoffMaxMs: number
+  /** 领活通道（生产由 MCP 客户端实现；测试里替换成假实现，不碰网络） */
+  readonly claimTasks: (limit: number) => Promise<ClaimReply>
+  /** 起一个分析会话（由 analyst 提供；测试里替换成计数桩） */
+  readonly runTask: (task: ClaimedTask) => Promise<void>
+  /** 可注入时钟/定时器（测试用） */
+  readonly now?: () => number
+}
+
+export interface ClaimLoopStats {
+  polls: number
+  claimed: number
+  started: number
+  failedClaims: number
+  doorbells: number
+  droppedByConcurrency: number
+  consecutiveErrors: number
+  lastError: string
+}
+
+export class ClaimLoop {
+  private readonly options: ClaimLoopOptions
+  private running = 0
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private debounce: ReturnType<typeof setTimeout> | null = null
+  private stopped = true
+  private backoffMs = 0
+  private lastErrorAt = 0
+  private readonly now: () => number
+  readonly stats: ClaimLoopStats = {
+    polls: 0,
+    claimed: 0,
+    started: 0,
+    failedClaims: 0,
+    doorbells: 0,
+    droppedByConcurrency: 0,
+    consecutiveErrors: 0,
+    lastError: '',
+  }
+
+  constructor(options: ClaimLoopOptions) {
+    this.options = options
+    this.now = options.now ?? Date.now
+  }
+
+  /** 启动：先立刻领一次（部署后不必等第一个轮询周期），再按间隔自轮询。 */
+  start(): void {
+    if (!this.stopped) return
+    this.stopped = false
+    void this.tick()
+    this.schedule(0)
+  }
+
+  stop(): void {
+    this.stopped = true
+    if (this.timer !== null) clearTimeout(this.timer)
+    if (this.debounce !== null) clearTimeout(this.debounce)
+    this.timer = null
+    this.debounce = null
+  }
+
+  /** 门铃：去抖后立刻领一次（不是"每声都领"，否则一串门铃会瞬间打满并发）。 */
+  wake(): void {
+    this.stats.doorbells += 1
+    if (this.stopped) return
+    if (this.debounce !== null) clearTimeout(this.debounce)
+    this.debounce = setTimeout(() => {
+      this.debounce = null
+      void this.tick()
+    }, Math.max(0, this.options.doorbellDebounceMs))
+    this.debounce.unref?.()
+  }
+
+  /** 一轮：按剩余并发领活；领到的任务立刻起会话（不串行等）。
+   *
+   * 刻意**不检查 `stopped`**：`tick()` 是可以被直接调用的一步（测试、运维手动戳），
+   * `stopped` 只约束"定时器要不要继续排下一轮"，否则手动调用永远打不开。
+   */
+  async tick(): Promise<void> {
+    const free = this.options.maxConcurrent - this.running
+    if (free <= 0) {
+      this.stats.droppedByConcurrency += 1
+      return
+    }
+    const want = Math.max(1, Math.min(free, this.options.claimLimit))
+    this.stats.polls += 1
+    let reply: ClaimReply
+    try {
+      reply = await this.options.claimTasks(want)
+    } catch (error) {
+      this.recordFailure(error)
+      return
+    }
+    if (reply.error) {
+      this.recordFailure(new Error(reply.error))
+      return
+    }
+    this.stats.consecutiveErrors = 0
+    this.backoffMs = 0
+    const tasks = reply.tasks ?? []
+    if (tasks.length === 0) return
+    this.stats.claimed += tasks.length
+    for (const task of tasks) {
+      this.running += 1
+      this.stats.started += 1
+      void this.runOne(task)
+    }
+  }
+
+  private async runOne(task: ClaimedTask): Promise<void> {
+    try {
+      await this.options.runTask(task)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.stats.lastError = message.slice(0, 300)
+    } finally {
+      this.running = Math.max(0, this.running - 1)
+    }
+  }
+
+  private recordFailure(error: unknown): void {
+    this.stats.failedClaims += 1
+    this.stats.consecutiveErrors += 1
+    this.backoffMs = Math.min(
+      this.options.backoffMaxMs,
+      Math.max(1000, this.backoffMs === 0 ? 1000 : this.backoffMs * 2),
+    )
+    this.stats.lastError = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+    // 同类错误 5 分钟内只记一次（NDR 短时不可用时不要把日志刷满）
+    const now = this.now()
+    if (now - this.lastErrorAt > 300_000) {
+      this.lastErrorAt = now
+      console.warn(`[xdr-ingest] 领取失败（已连续 ${this.stats.consecutiveErrors} 次）：${this.stats.lastError}`)
+    }
+  }
+
+  private schedule(delayMs: number): void {
+    if (this.stopped) return
+    if (this.timer !== null) clearTimeout(this.timer)
+    const baseMs = delayMs > 0 ? delayMs : this.options.pollSeconds * 1000
+    const waitMs = Math.max(baseMs, this.backoffMs)
+    this.timer = setTimeout(() => {
+      this.timer = null
+      void this.tick().finally(() => this.schedule(0))
+    }, waitMs)
+    this.timer.unref?.()
+  }
+
+}

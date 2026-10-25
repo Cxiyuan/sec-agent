@@ -3,6 +3,8 @@
  *
  * 契约要点：
  * - POST {basePath}/digests，Bearer token 认证，**2xx 即回执**；
+ *   同一个地址收**两种载荷**：`{"doorbell": {...}}`（新架构，只带队列状况）
+ *   与 `{"items": [...]}`（旧摘要推送，保留以便回滚）。
  * - GET {basePath}/ping 是 NDR 的连通性自检（由推送地址把 /digests 换成 /ping 推出）；
  * - NDR 把 4xx（除 408/429）判为「这批永久失败」、5xx/超时判为「整体不可达」
  *   落重试队列——所以本层的语义必须是：
@@ -14,12 +16,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { TieredCache } from './cache.ts'
+import { DoorbellFormatError, parseDoorbell } from './doorbell.ts'
+import type { Doorbell } from './doorbell.ts'
 import { analysisIdOf, normalizeDigest } from './identity.ts'
 import { triageDigest } from './analyzer.ts'
 import type { IngestReceipt, NdrDigestItem, ReceiptEntry } from './types.ts'
 const DEFAULT_DIGESTS_SUFFIX = '/digests'
 const PING_SUFFIX = '/ping'
 const STATS_SUFFIX = '/stats'
+const STATUS_SUFFIX = '/status'
 const MAX_DELIVERY_ID_LENGTH = 128
 
 export class WebhookHttpError extends Error {
@@ -40,6 +45,13 @@ export interface IngestHandlerConfig {
   readonly cache: TieredCache
   /** 可注入时钟（测试用）。 */
   readonly now?: () => number
+  /**
+   * 收到门铃时调用（去抖由领取循环负责，这里只负责"收到并回执"）。
+   * 不传 = 只回执不叫醒（调试/回滚场景）。
+   */
+  readonly onDoorbell?: (bell: Doorbell, receivedAt: number) => void
+  /** `GET {basePath}/status` 的返回体（运维观测：门铃数、领取数、在跑数）。 */
+  readonly status?: () => Record<string, unknown>
 }
 
 function respondText(response: ServerResponse, status: number, message: string): void {
@@ -148,6 +160,7 @@ export function createIngestHandler(
   const digestsPath = basePath + DEFAULT_DIGESTS_SUFFIX
   const pingPath = basePath + PING_SUFFIX
   const statsPath = basePath + STATS_SUFFIX
+  const statusPath = basePath + STATUS_SUFFIX
   const now = config.now ?? Date.now
 
   return async (request, response) => {
@@ -156,6 +169,11 @@ export function createIngestHandler(
       if (pathname === pingPath && request.method === 'GET') {
         requireAuth(request, config.token)
         respondText(response, 200, 'ok')
+        return
+      }
+      if (pathname === statusPath && request.method === 'GET') {
+        requireAuth(request, config.token)
+        respondJson(response, 200, config.status?.() ?? { status: 'unsupported' })
         return
       }
       if (pathname === statsPath && request.method === 'GET') {
@@ -175,9 +193,30 @@ export function createIngestHandler(
         } catch {
           throw new WebhookHttpError(400, 'body is not valid JSON')
         }
+        // 先试门铃（新架构）。坏门铃必须 400：若回 2xx，NDR 会以为叫醒成功，
+        // 实际线索静默积压 —— 这类"静默丢"比直接报错难查得多。
+        let bell: Doorbell | null = null
+        try {
+          bell = parseDoorbell(parsed)
+        } catch (error) {
+          if (error instanceof DoorbellFormatError) {
+            throw new WebhookHttpError(400, error.message)
+          }
+          throw error
+        }
+        if (bell !== null) {
+          config.onDoorbell?.(bell, now())
+          respondJson(response, 200, {
+            ok: true,
+            accepted: 'doorbell',
+            queue_len: bell.queue_len,
+            watermark: bell.watermark,
+          })
+          return
+        }
         const items = (parsed as { items?: unknown } | null)?.items
         if (!Array.isArray(items)) {
-          throw new WebhookHttpError(400, 'body must be {"items": [...]}')
+          throw new WebhookHttpError(400, 'body must be {"doorbell": {...}} or {"items": [...]}')
         }
         const { receipt, internalFailure } = await processItems(items, config.cache, now)
         if (internalFailure) {

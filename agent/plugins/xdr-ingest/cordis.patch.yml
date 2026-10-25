@@ -29,3 +29,36 @@
         hotThreshold: 2
         warmupLimit: 1000
         pruneIntervalMinutes: 60
+        # ---- 派工闭环（新架构）----
+        # NDR 的 MCP 地址：默认走容器服务名；analyst 档（16 个工具）够完整闭环，
+        # 排查时人工连 /mcp/full 拿全量 43 个。
+        mcpUrl: !!js process.env.XDR_NDR_MCP_URL ?? 'http://ndr-mcp:8090/mcp'
+        # 令牌来自 NDR 界面生成（stmcp_ 前缀）。留空 = 只回执门铃、不跑分析（会显式告警）。
+        mcpToken: !!js process.env.XDR_NDR_MCP_TOKEN ?? ''
+        # 门铃会丢（重启/网络），所以必须还有一条自轮询兜底
+        pollSeconds: 900
+        maxConcurrent: 2
+        claimLimit: 2
+        analysisTimeoutSeconds: 1200
+        doorbellDebounceMs: 3000
+        backoffMaxMs: 300000
+        # 留空 = 用 dsh 部署已配置的默认模型
+        provider: ''
+        model: ''
+
+# NDR 的 MCP 服务（analyst 档）：把 16 个工具暴露给模型，命名形如 mcp__ndr__claim_tasks。
+# 为什么要单独一行而不是复用上面的配置：dsh 的 mcp-client 是**独立插件**，
+# 一个 entry 对应一个 MCP 服务；命名空间固定进工具名，换服务名等于换一套工具名。
+- insert:
+    - id: mcp-ndr
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ndr
+        transport: streamable-http
+        url: !!js process.env.XDR_NDR_MCP_URL ?? 'http://ndr-mcp:8090/mcp'
+        headers:
+          Authorization: !!js '`Bearer ${process.env.XDR_NDR_MCP_TOKEN ?? ""}`'
+        # 分析里偶尔会有慢查询（大时间窗聚合），给足 120 秒
+        toolCallTimeoutMs: 120000
+        # 连不上就明确失败：不留"起了但一个工具都没有"的静默形态
+        failOnStartupError: true
