@@ -22,6 +22,10 @@ services:
       XDR_INGEST_TOKEN: ${AGENT_PUSH_TOKEN:?请在 .env 设置 AGENT_PUSH_TOKEN（与 NDR 侧 agent_push.token 一致）}
       # 统一 PG：默认宿主机 ndr 栈发布口；Node pg 连接串不带 +psycopg 后缀
       XDR_INGEST_PG_URL: ${XDR_INGEST_PG_URL:-postgresql://shentong:shentong@host.docker.internal:5432/shentong}
+      # NDR 的 MCP（analyst 档 16 个工具）。令牌是 NDR 控制台签发的 stmcp_ 串；
+      # 留空时门铃照收但不起分析会话（启动日志会明确告警）。
+      XDR_NDR_MCP_URL: ${XDR_NDR_MCP_URL:-}
+      XDR_NDR_MCP_TOKEN: ${XDR_NDR_MCP_TOKEN:-}
       # 信任围栏放行的 authority：浏览器经发布口访问时 Host 不是容器绑定 IP，
       # 把访问方用的主机名/IP 声明在这里（不带端口 = 任意端口；LAN 直接访问
       # 容器 IP 的场景不需要，绑定 IP 本身就在放行名单里）

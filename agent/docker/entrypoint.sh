@@ -16,12 +16,46 @@ if [ ! -d "$DSH_HOME/profiles/web" ]; then
   cp -a "$BAKED_HOME/." "$DSH_HOME/"
 fi
 
-# 自愈：卷里有旧 profile 但插件依赖缺失（如手工清过 node_modules）时补装。
-# file: 协议：快照进 profile 自带 store，不依赖 /opt 路径，卷可随意搬迁。
+# 自愈：卷里有旧 profile 但插件依赖缺失（镜像新增插件、手工清过 node_modules）时补装。
+# 优先从镜像里 bake 好的 profile 离线合并：卷里 node_modules 记录的 pnpm store
+# 路径来自上一次构建（/home/node/.local/share/pnpm/store/v11），新镜像的 pnpm
+# 会改用卷内 store，于是现场 `plugin add` 直接 ERR_PNPM_UNEXPECTED_STORE 起不来
+# （2026-10-26 上线踩过：新增 xdr-ui 后容器无限重启）。
+sync_from_image() {
+  pkg="$1"
+  baked="$BAKED_HOME/profiles/web"
+  vol="$DSH_HOME/profiles/web"
+  [ -e "$baked/node_modules/$pkg/package.json" ] || return 1
+  echo "[xdr-agent] syncing $pkg from baked profile (offline)"
+  mkdir -p "$vol/node_modules"
+  # 目录并集：镜像新增的插件/依赖补进卷，用户自己加装的插件不被删。
+  cp -a "$baked/node_modules/." "$vol/node_modules/"
+  # 依赖声明按并集合并：镜像期望的插件必须出现，卷里已有的额外插件保留。
+  node - "$PROFILE_PKG" "$baked/package.json" <<'NODE'
+const fs = require('node:fs')
+const [volPath, bakedPath] = process.argv.slice(2)
+const vol = JSON.parse(fs.readFileSync(volPath, 'utf8'))
+const baked = JSON.parse(fs.readFileSync(bakedPath, 'utf8'))
+vol.dependencies = { ...(vol.dependencies ?? {}), ...(baked.dependencies ?? {}) }
+vol.dsh = vol.dsh ?? {}
+vol.dsh.profile = vol.dsh.profile ?? {}
+vol.dsh.profile.bundles = [
+  ...new Set([...(vol.dsh.profile.bundles ?? []), ...(baked.dsh?.profile?.bundles ?? [])]),
+]
+fs.writeFileSync(volPath, `${JSON.stringify(vol, null, 2)}\n`)
+NODE
+  cp -f "$baked/pnpm-lock.yaml" "$vol/pnpm-lock.yaml" 2>/dev/null || true
+  cp -f "$baked/pnpm-workspace.yaml" "$vol/pnpm-workspace.yaml" 2>/dev/null || true
+  return 0
+}
+
 install_checked() {
   pkg="$1"; dir="$2"
   if ! grep -q "\"$pkg\"" "$PROFILE_PKG" 2>/dev/null \
     || [ ! -e "$DSH_HOME/profiles/web/node_modules/$pkg/package.json" ]; then
+    if sync_from_image "$pkg"; then
+      return 0
+    fi
     echo "[xdr-agent] $pkg missing from web profile, installing..."
     node "$BIN" plugin --profile web add "file:$dir"
   fi

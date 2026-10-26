@@ -57,6 +57,12 @@ docker compose up -d --build    # 本地源码构建（开发调试）
 `AGENT_TRUSTED_HOSTS` 里声明（默认已含 `host.docker.internal`；局域网其他
 机器访问再加宿主机 LAN IP 或域名）。
 
+**跨机部署（agent 与 NDR 不在一台）**：NDR 的 Postgres 只绑回环（仓库红线
+`tests/py/test_deploy_exposure.py`），agent 侧要连统一 PG 必须在 agent 宿主机上
+建 SSH 隧道，把 NDR 的 `127.0.0.1:5432` 映射到 `172.17.0.1:5432`，`.env` 里
+`XDR_INGEST_PG_URL` 保持 `host.docker.internal`。隧道要 systemd 常驻（示例见
+`.env.example` 对应注释）；隧道断了插件会降级成纯内存去重并打日志，不会崩。
+
 ## 开发
 
 见 `plugins/README.md` 与 `plugins/xdr-ingest/README.md`。约定：本地不装依赖
