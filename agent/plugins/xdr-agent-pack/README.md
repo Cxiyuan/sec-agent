@@ -9,13 +9,13 @@
 | `xdr-time-context` | `@deepseek-ai/dsh-time-context` | 每步注入当前时间/耗时，研判时间窗必需；时区 `Asia/Shanghai`，10 分钟一次 |
 | `xdr-tool-schedule` | `@deepseek-ai/dsh-tool-schedule` | 定时复查工具（schedule_create/list/update/delete），配合已启用的宿主 `dsh-schedule` |
 | `xdr-tool-present` | `@deepseek-ai/dsh-tool-present` | 结论/报告落成工作区文件，Web 端交付物卡片直接下载 |
-| `xdr-mcp-ndr` | `@deepseek-ai/dsh-mcp-client` | 把 NDR analyst 档 16 个工具接到模型工具面（`mcp__ndr__*`）；此前分析会话没有任何取数工具 |
 
 会话检索由镜像直接激活 `@deepseek-ai/dsh-experimental-session-search` bundle
 （它自带一层 patch，不在本包内重复插行）。
 
-NDR MCP 桥的地址与令牌沿用部署环境缝（`XDR_NDR_MCP_URL` / `XDR_NDR_MCP_TOKEN`），
-`failOnStartupError: false` + 重连：NDR 暂时不可达不会拖死容器，恢复后工具自动回来。
+NDR MCP 桥（`mcp-ndr`）由 `xdr-ingest` 自己的 patch 声明（它同时读 `XDR_NDR_MCP_URL` /
+`XDR_NDR_MCP_TOKEN`），本包不重复插行——同一 `serverName` 插两次会让 mcp-client
+互相顶掉。
 
 ## 加一个能力
 

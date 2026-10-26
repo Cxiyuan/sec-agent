@@ -25,24 +25,3 @@
     # 交付物：把结论/报告落成工作区文件，Web 端有 deliverables 卡片可下载。
     - id: xdr-tool-present
       name: '@deepseek-ai/dsh-tool-present'
-
-    # NDR MCP（analyst 档 16 个工具）接到模型工具面，工具名形如
-    # mcp__ndr__search_events。此前分析会话只有提示词、没有任何取数工具，
-    # 任务因此总是交不回来——这是闭环空转的根因。
-    # NDR 暂时不可达时按 failOnStartupError=false 正常启动，由 reconnect 拉回，
-    # 不拖死容器；令牌与地址沿用部署环境缝。
-    - id: xdr-mcp-ndr
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: ndr
-        transport: streamable-http
-        url: !!js process.env.XDR_NDR_MCP_URL ?? 'http://ndr-mcp:8090/mcp'
-        headers:
-          Authorization: !!js '`Bearer ${process.env.XDR_NDR_MCP_TOKEN ?? ""}`'
-        toolCallTimeoutMs: 60000
-        failOnStartupError: false
-        reconnect:
-          enabled: true
-          initialDelayMs: 2000
-          maxDelayMs: 60000
-          maxAttempts: 1000000
