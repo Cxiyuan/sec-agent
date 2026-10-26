@@ -58,12 +58,27 @@ function decodeBase64Url(value: string): Buffer | undefined {
   return encodeBase64Url(decoded) === value ? decoded : undefined
 }
 
-function processLaunchToken(owner: object): string {
+/**
+ * Launch token：进程内只生成一次。
+ *
+ * 2026-10 部署缝：`DSH_WEB_LAUNCH_TOKEN` 提供时用它（长度 ≥16 防弱 token），
+ * 缺省仍随机。为什么需要：现场部署后容器随重启换 token，登录 URL 随之失效，
+ * 用户从局域网打开旧链接只会看到 authentication required —— 无法自助恢复。
+ * 固定 token 让登录地址长期稳定；**没有"免 token"模式**：web 界面能执行
+ * 任意工具命令，免认证等于把 RCE 暴露给整个局域网。
+ */
+export function resolveLaunchToken(owner: object, env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env['DSH_WEB_LAUNCH_TOKEN']?.trim()
+  if (fromEnv !== undefined && fromEnv.length >= 16) return fromEnv
   const existing = PROCESS_LAUNCH_TOKENS.get(owner)
   if (existing !== undefined) return existing
   const created = encodeBase64Url(randomBytes(SECRET_BYTES))
   PROCESS_LAUNCH_TOKENS.set(owner, created)
   return created
+}
+
+function processLaunchToken(owner: object): string {
+  return resolveLaunchToken(owner)
 }
 
 function header(

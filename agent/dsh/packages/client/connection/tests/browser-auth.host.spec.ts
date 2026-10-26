@@ -368,3 +368,35 @@ describe('BrowserAuth', () => {
       .rejects.toThrow(/safe timestamp range/u)
   })
 })
+
+describe('launch token deployment seam', () => {
+  const owner = {}
+
+  it('uses DSH_WEB_LAUNCH_TOKEN when it is long enough', () => {
+    vi.resetModules()
+    const mod = import('../src/browser-auth.ts')
+    void mod
+    // 直接测 resolveLaunchToken（导出的纯函数）
+    return import('../src/browser-auth.ts').then(({ resolveLaunchToken }) => {
+      const fixed = resolveLaunchToken(owner, { DSH_WEB_LAUNCH_TOKEN: 'deployment-fixed-token-0123' })
+      expect(fixed).toBe('deployment-fixed-token-0123')
+    })
+  })
+
+  it('ignores short env tokens and falls back to a random one', () => {
+    return import('../src/browser-auth.ts').then(({ resolveLaunchToken }) => {
+      const token = resolveLaunchToken({}, { DSH_WEB_LAUNCH_TOKEN: 'short' })
+      expect(token.length).toBeGreaterThanOrEqual(32)
+      expect(token).not.toBe('short')
+    })
+  })
+
+  it('generates a random token when the env seam is absent', () => {
+    return import('../src/browser-auth.ts').then(({ resolveLaunchToken }) => {
+      const a = resolveLaunchToken({ fresh: 1 }, {})
+      const b = resolveLaunchToken({ fresh: 2 }, {})
+      expect(a).not.toBe(b)
+      expect(a.length).toBeGreaterThanOrEqual(32)
+    })
+  })
+})
