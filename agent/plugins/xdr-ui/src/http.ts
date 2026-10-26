@@ -90,7 +90,8 @@ export function createUiHandler(
       chunks.push(chunk)
     }
     const text = Buffer.concat(chunks).toString('utf8')
-    const contentType = String((req.headers as Record<string, unknown>)['content-type'] ?? '')
+    const rawContentType = (req.headers as { readonly ['content-type']?: unknown })['content-type']
+    const contentType = typeof rawContentType === 'string' ? rawContentType : ''
     return { text, contentType }
   }
 

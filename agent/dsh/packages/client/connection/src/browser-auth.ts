@@ -482,7 +482,7 @@ export class BrowserAuth {
         ),
       })
       res.end()
-    }, () => this.writeLoginPage(req, res))
+    }, () => { this.writeLoginPage(req, res) })
   }
 
   private async readLoginBody(req: ConnectionIndexRequest): Promise<{ user: string; password: string }> {
@@ -498,7 +498,10 @@ export class BrowserAuth {
       chunks.push(chunk)
     }
     const text = Buffer.concat(chunks).toString('utf8')
-    const contentType = String((req.headers as Record<string, unknown>)['content-type'] ?? '')
+    // SAFETY：req.headers 按 wire 类型是 unknown（ConnectionIndexRequest 未收窄到
+    // IncomingHttpHeaders）；显式 typeof 收窄而不是先泛型转 Record 再 String()。
+    const rawContentType = (req.headers as { readonly ['content-type']?: unknown })['content-type']
+    const contentType = typeof rawContentType === 'string' ? rawContentType : ''
     const fields = new URLSearchParams(contentType.includes('application/json') ? '' : text)
     let user = fields.get('user') ?? ''
     let password = fields.get('password') ?? ''

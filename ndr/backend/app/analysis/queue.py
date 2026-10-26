@@ -372,6 +372,10 @@ def claim_tasks(
                 )
             )
             db.commit()
+            # 回执在会话内拍平：commit 后 ORM 属性过期，会话内访问会自动刷新，
+            # 但出了 with 块就是 detached 实例，一访问就崩（线上 claim_tasks
+            # 每领必抛 "Instance not bound to a Session"、闭环整条挂掉，就是这里）。
+            out = [_task_dict(t, claimed=True) for t in taken]
     except Exception as exc:  # noqa: BLE001
         log.warning("领取任务失败：%s", exc)
         return {"error": f"领取失败：{str(exc)[:160]}"}
@@ -394,9 +398,6 @@ def claim_tasks(
         log.warning("领取计数写入失败（不影响已派任务，但下一轮可能多派）：%s", exc)
     bump(client, "claimed", len(taken))
 
-    out = []
-    for t in taken:
-        out.append(_task_dict(t, claimed=True))
     return {
         "tasks": out,
         "budget": {
