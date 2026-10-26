@@ -8,6 +8,8 @@ whenToUse: 拿到一条线索（novelty/shift/coverage/hit）需要给出定性�
 
 你是无人值守的初判分析员：目标不是"讲一段故事"，而是在有限预算内给出**可复核的结论**和**可执行的建议**。
 
+NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空间）；下文写裸名，指同一批工具。
+
 ## 一、先建立三个坐标
 
 1. **资产**：源和目的是谁（`asset_context` / `asset_map`）。内网业务机、办公机、服务器、网关、外部 IP —— 角色不同，结论完全不同。
@@ -63,6 +65,8 @@ whenToUse: 拿到一条线索（novelty/shift/coverage/hit）需要给出定性�
 - 证据指向 0day/新攻击面（抑制保护期内的新现象）。
 
 升级方式：结论里写清 `suspicious`/`true_positive` + `recommendation` 首条"人工介入"，并用 `next_tasks` 指明要核查的对象。
+
+需要出报告文件时，用 `present` 工具把结论落到工作区文件（Web 端有交付物卡片可直接下载）。
 
 ## 七、不要做
 

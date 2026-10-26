@@ -58,7 +58,7 @@ docker compose up -d --build    # 本地源码构建（开发调试）
 - 分层缓存观测：同 `/xdr/ingest/stats`（热层/冷层条数、命中/晋升/降级计数）
 
 **能力包与技能**：镜像里另装一个纯声明的 `@sec-agent/xdr-agent-pack`
-（启用 `dsh-time-context`、`dsh-tool-schedule`，并激活会话检索 bundle）。
+（启用时间上下文、定时复查、交付物、NDR MCP 工具桥，并激活会话检索 bundle）。
 `agent/skills/` 下的部署级技能（NDR 工具用法、告警初判手册）启动时同步到
 容器内 `$DSH_HOME/skills`，用户自建技能不受影响。
 
