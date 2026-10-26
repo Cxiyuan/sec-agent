@@ -58,6 +58,55 @@ function parseSse(text: string): string[] {
   return out.filter(item => item !== '')
 }
 
+/**
+ * NDR 工具的返回约定是**双层**：`{result: "<json 字符串>"}`，
+ * 真正的回执在里层字符串里（server._run 把 dict 序列化后塞进 result 字段）。
+ *
+ * 为什么必须同时管 `structuredContent` 和 `content[].text` 两条路：
+ * 服务端两个都给，而 structuredContent 分支会**提前返回**——2026-10 实测
+ * 只在 text 分支做剥壳时，reason/budget/tasks 全留在里层，调用方把
+ * inflight_full 当成「没 reason 的空回执」静默吞掉（队列 2000 条却领不到）。
+ */
+/** NDR 信封：外层唯一键 `result`，值是序列化后的 JSON 字符串。 */
+interface NdrEnvelope {
+  readonly result: string
+}
+
+function isNdrEnvelope(value: unknown): value is NdrEnvelope {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && typeof (value as Record<string, unknown>)['result'] === 'string'
+  )
+}
+
+/**
+ * 剥掉 NDR 的双层包装，把里层回执解析成对象后返回。
+ *
+ * 返回类型是命名领域对象（不是 `unknown`）：解析与归型都在这个边界完成，
+ * 调用方拿到的直接是「已验证形状」的回执。
+ */
+function unwrapNdrEnvelope(value: unknown): Record<string, unknown> {
+  if (isNdrEnvelope(value)) {
+    try {
+      const parsed: unknown = JSON.parse(value.result)
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+      // 里层是标量/数组：保留原文（调用方能看见原样数据，不假装是对象）
+      return { result: value.result }
+    } catch {
+      // 里层不是合法 JSON：原样保留，别假装解析成功
+      return { result: value.result }
+    }
+  }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return { result: value }
+}
+
+
 /** `tools/call` 的路由头要带工具名；其它方法不需要。 */
 function toolNameOf(params: Record<string, unknown>): string {
   const name = params['name']
@@ -98,7 +147,7 @@ export class McpHttpClient {
       structuredContent?: Record<string, unknown>
     }
     if (record.structuredContent !== undefined) {
-      return record.structuredContent
+      return unwrapNdrEnvelope(record.structuredContent)
     }
     const text = (record.content ?? [])
       .filter(part => part?.type === 'text' && typeof part.text === 'string')
@@ -108,28 +157,7 @@ export class McpHttpClient {
       return record.isError === true ? { error: '工具返回为空' } : {}
     }
     try {
-      let parsed: unknown = JSON.parse(text)
-      // NDR 工具的返回约定是**双层**：外层 {result: "<json 字符串>"}，
-      // 真正的回执在里层字符串里（server._run 把 dict 序列化后塞进 result 字段）。
-      // 只剥一层的话 reason/budget/tasks 全留在里层，调用方会把它当成
-      // 「没 reason 的空回执」静默吞掉（2026-10 实测：agent 明明收到
-      // inflight_full，却一行日志都没有，表现为"队列 2000 条却领不到"）。
-      if (
-        typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-        && Object.keys(parsed as Record<string, unknown>).length === 1
-        && typeof (parsed as Record<string, unknown>)['result'] === 'string'
-      ) {
-        const inner = (parsed as Record<string, unknown>)['result'] as string
-        try {
-          parsed = JSON.parse(inner)
-        } catch {
-          return { result: inner }
-        }
-      }
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed as Record<string, unknown>
-      }
-      return { result: parsed }
+      return unwrapNdrEnvelope(JSON.parse(text))
     } catch {
       // 少数工具返回纯文本；保留原文，别假装解析成功
       return { text }

@@ -133,3 +133,25 @@ test('already-flat receipts pass through without a second unwrap', async () => {
   })
   assert.equal((await client.callTool('claim_tasks', {}))['reason'], 'queue_empty')
 })
+
+test('structuredContent path unwraps the ndr envelope too (it returns early!)', async () => {
+  // 上一轮修复只处理了 content[].text 分支；服务端 structuredContent 也给
+  // {result:"<json>"}，而那个分支提前返回 —— reason 仍留在里层。必须同剥。
+  const captured: Captured[] = []
+  const client = new McpHttpClient({
+    url: 'http://x/mcp',
+    token: 't',
+    fetchImpl: stubFetch(captured, {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        content: [{ type: 'text', text: 'ignored' }],
+        structuredContent: {
+          result: JSON.stringify({ tasks: [], reason: 'budget_exhausted' }),
+        },
+      },
+    }),
+  })
+  const reply = await client.callTool('claim_tasks', {})
+  assert.equal(reply['reason'], 'budget_exhausted')
+})
