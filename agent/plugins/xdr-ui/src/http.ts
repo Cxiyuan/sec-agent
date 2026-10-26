@@ -23,6 +23,15 @@ export interface IngestServiceView {
     entries: readonly unknown[]
   }>
   getAnalysis(analysisId: string): Promise<unknown>
+  /** 运行参数快照（可选：老版本 xdr-ingest 没有，控制台显示"不可改"）。 */
+  settings?(): Promise<Record<string, unknown>>
+  /** 保存运行参数（可选；校验在数据面做，控制台只透传）。 */
+  updateSettings?(patch: unknown): Promise<{
+    ok: boolean
+    error?: string
+    persisted?: boolean
+    settings?: Record<string, number>
+  }>
 }
 
 export interface UiHandlerOptions {
@@ -32,8 +41,10 @@ export interface UiHandlerOptions {
   readonly ingest: () => IngestServiceView | null
   /** 登录页模板（含错误横幅位），由 index.ts 注入。 */
   readonly renderLogin: (authError: boolean) => string
-  /** 工作台页模板，由 index.ts 注入。 */
+  /** 控制台页模板，由 index.ts 注入。 */
   readonly renderWorkbench: () => string
+  /** 配置页展示的部署侧事实（账号、令牌是否配置、NDR 入口等；不含密钥值）。 */
+  readonly meta: () => Record<string, unknown>
 }
 
 const DEFAULT_LIMIT = 50
@@ -43,6 +54,8 @@ const MAX_OFFSET = 10_000_000
 const MAX_ANALYSIS_ID = 128
 /** 登录体上限：账号密码合理长度之外的都是攻击。 */
 const MAX_LOGIN_BODY = 4 * 1024
+/** 运行参数体上限：三个整数，8KB 已经很宽松。 */
+const MAX_SETTINGS_BODY = 8 * 1024
 const MAX_COOKIE_HEADER = 4096
 
 /**
@@ -177,6 +190,43 @@ export function createUiHandler(
         }
         return true
       }
+      if (tail === '/api/settings') {
+        if (method !== 'GET' && method !== 'POST') {
+          respondJson(res, 405, { error: 'settings accepts GET and POST only' })
+          return
+        }
+        if (!apiGuard()) return
+        const ingest = options.ingest()
+        const meta = options.meta()
+        if (method === 'GET') {
+          if (ingest === null || typeof ingest.settings !== 'function') {
+            respondJson(res, 200, { available: false, meta })
+            return
+          }
+          const settings = await ingest.settings()
+          respondJson(res, 200, { available: true, settings, meta })
+          return
+        }
+        if (ingest === null || typeof ingest.updateSettings !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用，运行参数暂不可改' })
+          return
+        }
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        const result = await ingest.updateSettings(patch)
+        respondJson(res, result.ok === false ? 400 : 200, result)
+        return
+      }
       if (tail === '/api/overview') {
         if (method !== 'GET') {
           respondJson(res, 405, { error: 'method not allowed' })
@@ -262,7 +312,28 @@ export function createUiHandler(
   return dispatch
 }
 
-function reqFor(): undefined { return undefined }
+/**
+ * 站点根路径 → 控制台的跳转（dsh 原生界面不再作为默认入口）。
+ * 原生界面仍在 /index.html 可达（frontend-static 会渲染它）；这里只接管 `/`。
+ * @param basePath - 控制台前缀，跳转目标为 `{basePath}/`（未登录会再转登录页）。
+ */
+export function createRootRedirect(basePath: string): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const target = `${basePath}/`
+  return async (req, res) => {
+    const method = req.method ?? 'GET'
+    if (method !== 'GET' && method !== 'HEAD') {
+      res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'method not allowed' }))
+      return
+    }
+    res.writeHead(303, {
+      'cache-control': 'no-store',
+      'location': target,
+      'referrer-policy': 'no-referrer',
+    })
+    res.end()
+  }
+}
 
 /** URL 的 pathname 形式；末尾斜杠去掉（basePath 本身不带），畸形回根。 */
 function normalizePath(raw: string | undefined): string {

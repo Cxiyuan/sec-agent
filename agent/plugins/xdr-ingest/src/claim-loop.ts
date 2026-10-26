@@ -77,6 +77,8 @@ export interface ClaimLoopStats {
 
 export class ClaimLoop {
   private readonly options: ClaimLoopOptions
+  /** 可在运行期热更新的三个旋钮；初值来自 cordis 配置，之后由工作台持久化的值覆盖。 */
+  private readonly settings: { pollSeconds: number, maxConcurrent: number, claimLimit: number }
   private running = 0
   private timer: ReturnType<typeof setTimeout> | null = null
   private debounce: ReturnType<typeof setTimeout> | null = null
@@ -99,7 +101,30 @@ export class ClaimLoop {
 
   constructor(options: ClaimLoopOptions) {
     this.options = options
+    this.settings = {
+      pollSeconds: options.pollSeconds,
+      maxConcurrent: options.maxConcurrent,
+      claimLimit: options.claimLimit,
+    }
     this.now = options.now ?? Date.now
+  }
+
+  /** 当前生效的三个运行参数（status 与工作台表单读同一份）。 */
+  settingsSnapshot(): { pollSeconds: number, maxConcurrent: number, claimLimit: number } {
+    return { ...this.settings }
+  }
+
+  /**
+   * 热更新运行参数：只改传入字段，其余保持。
+   * 轮询间隔变化时立刻按新间隔重排定时器（否则要等旧周期走完才生效）。
+   * @param patch - 已经过校验的新值（工作台/服务端保证范围）。
+   */
+  configure(patch: Partial<{ pollSeconds: number, maxConcurrent: number, claimLimit: number }>): void {
+    const pollChanged = patch.pollSeconds !== undefined && patch.pollSeconds !== this.settings.pollSeconds
+    if (patch.pollSeconds !== undefined) this.settings.pollSeconds = patch.pollSeconds
+    if (patch.maxConcurrent !== undefined) this.settings.maxConcurrent = patch.maxConcurrent
+    if (patch.claimLimit !== undefined) this.settings.claimLimit = patch.claimLimit
+    if (pollChanged && !this.stopped) this.schedule(0)
   }
 
   /** 启动：先立刻领一次（部署后不必等第一个轮询周期），再按间隔自轮询。 */
@@ -137,12 +162,12 @@ export class ClaimLoop {
    */
   async tick(): Promise<void> {
     this.stats.running = this.running
-    const free = this.options.maxConcurrent - this.running
+    const free = this.settings.maxConcurrent - this.running
     if (free <= 0) {
       this.stats.droppedByConcurrency += 1
       return
     }
-    const want = Math.max(1, Math.min(free, this.options.claimLimit))
+    const want = Math.max(1, Math.min(free, this.settings.claimLimit))
     this.stats.polls += 1
     let reply: ClaimReply
     try {

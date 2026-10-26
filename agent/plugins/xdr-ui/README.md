@@ -1,7 +1,8 @@
-# @sec-agent/xdr-ui — 深瞳分析工作台
+# @sec-agent/xdr-ui — 深瞳分析控制台
 
-agent 侧的**运营界面插件**：把手进的 dsh 聊天界面旁边，给"后台自助分析的
-工作智能体"一个真正的控制台——`/xdr/ui`，带登录鉴权（默认 admin/admin123）。
+agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分析的工作智能体"的
+控制台——`/xdr/ui`，带登录鉴权（默认 admin/admin123）。站点根路径 `/` 直接
+跳到这里；dsh 原始会话界面保留在 `/index.html`（只作排障用，不再当默认入口）。
 
 ## 为什么不是再开一个聊天窗口
 
@@ -11,14 +12,13 @@ agent 侧的**运营界面插件**：把手进的 dsh 聊天界面旁边，给"�
 
 | 面板 | 内容 | 数据源 |
 |---|---|---|
-| 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、剩余预算快照 | `xdrIngest.status()` |
-| 缓存卡片 | 热层/冷库条数、判定分析/命中复用/过期重析计数 | `xdrIngest.cacheStats()` |
+| 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、剩余预算快照、热层/冷库条数、最近 5 条分析 | `xdrIngest.status()/cacheStats()/listAnalyses()` |
 | 分析记录 | PG 冷库的历史结论：规则、源 IP、严重度、结论摘要、出现次数、最近出现；分页 + 搜索 + 详情（身份、结论、处置建议、原始 JSON） | `xdrIngest.listAnalyses()/getAnalysis()` |
-| 手动领取 | 「立即领取」按钮，等同一记门铃（去抖后触发一次领取，仍受并发与服务端预算约束） | `xdrIngest.wake()` |
+| 配置 | 运行参数（轮询间隔 / 本机并发 / 单次领取条数）热更新并持久化；连接与凭据状态（NDR MCP 地址与令牌是否配置、门铃令牌、冷库类型、登录账号与密码来源、会话时长）；NDR 控制台与原始会话界面入口 | `xdrIngest.settings()/updateSettings()` + 部署环境缝 |
 
-原生界面右上角（右下角）注入一枚跳转角标（`webserver.tapIndex`，登记式注入，
-不改 dsh 任何上游文件）；要看分析会话的**过程**（模型的工作轨迹），就从原生
-界面进会话看——工作台是运营视图，会话是取证视图，两者互补。
+左侧固定功能菜单（运行总览 / 分析记录 / 配置），无聊天输入框。原始会话界面上
+注入一枚「返回控制台」角标（`webserver.tapIndex`，登记式注入，不改 dsh 上游文件）
+——控制台是运营视图，会话是取证视图，两者互补。
 
 ## 鉴权
 
@@ -41,6 +41,9 @@ agent 侧的**运营界面插件**：把手进的 dsh 聊天界面旁边，给"�
 | `{basePath}/api/analyses?limit&offset&q` | GET | `{available, total, entries[]}`，last_seen 降序，limit 钳制 1..200 |
 | `{basePath}/api/analyses/{id}` | GET | `{entry}`（完整记录）；404 = 无此 ID |
 | `{basePath}/api/wake` | POST | `{accepted}`；分析循环未启用时 accepted=false |
+| `{basePath}/api/settings` | GET | `{available, settings{poll_seconds,max_concurrent,claim_limit,store}, meta{...}}`；数据面不在场 `available:false` |
+| `{basePath}/api/settings` | POST | JSON 补丁（三个整数字段）；越界/非整数 400，成功 `{ok,persisted,settings}`；数据面不在场 503 |
+| `/` | GET | 303 → `{basePath}/`（站点默认入口交给控制台） |
 
 ## 配置
 
@@ -50,7 +53,8 @@ agent 侧的**运营界面插件**：把手进的 dsh 聊天界面旁边，给"�
 | `user` / `password` | `''`（回落 admin/admin123） | 留空走环境缝，显式配置优先 |
 | `secret` | `''`（按上文寻源） | 会话签名密钥 |
 | `sessionHours` | 12 | 会话时长 |
-| `badge` | true | 原生界面注入跳转角标 |
+| `badge` | true | 原始界面注入「返回控制台」角标 |
+| `ndrConsoleUrl` | `''` | NDR 管理台地址，左侧菜单入口；空则隐藏（部署缝 `DSH_WEB_NDR_CONSOLE_URL`） |
 
 ## 与 xdr-ingest 的服务缝
 
@@ -73,5 +77,7 @@ pnpm run build    # tsc 产出 lib/
 - 工作台是**单页面单账号**语义：无多租户、无账号管理页（规划中）；
 - `logout` 只清本浏览器 Cookie，不吊销其他端（无服务端会话表——纯签名 Cookie 的
   取舍：停机重启 + 换密钥才是全局会话失效手段）；
-- 数据面只读：改配置、撤销抑制等写回动作仍走 NDR 后台（analyst 档的 MCP 工具
-  本就不含这些），工作台保持"看 + 一键领取"的最小权限面。
+- 控制台只写**本机运行参数**；规则/网段/抑制等 NDR 侧配置仍走 NDR 管理台
+  （左侧菜单有入口）。登录密码与 MCP 令牌只能改部署环境变量后重启，页面上只
+  显示"是否已配置"，不回显密钥；
+- `/` 被本插件独占为控制台入口：同一部署里不能再有第二个插件注册 exact `/`。

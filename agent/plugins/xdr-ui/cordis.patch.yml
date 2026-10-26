@@ -22,3 +22,6 @@
         secret: !!js process.env.DSH_WEB_UI_SECRET ?? ''
         sessionHours: 12
         badge: true
+        # NDR 管理台地址（左侧菜单入口）；留空隐藏。部署层用
+        # DSH_WEB_NDR_CONSOLE_URL 覆盖（默认空）。
+        ndrConsoleUrl: !!js process.env.DSH_WEB_NDR_CONSOLE_URL ?? ''

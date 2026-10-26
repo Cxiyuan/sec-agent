@@ -123,3 +123,13 @@ pnpm run build        # tsc 产出 lib/ 与 lib/types/
 
 PG 集成测试（`tests/pg-store.integration.test.ts`）需要真实数据库，设置
 `XDR_TEST_PG_URL` 后才会执行；CI 的 agent-plugins job 自带 postgres service。
+
+## 运行参数（工作台可改）
+
+`settings.ts` 定义三个可热更新的旋钮——定时轮询间隔、本机并发上限、单次领取条数
+（范围与 Config 一致）。保存走 `xdrIngest.updateSettings()`：先校验，再
+`ClaimLoop.configure()` 立即生效，最后持久化到 PG 表 `xdr_ingest_settings`
+（单行 JSONB；内存冷库则只在进程内）。启动时先读回上次保存的值覆盖 cordis 配置
+默认；读不到（或没有 PG）就用配置默认，不影响运行。
+
+配额、租约、保留名额、强度门槛仍在 NDR 侧强制，这里不接受修改。

@@ -1,10 +1,13 @@
 /**
- * 工作台与登录页（自包含 HTML，无前端构建链）。
+ * 登录页与控制台（自包含 HTML，无前端构建链）。
  *
  * 为什么是内联 HTML 而不是 React SPA：dsh 客户端有自己的构建链与研发门禁
- * （项目约定本地不装依赖不构建，一切构建在 CI），工作台是运营侧只读面板，
+ * （项目约定本地不装依赖不构建，一切构建在 CI），控制台是运营侧面板，
  * vanilla JS + fetch 轮询完全够用，且插件包只经 `tsc` 一种构建。
- * 页面文案是中文（这是项目自己的插件，不走 dsh 的 locale 门禁）。
+ *
+ * 产品形态：这不是"对话窗口"，是后台分析智能体的运营控制台——
+ * 左侧功能菜单（运行总览 / 分析记录 / 配置），右侧工作区，无聊天输入框。
+ * 页面文案中文（本项目自己的插件，不走 dsh 的 locale 门禁）。
  */
 
 /** HTML 文本逃逸（包含 JS 侧动态插入到 innerHTML 的场景）。 */
@@ -17,6 +20,22 @@ export function escapeHtml(value: unknown): string {
     .replaceAll('\'', '&#39;')
 }
 
+/** 两个页面共用的设计变量（深瞳深色主题）。 */
+const THEME = `
+  :root {
+    --bg: #070d1a; --panel: #0d1526; --panel-2: #111c33; --line: #1e2a44;
+    --text: #e6edf7; --muted: #8b9bb4; --accent: #38bdf8; --accent-2: #0ea5e9;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { font: inherit; cursor: pointer; }
+  input, select { font: inherit; }
+`
+
 /** 登录页。base 用于绝对化表单 action；authError 表示上一次提交凭据错误。 */
 export function loginPage(base: string, authError: boolean): string {
   return `<!doctype html>
@@ -24,131 +43,265 @@ export function loginPage(base: string, authError: boolean): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>深瞳 · 分析工作台登录</title>
+<title>深瞳 · 安全分析智能体</title>
 <style>
-  body { font-family: system-ui, sans-serif; display: grid; place-items: center;
-         min-height: 100vh; margin: 0; background: #f5f7fb; }
-  form { background: #fff; padding: 2.5rem 3rem; border-radius: 12px;
-         box-shadow: 0 2px 12px rgba(0,0,0,.08); width: 270px; }
-  h1 { font-size: 1.1rem; margin: 0 0 1.2rem; color: #1e293b; text-align: center; }
-  label { display: block; font-size: .8rem; color: #64748b; margin: .8rem 0 .25rem; }
-  input { width: 100%; box-sizing: border-box; padding: .55rem .7rem;
-          border: 1px solid #cbd5e1; border-radius: 6px; font-size: .9rem; }
-  button { margin-top: 1.4rem; width: 100%; padding: .6rem; border: none;
-           border-radius: 6px; background: #2563eb; color: #fff;
-           font-size: .95rem; cursor: pointer; }
-  button:hover { background: #1d4ed8; }
-  .error { color: #dc2626; font-size: .8rem; margin-top: .8rem; text-align: center; }
-  .back { margin-top: 1rem; font-size: .75rem; color: #94a3b8; text-align: center; }
+${THEME}
+  body { display: grid; place-items: center; min-height: 100vh;
+         background: radial-gradient(1200px 600px at 50% -10%, #123 0%, var(--bg) 60%); }
+  form { width: 330px; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 14px; padding: 2rem 2rem 1.6rem; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+  .brand { display: flex; align-items: center; gap: .65rem; margin-bottom: .3rem; }
+  .logo { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px;
+          background: linear-gradient(135deg, var(--accent), #2563eb); color: #04101f;
+          font-weight: 800; font-size: 1.05rem; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  .sub { color: var(--muted); font-size: .78rem; margin: 0 0 1.4rem; }
+  label { display: block; font-size: .78rem; color: var(--muted); margin: .9rem 0 .3rem; }
+  input { width: 100%; padding: .6rem .75rem; border-radius: 8px; background: #0a1322;
+          border: 1px solid var(--line); color: var(--text); }
+  input:focus { outline: none; border-color: var(--accent); }
+  button { margin-top: 1.5rem; width: 100%; padding: .65rem; border: none; border-radius: 8px;
+           background: linear-gradient(135deg, var(--accent), var(--accent-2));
+           color: #04101f; font-weight: 700; }
+  button:hover { filter: brightness(1.08); }
+  .error { color: var(--bad); font-size: .8rem; margin-top: .9rem; text-align: center; }
+  .hint { margin-top: 1.1rem; font-size: .72rem; color: var(--muted); text-align: center; }
 </style>
 </head>
 <body>
 <form method="POST" action="${escapeHtml(base)}/login">
-  <h1>深瞳 · 分析工作台</h1>
+  <div class="brand"><span class="logo">瞳</span><h1>深瞳 · 安全分析智能体</h1></div>
+  <p class="sub">后台自助分析控制台</p>
   <label for="user">账号</label>
   <input id="user" name="user" autocomplete="username" autofocus>
   <label for="password">密码</label>
   <input id="password" name="password" type="password" autocomplete="current-password">
-  <button type="submit">登录</button>
+  <button type="submit">进入控制台</button>
   ${authError ? '<div class="error">账号或密码不正确</div>' : ''}
-  <div class="back">默认账号 admin / admin123（部署时可用环境变量修改）</div>
+  <div class="hint">默认账号 admin / admin123（部署时用环境变量改）</div>
 </form>
 </body>
 </html>`
 }
 
-/** 工作台页：运行总览 + 分析记录 + 手动领取。数据全部来自 ${basePath}/api/*。 */
+/** 控制台页：运行总览 + 分析记录 + 配置。数据全部来自 ${basePath}/api/*。 */
 export function workbenchPage(basePath: string): string {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>深瞳 · 分析工作台</title>
+<title>深瞳 · 安全分析智能体</title>
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f7fb; color: #1e293b; }
-  header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center;
-           gap: .8rem; padding: .7rem 1.2rem; background: #0f172a; color: #f8fafc; }
-  header h1 { font-size: 1rem; margin: 0 0; font-weight: 600; }
-  header .spacer { flex: 1; }
-  header button { padding: .35rem .8rem; border: 1px solid #334155; border-radius: 6px;
-                  background: #1e293b; color: #e2e8f0; font-size: .8rem; cursor: pointer; }
-  header button:hover { background: #334155; }
-  main { max-width: 1180px; margin: 0 auto; padding: 1rem 1.2rem 3rem; }
-  h2 { font-size: .95rem; margin: 1.4rem 0 .6rem; color: #475569; }
+${THEME}
+  .app { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
+  .rail { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
+          gap: 1.2rem; padding: 1.1rem .9rem; background: var(--panel);
+          border-right: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: .6rem; padding: 0 .3rem; }
+  .brand .logo { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+                 background: linear-gradient(135deg, var(--accent), #2563eb); color: #04101f;
+                 font-weight: 800; }
+  .brand b { font-size: .98rem; display: block; line-height: 1.2; }
+  .brand small { color: var(--muted); font-size: .7rem; }
+  nav { display: flex; flex-direction: column; gap: .25rem; }
+  nav a { display: flex; align-items: center; gap: .5rem; padding: .5rem .6rem; border-radius: 8px;
+          color: #cdd8e8; font-size: .9rem; }
+  nav a:hover { background: var(--panel-2); text-decoration: none; }
+  nav a.active { background: rgba(56,189,248,.12); color: var(--accent); }
+  nav a .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .7; }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: .45rem;
+               font-size: .78rem; color: var(--muted); padding: 0 .3rem; }
+  .rail-foot a { color: var(--muted); }
+  .rail-foot a:hover { color: var(--accent); }
+  main { min-width: 0; padding: 1.2rem 1.6rem 3rem; }
+  .top { display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.1rem; }
+  .top h1 { margin: 0; font-size: 1.25rem; }
+  .top p { margin: .15rem 0 0; color: var(--muted); font-size: .8rem; }
+  .actions { margin-left: auto; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .chip { font-size: .75rem; padding: .3rem .6rem; border-radius: 999px;
+          border: 1px solid var(--line); color: var(--muted); }
+  .chip.ok { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+  .chip.off { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+  .actions button { padding: .42rem .8rem; border-radius: 8px; border: 1px solid var(--line);
+                    background: var(--panel-2); color: var(--text); font-size: .82rem; }
+  .actions button:hover { border-color: var(--accent); }
+  .actions button.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2));
+                            color: #04101f; border: none; font-weight: 700; }
+  .actions button.ghost { background: transparent; color: var(--muted); }
+  section[hidden] { display: none; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 1.5rem 0 .6rem; font-weight: 600; }
+  h2:first-child { margin-top: 0; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
-  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: .7rem .9rem; }
-  .card .k { font-size: .72rem; color: #94a3b8; }
-  .card .v { font-size: 1.05rem; font-weight: 600; margin-top: .15rem; word-break: break-all; }
-  .card .v.ok { color: #16a34a; } .card .v.bad { color: #dc2626; } .card .v.off { color: #d97706; }
-  .unavailable { background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
-                 padding: .7rem 1rem; border-radius: 10px; font-size: .85rem; }
-  .toolbar { display: flex; gap: .6rem; align-items: center; margin: .4rem 0 .6rem; }
-  .toolbar input { flex: 0 0 300px; padding: .45rem .6rem; border: 1px solid #cbd5e1;
-                   border-radius: 6px; font-size: .85rem; }
-  .toolbar button { padding: .45rem .9rem; border: 1px solid #cbd5e1; border-radius: 6px;
-                    background: #fff; font-size: .85rem; cursor: pointer; }
-  .toolbar button:hover { background: #f1f5f9; }
-  .toolbar .count { font-size: .8rem; color: #94a3b8; }
-  table { width: 100%; border-collapse: collapse; background: #fff;
-          border: 1px solid #e2e8f0; border-radius: 10px; font-size: .85rem; }
-  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
-  th { font-size: .75rem; color: #64748b; background: #f8fafc; white-space: nowrap; }
-  td .mono { font-family: ui-monospace, monospace; font-size: .75rem; color: #475569; }
-  tbody tr:hover { background: #f8fafc; cursor: pointer; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .85rem; }
+  .card .k { font-size: .72rem; color: var(--muted); }
+  .card .v { font-size: 1.02rem; font-weight: 600; margin-top: .2rem; word-break: break-all; }
+  .v.ok { color: var(--ok); } .v.bad { color: var(--bad); } .v.off { color: var(--warn); }
+  .notice { border-radius: var(--radius); padding: .7rem 1rem; font-size: .82rem; margin-top: .7rem;
+            background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.3); color: #fcd34d; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.1rem; }
+  .toolbar { display: flex; gap: .6rem; align-items: center; margin-bottom: .7rem; flex-wrap: wrap; }
+  .toolbar input[type=search] { flex: 0 0 300px; max-width: 100%; padding: .45rem .65rem;
+                                border-radius: 8px; border: 1px solid var(--line);
+                                background: #0a1322; color: var(--text); }
+  .toolbar button, .btn { padding: .45rem .85rem; border-radius: 8px; border: 1px solid var(--line);
+                          background: var(--panel-2); color: var(--text); font-size: .82rem; }
+  .toolbar button:hover, .btn:hover { border-color: var(--accent); }
+  .count { font-size: .78rem; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; font-size: .84rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .72rem; color: var(--muted); background: var(--panel-2); white-space: nowrap; font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); cursor: pointer; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; color: #a9b8cd; }
   .sev { font-weight: 600; white-space: nowrap; }
-  .sev.high, .sev.critical { color: #dc2626; } .sev.medium { color: #d97706; }
-  .pager { display: flex; gap: .5rem; align-items: center; font-size: .8rem; color: #64748b; margin-top: .6rem; }
-  .pager button { padding: .35rem .8rem; border: 1px solid #cbd5e1; border-radius: 6px;
-                  background: #fff; cursor: pointer; }
-  dialog { border: none; border-radius: 12px; max-width: 720px; width: 88%;
-           padding: 1.2rem 1.4rem; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
-  dialog::backdrop { background: rgba(15,23,42,.45); }
-  dialog h3 { margin: 0 0 .6rem; font-size: 1rem; }
-  dialog .kv { font-size: .85rem; margin: .3rem 0; }
-  dialog .kv .k { color: #94a3b8; margin-right: .5rem; }
-  dialog pre { background: #0f172a; color: #e2e8f0; padding: .8rem; border-radius: 8px;
-               font-size: .72rem; overflow: auto; max-height: 40vh; white-space: pre-wrap; }
+  .sev.high, .sev.critical { color: var(--bad); } .sev.medium { color: var(--warn); }
+  .empty { color: var(--muted); text-align: center; padding: 1.2rem; }
+  .pager { display: flex; gap: .5rem; align-items: center; font-size: .78rem; color: var(--muted); margin-top: .6rem; }
+  .pager button { padding: .35rem .75rem; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--panel-2); color: var(--text); }
+  .pager button:disabled { opacity: .45; cursor: default; }
+  dialog { border: 1px solid var(--line); border-radius: 14px; max-width: 760px; width: 90%;
+           padding: 1.2rem 1.4rem; background: var(--panel); color: var(--text);
+           box-shadow: 0 20px 70px rgba(0,0,0,.55); }
+  dialog::backdrop { background: rgba(3,8,18,.72); }
+  dialog h3 { margin: 0 0 .8rem; font-size: .9rem; color: var(--muted); }
+  dialog .kv { font-size: .84rem; margin: .3rem 0; }
+  dialog .kv .k { color: var(--muted); margin-right: .5rem; }
+  dialog pre { background: #050b16; border: 1px solid var(--line); color: #cfe0f5; padding: .8rem;
+               border-radius: 8px; font-size: .7rem; overflow: auto; max-height: 40vh; white-space: pre-wrap; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .8rem 1.2rem; }
+  .field label { display: block; font-size: .76rem; color: var(--muted); margin-bottom: .3rem; }
+  .field input { width: 100%; padding: .5rem .65rem; border-radius: 8px; border: 1px solid var(--line);
+                 background: #0a1322; color: var(--text); }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .field small { display: block; color: var(--muted); font-size: .7rem; margin-top: .25rem; }
+  .form-actions { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
+  .form-actions .msg { font-size: .78rem; color: var(--muted); }
+  .form-actions .msg.bad { color: var(--bad); } .form-actions .msg.ok { color: var(--ok); }
+  .kv-list { display: grid; grid-template-columns: minmax(130px, 190px) 1fr; gap: .45rem .9rem; font-size: .82rem; }
+  .kv-list dt { color: var(--muted); }
+  .kv-list dd { margin: 0; word-break: break-all; }
+  .tag { font-size: .7rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tag.ok { color: var(--ok); border-color: rgba(52,211,153,.4); }
+  .tag.bad { color: var(--bad); border-color: rgba(248,113,113,.4); }
   #toast { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
-           background: #0f172a; color: #f8fafc; padding: .5rem 1rem; border-radius: 8px;
-           font-size: .85rem; opacity: 0; transition: opacity .2s; pointer-events: none; }
-  #toast.show { opacity: .95; }
+           background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+           padding: .55rem 1rem; border-radius: 9px; font-size: .83rem; opacity: 0;
+           transition: opacity .2s; pointer-events: none; z-index: 9; }
+  #toast.show { opacity: 1; }
+  @media (max-width: 820px) {
+    .app { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; align-items: center;
+            flex-wrap: wrap; gap: .6rem; border-right: none; border-bottom: 1px solid var(--line); }
+    nav { flex-direction: row; }
+    .rail-foot { margin: 0 0 0 auto; flex-direction: row; }
+    main { padding: 1rem; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>深瞳 · 分析工作台</h1>
-  <span id="state" style="font-size:.75rem;color:#94a3b8;"></span>
-  <span class="spacer"></span>
-  <button id="wake" title="等同一记门铃：立即触发一次领取，仍受并发与预算约束">立即领取</button>
-  <button id="logout">退出</button>
-</header>
-<main>
-  <h2>运行总览</h2>
-  <div id="overview"></div>
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><span class="logo">瞳</span><div><b>深瞳</b><small>安全分析智能体</small></div></div>
+    <nav>
+      <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
+      <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
+      <a href="#/settings" data-view="settings"><span class="dot"></span>配置</a>
+    </nav>
+    <div class="rail-foot">
+      <a id="ndr-link" href="#" target="_blank" rel="noreferrer" hidden>NDR 控制台 ↗</a>
+      <a id="native-link" href="/index.html" target="_blank" rel="noreferrer">原始会话界面 ↗</a>
+      <span>v0.2 · 后台自助分析</span>
+    </div>
+  </aside>
+  <main>
+    <div class="top">
+      <div>
+        <h1 id="view-title">运行总览</h1>
+        <p id="view-sub">门铃 → 领工单 → 取证 → 交结论</p>
+      </div>
+      <div class="actions">
+        <span id="state" class="chip">连接中…</span>
+        <button id="wake" class="primary" title="等同一记门铃：立即触发一次领取，仍受并发与预算约束">立即领取</button>
+        <button id="refresh">刷新</button>
+        <button id="logout" class="ghost">退出<span id="who"></span></button>
+      </div>
+    </div>
 
-  <h2>分析记录</h2>
-  <div class="toolbar">
-    <input id="q" type="search" placeholder="搜索：规则 / 源 IP / 结论…" maxlength="128">
-    <button id="reload">搜索 / 刷新</button>
-    <span class="count" id="count"></span>
-  </div>
-  <table>
-    <thead>
-      <tr><th>规则</th><th>源 IP</th><th>严重度</th><th>结论摘要</th><th>出现</th><th>最近出现</th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <div class="pager">
-    <button id="prev">‹ 上一页</button>
-    <button id="next">下一页 ›</button>
-    <span id="page"></span>
-  </div>
-</main>
+    <section id="view-overview">
+      <div id="overview"></div>
+      <h2>最近分析</h2>
+      <table>
+        <thead><tr><th>规则</th><th>源 IP</th><th>严重度</th><th>结论摘要</th><th>最近出现</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </section>
+
+    <section id="view-records" hidden>
+      <div class="toolbar">
+        <input id="q" type="search" placeholder="搜索：规则 / 源 IP / 结论…" maxlength="128">
+        <button id="search">搜索 / 刷新</button>
+        <span class="count" id="count"></span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>规则</th><th>源 IP</th><th>严重度</th><th>结论摘要</th><th>出现</th><th>最近出现</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="pager">
+        <button id="prev">‹ 上一页</button>
+        <button id="next">下一页 ›</button>
+        <span id="page"></span>
+      </div>
+    </section>
+
+    <section id="view-settings" hidden>
+      <h2>运行参数</h2>
+      <div class="panel">
+        <div class="form-grid">
+          <div class="field">
+            <label for="pollSeconds">定时轮询间隔（秒）</label>
+            <input id="pollSeconds" type="number" min="30" max="86400" step="1">
+            <small>门铃会丢，这是"自己去看一眼"的兜底节奏：30 ~ 86400</small>
+          </div>
+          <div class="field">
+            <label for="maxConcurrent">本机并发上限</label>
+            <input id="maxConcurrent" type="number" min="1" max="16" step="1">
+            <small>同时跑几个分析会话：1 ~ 16（NDR 侧每令牌并发另行限制）</small>
+          </div>
+          <div class="field">
+            <label for="claimLimit">单次领取条数</label>
+            <input id="claimLimit" type="number" min="1" max="20" step="1">
+            <small>一次 claim_tasks 最多领几条：1 ~ 20</small>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="save-settings" class="btn" style="border-color:var(--accent);color:var(--accent)">保存并生效</button>
+          <button id="reload-settings" class="btn">重新读取</button>
+          <span id="settings-msg" class="msg"></span>
+        </div>
+      </div>
+
+      <h2>连接与凭据</h2>
+      <div class="panel">
+        <dl class="kv-list" id="meta"></dl>
+      </div>
+      <div class="notice">
+        登录密码与 NDR MCP 令牌由部署环境变量提供（DSH_WEB_AUTH_PASSWORD / XDR_NDR_MCP_TOKEN），
+        修改后需重启容器；本页只展示"是否已配置"，不回显密钥。
+      </div>
+    </section>
+  </main>
+</div>
 
 <dialog id="detail"><div id="detail-body"></div>
-  <button id="close" style="margin-top:1rem;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;">关闭</button>
+  <div style="margin-top:1rem;display:flex;gap:.6rem;">
+    <button id="close" class="btn">关闭</button>
+  </div>
 </dialog>
 <div id="toast"></div>
 
@@ -156,62 +309,105 @@ export function workbenchPage(basePath: string): string {
 (() => {
   const BASE = ${JSON.stringify(basePath)}
   const PAGE = 20
-  let offset = 0, total = 0
+  const VIEWS = {
+    overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
+    records: { title: '分析记录', sub: '冷库里的历史结论，可搜索与翻页' },
+    settings: { title: '配置', sub: '运行参数、连接状态与入口' },
+  }
+  let offset = 0, total = 0, settingsLoaded = false
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
   const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
-  const toast = text => { const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1800) }
-
+  const toast = text => { const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000) }
   const json = (url, init) => fetch(url, init).then(r => { if (r.status === 401) { location.href = BASE + '/login'; throw new Error('unauthorized') } return r.json() })
+
+  function viewOf(hash) {
+    const key = String(hash || '').replace(/^#\\/?/, '')
+    return VIEWS[key] ? key : 'overview'
+  }
+
+  function route() {
+    const view = viewOf(location.hash)
+    for (const name of Object.keys(VIEWS)) {
+      document.getElementById('view-' + name).hidden = name !== view
+      const link = document.querySelector('nav a[data-view="' + name + '"]')
+      if (link) link.classList.toggle('active', name === view)
+    }
+    document.getElementById('view-title').textContent = VIEWS[view].title
+    document.getElementById('view-sub').textContent = VIEWS[view].sub
+    if (view === 'records') void loadList().catch(onError)
+    if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
+  }
 
   async function loadOverview() {
     const box = document.getElementById('overview')
     const data = await json(BASE + '/api/overview')
     if (!data.available) {
-      box.innerHTML = '<div class="unavailable">xdr-ingest 插件未在场（分析循环未部署）——工作台自身正常，数据面不可用。</div>'
+      box.innerHTML = '<div class="notice">xdr-ingest 插件未在场（分析循环未部署）——控制台自身正常，数据面不可用。</div>'
+      document.getElementById('state').textContent = '数据面不可用'
+      document.getElementById('state').className = 'chip off'
       return
     }
-    const s = data.status || {}, c = data.cache || {}
-    const loop = s.loop || {}
+    const s = data.status || {}, c = data.cache || {}, loop = s.loop || {}
     const analysisOn = s.analysis === 'enabled'
-    const cards = [
-      ['分析循环', analysisOn ? '启用' : '停用', analysisOn ? 'ok' : 'off'],
-      ['在跑 / 上限', esc(loop.running + ' / ' + s.max_concurrent), ''],
-      ['门铃次数', esc(loop.doorbells), ''],
-      ['轮询次数', esc(loop.polls), ''],
-      ['已领取', esc(loop.claimed), ''],
-      ['已启动分析', esc(loop.started), ''],
-      ['并发放弃', esc(loop.droppedByConcurrency), ''],
-      ['领取失败', esc(loop.failedClaims), ''],
-      ['连续错误', esc(loop.consecutiveErrors), Number(loop.consecutiveErrors) > 0 ? 'bad' : 'ok'],
-      ['剩余预算', esc(loop.lastBudget == null ? '—' : loop.lastBudget), ''],
-      ['热层条数', esc(c.hot), ''],
-      ['冷库条数', esc(c.cold), ''],
-      ['判定分析', esc(c.analyzed), ''],
-      ['命中复用', esc(c.reused), ''],
-      ['过期重析', esc(c.reanalyzed), ''],
+    const groups = [
+      ['运行状态', [
+        ['分析循环', analysisOn ? '启用' : '停用', analysisOn ? 'ok' : 'off'],
+        ['在跑 / 并发上限', esc(String(loop.running ?? 0) + ' / ' + (s.max_concurrent ?? '—')), ''],
+        ['剩余预算', esc(loop.lastBudget == null || loop.lastBudget === '' ? '—' : loop.lastBudget), ''],
+        ['门铃次数', esc(loop.doorbells ?? 0), ''],
+        ['轮询次数', esc(loop.polls ?? 0), ''],
+        ['已领取', esc(loop.claimed ?? 0), ''],
+        ['已启动分析', esc(loop.started ?? 0), ''],
+        ['并发放弃', esc(loop.droppedByConcurrency ?? 0), ''],
+        ['领取失败', esc(loop.failedClaims ?? 0), ''],
+        ['连续错误', esc(loop.consecutiveErrors ?? 0), Number(loop.consecutiveErrors) > 0 ? 'bad' : 'ok'],
+      ]],
+      ['分析缓存', [
+        ['热层条数', esc(c.hot ?? '—'), ''],
+        ['冷库条数', esc(c.cold ?? '—'), ''],
+        ['存储', esc(s.store_kind || c.storeKind || '—'), ''],
+        ['判定分析', esc(c.analyzed ?? '—'), ''],
+        ['命中复用', esc(c.reused ?? '—'), ''],
+        ['过期重析', esc(c.reanalyzed ?? '—'), ''],
+      ]],
     ]
-    let html = '<div class="cards">' + cards.map(([k, v, cls]) =>
-      '<div class="card"><div class="k">' + k + '</div><div class="v ' + cls + '">' + v + '</div></div>').join('') + '</div>'
-    if (loop.lastError) html += '<div class="unavailable" style="margin-top:.6rem;">最近领取错误：' + esc(loop.lastError) + '</div>'
+    let html = ''
+    for (const [title, cards] of groups) {
+      html += '<h2>' + esc(title) + '</h2><div class="cards">' + cards.map(([k, v, cls]) =>
+        '<div class="card"><div class="k">' + esc(k) + '</div><div class="v ' + cls + '">' + v + '</div></div>').join('') + '</div>'
+    }
+    if (loop.lastError) html += '<div class="notice">最近领取错误：' + esc(loop.lastError) + '</div>'
     box.innerHTML = html
-    document.getElementById('state').textContent = analysisOn ? '分析循环运行中' : '分析循环停用'
+    const chip = document.getElementById('state')
+    chip.textContent = analysisOn ? '分析循环运行中' : '分析循环停用'
+    chip.className = 'chip ' + (analysisOn ? 'ok' : 'off')
+  }
+
+  function rowHtml(e, withOccurrences) {
+    const sev = e.result && e.result.severity ? e.result.severity : ''
+    return '<tr data-id="' + esc(e.analysisId) + '">' +
+      '<td>' + esc(e.identity && e.identity.rule) + '</td>' +
+      '<td class="mono">' + esc(e.identity && e.identity.srcIp) + '</td>' +
+      '<td class="sev ' + esc(sev) + '">' + esc(sev) + '</td>' +
+      '<td>' + esc(e.result && e.result.summary) + '</td>' +
+      (withOccurrences ? '<td>' + esc(e.occurrences) + '</td>' : '') +
+      '<td>' + esc(fmt(e.lastSeenAt)) + '</td></tr>'
+  }
+
+  async function loadRecent() {
+    const data = await json(BASE + '/api/analyses?limit=5&offset=0&q=')
+    const rows = document.getElementById('recent')
+    rows.innerHTML = (data.entries || []).map(e => rowHtml(e, false)).join('') ||
+      '<tr><td colspan="5" class="empty">暂无分析记录</td></tr>'
   }
 
   async function loadList() {
-    const data = await json(BASE + '/api/analyses?limit=' + PAGE + '&offset=' + offset + '&q=' + encodeURIComponent(document.getElementById('q').value.trim()))
+    const q = document.getElementById('q').value.trim()
+    const data = await json(BASE + '/api/analyses?limit=' + PAGE + '&offset=' + offset + '&q=' + encodeURIComponent(q))
     total = data.total || 0
-    const rows = document.getElementById('rows')
-    rows.innerHTML = (data.entries || []).map(e => {
-      const sev = e.result && e.result.severity ? e.result.severity : ''
-      return '<tr data-id="' + esc(e.analysisId) + '">' +
-        '<td>' + esc(e.identity && e.identity.rule) + '</td>' +
-        '<td class="mono">' + esc(e.identity && e.identity.srcIp) + '</td>' +
-        '<td class="sev ' + esc(sev) + '">' + esc(sev) + '</td>' +
-        '<td>' + esc(e.result && e.result.summary) + '</td>' +
-        '<td>' + esc(e.occurrences) + '</td>' +
-        '<td>' + esc(fmt(e.lastSeenAt)) + '</td></tr>'
-    }).join('') || '<tr><td colspan="6" style="color:#94a3b8;">暂无分析记录</td></tr>'
+    document.getElementById('rows').innerHTML = (data.entries || []).map(e => rowHtml(e, true)).join('') ||
+      '<tr><td colspan="6" class="empty">暂无分析记录</td></tr>'
     const last = Math.max(0, Math.ceil(total / PAGE) - 1) * PAGE
     offset = Math.min(offset, last)
     document.getElementById('count').textContent = '共 ' + total + ' 条'
@@ -228,7 +424,7 @@ export function workbenchPage(basePath: string): string {
     const e = data.entry || {}
     const idn = e.identity || {}, res = e.result || {}
     document.getElementById('detail-body').innerHTML =
-      '<h3 style="font-family:ui-monospace,monospace;font-size:.8rem;">' + esc(e.analysisId) + '</h3>' +
+      '<h3 class="mono">' + esc(e.analysisId) + '</h3>' +
       '<div class="kv"><span class="k">规则</span>' + esc(idn.rule) + '</div>' +
       '<div class="kv"><span class="k">源 IP</span>' + esc(idn.srcIp) + '</div>' +
       '<div class="kv"><span class="k">目标</span>' + esc((idn.dstIps || []).join('、')) + '</div>' +
@@ -243,26 +439,103 @@ export function workbenchPage(basePath: string): string {
     document.getElementById('detail').showModal()
   }
 
+  function tag(ok) { return '<span class="tag ' + (ok ? 'ok' : 'bad') + '">' + (ok ? '已配置' : '未配置') + '</span>' }
+
+  async function loadSettings() {
+    const data = await json(BASE + '/api/settings')
+    const s = data.settings || {}, m = data.meta || {}
+    if (data.available && s.poll_seconds != null) {
+      document.getElementById('pollSeconds').value = s.poll_seconds
+      document.getElementById('maxConcurrent').value = s.max_concurrent
+      document.getElementById('claimLimit').value = s.claim_limit
+    }
+    document.getElementById('save-settings').disabled = !data.available
+    document.getElementById('settings-msg').textContent = data.available ? '' : '数据面不可用，运行参数暂不可改'
+    document.getElementById('settings-msg').className = 'msg' + (data.available ? '' : ' bad')
+    const ndr = document.getElementById('ndr-link')
+    if (m.ndrConsoleUrl) { ndr.href = m.ndrConsoleUrl; ndr.hidden = false }
+    if (m.user) document.getElementById('who').textContent = ' · ' + m.user
+    const rows = [
+      ['服务', esc(m.service || '深瞳 · 安全分析智能体')],
+      ['NDR MCP', '<span class="mono">' + esc(m.mcpUrl || '—') + '</span> ' + tag(m.mcpTokenSet)],
+      ['门铃令牌', tag(m.doorbellTokenSet) + ' <span class="mono">' + esc(m.doorbellPath || '') + '</span>'],
+      ['冷库', esc(s.store || m.store || '—') + ' ' + tag(m.pgSet)],
+      ['登录账号', esc(m.user || '—') + ' <span class="tag">' + esc(m.passwordSource || '') + '</span>'],
+      ['会话时长', esc(m.sessionHours != null ? m.sessionHours + ' 小时' : '—')],
+      ['控制台路径', '<span class="mono">' + esc(m.basePath || BASE) + '</span>'],
+      ['原始会话界面', '<a href="/index.html" target="_blank" rel="noreferrer">/index.html</a>'],
+    ]
+    document.getElementById('meta').innerHTML = rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('')
+    settingsLoaded = true
+  }
+
+  async function saveSettings() {
+    const msg = document.getElementById('settings-msg')
+    const body = {
+      pollSeconds: Number(document.getElementById('pollSeconds').value),
+      maxConcurrent: Number(document.getElementById('maxConcurrent').value),
+      claimLimit: Number(document.getElementById('claimLimit').value),
+    }
+    msg.textContent = '保存中…'; msg.className = 'msg'
+    const r = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) {
+      msg.textContent = data.error || '保存失败'; msg.className = 'msg bad'; return
+    }
+    msg.textContent = data.persisted === false ? '已生效（持久化失败，重启会回退）' : '已保存并生效'
+    msg.className = 'msg ' + (data.persisted === false ? 'bad' : 'ok')
+    if (data.settings) {
+      document.getElementById('pollSeconds').value = data.settings.poll_seconds
+      document.getElementById('maxConcurrent').value = data.settings.max_concurrent
+      document.getElementById('claimLimit').value = data.settings.claim_limit
+    }
+    toast('运行参数已更新')
+    void loadOverview().catch(onError)
+  }
+
+  document.querySelectorAll('nav a[data-view]').forEach(link => {
+    link.addEventListener('click', () => { location.hash = '#/' + link.dataset.view })
+  })
+  window.addEventListener('hashchange', route)
+
   document.getElementById('rows').addEventListener('click', ev => {
     const tr = ev.target.closest('tr[data-id]')
     if (tr) void openDetail(tr.dataset.id)
   })
-  document.getElementById('reload').addEventListener('click', () => { offset = 0; void loadList() })
-  document.getElementById('q').addEventListener('keydown', ev => { if (ev.key === 'Enter') { offset = 0; void loadList() } })
-  document.getElementById('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE); void loadList() })
-  document.getElementById('next').addEventListener('click', () => { offset += PAGE; void loadList() })
-  document.getElementById('close').addEventListener('click', () => document.getElementById('detail').close())
-  document.getElementById('logout').addEventListener('click', () => { void fetch(BASE + '/logout', { method: 'POST' }).then(() => { location.href = BASE + '/login' }) })
-  document.getElementById('wake').addEventListener('click', () => {
-    void json(BASE + '/api/wake', { method: 'POST' }).then(d => toast(d.accepted ? '已叫醒领取循环（受并发与预算约束）' : '分析循环未启用，无循环可叫醒'), () => toast('请求失败'))
+  document.getElementById('recent').addEventListener('click', ev => {
+    const tr = ev.target.closest('tr[data-id]')
+    if (tr) void openDetail(tr.dataset.id)
   })
+  document.getElementById('search').addEventListener('click', () => { offset = 0; void loadList().catch(onError) })
+  document.getElementById('q').addEventListener('keydown', ev => { if (ev.key === 'Enter') { offset = 0; void loadList().catch(onError) } })
+  document.getElementById('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE); void loadList().catch(onError) })
+  document.getElementById('next').addEventListener('click', () => { offset += PAGE; void loadList().catch(onError) })
+  document.getElementById('close').addEventListener('click', () => document.getElementById('detail').close())
+  document.getElementById('logout').addEventListener('click', () => {
+    void fetch(BASE + '/logout', { method: 'POST' }).then(() => { location.href = BASE + '/login' })
+  })
+  document.getElementById('wake').addEventListener('click', () => {
+    void json(BASE + '/api/wake', { method: 'POST' }).then(
+      d => toast(d.accepted ? '已叫醒领取循环（受并发与预算约束）' : '分析循环未启用，无循环可叫醒'),
+      () => toast('请求失败'),
+    )
+  })
+  document.getElementById('refresh').addEventListener('click', () => { void tick() })
+  document.getElementById('save-settings').addEventListener('click', () => { void saveSettings().catch(onError) })
+  document.getElementById('reload-settings').addEventListener('click', () => { settingsLoaded = false; void loadSettings().catch(onError) })
 
   function onError(err) { console.warn(err); toast('数据加载失败') }
 
   async function tick() {
     await loadOverview().catch(onError)
-    await loadList().catch(onError)
+    if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
+    if (viewOf(location.hash) === 'records') await loadList().catch(onError)
   }
+
+  route()
   void tick()
   setInterval(tick, 30000)
 })()

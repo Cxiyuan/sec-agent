@@ -26,6 +26,9 @@ import { TieredCache } from './cache.ts'
 import { createIngestHandler } from './handler.ts'
 import { PostgresColdStore } from './pg-store.ts'
 import { MemoryColdStore } from './store.ts'
+import type { ColdStore } from './store.ts'
+import { mergeSettings, settingsView } from './settings.ts'
+import type { RuntimeSettings, SettingsStore } from './settings.ts'
 
 export type * from './types.ts'
 export { analysisIdOf, identityKey, normalizeDigest, ANALYSIS_ID_PREFIX } from './identity.ts'
@@ -43,6 +46,8 @@ export { processItems, createIngestHandler, WebhookHttpError } from './handler.t
 export { MemoryColdStore } from './store.ts'
 export { PostgresColdStore } from './pg-store.ts'
 export type { ColdEntry, ColdStore, AnalysesPage, AnalysesQuery } from './store.ts'
+export { mergeSettings, settingsView, SETTING_LIMITS } from './settings.ts'
+export type { RuntimeSettings, SettingsStore } from './settings.ts'
 export type { XdrIngestService } from './workbench.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
@@ -153,7 +158,7 @@ function assertConfig(config: Config): void {
 /** 注册 NDR 摘要接收路由，并管理两级缓存的生命周期。 */
 export function apply(ctx: Context, config: Config): void {
   assertConfig(config)
-  const store = config.pgUrl.trim() === ''
+  const store: ColdStore & SettingsStore = config.pgUrl.trim() === ''
     ? new MemoryColdStore()
     : new PostgresColdStore({ connectionString: config.pgUrl.trim() })
   if (store.kind === 'memory') {
@@ -214,12 +219,21 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
 
+  /** 当前生效的运行参数：有领取循环读循环（可能被工作台改过），没有就取配置默认。 */
+  function currentSettings(): RuntimeSettings {
+    return loop?.settingsSnapshot() ?? {
+      pollSeconds: config.pollSeconds,
+      maxConcurrent: config.maxConcurrent,
+      claimLimit: config.claimLimit,
+    }
+  }
+
   /** 运行观测快照：`/xdr/ingest/status` 与 xdrIngest 服务共用同一份。 */
   function statusSnapshot(): Record<string, unknown> {
     return {
       analysis: loop === null ? 'disabled' : 'enabled',
-      poll_seconds: config.pollSeconds,
-      max_concurrent: config.maxConcurrent,
+      ...settingsView(currentSettings()),
+      store_kind: store.kind,
       ...(loop === null ? {} : { loop: loop.stats }),
     }
   }
@@ -249,11 +263,36 @@ export function apply(ctx: Context, config: Config): void {
     },
     listAnalyses: (query: { limit: number, offset: number, search: string }) => store.listRecent(query),
     getAnalysis: (analysisId: string) => store.load(analysisId),
+    settings: async () => ({ ...settingsView(currentSettings()), store: store.kind }),
+    updateSettings: async (patch: unknown) => {
+      const merged = mergeSettings(currentSettings(), patch)
+      if ('error' in merged) return { ok: false, error: merged.error }
+      loop?.configure(merged.settings)
+      const persisted = await store.saveSettings(merged.settings)
+      if (!persisted) {
+        console.warn(
+          '[xdr-ingest] 运行参数只在内存生效：冷库写入失败，重启后会回到上次成功保存的值。',
+        )
+      }
+      return { ok: true, persisted, settings: settingsView(merged.settings) }
+    },
   }
   void ctx.reflect.provide('xdrIngest', service)
   ctx.effect(
     () => {
       const disposeRoute = ctx.webServer.register(route)
+      // 工作台保存过的运行参数优先于 cordis 配置默认值；读失败就用默认值继续跑。
+      void store.loadSettings().then(saved => {
+        if (saved === null) return
+        const merged = mergeSettings(currentSettings(), saved)
+        if ('error' in merged) {
+          console.warn('[xdr-ingest] 已保存的运行参数不合法，忽略：', merged.error)
+          return
+        }
+        loop?.configure(merged.settings)
+      }).catch((error: unknown) => {
+        console.warn('[xdr-ingest] 运行参数读取失败，使用配置默认值：', error instanceof Error ? error.message : String(error))
+      })
       loop?.start()
       // 预热失败不影响路由（冷库不可用时退化为纯内存判重）
       void cache.warmup(config.warmupLimit).catch(error => {

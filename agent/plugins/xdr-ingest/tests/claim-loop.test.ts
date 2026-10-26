@@ -171,3 +171,19 @@ test('budget from the claim reply lands in stats as a snapshot; running tracks c
   await quiet.tick()
   assert.equal(quiet.stats.lastBudget, '')
 })
+
+test('configure：热更新领取条数与并发，立刻影响下一轮', async () => {
+  const limits: number[] = []
+  const loop = new ClaimLoop(base(
+    async () => undefined,
+    async limit => {
+      limits.push(limit)
+      return { tasks: [] }
+    },
+  ))
+  assert.deepEqual(loop.settingsSnapshot(), { pollSeconds: 900, maxConcurrent: 2, claimLimit: 2 })
+  loop.configure({ claimLimit: 5, maxConcurrent: 5 })
+  assert.deepEqual(loop.settingsSnapshot(), { pollSeconds: 900, maxConcurrent: 5, claimLimit: 5 })
+  await loop.tick()
+  assert.deepEqual(limits, [5])
+})

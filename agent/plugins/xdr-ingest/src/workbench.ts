@@ -27,4 +27,22 @@ export interface XdrIngestService {
 
   /** 按分析 ID 取一条记录；没有（或冷库不可用）返回 null。 */
   getAnalysis(analysisId: string): Promise<ColdEntry | null>
+
+  /**
+   * 当前生效的运行参数：`{poll_seconds, max_concurrent, claim_limit, store}`。
+   * 工作台配置页与 status 读同一份（可能已被工作台改过）。
+   */
+  settings(): Promise<Record<string, unknown>>
+
+  /**
+   * 保存运行参数并热更新领取循环；持久化在冷库（重启后仍生效）。
+   * 校验失败返回 `{ok:false, error}`，成功返回 `{ok, persisted, settings}`；
+   * `persisted:false` 表示只在内存生效（冷库写入失败，不阻断运行）。
+   */
+  updateSettings(patch: unknown): Promise<{
+    ok: boolean
+    error?: string
+    persisted?: boolean
+    settings?: Record<string, number>
+  }>
 }

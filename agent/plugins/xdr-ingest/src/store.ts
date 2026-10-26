@@ -15,6 +15,7 @@
  */
 
 import type { AnalysisRecord } from './types.ts'
+import type { RuntimeSettings, SettingsStore } from './settings.ts'
 
 /** 冷库中的一条分析记录 = 缓存记录 + 过期时刻。 */
 export interface ColdEntry extends AnalysisRecord {
@@ -79,9 +80,11 @@ export interface ColdStore {
  * 内存冷库：无 PG 的开发/测试环境兜底，语义与 PG 实现一致。
  * 注意它同样怕丢（进程退出即没），生产必须配 pgUrl。
  */
-export class MemoryColdStore implements ColdStore {
+export class MemoryColdStore implements ColdStore, SettingsStore {
   readonly kind = 'memory' as const
   private readonly map = new Map<string, ColdEntry>()
+  /** 运行参数（内存实现只在进程内有效；生产用 PG 实现才持久）。 */
+  private settings: unknown = null
 
   async load(analysisId: string): Promise<ColdEntry | null> {
     return this.map.get(analysisId) ?? null
@@ -136,6 +139,15 @@ export class MemoryColdStore implements ColdStore {
       total: matched.length,
       entries: matched.slice(Math.max(0, query.offset), Math.max(0, query.offset) + query.limit),
     }
+  }
+
+  async loadSettings(): Promise<unknown> {
+    return this.settings
+  }
+
+  async saveSettings(settings: RuntimeSettings): Promise<boolean> {
+    this.settings = { ...settings }
+    return true
   }
 }
 

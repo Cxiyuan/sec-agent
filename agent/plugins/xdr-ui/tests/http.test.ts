@@ -40,6 +40,7 @@ function makeApp(options: Partial<{ ingest: IngestServiceView | null, password: 
     ingest: () => ingestRef.current,
     renderLogin: error => loginPage(BASE, error),
     renderWorkbench: () => workbenchPage(BASE),
+    meta: () => ({ user: 'admin', basePath: BASE, mcpTokenSet: true, doorbellTokenSet: true, pgSet: true }),
   })
   return { server: createServer(handler), ingest: ingestRef }
 }
@@ -89,7 +90,7 @@ test('未登录访问工作台 → 303 到登录页；登录页渲染表单与�
     const page = await fetch(`${base}${BASE}/login`)
     assert.equal(page.status, 200)
     const html = await page.text()
-    assert.ok(html.includes('深瞳 · 分析工作台'))
+    assert.ok(html.includes('深瞳 · 安全分析智能体'))
     assert.ok(html.includes('admin / admin123'))
     assert.ok(html.includes(`action="${BASE}/login"`))
   } finally {
@@ -242,4 +243,91 @@ test('工作台 HTML 注入防护：数据里的尖括号经 textContent 渲染�
   // 数据均为运行期 JSON 填充；这里只锁住模板不含把 BASE 拼进可执行字符串的缝隙
   assert.ok(html.includes(JSON.stringify(BASE)))
   assert.ok(!html.includes('`${BASE}'))
+})
+
+test('站点根路径 → 303 到控制台；非 GET 405', async () => {
+  const { createRootRedirect } = await import('../src/http.ts')
+  const server = createServer(createRootRedirect(BASE))
+  const base = await listen(server)
+  try {
+    const res = await fetch(`${base}/`, { redirect: 'manual' })
+    assert.equal(res.status, 303)
+    assert.equal(res.headers.get('location'), `${BASE}/`)
+    const post = await fetch(`${base}/`, { method: 'POST' })
+    assert.equal(post.status, 405)
+  } finally {
+    server.close()
+  }
+})
+
+test('运行参数：未登录 401；GET 回参数+配置事实；POST 校验失败 400、成功 200', async () => {
+  const stored: Record<string, number> = { poll_seconds: 900, max_concurrent: 2, claim_limit: 2 }
+  const ingest: IngestServiceView = {
+    ...makeIngest(),
+    settings: async () => ({ ...stored, store: 'postgres' }),
+    updateSettings: async patch => {
+      const p = patch as Record<string, number>
+      if (typeof p['claimLimit'] !== 'number' || p['claimLimit'] > 20) {
+        return { ok: false, error: '单次领取条数必须是 1~20 的整数' }
+      }
+      stored.poll_seconds = p['pollSeconds']
+      stored.max_concurrent = p['maxConcurrent']
+      stored.claim_limit = p['claimLimit']
+      return { ok: true, persisted: true, settings: { ...stored } }
+    },
+  }
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const denied = await fetch(`${base}${BASE}/api/settings`)
+    assert.equal(denied.status, 401)
+
+    const cookie = await login(base)
+    const got = await fetch(`${base}${BASE}/api/settings`, { headers: { cookie } })
+    assert.equal(got.status, 200)
+    const data = await got.json() as { available: boolean, settings: Record<string, unknown>, meta: Record<string, unknown> }
+    assert.equal(data.available, true)
+    assert.equal(data.settings['poll_seconds'], 900)
+    assert.equal(data.meta['user'], 'admin')
+
+    const bad = await fetch(`${base}${BASE}/api/settings`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ claimLimit: 99 }),
+    })
+    assert.equal(bad.status, 400)
+
+    const ok = await fetch(`${base}${BASE}/api/settings`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ pollSeconds: 60, maxConcurrent: 3, claimLimit: 4 }),
+    })
+    assert.equal(ok.status, 200)
+    const saved = await ok.json() as { ok: boolean, settings: Record<string, number> }
+    assert.equal(saved.ok, true)
+    assert.deepEqual(saved.settings, { poll_seconds: 60, max_concurrent: 3, claim_limit: 4 })
+  } finally {
+    server.close()
+  }
+})
+
+test('运行参数：数据面不在场时 available=false，POST 503', async () => {
+  const { server } = makeApp({ ingest: null })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const got = await fetch(`${base}${BASE}/api/settings`, { headers: { cookie } })
+    assert.deepEqual(await got.json(), {
+      available: false,
+      meta: { user: 'admin', basePath: BASE, mcpTokenSet: true, doorbellTokenSet: true, pgSet: true },
+    })
+    const post = await fetch(`${base}${BASE}/api/settings`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assert.equal(post.status, 503)
+  } finally {
+    server.close()
+  }
 })

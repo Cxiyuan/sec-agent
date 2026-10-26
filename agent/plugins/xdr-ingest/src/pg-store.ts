@@ -14,6 +14,7 @@
 
 import { Pool } from 'pg'
 import type { AnalysesPage, AnalysesQuery, ColdEntry, ColdStore } from './store.ts'
+import type { RuntimeSettings, SettingsStore } from './settings.ts'
 import type { AnalysisRecord } from './types.ts'
 
 /** 单表 DDL。索引覆盖冷命中清理（last_seen）与预热排序（occurrences）。 */
@@ -33,6 +34,11 @@ CREATE INDEX IF NOT EXISTS xdr_ingest_analysis_last_seen_idx
   ON xdr_ingest_analysis (last_seen);
 CREATE INDEX IF NOT EXISTS xdr_ingest_analysis_occurrences_idx
   ON xdr_ingest_analysis (occurrences DESC);
+CREATE TABLE IF NOT EXISTS xdr_ingest_settings (
+  singleton   BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  value       JSONB NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `
 
 const LOG_PREFIX = '[xdr-ingest:pg]'
@@ -74,7 +80,7 @@ function toEntry(row: AnalysisRow): ColdEntry {
   }
 }
 
-export class PostgresColdStore implements ColdStore {
+export class PostgresColdStore implements ColdStore, SettingsStore {
   readonly kind = 'postgres' as const
   private readonly pool: Pool
   /** schema 初始化结果；false = PG 不可用，全实例降级。 */
@@ -262,6 +268,37 @@ export class PostgresColdStore implements ColdStore {
       await this.pool.end()
     } catch (error) {
       console.error(`${LOG_PREFIX} pool close failed:`, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /** 读上次保存的运行参数；没存过或库不可用时返回 null（用 cordis 配置默认值）。 */
+  async loadSettings(): Promise<unknown> {
+    if (!await this.usable()) return null
+    try {
+      const { rows } = await this.pool.query<{ value: unknown }>(
+        'SELECT value FROM xdr_ingest_settings WHERE singleton',
+      )
+      return rows[0]?.value ?? null
+    } catch (error) {
+      console.error(`${LOG_PREFIX} loadSettings failed:`, error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }
+
+  /** 整份 upsert；写失败返回 false（调用方保留内存值并告警，不阻断运行）。 */
+  async saveSettings(settings: RuntimeSettings): Promise<boolean> {
+    if (!await this.usable()) return false
+    try {
+      await this.pool.query(
+        `INSERT INTO xdr_ingest_settings (singleton, value, updated_at)
+         VALUES (TRUE, $1, now())
+         ON CONFLICT (singleton) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+        [JSON.stringify(settings)],
+      )
+      return true
+    } catch (error) {
+      console.error(`${LOG_PREFIX} saveSettings failed:`, error instanceof Error ? error.message : String(error))
+      return false
     }
   }
 }
