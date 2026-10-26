@@ -49,7 +49,9 @@ services:
       - dsh-home:/data/dsh
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # dsh web 绑的是容器内第一块非内部 IPv4（不是 127.0.0.1），健康检查必须
+      # 打那个地址；取不到才回落回环。
+      test: ["CMD", "node", "-e", "const os=require('node:os');const a=Object.values(os.networkInterfaces()).flat().find(i=>i&&!i.internal&&i.family==='IPv4');fetch('http://'+(a?a.address:'127.0.0.1')+':3080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 60s
