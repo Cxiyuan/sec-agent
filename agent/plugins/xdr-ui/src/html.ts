@@ -210,6 +210,7 @@ ${THEME}
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
       <a href="#/settings" data-view="settings"><span class="dot"></span>配置</a>
+      <a href="#/system" data-view="system"><span class="dot"></span>系统</a>
     </nav>
     <div class="rail-foot">
       <a id="ndr-link" href="#" target="_blank" rel="noreferrer" hidden>NDR 控制台 ↗</a>
@@ -295,6 +296,73 @@ ${THEME}
         修改后需重启容器；本页只展示"是否已配置"，不回显密钥。
       </div>
     </section>
+
+    <section id="view-system" hidden>
+      <div id="system-notes"></div>
+      <h2>模型与密钥</h2>
+      <div class="panel">
+        <div class="form-grid">
+          <div class="field">
+            <label for="sys-provider">Provider</label>
+            <input id="sys-provider" placeholder="deepseek-official">
+            <small>当前部署注册的模型路由</small>
+          </div>
+          <div class="field">
+            <label for="sys-model">模型</label>
+            <input id="sys-model" placeholder="deepseek-chat">
+            <small>分析会话使用的默认模型</small>
+          </div>
+          <div class="field">
+            <label for="sys-effort">推理强度</label>
+            <select id="sys-effort" style="width:100%;padding:.5rem .65rem;border-radius:8px;border:1px solid var(--line);background:#0a1322;color:var(--text)">
+              <option value="">跟随默认</option><option value="off">off</option>
+              <option value="low">low</option><option value="high">high</option><option value="max">max</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="save-model" class="btn" style="border-color:var(--accent);color:var(--accent)">保存模型</button>
+          <span id="model-msg" class="msg"></span>
+        </div>
+        <div class="form-grid" style="margin-top:1rem">
+          <div class="field">
+            <label for="sys-baseurl">接口地址（可选）</label>
+            <input id="sys-baseurl" placeholder="https://api.deepseek.com/anthropic">
+            <small>留空 = 用 provider 默认/环境变量；保存空值会清掉覆盖</small>
+          </div>
+          <div class="field">
+            <label for="sys-key">API Key</label>
+            <input id="sys-key" type="password" autocomplete="new-password" placeholder="输入新的 Key（不回显已存的）">
+            <small>存放在 dsh 凭证库，不写进配置文件；分析会话下次请求即生效</small>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="save-endpoint" class="btn">保存接口地址</button>
+          <button id="save-key" class="btn">保存密钥</button>
+          <button id="clear-key" class="btn">清除密钥</button>
+          <span id="key-msg" class="msg"></span>
+        </div>
+        <div class="kv-list" style="margin-top:1rem"><dt>密钥状态</dt><dd id="key-state">—</dd></div>
+      </div>
+
+      <h2>插件</h2>
+      <div class="panel">
+        <table>
+          <thead><tr><th>条目 ID</th><th>包名</th><th>状态</th><th>启用</th></tr></thead>
+          <tbody id="plugins"></tbody>
+        </table>
+        <div class="notice" style="margin-top:.8rem">
+          插件在镜像构建时烤进 profile，容器启动自动刷新（镜像指纹变了就覆盖卷里的旧副本），
+          不需要手工启用。安装/升级/启停走部署层，本页只读。
+        </div>
+      </div>
+
+      <h2>更多原生设置</h2>
+      <div class="panel">
+        Agent 循环、Shell、Web Search、会话日志等其余设置仍在 dsh 原始界面：
+        <a href="/index.html" target="_blank" rel="noreferrer">打开原生设置 ↗</a>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -313,6 +381,7 @@ ${THEME}
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '冷库里的历史结论，可搜索与翻页' },
     settings: { title: '配置', sub: '运行参数、连接状态与入口' },
+    system: { title: '系统', sub: '模型与密钥、插件清单、原生设置入口' },
   }
   let offset = 0, total = 0, settingsLoaded = false
 
@@ -337,6 +406,7 @@ ${THEME}
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
     if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
+    if (view === 'system') void loadSystem().catch(onError)
   }
 
   async function loadOverview() {
@@ -527,12 +597,82 @@ ${THEME}
   document.getElementById('save-settings').addEventListener('click', () => { void saveSettings().catch(onError) })
   document.getElementById('reload-settings').addEventListener('click', () => { settingsLoaded = false; void loadSettings().catch(onError) })
 
+  function msg(el, text, cls) {
+    const node = document.getElementById(el)
+    node.textContent = text
+    node.className = 'msg' + (cls ? ' ' + cls : '')
+  }
+
+  async function loadSystem() {
+    const data = await json(BASE + '/api/system')
+    const notes = data.notes || []
+    document.getElementById('system-notes').innerHTML = notes.length
+      ? '<div class="notice">' + notes.map(esc).join('<br>') + '</div>' : ''
+    const m = data.model
+    document.getElementById('sys-provider').value = m ? m.provider : ''
+    document.getElementById('sys-model').value = m ? m.model : ''
+    document.getElementById('sys-effort').value = m ? (m.reasoningEffort || '') : ''
+    document.getElementById('sys-baseurl').value = data.key ? data.key.baseURL : ''
+    document.getElementById('save-model').disabled = !m
+    document.getElementById('save-endpoint').disabled = !data.key
+    document.getElementById('save-key').disabled = !data.key
+    document.getElementById('clear-key').disabled = !data.key
+    const k = data.key
+    document.getElementById('key-state').innerHTML = k
+      ? (k.configured ? '<span class="tag ok">已配置</span>' : '<span class="tag bad">未配置</span>')
+        + ' <span class="mono">' + esc(k.ref) + '</span>'
+        + (k.source ? ' <span class="tag">来源 ' + esc(k.source) + '</span>' : '')
+        + (k.writable ? '' : ' <span class="tag bad">不可写</span>')
+      : '未找到 API Key 配置条目'
+    const rows = (data.plugins || []).map(p =>
+      '<tr><td class="mono">' + esc(p.id) + '</td><td class="mono">' + esc(p.name) + '</td>'
+      + '<td>' + esc(p.phase) + '</td><td>' + (p.disabled ? '否' : '是') + '</td></tr>')
+    document.getElementById('plugins').innerHTML = rows.join('') ||
+      '<tr><td colspan="4" class="empty">插件清单不可用</td></tr>'
+  }
+
+  async function postJson(path, body, msgId) {
+    msg(msgId, '保存中…')
+    const r = await fetch(BASE + path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { msg(msgId, data.error || '保存失败', 'bad'); return }
+    msg(msgId, '已保存并生效', 'ok')
+    toast('设置已更新')
+    await loadSystem()
+  }
+
+  document.getElementById('save-model').addEventListener('click', () => {
+    void postJson('/api/system/model', {
+      provider: document.getElementById('sys-provider').value.trim(),
+      model: document.getElementById('sys-model').value.trim(),
+      reasoningEffort: document.getElementById('sys-effort').value,
+    }, 'model-msg').catch(onError)
+  })
+  document.getElementById('save-endpoint').addEventListener('click', () => {
+    void postJson('/api/system/endpoint', {
+      baseURL: document.getElementById('sys-baseurl').value.trim(),
+    }, 'key-msg').catch(onError)
+  })
+  document.getElementById('save-key').addEventListener('click', () => {
+    void postJson('/api/system/key', {
+      value: document.getElementById('sys-key').value,
+    }, 'key-msg').then(() => { document.getElementById('sys-key').value = '' }).catch(onError)
+  })
+  document.getElementById('clear-key').addEventListener('click', () => {
+    if (!confirm('确定清除已保存的 API Key？清除后分析会话将无法调用模型，直到重新配置。')) return
+    void postJson('/api/system/key', { clear: true }, 'key-msg').catch(onError)
+  })
+
   function onError(err) { console.warn(err); toast('数据加载失败') }
 
   async function tick() {
     await loadOverview().catch(onError)
     if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
     if (viewOf(location.hash) === 'records') await loadList().catch(onError)
+    if (viewOf(location.hash) === 'system') await loadSystem().catch(onError)
   }
 
   route()

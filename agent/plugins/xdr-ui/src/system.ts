@@ -1,0 +1,288 @@
+/**
+ * 系统设置面：控制台里读/写 dsh 的模型选择、模型 API Key 与插件清单。
+ *
+ * 为什么在这里做而不是去改原生界面：原生 dsh 的「设置」是它自己的 React 客户端，
+ * 我们不碰上游；这些能力在同一进程里都是**宿主机服务**（`settings` /
+ * `credentials` / `loader`），xdr-ui 作为 host 插件可以直接读写：
+ *   - 模型选择（provider / model / reasoningEffort）→ `ctx.settings`
+ *   - 模型 API Key（按 credential-ref 存）→ `ctx.credentials`
+ *   - 插件清单 → `ctx.loader`（只读；安装/启停走镜像与 profile，不在页面里改）
+ *
+ * 服务全部可选：任何一个不在场时对应区块报"不可用"，控制台其余部分照常。
+ * 写操作一律先取最新 revision 再提交（settings 是乐观并发，旧 revision 会被拒）。
+ */
+
+/** 可选服务的最小结构化接口（不跨包 import type，理由同 http.ts）。 */
+interface SettingsLike {
+  describe(options?: { redactSecrets?: boolean }): Array<{
+    ns: string
+    revision: number
+    value: unknown
+  }>
+  update(ns: string, patch: Record<string, unknown>, expectedRevision?: number): Promise<void>
+  mutate(ns: string, ops: ReadonlyArray<{ op: 'unset', path: string[] }>, expectedRevision?: number): Promise<void>
+}
+
+interface CredentialsLike {
+  describe(ref: string): Promise<{ configured: boolean, writable?: boolean, source?: string }>
+  set(ref: string, value: string): Promise<void>
+  unset(ref: string): Promise<void>
+}
+
+interface LoaderLike {
+  entries(): Iterable<{
+    options: { id?: string, name?: string, disabled?: boolean | null }
+    fiber?: { state?: number }
+  }>
+}
+
+/** 结果：成功带快照，失败带可直接展示的原因。 */
+export interface SystemResult {
+  ok: boolean
+  error?: string
+  snapshot?: SystemSnapshot
+}
+
+export interface SystemSnapshot {
+  /** 模型设置服务是否在场。 */
+  available: boolean
+  plugins: Array<{ id: string, name: string, phase: string, disabled: boolean }>
+  model: {
+    ns: string
+    revision: number
+    provider: string
+    model: string
+    reasoningEffort: string
+  } | null
+  key: {
+    ns: string
+    revision: number
+    ref: string
+    baseURL: string
+    configured: boolean
+    writable: boolean
+    source: string
+  } | null
+  /** 给界面看的说明（服务缺失、配置来自环境变量等）。 */
+  notes: string[]
+}
+
+const FIBER_PHASE: Record<number, string> = {
+  0: 'pending',
+  1: 'loading',
+  2: 'active',
+  3: 'failed',
+  4: 'disposed',
+  5: 'unloading',
+}
+
+const MAX_TEXT = 256
+const EFFORTS = new Set(['', 'off', 'low', 'high', 'max'])
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function serviceOf<T>(context: unknown, name: string): T | null {
+  try {
+    const reflect = (context as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+    if (typeof reflect?.get !== 'function') return null
+    const service = reflect.get(name, false)
+    return typeof service === 'object' && service !== null ? service as T : null
+  } catch {
+    return null
+  }
+}
+
+/** 只接受短文本：这些值会写进 profile patch，不做长度上限就是给自己留坑。 */
+function textOf(value: unknown): string | null {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > MAX_TEXT ? null : trimmed
+}
+
+/** 模型选择对应的 settings 命名空间：优先 default-model，其次任一含 provider/model 的条目。 */
+function pickModel(
+  settings: SettingsLike,
+): { descriptor: Extract<ReturnType<SettingsLike['describe']>[number], { value: unknown }> } | null {
+  try {
+    const rows = settings.describe({ redactSecrets: true })
+    const shaped = rows.filter(row => {
+      const value: unknown = row.value
+      return isPlainObject(value) && typeof value['provider'] === 'string' && typeof value['model'] === 'string'
+    })
+    const preferred = shaped.find(row => row.ns === 'default-model') ?? shaped[0]
+    return preferred === undefined ? null : { descriptor: preferred }
+  } catch {
+    return null
+  }
+}
+
+/** API Key 配置对应的命名空间：带 credential-ref 字段（apiKeyEnv）的那个条目。 */
+function pickKey(
+  settings: SettingsLike,
+): { ns: string, revision: number, ref: string, baseURL: string } | null {
+  try {
+    const rows = settings.describe({ redactSecrets: true })
+    for (const row of rows) {
+      const value: unknown = row.value
+      if (!isPlainObject(value)) continue
+      const ref = value['apiKeyEnv']
+      if (typeof ref !== 'string' || ref.trim() === '') continue
+      const baseURL = typeof value['baseURL'] === 'string' ? value['baseURL'] : ''
+      return { ns: row.ns, revision: row.revision, ref: ref.trim(), baseURL }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** 读一份完整快照（界面每次保存后都重新拉它）。 */
+export async function systemSnapshot(context: unknown): Promise<SystemSnapshot> {
+  const notes: string[] = []
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  const credentials = serviceOf<CredentialsLike>(context, 'credentials')
+  const loader = serviceOf<LoaderLike>(context, 'loader')
+
+  const plugins: SystemSnapshot['plugins'] = []
+  if (loader === null) {
+    notes.push('插件清单不可用：loader 服务不在场')
+  } else {
+    try {
+      for (const entry of loader.entries()) {
+        const id = entry.options.id ?? ''
+        const name = entry.options.name ?? ''
+        if (id === '' || name === '') continue
+        plugins.push({
+          id,
+          name,
+          phase: FIBER_PHASE[entry.fiber?.state ?? -1] ?? 'unknown',
+          disabled: entry.options.disabled === true,
+        })
+      }
+      plugins.sort((a, b) => a.id.localeCompare(b.id))
+    } catch {
+      notes.push('插件清单读取失败')
+    }
+  }
+
+  if (settings === null) {
+    notes.push('模型配置不可用：settings 服务不在场')
+    return { available: false, plugins, model: null, key: null, notes }
+  }
+
+  let model: SystemSnapshot['model'] = null
+  const pickedModel = pickModel(settings)
+  if (pickedModel === null) {
+    notes.push('没有找到模型选择条目（default-model）：部署的 profile 未启用模型插件')
+  } else {
+    const value = pickedModel.descriptor.value as Record<string, unknown>
+    model = {
+      ns: pickedModel.descriptor.ns,
+      revision: pickedModel.descriptor.revision,
+      provider: String(value['provider'] ?? ''),
+      model: String(value['model'] ?? ''),
+      reasoningEffort: typeof value['reasoningEffort'] === 'string' ? value['reasoningEffort'] : '',
+    }
+  }
+
+  let key: SystemSnapshot['key'] = null
+  const pickedKey = pickKey(settings)
+  if (pickedKey === null) {
+    notes.push('没有找到 API Key 配置条目：当前 profile 可能用账号授权而不是 API Key')
+  } else {
+    let configured = false
+    let writable = false
+    let source = ''
+    if (credentials === null) {
+      notes.push('API Key 状态不可读：credentials 服务不在场')
+    } else {
+      try {
+        const info = await credentials.describe(pickedKey.ref)
+        configured = info.configured === true
+        writable = info.writable === true
+        source = info.source ?? ''
+      } catch (error) {
+        notes.push(`API Key 状态读取失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    key = { ...pickedKey, configured, writable, source }
+  }
+
+  return { available: true, plugins, model, key, notes }
+}
+
+/** 保存模型选择（provider / model / 可选 reasoningEffort）。 */
+export async function saveModel(context: unknown, patch: unknown): Promise<SystemResult> {
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  if (settings === null) return { ok: false, error: 'settings 服务不在场' }
+  if (!isPlainObject(patch)) return { ok: false, error: '参数必须是 JSON 对象' }
+  const provider = textOf(patch['provider'])
+  const model = textOf(patch['model'])
+  const effort = textOf(patch['reasoningEffort'] ?? '')
+  if (provider === null || provider === '') return { ok: false, error: 'provider 不能为空（如 deepseek-official）' }
+  if (model === null || model === '') return { ok: false, error: 'model 不能为空（如 deepseek-chat）' }
+  if (effort === null || !EFFORTS.has(effort)) return { ok: false, error: 'reasoningEffort 只能是 off/low/high/max 或留空' }
+  const picked = pickModel(settings)
+  if (picked === null) return { ok: false, error: '没有找到模型选择条目（default-model）' }
+  try {
+    const fields: Record<string, unknown> = { provider, model }
+    if (effort !== '') fields['reasoningEffort'] = effort
+    await settings.update(picked.descriptor.ns, fields, picked.descriptor.revision)
+    return { ok: true, snapshot: await systemSnapshot(context) }
+  } catch (error) {
+    return { ok: false, error: describeWriteError(error) }
+  }
+}
+
+/** 保存 / 清除模型 API Key（写的是 credentials 服务，不落 profile patch）。 */
+export async function saveKey(context: unknown, patch: unknown): Promise<SystemResult> {
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  const credentials = serviceOf<CredentialsLike>(context, 'credentials')
+  if (settings === null) return { ok: false, error: 'settings 服务不在场' }
+  if (credentials === null) return { ok: false, error: 'credentials 服务不在场，无法保存密钥' }
+  if (!isPlainObject(patch)) return { ok: false, error: '参数必须是 JSON 对象' }
+  const picked = pickKey(settings)
+  if (picked === null) return { ok: false, error: '没有找到 API Key 配置条目' }
+  const clear = patch['clear'] === true
+  const value = typeof patch['value'] === 'string' ? patch['value'].trim() : ''
+  if (!clear && value === '') return { ok: false, error: '密钥不能为空（要移除请点「清除密钥」）' }
+  if (value.length > 4_096) return { ok: false, error: '密钥过长' }
+  try {
+    if (clear) await credentials.unset(picked.ref)
+    else await credentials.set(picked.ref, value)
+    return { ok: true, snapshot: await systemSnapshot(context) }
+  } catch (error) {
+    return { ok: false, error: describeWriteError(error) }
+  }
+}
+
+/** 保存模型 API 地址（可选；清空表示回落 provider 默认/环境变量）。 */
+export async function saveEndpoint(context: unknown, patch: unknown): Promise<SystemResult> {
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  if (settings === null) return { ok: false, error: 'settings 服务不在场' }
+  if (!isPlainObject(patch)) return { ok: false, error: '参数必须是 JSON 对象' }
+  const baseURL = textOf(patch['baseURL'])
+  if (baseURL === null) return { ok: false, error: 'baseURL 不合法' }
+  if (baseURL !== '' && !/^https?:\/\/\S+$/u.test(baseURL)) return { ok: false, error: 'baseURL 必须是 http(s) 地址' }
+  const picked = pickKey(settings)
+  if (picked === null) return { ok: false, error: '没有找到模型接口配置条目' }
+  try {
+    if (baseURL === '') {
+      await settings.mutate(picked.ns, [{ op: 'unset', path: ['baseURL'] }], picked.revision)
+    } else {
+      await settings.update(picked.ns, { baseURL }, picked.revision)
+    }
+    return { ok: true, snapshot: await systemSnapshot(context) }
+  } catch (error) {
+    return { ok: false, error: describeWriteError(error) }
+  }
+}
+
+/** 写失败原因：并发冲突/字段不可改/配置校验，都要能直接读懂。 */
+function describeWriteError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.slice(0, 240)
+}

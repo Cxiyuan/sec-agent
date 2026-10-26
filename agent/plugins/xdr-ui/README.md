@@ -15,6 +15,7 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、剩余预算快照、热层/冷库条数、最近 5 条分析 | `xdrIngest.status()/cacheStats()/listAnalyses()` |
 | 分析记录 | PG 冷库的历史结论：规则、源 IP、严重度、结论摘要、出现次数、最近出现；分页 + 搜索 + 详情（身份、结论、处置建议、原始 JSON） | `xdrIngest.listAnalyses()/getAnalysis()` |
 | 配置 | 运行参数（轮询间隔 / 本机并发 / 单次领取条数）热更新并持久化；连接与凭据状态（NDR MCP 地址与令牌是否配置、门铃令牌、冷库类型、登录账号与密码来源、会话时长）；NDR 控制台与原始会话界面入口 | `xdrIngest.settings()/updateSettings()` + 部署环境缝 |
+| 系统 | 模型与密钥：provider / model / reasoningEffort、接口地址、模型 API Key（写入 dsh 凭证库，可清除）；插件清单（条目、包名、Fiber 状态、是否禁用，只读）；其余原生设置入口 | 宿主机服务 `ctx.settings` / `ctx.credentials` / `ctx.loader` |
 
 左侧固定功能菜单（运行总览 / 分析记录 / 配置），无聊天输入框。原始会话界面上
 注入一枚「返回控制台」角标（`webserver.tapIndex`，登记式注入，不改 dsh 上游文件）
@@ -44,6 +45,10 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | `{basePath}/api/settings` | GET | `{available, settings{poll_seconds,max_concurrent,claim_limit,store}, meta{...}}`；数据面不在场 `available:false` |
 | `{basePath}/api/settings` | POST | JSON 补丁（三个整数字段）；越界/非整数 400，成功 `{ok,persisted,settings}`；数据面不在场 503 |
 | `/` | GET | 303 → `{basePath}/`（站点默认入口交给控制台） |
+| `{basePath}/api/system` | GET | `{available, plugins[], model, key, notes[]}`（敏感值不返回） |
+| `{basePath}/api/system/model` | POST | `{provider, model, reasoningEffort?}`；写 dsh settings（乐观并发，失败 400） |
+| `{basePath}/api/system/key` | POST | `{value}` 或 `{clear:true}`；写 dsh credentials，不落 profile |
+| `{basePath}/api/system/endpoint` | POST | `{baseURL}`；空串表示清掉覆盖、回落 provider 默认/环境变量 |
 
 ## 配置
 
@@ -77,7 +82,7 @@ pnpm run build    # tsc 产出 lib/
 - 工作台是**单页面单账号**语义：无多租户、无账号管理页（规划中）；
 - `logout` 只清本浏览器 Cookie，不吊销其他端（无服务端会话表——纯签名 Cookie 的
   取舍：停机重启 + 换密钥才是全局会话失效手段）；
-- 控制台只写**本机运行参数**；规则/网段/抑制等 NDR 侧配置仍走 NDR 管理台
-  （左侧菜单有入口）。登录密码与 MCP 令牌只能改部署环境变量后重启，页面上只
-  显示"是否已配置"，不回显密钥；
+- 控制台写三类：本机运行参数、模型选择/接口地址、模型 API Key（凭证库）。
+  NDR 侧的规则/网段/抑制仍走 NDR 管理台；插件安装/启停、登录密码、NDR MCP
+  令牌仍只能改部署层（镜像/环境变量），页面只报状态、不回显密钥；
 - `/` 被本插件独占为控制台入口：同一部署里不能再有第二个插件注册 exact `/`。

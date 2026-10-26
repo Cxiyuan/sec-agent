@@ -45,10 +45,12 @@ docker compose up -d --build    # 本地源码构建（开发调试）
 
 - 控制台：`http://<宿主机IP>:3080/`（站点根路径直接跳控制台，**登录账号密码
   admin / admin123**，环境缝 `DSH_WEB_AUTH_USER` / `DSH_WEB_AUTH_PASSWORD`）
-  ——左侧功能菜单：运行总览 / 分析记录 / 配置。配置页可改轮询间隔、本机并发、
-  单次领取条数（持久化，重启仍生效），并显示 NDR MCP / 门铃令牌 / 冷库的连接
-  状态（只报是否配置，不回显密钥）。`DSH_WEB_NDR_CONSOLE_URL` 设了就在菜单里
-  出现 NDR 管理台入口。
+  ——左侧功能菜单：运行总览 / 分析记录 / 配置 / 系统。配置页可改轮询间隔、
+  本机并发、单次领取条数（持久化，重启仍生效），并显示 NDR MCP / 门铃令牌 /
+  冷库的连接状态（只报是否配置，不回显密钥）。**系统页**可配模型（provider /
+  model / 推理强度）、模型接口地址和模型 API Key（写 dsh 凭证库，即时生效），
+  并查看插件清单与 Fiber 状态；其余原生设置仍在 `/index.html`。
+  `DSH_WEB_NDR_CONSOLE_URL` 设了就在菜单里出现 NDR 管理台入口。
 - 原始 dsh 会话界面：`http://<宿主机IP>:3080/index.html`（只作排障看模型工作
   轨迹；不再是默认入口，页面上有「返回控制台」角标）
 - 连通性自检：`curl -H "Authorization: Bearer $AGENT_PUSH_TOKEN" \

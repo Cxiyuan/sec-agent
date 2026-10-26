@@ -28,7 +28,16 @@ function makeIngest(overrides: Partial<IngestServiceView> = {}): IngestServiceVi
   }
 }
 
-function makeApp(options: Partial<{ ingest: IngestServiceView | null, password: string }> = {}) {
+function makeApp(options: Partial<{
+  ingest: IngestServiceView | null
+  password: string
+  system: {
+    snapshot: () => Promise<unknown>
+    saveModel: (patch: unknown) => Promise<unknown>
+    saveKey: (patch: unknown) => Promise<unknown>
+    saveEndpoint: (patch: unknown) => Promise<unknown>
+  }
+}> = {}) {
   const auth = new UiAuth(
     { user: 'admin', password: options.password ?? 'admin123' },
     'http-test-secret-0123456789',
@@ -41,6 +50,12 @@ function makeApp(options: Partial<{ ingest: IngestServiceView | null, password: 
     renderLogin: error => loginPage(BASE, error),
     renderWorkbench: () => workbenchPage(BASE),
     meta: () => ({ user: 'admin', basePath: BASE, mcpTokenSet: true, doorbellTokenSet: true, pgSet: true }),
+    system: options.system ?? {
+      snapshot: async () => ({ available: false, plugins: [], model: null, key: null, notes: ['测试桩'] }),
+      saveModel: async () => ({ ok: false, error: '未接线' }),
+      saveKey: async () => ({ ok: false, error: '未接线' }),
+      saveEndpoint: async () => ({ ok: false, error: '未接线' }),
+    },
   })
   return { server: createServer(handler), ingest: ingestRef }
 }
@@ -327,6 +342,60 @@ test('运行参数：数据面不在场时 available=false，POST 503', async ()
       body: '{}',
     })
     assert.equal(post.status, 503)
+  } finally {
+    server.close()
+  }
+})
+
+test('系统设置：未登录 401；GET 返回快照；POST 模型校验失败 400、成功 200', async () => {
+  const seen: unknown[] = []
+  const system = {
+    snapshot: async () => ({
+      available: true,
+      plugins: [{ id: 'xdr-ingest', name: '@sec-agent/xdr-ingest', phase: 'active', disabled: false }],
+      model: { ns: 'default-model', revision: 3, provider: 'deepseek-official', model: 'deepseek-chat', reasoningEffort: '' },
+      key: { ns: 'llm', revision: 1, ref: 'DEEPSEEK_API_KEY', baseURL: '', configured: true, writable: true, source: 'file' },
+      notes: [],
+    }),
+    saveModel: async (patch: unknown) => {
+      seen.push(patch)
+      const p = patch as Record<string, string>
+      if (!p['provider']) return { ok: false, error: 'provider 不能为空' }
+      return { ok: true }
+    },
+    saveKey: async () => ({ ok: true }),
+    saveEndpoint: async () => ({ ok: true }),
+  }
+  const { server } = makeApp({ system })
+  const base = await listen(server)
+  try {
+    const denied = await fetch(`${base}${BASE}/api/system`)
+    assert.equal(denied.status, 401)
+
+    const cookie = await login(base)
+    const got = await fetch(`${base}${BASE}/api/system`, { headers: { cookie } })
+    assert.equal(got.status, 200)
+    const data = await got.json() as { plugins: unknown[], model: Record<string, unknown> }
+    assert.equal((data.plugins[0] as Record<string, unknown>)['id'], 'xdr-ingest')
+    assert.equal(data.model['ns'], 'default-model')
+
+    const bad = await fetch(`${base}${BASE}/api/system/model`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: '', model: 'x' }),
+    })
+    assert.equal(bad.status, 400)
+
+    const ok = await fetch(`${base}${BASE}/api/system/model`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+    })
+    assert.equal(ok.status, 200)
+    assert.deepEqual(seen[1], { provider: 'deepseek-official', model: 'deepseek-chat' })
+
+    const wrongMethod = await fetch(`${base}${BASE}/api/system`, { method: 'POST', headers: { cookie } })
+    assert.equal(wrongMethod.status, 405)
   } finally {
     server.close()
   }

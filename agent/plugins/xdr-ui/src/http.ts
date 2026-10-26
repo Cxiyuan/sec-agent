@@ -45,6 +45,13 @@ export interface UiHandlerOptions {
   readonly renderWorkbench: () => string
   /** 配置页展示的部署侧事实（账号、令牌是否配置、NDR 入口等；不含密钥值）。 */
   readonly meta: () => Record<string, unknown>
+  /** 系统设置面（模型选择 / API Key / 插件清单）；所有方法都可返回 {ok:false,error}。 */
+  readonly system: {
+    snapshot: () => Promise<unknown>
+    saveModel: (patch: unknown) => Promise<unknown>
+    saveKey: (patch: unknown) => Promise<unknown>
+    saveEndpoint: (patch: unknown) => Promise<unknown>
+  }
 }
 
 const DEFAULT_LIMIT = 50
@@ -189,6 +196,40 @@ export function createUiHandler(
           return false
         }
         return true
+      }
+      if (tail === '/api/system') {
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'system accepts GET only; use /api/system/model|key|endpoint' })
+          return
+        }
+        if (!apiGuard()) return
+        respondJson(res, 200, await options.system.snapshot())
+        return
+      }
+      if (tail === '/api/system/model' || tail === '/api/system/key' || tail === '/api/system/endpoint') {
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        const save = tail === '/api/system/model'
+          ? options.system.saveModel
+          : tail === '/api/system/key' ? options.system.saveKey : options.system.saveEndpoint
+        const result = await save(patch) as { ok?: boolean }
+        respondJson(res, result.ok === false ? 400 : 200, result)
+        return
       }
       if (tail === '/api/settings') {
         if (method !== 'GET' && method !== 'POST') {

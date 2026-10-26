@@ -30,6 +30,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { escapeHtml, loginPage, workbenchPage } from './html.ts'
 import { createRootRedirect, createUiHandler, type IngestServiceView } from './http.ts'
+import { saveEndpoint, saveKey, saveModel, systemSnapshot } from './system.ts'
 import { credentialsOf, resolveSessionSecret, UiAuth } from './ui-auth.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
@@ -152,6 +153,12 @@ export function apply(ctx: Context, config: Config): void {
       renderLogin: (error: boolean) => loginPage(base, error),
       renderWorkbench: () => workbenchPage(base),
       meta,
+      system: {
+        snapshot: () => systemSnapshot(ctx),
+        saveModel: patch => saveModel(ctx, patch),
+        saveKey: patch => saveKey(ctx, patch),
+        saveEndpoint: patch => saveEndpoint(ctx, patch),
+      },
     }),
   }
   // 站点根路径交给控制台：原生 dsh 界面不再作为默认入口（仍可从左侧菜单进 /index.html）。
