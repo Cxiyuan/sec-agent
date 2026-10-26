@@ -273,6 +273,9 @@ services:
     image: ghcr.io/cxiyuan/sec-agent/shentong-ndr-frontend:latest
     environment:
       TZ: Asia/Shanghai  # 服务端渲染与容器日志统一北京时间
+      # 证书 SAN 追加（部署侧，逗号分隔，如 IP:192.0.2.10,DNS:ndr.example.com）：
+      # 入口会先把宿主 IP 自动签进去，多地址访问时在这里显式补；改了会重签证书。
+      TLS_SANS: ${TLS_SANS:-}
     ports:
       # 强制 HTTPS：443 对外唯一入口（自签名证书，入口生成并持久化在 frontend-certs 卷），
       # 80 只做 308 跳转；3000 仅容器内部
