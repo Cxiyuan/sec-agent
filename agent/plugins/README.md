@@ -30,4 +30,6 @@
 - **`xdr-ui/` 已落地**：登录鉴权的分析工作台 `/xdr/ui`（默认 admin/admin123），
   运行总览 + PG 历史分析记录 + 「立即领取」；`xdr-ingest` 经
   `ctx.reflect.provide('xdrIngest', …)` 供出数据面，本插件可选读取。详见其 README。
+- **`xdr-agent-pack/` 已落地**：纯声明 bundle，把本项目启用的第一方 dsh 能力
+  集中成一层可审阅的 patch（`dsh-time-context`、`dsh-tool-schedule`）；没有运行逻辑。
 - 规划中：`xdr-memory`（案件记忆域）、`xdr-triage`（定时分诊）。

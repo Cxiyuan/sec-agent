@@ -53,6 +53,27 @@ if [ -f "$BAKED_STAMP" ] && [ "$(cat "$BAKED_STAMP" 2>/dev/null || true)" != "$(
   cp -f "$BAKED_STAMP" "$STAMP"
 fi
 
+# 部署级技能：镜像里的技能每次启动覆盖到用户技能根（$DSH_HOME/skills 是
+# dsh-skill-filesystem 的 user 根），用户自建的其它技能目录保持不动。
+sync_skills() {
+  src="/opt/agent/skills"
+  [ -d "$src" ] || return 0
+  dest="$DSH_HOME/skills"
+  mkdir -p "$dest"
+  for dir in "$src"/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    rm -rf "$dest/$name"
+    cp -a "$dir" "$dest/$name"
+  done
+  # 平铺的单文件技能（<name>.md）同样覆盖
+  for file in "$src"/*.md; do
+    [ -f "$file" ] || continue
+    cp -af "$file" "$dest/"
+  done
+}
+sync_skills
+
 # 自愈：卷里有旧 profile 但插件依赖缺失（手工清过 node_modules）时补装。
 # 优先从镜像离线合并：卷里 node_modules 记录的 pnpm store 路径来自上一次构建
 # （/home/node/.local/share/pnpm/store/v11），新镜像的 pnpm 会改用卷内 store，

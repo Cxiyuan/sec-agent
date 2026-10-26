@@ -43,6 +43,8 @@ RUN npm install -g pnpm@11.28.5 \
 WORKDIR /opt/agent
 COPY --from=builder /build/dsh ./dsh
 COPY --from=builder /build/plugins ./plugins
+# 部署级技能（项目自带的处置手册/Ndr 工具用法），启动时同步进 DSH_HOME/skills
+COPY skills /opt/agent/skills
 COPY docker/entrypoint.sh /usr/local/bin/xdr-agent-entrypoint
 RUN chmod +x /usr/local/bin/xdr-agent-entrypoint
 
@@ -57,6 +59,12 @@ USER node
 # file: 把插件快照进 profile 自带的 .pnpm store，随卷一起搬迁、自包含。
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ingest
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ui
+RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-agent-pack
+
+# 会话检索 bundle：包本体随 apps/cli 一起装好，这里只把它加进 profile 的激活列表。
+# 走 pnpm add 会去 registry 找这个私有 workspace 包（找不到），所以直接改 bake 出的清单；
+# 入口脚本刷新 profile 时按并集合并 bundles，不会把它冲掉。
+RUN node -e "const fs=require('node:fs');const p='/opt/dsh-home/profiles/web/package.json';const m=JSON.parse(fs.readFileSync(p,'utf8'));m.dsh=m.dsh||{};m.dsh.profile=m.dsh.profile||{};const b=m.dsh.profile.bundles||[];const n='@deepseek-ai/dsh-experimental-session-search';if(!b.includes(n))b.push(n);m.dsh.profile.bundles=b;fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
 
 # 插件指纹：镜像每次重建都会刷新它，入口脚本据此判断卷里的插件副本是不是旧镜像
 # 留下的。只比版本号不够——本项目插件版本号长期不变，代码却每次都在变。

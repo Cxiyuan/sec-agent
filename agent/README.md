@@ -57,6 +57,11 @@ docker compose up -d --build    # 本地源码构建（开发调试）
   http://<宿主机IP>:3080/xdr/ingest/ping` → `ok`
 - 分层缓存观测：同 `/xdr/ingest/stats`（热层/冷层条数、命中/晋升/降级计数）
 
+**能力包与技能**：镜像里另装一个纯声明的 `@sec-agent/xdr-agent-pack`
+（启用 `dsh-time-context`、`dsh-tool-schedule`，并激活会话检索 bundle）。
+`agent/skills/` 下的部署级技能（NDR 工具用法、告警初判手册）启动时同步到
+容器内 `$DSH_HOME/skills`，用户自建技能不受影响。
+
 **信任围栏**：dsh 只放行 Host 为 loopback、容器绑定 IP、或 `--trusted-host`
 声明值的请求。浏览器经 docker 发布口访问时 Host 是宿主机名/IP，需在
 `AGENT_TRUSTED_HOSTS` 里声明（默认已含 `host.docker.internal`；局域网其他

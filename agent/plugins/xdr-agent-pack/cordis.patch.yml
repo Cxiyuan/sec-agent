@@ -1,0 +1,23 @@
+# xdr-agent-pack：本项目启用的第一方 dsh 能力（纯声明，没有自研逻辑）。
+#
+# 为什么单独一层：启用清单要能被审阅、能随镜像版本回滚，而不是散落在部署机
+# 的 profile cordis.patch.yml 里。行格式与 in-tree bundle 一致：insert + name，
+# name 必须能被 dsh 安装解析（这里都是 apps/cli 的依赖，镜像里自带）。
+#
+# 会话检索（@deepseek-ai/dsh-experimental-session-search）是 bundle 层，
+# 在 Dockerfile 里直接加进 profile.dsh.profile.bundles，不在这里插行。
+
+- insert:
+    # 每一步给模型「现在几点、磨了多久」。研判必须知道真实时间窗，
+    # 否则容易把跨天/跨时段的行为混在一起。
+    - id: xdr-time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        # 10 分钟一次足够：太频繁会把上下文塞满时间戳，太稀又算不准长任务耗时。
+        refreshIntervalMs: 600000
+
+    # 定时复查：schedule_create / list / update / delete。
+    # 宿主 dsh-schedule 服务由 dsh-web-app 提供，工具只作用于当前会话。
+    - id: xdr-tool-schedule
+      name: '@deepseek-ai/dsh-tool-schedule'
