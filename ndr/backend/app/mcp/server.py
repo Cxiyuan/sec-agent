@@ -391,9 +391,16 @@ def claim_tasks(
     limit: int = 0, kinds: str = "", min_strength: float = 0.0, wait_seconds: int = 0
 ) -> str:
     """领取待分析的客观线索（服务端按令牌强制预算，响应回剩余额度）。"""
+    # 必须走 `_with_ctx` 注入 `_token`：领取要记"谁领的"，
+    # 配额与并发（inflight）也**按令牌**算。漏了它所有调用方会落到兜底名
+    # `mcp` 上共用一个桶 —— 一个卡住的会话就能把全体挡住（2026-10 实测：
+    # 两条租约未到期的任务让所有智能体都拿到 inflight_full）。
     return _run(
         "claim_tasks",
-        _clean(limit=limit, kinds=kinds, min_strength=min_strength, wait_seconds=wait_seconds),
+        _with_ctx(
+            "claim_tasks",
+            _clean(limit=limit, kinds=kinds, min_strength=min_strength, wait_seconds=wait_seconds),
+        ),
         native=True,
     )
 

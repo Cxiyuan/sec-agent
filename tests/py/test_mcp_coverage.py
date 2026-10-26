@@ -381,3 +381,37 @@ def test_skill_validation_accepts_investigation_tools(
     assert routes._validate(body) == []
     bad = routes.SkillIn(name="t", event_types=["x"], sop="y", tools=["no_such_tool"])
     assert any("不存在" in e["msg"] for e in routes._validate(bad))
+
+
+def test_token_consuming_tools_inject_the_token(mcp_mods: dict[str, Any]) -> None:
+    """凡是读 `_token` 的工具，包装层都必须走 `_with_ctx` 注入。
+
+    2026-10 实机踩过：`claim_tasks` 的包装只用 `_clean`，`_token` 是空的 →
+    落到兜底名 `mcp`，于是**所有调用方共用一个配额/并发桶**。后果不是报错而是
+    静默：两条租约未到期的任务让每个智能体都拿到 `inflight_full`，看起来
+    "队列里明明有 2000 条却一条也领不到"。
+    """
+    import inspect
+    import re
+
+    server, ndr_tools = mcp_mods["server"], mcp_mods["ndr_tools"]
+
+    # 哪些实现读了 _token
+    source = inspect.getsource(ndr_tools)
+    consumers: set[str] = set()
+    for match in re.finditer(r"\ndef (_([a-z_]+))\(args: dict\[str, Any\]\)", source):
+        tool = match.group(2)
+        end = source.find("\ndef ", match.end())
+        body = source[match.start() : end if end > 0 else len(source)]
+        if 'args.get("_token")' in body:
+            consumers.add(tool)
+    assert consumers, "解析失败：应该至少解析出 claim_tasks 等读令牌的工具"
+
+    server_source = inspect.getsource(server)
+    missing: list[str] = []
+    for tool in sorted(consumers):
+        wrapper = re.search(rf"\ndef {tool}\(.*?\n(?=\ndef )", server_source, re.DOTALL)
+        assert wrapper is not None, f"注册表里有 {tool} 但 server.py 没有对应包装"
+        if "_with_ctx(" not in wrapper.group(0):
+            missing.append(tool)
+    assert not missing, f"这些工具读了 _token 却没注入（会共用兜底桶）：{missing}"
