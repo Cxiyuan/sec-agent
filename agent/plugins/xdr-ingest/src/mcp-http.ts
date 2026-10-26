@@ -33,6 +33,13 @@ export class McpError extends Error {
 const PROTOCOL_VERSION = '2026-07-28'
 const SESSION_HEADER = 'mcp-session-id'
 const VERSION_HEADER = 'mcp-protocol-version'
+//: 2026-07-28 起每个请求还要带路由头：方法与（tools/call 时）工具名，
+//: 服务端会拿它和 JSON-RPC body 比对，不一致直接 400。
+const METHOD_HEADER = 'mcp-method'
+const NAME_HEADER = 'mcp-name'
+//: `params._meta` 里的两个协商键（键名由 MCP 规范固定，不能改）
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion'
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities'
 
 interface JsonRpcResponse {
   readonly id?: number | string | null
@@ -50,6 +57,13 @@ function parseSse(text: string): string[] {
   }
   return out.filter(item => item !== '')
 }
+
+/** `tools/call` 的路由头要带工具名；其它方法不需要。 */
+function toolNameOf(params: Record<string, unknown>): string {
+  const name = params['name']
+  return typeof name === 'string' ? name : ''
+}
+
 
 export class McpHttpClient {
   private readonly options: McpClientOptions
@@ -73,23 +87,14 @@ export class McpHttpClient {
     return this.unwrapToolResult(payload)
   }
 
+  /**
+   * 2026-07-28 这一版**没有 `initialize` 握手**：协议版本与客户端能力改为
+   * 每个请求用 `params._meta` 随行声明，服务端按 `mcp-method` 路由头分派。
+   * 所以这里没有"先握手"这一步 —— 早先按旧规范先发 initialize 会得到
+   * `Method not found (data: "initialize")`（实测）。
+   */
   private async ensureReady(): Promise<void> {
-    if (this.ready) return
-    const init = await this.request('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      // 我们不用服务端的 sampling/roots，只当纯工具调用方
-      capabilities: {},
-      clientInfo: {
-        name: this.options.clientName ?? 'xdr-ingest',
-        version: this.options.clientVersion ?? '0.1.0',
-      },
-    })
-    if (init === null) {
-      throw new McpError('MCP initialize 没有返回结果')
-    }
-    // 握手后必须发这条通知；不带 id，服务端回 202
-    await this.notify('notifications/initialized')
-    this.ready = true
+    return
   }
 
   private unwrapToolResult(result: unknown): Record<string, unknown> {
@@ -120,13 +125,26 @@ export class McpHttpClient {
     }
   }
 
+  /** 每个请求都要带的协商元数据（键名由 MCP 规范固定）。 */
+  private metaOf(): Record<string, unknown> {
+    return {
+      [PROTOCOL_VERSION_META_KEY]: PROTOCOL_VERSION,
+      [CLIENT_CAPABILITIES_META_KEY]: {},
+    }
+  }
+
   private async notify(method: string): Promise<void> {
-    await this.post({ jsonrpc: '2.0', method })
+    await this.post({ jsonrpc: '2.0', method }, method)
   }
 
   private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = this.nextId++
-    const body = await this.post({ jsonrpc: '2.0', id, method, params })
+    const enriched = { ...params, _meta: this.metaOf() }
+    const body = await this.post(
+      { jsonrpc: '2.0', id, method, params: enriched },
+      method,
+      toolNameOf(params),
+    )
     const response = this.pickResponse(body, id)
     if (response?.error !== undefined && response.error !== null) {
       throw new McpError(
@@ -160,12 +178,20 @@ export class McpHttpClient {
     return null
   }
 
-  private async post(payload: Record<string, unknown>): Promise<string> {
+  private async post(
+    payload: Record<string, unknown>,
+    method: string,
+    name = '',
+  ): Promise<string> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       authorization: `Bearer ${this.options.token}`,
       [VERSION_HEADER]: PROTOCOL_VERSION,
+      [METHOD_HEADER]: method,
+    }
+    if (name !== '') {
+      headers[NAME_HEADER] = name
     }
     if (this.sessionId !== '') {
       headers[SESSION_HEADER] = this.sessionId
