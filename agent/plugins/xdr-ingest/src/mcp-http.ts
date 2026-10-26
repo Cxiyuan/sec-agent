@@ -70,7 +70,6 @@ export class McpHttpClient {
   private readonly fetchImpl: typeof fetch
   private sessionId = ''
   private nextId = 1
-  private ready = false
 
   constructor(options: McpClientOptions) {
     this.options = options
@@ -82,7 +81,6 @@ export class McpHttpClient {
     name: string,
     args: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
-    await this.ensureReady()
     const payload = await this.request('tools/call', { name, arguments: args })
     return this.unwrapToolResult(payload)
   }
@@ -93,10 +91,6 @@ export class McpHttpClient {
    * 所以这里没有"先握手"这一步 —— 早先按旧规范先发 initialize 会得到
    * `Method not found (data: "initialize")`（实测）。
    */
-  private async ensureReady(): Promise<void> {
-    return
-  }
-
   private unwrapToolResult(result: unknown): Record<string, unknown> {
     const record = (result ?? {}) as {
       content?: Array<{ type?: string; text?: string }>
@@ -114,7 +108,24 @@ export class McpHttpClient {
       return record.isError === true ? { error: '工具返回为空' } : {}
     }
     try {
-      const parsed: unknown = JSON.parse(text)
+      let parsed: unknown = JSON.parse(text)
+      // NDR 工具的返回约定是**双层**：外层 {result: "<json 字符串>"}，
+      // 真正的回执在里层字符串里（server._run 把 dict 序列化后塞进 result 字段）。
+      // 只剥一层的话 reason/budget/tasks 全留在里层，调用方会把它当成
+      // 「没 reason 的空回执」静默吞掉（2026-10 实测：agent 明明收到
+      // inflight_full，却一行日志都没有，表现为"队列 2000 条却领不到"）。
+      if (
+        typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        && Object.keys(parsed as Record<string, unknown>).length === 1
+        && typeof (parsed as Record<string, unknown>)['result'] === 'string'
+      ) {
+        const inner = (parsed as Record<string, unknown>)['result'] as string
+        try {
+          parsed = JSON.parse(inner)
+        } catch {
+          return { result: inner }
+        }
+      }
       if (typeof parsed === 'object' && parsed !== null) {
         return parsed as Record<string, unknown>
       }
@@ -131,10 +142,6 @@ export class McpHttpClient {
       [PROTOCOL_VERSION_META_KEY]: PROTOCOL_VERSION,
       [CLIENT_CAPABILITIES_META_KEY]: {},
     }
-  }
-
-  private async notify(method: string): Promise<void> {
-    await this.post({ jsonrpc: '2.0', method }, method)
   }
 
   private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -215,7 +222,6 @@ export class McpHttpClient {
         // 会话过期（404）时清掉会话，下次调用重新握手
         if (response.status === 404) {
           this.sessionId = ''
-          this.ready = false
         }
         throw new McpError(
           `MCP HTTP ${response.status}：${text.slice(0, 200)}`,

@@ -94,3 +94,42 @@ test('JSON-RPC errors surface as McpError with the server message', async () => 
     (error: Error) => error.message.includes('_meta'),
   )
 })
+
+test('ndr double-wrapped receipts are unwrapped (the reason must reach the caller)', async () => {
+  // 实测踩过：NDR 工具返回 {result: "<json string>"}，只剥一层的话
+  // inflight_full 留在里层，调用方看到的是「没 reason 的空回执」→ 静默。
+  const captured: Captured[] = []
+  const client = new McpHttpClient({
+    url: 'http://x/mcp',
+    token: 't',
+    fetchImpl: stubFetch(captured, {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            result: JSON.stringify({ tasks: [], reason: 'inflight_full', budget: { inflight: 2 } }),
+          }),
+        }],
+      },
+    }),
+  })
+  const reply = await client.callTool('claim_tasks', { limit: 1 })
+  assert.equal(reply['reason'], 'inflight_full', '里层的 reason 必须浮到顶层')
+  assert.deepEqual(reply['budget'], { inflight: 2 })
+})
+
+test('already-flat receipts pass through without a second unwrap', async () => {
+  const captured: Captured[] = []
+  const client = new McpHttpClient({
+    url: 'http://x/mcp',
+    token: 't',
+    fetchImpl: stubFetch(captured, {
+      jsonrpc: '2.0',
+      id: 1,
+      result: { content: [{ type: 'text', text: '{"tasks":[],"reason":"queue_empty"}' }] },
+    }),
+  })
+  assert.equal((await client.callTool('claim_tasks', {}))['reason'], 'queue_empty')
+})
