@@ -42,7 +42,8 @@ export { buildAnalysisPrompt } from './prompt.ts'
 export { processItems, createIngestHandler, WebhookHttpError } from './handler.ts'
 export { MemoryColdStore } from './store.ts'
 export { PostgresColdStore } from './pg-store.ts'
-export type { ColdEntry, ColdStore } from './store.ts'
+export type { ColdEntry, ColdStore, AnalysesPage, AnalysesQuery } from './store.ts'
+export type { XdrIngestService } from './workbench.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
 export const name = 'xdr-ingest'
@@ -213,6 +214,15 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
 
+  /** 运行观测快照：`/xdr/ingest/status` 与 xdrIngest 服务共用同一份。 */
+  function statusSnapshot(): Record<string, unknown> {
+    return {
+      analysis: loop === null ? 'disabled' : 'enabled',
+      poll_seconds: config.pollSeconds,
+      max_concurrent: config.maxConcurrent,
+      ...(loop === null ? {} : { loop: loop.stats }),
+    }
+  }
   const route: WebRoute = {
     kind: 'prefix',
     path: config.basePath,
@@ -220,15 +230,27 @@ export function apply(ctx: Context, config: Config): void {
       token: config.token,
       maxBodyBytes: config.maxBodyBytes,
       cache,
-      status: () => ({
-        analysis: loop === null ? 'disabled' : 'enabled',
-        poll_seconds: config.pollSeconds,
-        max_concurrent: config.maxConcurrent,
-        ...(loop === null ? {} : { loop: loop.stats }),
-      }),
+      status: statusSnapshot,
       ...(loop === null ? {} : { onDoorbell: () => loop.wake() }),
     }),
   }
+  /**
+   * 工作台数据面：xdr-ui（同进程）经 ctx.reflect.get('xdrIngest', false) 读取。
+   * 本插件未在场时工作台返回 undefined——它在 API 里报「数据不可用」而不是拒绝打开。
+   * provide 自带 fiber 生命周期，插件停用时自动注销。
+   */
+  const service = {
+    status: statusSnapshot,
+    cacheStats: () => cache.stats(),
+    wake: () => {
+      if (loop === null) return false
+      loop.wake()
+      return true
+    },
+    listAnalyses: (query: { limit: number, offset: number, search: string }) => store.listRecent(query),
+    getAnalysis: (analysisId: string) => store.load(analysisId),
+  }
+  void ctx.reflect.provide('xdrIngest', service)
   ctx.effect(
     () => {
       const disposeRoute = ctx.webServer.register(route)

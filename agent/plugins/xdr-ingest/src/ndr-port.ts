@@ -69,7 +69,11 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
           console.warn(`[xdr-ingest] claim_tasks: ${reason}`)
         }
       }
-      return { tasks, ...(reason ? { reason } : {}) }
+      // 预算快照原样透传（工作台展示；不参与本进程判断）
+      const budget = typeof reply['budget'] === 'object' && reply['budget'] !== null
+        ? reply['budget'] as ClaimReply['budget']
+        : undefined
+      return { tasks, ...(budget ? { budget } : {}), ...(reason ? { reason } : {}) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[xdr-ingest] claim_tasks threw: ${message.slice(0, 240)}`)

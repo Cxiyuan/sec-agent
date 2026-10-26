@@ -22,6 +22,23 @@ export interface ColdEntry extends AnalysisRecord {
   readonly expiresAt: string
 }
 
+/** 运营工作台的列表查询（xdr-ui 插件经 xdrIngest 服务用它翻页）。 */
+export interface AnalysesQuery {
+  /** 单页条数（调用方已钳制）。 */
+  readonly limit: number
+  /** 跳过条数。 */
+  readonly offset: number
+  /** 空串 = 不过滤；非空时对分析 ID / 身份 / 结论做不区分大小写的包含匹配。 */
+  readonly search: string
+}
+
+/** 列表页：过滤后的总数（供分页）+ 一页记录。 */
+export interface AnalysesPage {
+  readonly total: number
+  /** last_seen 降序，同一条记录仍带完整结论与累计次数。 */
+  readonly entries: readonly ColdEntry[]
+}
+
 export interface ColdStore {
   /** 实现标识（/stats 观测用）。 */
   readonly kind: 'memory' | 'postgres'
@@ -46,6 +63,13 @@ export interface ColdStore {
 
   /** 按 occurrences 降序取前 limit 条未过期记录（启动预热用）。 */
   warmup(limit: number): Promise<ColdEntry[]>
+
+  /**
+   * 分析记录按 last_seen 降序分页（工作台用）。
+   * 与预热返回未过期记录不同：这里**含过期记录**——过期只是"待重分析"，
+   * 结论与累计统计对排查仍然有效。
+   */
+  listRecent(query: AnalysesQuery): Promise<AnalysesPage>
 
   /** 释放资源（连接池等）。 */
   close(): Promise<void>
@@ -103,4 +127,19 @@ export class MemoryColdStore implements ColdStore {
   async close(): Promise<void> {
     this.map.clear()
   }
+
+  async listRecent(query: AnalysesQuery): Promise<AnalysesPage> {
+    const needle = query.search.trim().toLowerCase()
+    const matched = [...this.map.values()].filter(entry => needle === '' || listableText(entry).includes(needle))
+    matched.sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : -1))
+    return {
+      total: matched.length,
+      entries: matched.slice(Math.max(0, query.offset), Math.max(0, query.offset) + query.limit),
+    }
+  }
+}
+
+/** 列表搜索的比对文本：分析 ID + 身份 + 结论，小写。 */
+function listableText(entry: ColdEntry): string {
+  return JSON.stringify({ analysisId: entry.analysisId, identity: entry.identity, result: entry.result }).toLowerCase()
 }

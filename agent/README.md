@@ -10,7 +10,8 @@
 agent/
 ├── dsh/       dsh v0.2.1-rc.2 完整 monorepo（上游源码，保持原样，无 .git）
 ├── plugins/   自研 dsh 插件（out-of-tree，与上游物理分离）
-│   └── xdr-ingest/   首个插件：NDR 摘要 webhook + 事件分析 ID + 冷热两级缓存
+│   ├── xdr-ingest/   NDR 门铃/摘要 + 事件分析 ID + 冷热两级缓存 + 领取分析循环
+│   └── xdr-ui/       登录鉴权的分析工作台 /xdr/ui（admin/admin123）
 ├── skills/    调查方法论 / 角色模板（prompt 资产）
 ├── docker/    容器入口脚本
 ├── Dockerfile         智能体镜像（多阶段，构建统一在 GitHub Actions）
@@ -42,8 +43,11 @@ docker compose up -d --build    # 本地源码构建（开发调试）
 
 起来后：
 
-- Web 界面：`http://<宿主机IP>:3080`（首次打印的带 token URL 在容器日志里，
-  `docker compose logs agent`）
+- Web 界面：`http://<宿主机IP>:3080`（原生 dsh 界面：**登录页账号密码
+  admin / admin123**，环境缝 `DSH_WEB_AUTH_USER` / `DSH_WEB_AUTH_PASSWORD`；
+  首次打印的带 token URL 在容器日志里，`docker compose logs agent`）
+- 分析工作台：`http://<宿主机IP>:3080/xdr/ui`（登录鉴权，同一组凭据；
+  运行总览 + PG 历史分析记录 + 「立即领取」；原生界面右下角有跳转角标）
 - 连通性自检：`curl -H "Authorization: Bearer $AGENT_PUSH_TOKEN" \
   http://<宿主机IP>:3080/xdr/ingest/ping` → `ok`
 - 分层缓存观测：同 `/xdr/ingest/stats`（热层/冷层条数、命中/晋升/降级计数）

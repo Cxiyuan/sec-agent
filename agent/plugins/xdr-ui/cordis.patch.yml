@@ -1,0 +1,24 @@
+# xdr-ui bundle patch：把工作台插件挂进 Loader 并给默认配置。
+#
+# 与 xdr-ingest 同一条规约：行必须是 - insert: + name（可解析包名），只有
+# id + config 的补丁没行可改时是空操作，路由根本不注册。
+#
+# 账号密码默认 admin/admin123（现场部署默认值，与 dsh 的 /login 共用
+# DSH_WEB_AUTH_USER / DSH_WEB_AUTH_PASSWORD 两个环境缝——改一处两处都变）。
+# 会话签名密钥依次取 DSH_WEB_UI_SECRET → DSH_WEB_LAUNCH_TOKEN（部署缝已固化）。
+# 都没有时退化为进程内随机密钥：每次重启所有登录失效，属可用性降级非安全降级，
+# 启动日志会警告。
+#
+# 数据面来自 xdrIngest 服务（xdr-ingest 插件 provide；未在场时工作台打开但
+# 数据区显示不可用）。
+
+- insert:
+    - id: xdr-ui
+      name: '@sec-agent/xdr-ui'
+      config:
+        basePath: /xdr/ui
+        user: !!js process.env.DSH_WEB_AUTH_USER ?? ''
+        password: !!js process.env.DSH_WEB_AUTH_PASSWORD ?? ''
+        secret: !!js process.env.DSH_WEB_UI_SECRET ?? ''
+        sessionHours: 12
+        badge: true

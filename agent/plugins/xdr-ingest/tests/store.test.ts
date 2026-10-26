@@ -79,3 +79,32 @@ test('warmup returns hottest fresh entries first and skips expired', async () =>
   const warmed = await store.warmup(2)
   assert.deepEqual(warmed.map(item => item.analysisId), ['EA-high', 'EA-mid'])
 })
+
+test('listRecent 按 last_seen 降序分页，且包含已过期记录', async () => {
+  const store = new MemoryColdStore()
+  // 三条不同 lastSeen：EA-c 最新、EA-a 最旧；EA-expired 已过期但列表仍可见
+  await store.upsert({ ...entry('EA-a', 1, '2099-01-01T00:00:00.000Z'), lastSeenAt: '2026-10-20T00:00:00.000Z' })
+  await store.upsert({ ...entry('EA-b', 1, '2099-01-01T00:00:00.000Z'), lastSeenAt: '2026-10-22T00:00:00.000Z' })
+  await store.upsert({ ...entry('EA-expired', 1, '2000-01-01T00:00:00.000Z'), lastSeenAt: '2026-10-21T00:00:00.000Z' })
+  const page = await store.listRecent({ limit: 10, offset: 0, search: '' })
+  assert.equal(page.total, 3)
+  assert.deepEqual(page.entries.map(item => item.analysisId), ['EA-b', 'EA-expired', 'EA-a'])
+  // 翻页：第二页从降序列表切出
+  const second = await store.listRecent({ limit: 1, offset: 1, search: '' })
+  assert.equal(second.total, 3)
+  assert.equal(second.entries[0]?.analysisId, 'EA-expired')
+})
+
+test('listRecent 搜索大小写不敏感地匹配分析 ID、结论摘要', async () => {
+  const store = new MemoryColdStore()
+  await store.upsert(entry('EA-a', 1, '2099-01-01T00:00:00.000Z'))
+  await store.upsert({ ...entry('EA-b', 1, '2099-01-01T00:00:00.000Z'), lastSeenAt: '2026-10-25T00:00:00.000Z',
+    result: { category: 'generic-alert', severity: 'medium', summary: '端口扫描特征', recommendation: '封禁', analyzer: 'heuristic-v0' } })
+  const byId = await store.listRecent({ limit: 10, offset: 0, search: 'ea-b' })
+  assert.equal(byId.total, 1)
+  assert.equal(byId.entries[0]?.analysisId, 'EA-b')
+  const bySummary = await store.listRecent({ limit: 10, offset: 0, search: '端口扫描' })
+  assert.deepEqual(bySummary.entries.map(item => item.analysisId), ['EA-b'])
+  const miss = await store.listRecent({ limit: 10, offset: 0, search: '不存在的关键词' })
+  assert.equal(miss.total, 0)
+})

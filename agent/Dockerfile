@@ -56,6 +56,7 @@ USER node
 # 运行期卷在 /data/dsh，整体搬迁后相对解析会悬空（CI 冒烟实测过）。
 # file: 把插件快照进 profile 自带的 .pnpm store，随卷一起搬迁、自包含。
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ingest
+RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ui
 
 # 运行期：数据目录用卷持久化（dsh home：profile、会话历史、插件管理状态）
 ENV DSH_HOME=/data/dsh

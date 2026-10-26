@@ -28,6 +28,13 @@ export interface ClaimReply {
   /** NDR 的正常回执：queue_empty / budget_exhausted / inflight_full —— 都不是错误 */
   readonly reason?: string
   readonly error?: string
+  /** 服务端预算剩余（normal + reserved）；用于工作台展示，只是快照不加约束。 */
+  readonly budget?: {
+    readonly normal_remaining?: number
+    readonly reserved_remaining?: number
+    readonly inflight?: number
+    readonly max_inflight?: number
+  }
 }
 
 /** NDR 侧最小端口（测试里替换成假实现，不碰网络）。 */
@@ -58,11 +65,14 @@ export interface ClaimLoopStats {
   polls: number
   claimed: number
   started: number
+  running: number
   failedClaims: number
   doorbells: number
   droppedByConcurrency: number
   consecutiveErrors: number
   lastError: string
+  /** 最近一次领取回执里的服务端预算剩余（字符串快照，无预算记录为 ''）。 */
+  lastBudget: string
 }
 
 export class ClaimLoop {
@@ -78,11 +88,13 @@ export class ClaimLoop {
     polls: 0,
     claimed: 0,
     started: 0,
+    running: 0,
     failedClaims: 0,
     doorbells: 0,
     droppedByConcurrency: 0,
     consecutiveErrors: 0,
     lastError: '',
+    lastBudget: '',
   }
 
   constructor(options: ClaimLoopOptions) {
@@ -124,6 +136,7 @@ export class ClaimLoop {
    * `stopped` 只约束"定时器要不要继续排下一轮"，否则手动调用永远打不开。
    */
   async tick(): Promise<void> {
+    this.stats.running = this.running
     const free = this.options.maxConcurrent - this.running
     if (free <= 0) {
       this.stats.droppedByConcurrency += 1
@@ -144,6 +157,7 @@ export class ClaimLoop {
     }
     this.stats.consecutiveErrors = 0
     this.backoffMs = 0
+    this.recordBudget(reply.budget)
     const tasks = reply.tasks ?? []
     if (tasks.length === 0) return
     this.stats.claimed += tasks.length
@@ -154,6 +168,15 @@ export class ClaimLoop {
     }
   }
 
+  /** 预算快照进统计（工作台展示用）；字段缺失组成'—'凑整不可信时不记。 */
+  private recordBudget(budget: ClaimReply['budget']): void {
+    if (budget === undefined) return
+    const normal = typeof budget.normal_remaining === 'number' ? budget.normal_remaining : undefined
+    const reserved = typeof budget.reserved_remaining === 'number' ? budget.reserved_remaining : undefined
+    if (normal === undefined && reserved === undefined) return
+    this.stats.lastBudget = normal === undefined ? String(reserved) : `${normal}+${reserved}/${String(budget.max_inflight ?? '？')}`
+  }
+
   private async runOne(task: ClaimedTask): Promise<void> {
     try {
       await this.options.runTask(task)
@@ -162,6 +185,7 @@ export class ClaimLoop {
       this.stats.lastError = message.slice(0, 300)
     } finally {
       this.running = Math.max(0, this.running - 1)
+      this.stats.running = this.running
     }
   }
 

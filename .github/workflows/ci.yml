@@ -582,6 +582,28 @@ jobs:
           CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "content-type: application/json" -d '{"items":[]}' http://127.0.0.1:3080/xdr/ingest/digests)
           if [ "$CODE" != "401" ]; then echo "::error::expected 401, got $CODE"; exit 1; fi
 
+      # ---- 工作台（xdr-ui 插件）：登录 → 工作台页 → 数据面 API ----
+      # 三步各断不同根因：登录页 200 = 路由在；303 = Cookie 签发成功；
+      # overview 200 = xdrIngest 服务横插线接通。
+      - name: Workbench login and overview (admin/admin123)
+        run: |
+          COOKIE=$(curl -s -i --max-time 10 -X POST \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data 'user=admin&password=admin123' \
+            http://127.0.0.1:3080/xdr/ui/login | grep -i '^set-cookie:' | sed 's/^set-cookie: //I' | cut -d';' -f1)
+          if [ -z "$COOKIE" ]; then echo "::error::login did not set the workbench cookie"; docker logs --tail 40 xdr-agent; exit 1; fi
+          echo "cookie: ${COOKIE%%=*}"
+          PAGE_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: $COOKIE" http://127.0.0.1:3080/xdr/ui)
+          echo "workbench page: $PAGE_CODE"
+          [ "$PAGE_CODE" = "200" ]
+          OUT=$(curl -s --max-time 10 -w '\n%{http_code}' -H "Cookie: $COOKIE" http://127.0.0.1:3080/xdr/ui/api/overview)
+          echo "overview: $OUT"
+          printf '%s' "$OUT" | tail -1 | grep -qx 200
+          printf '%s' "$OUT" | head -1 | grep -q '"available":true'
+          # 未登录的 API 必须还是 401（鉴权门要真拦）
+          DENIED=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/xdr/ui/api/overview)
+          [ "$DENIED" = "401" ]
+
       - name: Dump logs and stop the container
         if: always()
         run: |

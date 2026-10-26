@@ -28,6 +28,13 @@ services:
       AGENT_TRUSTED_HOSTS: ${AGENT_TRUSTED_HOSTS:-host.docker.internal}
       # 留空 = 自动绑定容器内第一块非内部 IPv4；要指定具体 IP 时填
       DSH_WEB_HOST: ${DSH_WEB_HOST:-}
+      # web 界面登录（原生界面 /login 与工作台 /xdr/ui/login 共用这组缝）：
+      # 不设 = 默认 admin/admin123；设了就两处同时变
+      DSH_WEB_AUTH_USER: ${DSH_WEB_AUTH_USER:-}
+      DSH_WEB_AUTH_PASSWORD: ${DSH_WEB_AUTH_PASSWORD:-}
+      # 固定 web 登录令牌（重启不再换 token 维持登录 URL 稳定），同时也是
+      # 工作台会话签名密钥的兜底缝——不设时启动日志会提示
+      DSH_WEB_LAUNCH_TOKEN: ${DSH_WEB_LAUNCH_TOKEN:-}
     extra_hosts:
       # 让容器能解析宿主机地址（连宿主机上 ndr 栈发布的 PG）
       - "host.docker.internal:host-gateway"

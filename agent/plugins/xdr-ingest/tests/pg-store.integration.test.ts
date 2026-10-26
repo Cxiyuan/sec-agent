@@ -100,3 +100,40 @@ test('postgres cold store: unreachable dsn degrades instead of throwing', { skip
     await store.close()
   }
 })
+
+test('postgres cold store: listRecent orders, filters and paginates', { skip: !withPg }, async () => {
+  const { PostgresColdStore } = await import('../src/pg-store.ts')
+  const store = new PostgresColdStore({ connectionString: PG_URL })
+  try {
+    const base = randomUUID()
+    const a = `EA-it-${base}-a`
+    const b = `EA-it-${base}-b`
+    const expired = `EA-it-${base}-expired`
+    await store.upsert({ ...entry(a, 1, new Date(Date.now() + 3_600_000).toISOString()), lastSeenAt: '2026-10-20T00:00:00.000Z' })
+    await store.upsert({ ...entry(b, 1, new Date(Date.now() + 3_600_000).toISOString()), lastSeenAt: '2026-10-22T00:00:00.000Z' })
+    // 过期行也要出现在列表（过期 = 待重分析，不是删除）
+    await store.upsert({ ...entry(expired, 1, '2000-01-01T00:00:00.000Z'), lastSeenAt: '2026-10-21T00:00:00.000Z' })
+
+    // 降序：b (10-22) > expired (10-21) > a (10-20)
+    const page = await store.listRecent({ limit: 10, offset: 0, search: base })
+    assert.deepEqual(page.entries.map(item => item.analysisId), [b, expired, a])
+    assert.equal(page.total, 3)
+
+    // 分页与总数（total 不随页缩）
+    const second = await store.listRecent({ limit: 1, offset: 1, search: base })
+    assert.equal(second.total, 3)
+    assert.equal(second.entries[0]?.analysisId, expired)
+
+    // 搜索大写不敏感（ILIKE）
+    const byUpper = await store.listRecent({ limit: 10, offset: 0, search: `EA-IT-${base.toUpperCase()}-A` })
+    assert.equal(byUpper.total, 1)
+    assert.equal(byUpper.entries[0]?.analysisId, a)
+
+    // 深翻页越过末尾：entries 为空但 total 仍准确（补 count 的分支）
+    const beyond = await store.listRecent({ limit: 10, offset: 100, search: base })
+    assert.equal(beyond.total, 3)
+    assert.deepEqual(beyond.entries, [])
+  } finally {
+    await store.close()
+  }
+})

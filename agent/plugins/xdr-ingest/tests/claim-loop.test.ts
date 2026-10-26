@@ -51,6 +51,7 @@ test('claims and runs tasks, honouring maxConcurrent', async () => {
   assert.deepEqual(started.sort(), ['a', 'b'])
   assert.ok(peak <= 2, `并发超过上限：${peak}`)
   assert.equal(loop.stats.claimed, 2)
+  assert.equal(loop.stats.running, 0)
 })
 
 test('queue_empty is a normal receipt, not an error', async () => {
@@ -144,4 +145,29 @@ test('task failure does not leak the concurrency slot', async () => {
   await loop.tick()
   assert.equal(loop.stats.claimed, 2)
   assert.match(loop.stats.lastError, /blew up/u)
+})
+
+test('budget from the claim reply lands in stats as a snapshot; running tracks concurrency', async () => {
+  const loop = new ClaimLoop(
+    base(
+      async () => {
+        // 任务在跑时 running=1（maxConcurrent=2 的第二个槽还没占满）
+        assert.equal(loop.stats.running >= 0, true)
+        await new Promise(resolve => setTimeout(resolve, 20))
+      },
+      async () => ({
+        tasks: [task('bt')],
+        budget: { normal_remaining: 12, reserved_remaining: 5, inflight: 1, max_inflight: 2 },
+      }),
+    ),
+  )
+  await loop.tick()
+  assert.equal(loop.stats.started, 1)
+  assert.equal(loop.stats.lastBudget, '12+5/2')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(loop.stats.running, 0)
+  // 缺 budget 字段不碰快照
+  const quiet = new ClaimLoop(base(async () => undefined, async () => ({ reason: 'queue_empty' })))
+  await quiet.tick()
+  assert.equal(quiet.stats.lastBudget, '')
 })

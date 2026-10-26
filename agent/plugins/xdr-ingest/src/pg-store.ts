@@ -13,7 +13,7 @@
  */
 
 import { Pool } from 'pg'
-import type { ColdEntry, ColdStore } from './store.ts'
+import type { AnalysesPage, AnalysesQuery, ColdEntry, ColdStore } from './store.ts'
 import type { AnalysisRecord } from './types.ts'
 
 /** 单表 DDL。索引覆盖冷命中清理（last_seen）与预热排序（occurrences）。 */
@@ -202,15 +202,58 @@ export class PostgresColdStore implements ColdStore {
   async warmup(limit: number): Promise<ColdEntry[]> {
     if (!await this.usable()) return []
     try {
-      const { rows } = await this.pool.query<AnalysisRow>(
-        'SELECT analysis_id, identity, result, occurrences, first_seen, last_seen, analyzed_at, expires_at, deliveries'
+      const { rows } = await this.pool.query<AnalysisRow & { total: string }>(
+        'SELECT analysis_id, identity, result, occurrences, first_seen, last_seen, analyzed_at, expires_at, deliveries,'
+        + ' count(*) OVER () AS total'
         + ' FROM xdr_ingest_analysis WHERE expires_at > $1 ORDER BY occurrences DESC LIMIT $2',
         [new Date(), Math.max(0, limit)],
       )
       return rows.map(toEntry)
     } catch (error) {
-      console.error(`${LOG_PREFIX} warmup failed:`, error instanceof Error ? error.message : String(error))
+      console.error(`${LOG_PREFIX} warmup failed for limit ${limit}:`, error instanceof Error ? error.message : String(error))
       return []
+    }
+  }
+
+  /**
+   * last_seen 降序分页。搜索走 ILIKE 不区分英文大小写；比对 analysis_id 与
+   * identity/result 的 JSON 文本（含规则名、源 IP、结论摘要），过滤后的总数
+   * 用窗口函数一次算出——翻页与总数读同一快照。深翻页越过末尾（窗口函数
+   * 没有行可看）时补一趟 count，只为总数仍准确。
+   */
+  async listRecent(query: AnalysesQuery): Promise<AnalysesPage> {
+    if (!await this.usable()) return { total: 0, entries: [] }
+    const search = query.search.trim()
+    const offset = Math.max(0, Math.floor(query.offset))
+    const limit = Math.max(0, Math.floor(query.limit))
+    try {
+      const { rows } = await this.pool.query<AnalysisRow & { total: string }>(
+        'SELECT analysis_id, identity, result, occurrences, first_seen, last_seen, analyzed_at, expires_at, deliveries,'
+        + ' count(*) OVER () AS total'
+        + ' FROM xdr_ingest_analysis'
+        + ' WHERE ($1 = \'\' OR analysis_id ILIKE \'%\' || $1 || \'%\''
+        + '   OR identity::text   ILIKE \'%\' || $1 || \'%\''
+        + '   OR result::text     ILIKE \'%\' || $1 || \'%\')'
+        + ' ORDER BY last_seen DESC'
+        + ' LIMIT $2 OFFSET $3',
+        [search, limit, offset],
+      )
+      const total = rows.length === 0 && offset === 0 ? 0 : Number(rows[0]?.total ?? 0)
+      // 深翻页越过末尾时窗口函数没有行可看；此时过滤后的总数只能再问一趟。
+      if (rows.length === 0 && offset > 0) {
+        const counted = await this.pool.query<{ count: string }>(
+          'SELECT count(*) AS count FROM xdr_ingest_analysis'
+          + ' WHERE ($1 = \'\' OR analysis_id ILIKE \'%\' || $1 || \'%\''
+          + '   OR identity::text   ILIKE \'%\' || $1 || \'%\''
+          + '   OR result::text     ILIKE \'%\' || $1 || \'%\')',
+          [search],
+        )
+        return { total: Number(counted.rows[0]?.count ?? 0), entries: [] }
+      }
+      return { total, entries: rows.map(toEntry) }
+    } catch (error) {
+      console.error(`${LOG_PREFIX} listRecent failed:`, error instanceof Error ? error.message : String(error))
+      return { total: 0, entries: [] }
     }
   }
 
