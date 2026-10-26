@@ -135,15 +135,26 @@ function pickModel(
   }
 }
 
-/** API Key 配置对应的命名空间：带 credential-ref 字段（apiKeyEnv）的那个条目。 */
+/**
+ * 模型适配器条目判定：只有 `llm-*` 的条目才是"模型服务商"。
+ * 别把 web-search-deepseek 之类的条目算进来——它同样有 apiKeyEnv 字段，
+ * 误判会导致 BaseURL/Key 写到搜索插件而不是模型通道。
+ */
+function isModelAdapter(ns: string): boolean {
+  return ns === 'llm-deepseek' || ns.startsWith('llm-')
+}
+
+/** API Key 配置对应的命名空间：模型适配器里带 credential-ref（apiKeyEnv）的那个条目。 */
 function pickKey(
   settings: SettingsLike,
 ): { ns: string, revision: number, ref: string, baseURL: string } | null {
   try {
     const rows = settings.describe({ redactSecrets: true })
     for (const row of rows) {
+      if (!isModelAdapter(row.ns)) continue
       const value: unknown = row.value
       if (!isPlainObject(value)) continue
+      if (isPlainObject(value['providers'])) continue
       const ref = value['apiKeyEnv']
       if (typeof ref !== 'string' || ref.trim() === '') continue
       const baseURL = typeof value['baseURL'] === 'string' ? value['baseURL'] : ''
@@ -270,9 +281,10 @@ async function providerRows(
   }
   // DeepSeek 官方通道（独立适配器，不在 pi-ai 字典里）
   for (const row of described) {
+    if (!isModelAdapter(row.ns)) continue
     const value: unknown = row.value
     if (!isPlainObject(value)) continue
-    if (typeof value['providers'] === 'object') continue
+    if (isPlainObject(value['providers'])) continue
     const ref = value['apiKeyEnv']
     if (typeof ref !== 'string' || ref.trim() === '') continue
     const info = credentials === null ? null : await safeDescribe(credentials, ref.trim())

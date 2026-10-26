@@ -30,6 +30,8 @@ function fakeSettings(calls: Calls, value: Record<string, unknown> = {
         { ns: 'default-model', revision: 7, value },
         { ns: 'llm-deepseek-api-key', revision: 2, value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com/anthropic' } },
         { ns: 'llm-pi-ai', revision: 4, value: { providers } },
+        // 干扰项：搜索插件也有 apiKeyEnv，但不能被当成模型通道
+        { ns: 'web-search-deepseek', revision: 1, value: { apiKeyEnv: 'DEEPSEEK_API_KEY' } },
       ]
     },
     update: async (ns: string, patch: Record<string, unknown>, revision?: number) => {
@@ -69,6 +71,7 @@ test('快照：模型/密钥/插件清单映射，取消红act 只报状态不�
   assert.equal(snap.model?.ns, 'default-model')
   assert.equal(snap.model?.provider, 'deepseek-official')
   assert.equal(snap.model?.revision, 7)
+  assert.equal(snap.key?.ns, 'llm-deepseek-api-key')
   assert.equal(snap.key?.ref, 'DEEPSEEK_API_KEY')
   assert.equal(snap.key?.configured, true)
   assert.equal(snap.key?.baseURL, 'https://api.deepseek.com/anthropic')
