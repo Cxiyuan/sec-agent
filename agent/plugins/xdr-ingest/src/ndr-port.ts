@@ -51,12 +51,29 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
     try {
       const reply = await this.caller.callTool('claim_tasks', { limit })
       if (typeof reply['error'] === 'string' && reply['error'] !== '') {
+        console.warn(`[xdr-ingest] claim_tasks error: ${reply['error'].slice(0, 240)}`)
         return { error: reply['error'] }
       }
       const reason = typeof reply['reason'] === 'string' ? reply['reason'] : undefined
-      return { tasks: asTasks(reply['tasks']), ...(reason ? { reason } : {}) }
+      const tasks = asTasks(reply['tasks'])
+      if (tasks.length === 0) {
+        // 「领到 0 条」本身是正常回执（queue_empty / budget_exhausted / inflight_full），
+        // 但**不显示 reason 的空任务**不是 —— 那说明两侧的回执形状没对上（实测踩过）。
+        // 这里把原始键打出来，下次一眼就能看出差在哪。
+        if (!reason) {
+          console.warn(
+            `[xdr-ingest] claim_tasks returned 0 tasks with no reason; reply keys: `
+            + `${Object.keys(reply).join(',')} | body: ${JSON.stringify(reply).slice(0, 240)}`,
+          )
+        } else if (reason !== 'queue_empty') {
+          console.warn(`[xdr-ingest] claim_tasks: ${reason}`)
+        }
+      }
+      return { tasks, ...(reason ? { reason } : {}) }
     } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) }
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[xdr-ingest] claim_tasks threw: ${message.slice(0, 240)}`)
+      return { error: message }
     }
   }
 
