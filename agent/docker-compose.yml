@@ -39,7 +39,7 @@ services:
       # 固定 web 登录令牌（重启不再换 token 维持登录 URL 稳定），同时也是
       # 工作台会话签名密钥的兜底缝——不设时启动日志会提示
       DSH_WEB_LAUNCH_TOKEN: ${DSH_WEB_LAUNCH_TOKEN:-}
-      # 控制台左侧菜单里的 NDR 管理台入口（如 https://172.16.196.77）；留空隐藏
+      # 控制台左侧菜单里的 NDR 管理台入口（部署时填实际地址）；留空隐藏
       DSH_WEB_NDR_CONSOLE_URL: ${DSH_WEB_NDR_CONSOLE_URL:-}
     extra_hosts:
       # 让容器能解析宿主机地址（连宿主机上 ndr 栈发布的 PG）

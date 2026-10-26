@@ -197,7 +197,7 @@ export async function systemSnapshot(context: unknown): Promise<SystemSnapshot> 
 
   if (settings === null) {
     notes.push('模型配置不可用：settings 服务不在场')
-    return { available: false, plugins, model: null, key: null, notes }
+    return { available: false, plugins, model: null, key: null, providers: [], notes }
   }
 
   let model: SystemSnapshot['model'] = null
