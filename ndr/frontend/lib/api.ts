@@ -846,7 +846,7 @@ export interface StatsOverview {
   error?: string;
 }
 
-// ---------- 行为分析页（/admin/behavior） ----------
+// ---------- 行为分析页（/behavior） ----------
 
 /** `GET /api/baseline/config`：一个可调参数（后端单一定义源，前端只负责渲染） */
 export interface BaselineConfigItem {

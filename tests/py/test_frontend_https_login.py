@@ -20,7 +20,11 @@ def test_root_is_login_gate() -> None:
     assert "/login" in page and "/admin/status" in page
     assert "正在校验登录" in page, "首屏只渲染这句，不渲染主页内容"
     config = (FRONTEND / "next.config.mjs").read_text(encoding="utf-8")
-    assert "redirects" not in config, "不能在配置里把 `/` 无条件重定向到总览（那正是闪烁的根因）"
+    # 这条守的是「**根路径**不许被静态重定向」：`/` 一旦在配置里 307 到总览，打开站点
+    # 就会先渲染主页再跳登录页，出现闪烁——那正是当初改成客户端登录闸门的根因。
+    # 允许的则是「具体路径的别名重定向」（如 `/admin/status` → `/console` 这类历史地址
+    # 兼容的 307），两者语义正交。所以这里只禁 `source: "/"`，不要一刀切禁掉 redirects 整个键。
+    assert 'source: "/"' not in config, "不能在配置里把 `/` 无条件重定向到总览（那正是闪烁的根因）"
 
 
 def test_https_termination_in_container() -> None:
@@ -93,7 +97,7 @@ def test_config_audit_lists_source_and_masks_secrets() -> None:
     assert "_PLACEHOLDER_SECRETS" in src and "change-me-in-production" in src, "占位密钥要报警"
     router = (ROOT / "ndr" / "backend" / "app" / "api" / "router.py").read_text(encoding="utf-8")
     assert "config_audit_router" in router
-    page = (ROOT / "ndr" / "frontend" / "app" / "admin" / "config" / "page.tsx").read_text(
+    page = (ROOT / "ndr" / "frontend" / "app" / "config" / "health" / "page.tsx").read_text(
         encoding="utf-8"
     )
     assert "/api/config/audit" in page and "来源" in page
@@ -101,7 +105,7 @@ def test_config_audit_lists_source_and_masks_secrets() -> None:
     nav = (ROOT / "ndr" / "frontend" / "lib" / "nav-config.ts").read_text(encoding="utf-8")
     assert "/config/health" in nav, "「配置管理」分区要能进到配置体检页"
     assert (ROOT / "ndr" / "frontend" / "app" / "config" / "health" / "page.tsx").exists(), (
-        "新路由 /config/health 必须存在（复用 /admin/config 的实现）"
+        "配置体检页在 /config/health（实现已从旧 /admin/config 搬到新地址）"
     )
 
 

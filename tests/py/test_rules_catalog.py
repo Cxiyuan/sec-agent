@@ -65,7 +65,7 @@ def test_signature_ruleset_feature_is_removed() -> None:
 
 def test_rules_page_has_no_signature_node() -> None:
     """规则页不该再有「签名规则集」节点（特征匹配走正常分组）。"""
-    page = (ROOT / "ndr" / "frontend" / "app" / "admin" / "rules" / "page.tsx").read_text(
+    page = (ROOT / "ndr" / "frontend" / "app" / "config" / "rules" / "page.tsx").read_text(
         encoding="utf-8"
     )
     assert "tree-signature" not in page

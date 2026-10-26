@@ -928,7 +928,7 @@ Badge 组（现状 3 个，保持）：`轮转 {status.rotation_hours}h` · `本
 | 最近成功 / 失败 | `st.last_success_at` / `st.last_error_at`（+ `st.last_error`） | `—` |
 | 状态不可读 | `st.error` | 不显示 |
 
-### 4.7 `/config/health`（`app/admin/config/page.tsx`，`/api/config/audit`）
+### 4.7 `/config/health`（`app/config/health/page.tsx`，`/api/config/audit`）
 
 **rail 卡「需要处理」/「正常」**（现状已有）
 

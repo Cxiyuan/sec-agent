@@ -148,5 +148,5 @@ export function SideNav() {
 }
 
 
-/** 兼容旧引用（`app/admin/*` 里有页面直接渲染 `<Nav />`）：语义与 `SideNav` 相同。 */
+/** 兼容别名：`Nav` 与 `SideNav` 是同一组件，`PageShell` 仍按 `Nav` 导入使用。 */
 export const Nav = SideNav;

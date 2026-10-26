@@ -36,7 +36,7 @@
 | 精准抑制 | `/config/suppressions` | 配置管理·检测与过滤组 | `PageShell width="wide"` | 配置管理 |
 
 - 命名：菜单/页标题「派工队列」「精准抑制」；「分析机制」只作首块 Section 副标题。
-- 直接实现 `app/analysis/page.tsx` 与 `app/config/suppressions/page.tsx`，**不建 `app/admin/*` 薄壳镜像**。
+- 直接实现 `app/analysis/page.tsx` 与 `app/config/suppressions/page.tsx`，**不建 `app/admin/*` 薄壳镜像**（该迁移期模式现已整体撤销，`app/admin/` 目录已删除）。
 - 骨架（两页 h1 `sr-only`，第一屏直接 Section）：派工队列 5 块（①队列总览 ②任务队列 ③任务结论 ④覆盖率与盲区 ⑤对象清单）；精准抑制 3 块（①抑制总览 ②抑制清单 ③参数与门槛）。
 
 ---

@@ -446,7 +446,7 @@ hover 与选中因此分属两个不同的视觉通道（表面层级 vs 品牌�
 
 ## 4. 检测规则树形列表视觉规范（本次重点）
 
-`app/admin/rules/page.tsx`。**业务状态机一律不改**：`expanded` / `openIds` / `showDisabled` / `busy` / localStorage key `shentong.rules.tree` / 三个接口调用全部保持原样。
+`app/config/rules/page.tsx`（原 `app/admin/rules/page.tsx`，2026-10 已搬到新地址）。**业务状态机一律不改**：`expanded` / `openIds` / `showDisabled` / `busy` / localStorage key `shentong.rules.tree` / 三个接口调用全部保持原样。
 
 ### 4.0 容器：整棵树装在一张 `Card` 里，内部不再出现任何盒子
 
@@ -1427,7 +1427,7 @@ export function TreeRow({ last = false, mid = 20, className, children }: TreeRow
 }
 ```
 
-### 5.11 `ndr/frontend/app/admin/rules/page.tsx`（修改）
+### 5.11 `ndr/frontend/app/config/rules/page.tsx`（修改；原 `app/admin/rules/page.tsx`）
 
 - 删掉本地 `TreeNode`（rules/page.tsx:66-106），改用 `TreeChildren` / `TreeRow` / `TreeChevron`
 - `builtinTable` / `customTable` 从 `<Table>` 改为 7 列 `grid` 行（4.5 节）

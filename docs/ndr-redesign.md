@@ -310,7 +310,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 6. **调用记录**（`ndr/backend/app/mcp/calls.py`）：Redis 有界列表 `LPUSH` + `LTRIM`，**记录失败整体吞异常**（旁路不该让智能体的调查挂掉）。
 
-7. **管理接口** `ndr/backend/app/api/routes/mcp.py`（NDR 后端第 8 组路由）：`GET /status`、`GET /tools`、`GET|POST /tokens`、`POST /tokens/{id}/state`（启用/吊销）、`DELETE /tokens/{id}`、`GET|DELETE /calls`、`GET /conclusions`（顺手清过期结论）。界面面板 `ndr/frontend/components/mcp-panel.tsx`（第 7 期拆页后挂在 `/admin/agent`「智能体对接」页）。
+7. **管理接口** `ndr/backend/app/api/routes/mcp.py`（NDR 后端第 8 组路由）：`GET /status`、`GET /tools`、`GET|POST /tokens`、`POST /tokens/{id}/state`（启用/吊销）、`DELETE /tokens/{id}`、`GET|DELETE /calls`、`GET /conclusions`（顺手清过期结论）。界面面板 `ndr/frontend/components/mcp-panel.tsx`（第 7 期拆页时挂在「智能体对接」页，现地址 `/config/agent`，旧 `/admin/agent` 仅为 307 别名）。
 
 8. **编排**：两份 compose 都加 `ndr-mcp` 服务（`command: python -m app.mcp.server`、端口 8090、healthcheck 打 `/health` —— 镜像里没有 curl，用 `python -c` 打）。`ndr/backend/pyproject.toml` 依赖加 `mcp>=2.2,<3`。
 
@@ -363,7 +363,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 5. **接口** 新增 `ndr/backend/app/api/routes/ingest_filters.py`（NDR 后端第 9 组路由，`prefix="/api/ingest-filters"`）：`GET ""`（list，每条带 `hit_count` 与 `samples`）、`GET "/fields"`（字段分组 + 运算符 + **三条现成示例**：内网互扫 / 监控探活 UA / 心跳域名）、`GET "/stats"`、`POST "/dry-run"`、`POST ""`、`PUT "/{id}"`、`DELETE "/{id}"`；三道校验（400 空条件/未知字段/正则错、404 不存在、409 同名），写操作后 `invalidate_cache()`。挂在 `ndr/backend/app/api/router.py` 的 exclusions 之后。
 
-6. **界面** 新增 `ndr/frontend/components/ingest-filters-panel.tsx`，与排除过滤面板同挂在 `/admin/filters`「过滤规则」页（第 7 期拆页前是 `ndr/frontend/app/admin/settings/page.tsx` 里 MCP 面板与排除过滤面板之间），复用 `condition-editor.tsx`；面板带**「试运行（不保存）」**按钮 + 回看小时/取样条数输入，结果区显示取数来源、扫描/命中条数与比例、命中样例（含事件 ref），以及三条示例的一键套用；列表显示每条例「已挡下」计数与最近命中的样例。`ndr/frontend/lib/api.ts` 补 `IngestFilterItem` / `IngestFilterSample` / `IngestFilterFields` / `IngestFilterDryRunResult` 等类型。
+6. **界面** 新增 `ndr/frontend/components/ingest-filters-panel.tsx`，与排除过滤面板同挂在「过滤规则」页 `/config/filters`（第 7 期拆页前在已删除的 `ndr/frontend/app/admin/settings/page.tsx` 里，即 MCP 面板与排除过滤面板之间），复用 `condition-editor.tsx`；面板带**「试运行（不保存）」**按钮 + 回看小时/取样条数输入，结果区显示取数来源、扫描/命中条数与比例、命中样例（含事件 ref），以及三条示例的一键套用；列表显示每条例「已挡下」计数与最近命中的样例。`ndr/frontend/lib/api.ts` 补 `IngestFilterItem` / `IngestFilterSample` / `IngestFilterFields` / `IngestFilterDryRunResult` 等类型。
 
 7. **顺手扩了 MCP `list_filters`**：原来只回排除过滤，现在回 `{"filters": 排除, "ingest_filters": 降噪, "hint": ...}`，hint 明确「两道闸门都会导致没有告警，别把被过滤当成没有异常」。智能体侧从未调用过该工具，改形状安全。
 
@@ -374,7 +374,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 - **agent 侧接收端点**：`agent/backend/app/api/routes/push.py` —— `GET /api/push/ping`（连通性自检）、`POST /api/push/digests`；Bearer 令牌常数时间比较（未配 `ST_PUSH_TOKEN` → 503，令牌不符 → 401，超 `push_max_items` → 413）；逐条按「查库 → Redis 占位」判重（见第 5 节），新摘要用 `celery_app.send_task("analysis.analyze_digests", args=[accepted])` 投递（API 进程不必 import 整个任务模块）。指纹下沉：`agent/backend/app/digest.py` 新增 `group_fingerprint` / `time_bucket` / `bucket_minutes` / `digest_ips`，`agents/nodes.py:_group_fingerprint` 改为转发。
 - **NDR 侧推送与重发**：`ndr/backend/app/detector/push.py`（配置读写 / 分片 / 2xx 判定 / 统计 / `deliver` 四态 off·pushed·queued·lost / 重试队列与尝试上限 `_RETRY_QUEUE_MAX=2000`·`_RETRY_MAX_ATTEMPTS=5` / `retry_pending`）、`ndr/backend/app/detector/fingerprint.py`（`digest_age` + `digest_fingerprint` 从原闸门搬出）；`runner._flush()` 交接是「优先 HTTP 推 → 没配地址/被关掉时不再写已退役的 `shentong:events:dispatch`（全仓无消费者），改为记 `undelivered` 计数（`dropped.undelivered` + `/api/agent-push` 的 `undelivered`）后 ack，绝不静默丢也绝不计成 delivered」，推送失败但重试队列也写不进去（Redis 挂了）时摘要放回检测队列；主循环每轮调 `push.retry_pending()`。
-- **配置接口与界面**：`ndr/backend/app/api/routes/agent_push.py`（`GET`/`PUT /api/agent-push`、`POST /test`、`POST /retry`；令牌只回显打码，`token=None` 表示不改动）；`ndr/frontend/components/agent-push-panel.tsx`（第 7 期拆页后挂在 `/admin/agent`「智能体对接」页）（地址 / 令牌 / 超时 / 单次条数 / 开关 + 已送达·失败待重发·重发成功·重发失败·待重发批数 + 测试连接 / 立即重发）。配置存 `ndr/backend/app/db/models.py:SystemConfig`（键 `agent_push.params`），环境变量只作默认值。
+- **配置接口与界面**：`ndr/backend/app/api/routes/agent_push.py`（`GET`/`PUT /api/agent-push`、`POST /test`、`POST /retry`；令牌只回显打码，`token=None` 表示不改动）；`ndr/frontend/components/agent-push-panel.tsx`（第 7 期拆页时挂在「智能体对接」页，现地址 `/config/agent`）（地址 / 令牌 / 超时 / 单次条数 / 开关 + 已送达·失败待重发·重发成功·重发失败·待重发批数 + 测试连接 / 立即重发）。配置存 `ndr/backend/app/db/models.py:SystemConfig`（键 `agent_push.params`），环境变量只作默认值。
 - **退役**：删 `agent/backend/app/consumer.py`、`agent/backend/app/workers/tasks.py:_notify_done()`、NDR `detector/analyzed.py`、`AnalyzedFingerprint` 模型、两侧 `analyzed_done_queue` 配置、agent 两份 compose 的 `consumer` 服务；`/api/detector/stats` 与 MCP `detector_status` 的 `dedup` 字段改为「判重已下放到智能体」+ 退役前历史计数，前端同步。
 - **配置项**：NDR `ST_AGENT_PUSH_URL` / `ST_AGENT_PUSH_TOKEN` / `ST_AGENT_PUSH_ENABLED` / `ST_AGENT_PUSH_TIMEOUT_SECONDS` / `ST_AGENT_PUSH_MAX_PER_PUSH` / `ST_DETECTOR_PUSH_RETRY_QUEUE` / `ST_DETECTOR_PUSH_PROCESSING_QUEUE` / `ST_DETECTOR_PUSH_RETRY_MAX_PER_ROUND` / `ST_DETECTOR_PUSH_STATS_KEY`；agent `ST_PUSH_TOKEN` / `ST_PUSH_DEDUP_KEY` / `ST_PUSH_MAX_ITEMS`。**两侧令牌必须一致**，compose 分别从 `NDR_AGENT_PUSH_TOKEN` / `PUSH_TOKEN` 取。
 - **实测**：`/tmp/test_push_api.py` 30 项（鉴权 / 首次 / 重复 / 占位冲突 / 无 IP / 413 / 422 / 指纹与图一致）；`/tmp/test_agent_push.py` 51 项（`deliver` 四态与分片 / 重发队列回灌与失败停止 / 配置合并与 `_to_bool`（"no"/"false"/"0"/"off" 认成假）/ 路由 GET·PUT·test·retry）；`/tmp/test_runner_push.py` 15 项（`_flush` 四态交接、超龄丢弃先于推送、旧队列写不进则回队）。写库测试用 FakeSession / FakeRedis / `dependency_overrides`，**未连真 PG / 真 Redis**。
@@ -393,7 +393,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 
 
 1. **`ndr/frontend/components/page-shell.tsx`（新增）**：统一页面骨架 `PageShell({title, desc, children})` = 左侧 `Nav` + `ml-56` 主区 + 标题/说明 + `space-y-4` 内容栈，新页不再各写一遍布局。
-2. **六个新页面**（均在 `ndr/frontend/app/admin/` 下，套 `PageShell`）：
+2. **六个新页面**（当时均在 `ndr/frontend/app/admin/` 下，套 `PageShell`；2026-10 已整体搬到新地址、`app/admin/` 目录已删除，下列路径按新地址理解）：
    - `networks/page.tsx`「监控网段」= `<ZeekPanel section="networks"/>`（抓包范围 + 附加 BPF）
    - `storage/page.tsx`「数据存储」= `<EsPanel/>` + `<LogstashPanel/>`
    - `filters/page.tsx`「过滤规则」= `<IngestFiltersPanel/>` + `<ExclusionsPanel/>`
@@ -401,7 +401,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
    - `status/page.tsx`「运行状态」= `<StatusPanel/>`（新增，见下）
 3. **`ndr/frontend/components/zeek-panel.tsx` 按 section 复用**：签名改为 `ZeekPanel({ section = "all" }: { section?: "all" | "iface" | "networks" })`，标题/说明/可见块随 section 切；`save()` 仍一次性 PUT `{interface, networks, bpf_extra}`，**没显示的那部分原样回传**，因此「采集接入」与「监控网段」两页互不覆盖。旧的 `section="all"` 形态保留。
 5. **`ndr/frontend/components/nav.tsx` 七项导航**：检测规则 / 采集接入 / 监控网段 / 数据存储 / 过滤规则 / 智能体对接 / 运行状态；~~**配置总览（`/admin/settings`）挂在全局页头的 logo 上**（可点，带齿轮图标），不占导航行~~ → **该页与入口已取消，见「2026-10 界面口径」小节的后续说明**。
-6. **顺手修掉两处死跳转**：`ndr/frontend/app/setup/page.tsx`（首次向导保存后）与 `ndr/frontend/app/login/page.tsx`（登录后）原本都 `router.replace("/dashboard")`，而本前端没有 `/dashboard`（首页 `app/page.tsx` 即 `/`，它再 redirect 到 `/admin/rules`）→ 都改为 `"/"`。原先这两处会跳到 404。
+6. **顺手修掉两处死跳转**：`ndr/frontend/app/setup/page.tsx`（首次向导保存后）与 `ndr/frontend/app/login/page.tsx`（登录后）原本都 `router.replace("/dashboard")`，而本前端没有 `/dashboard`（首页 `app/page.tsx` 即 `/`，它再 redirect 到检测规则页 `/admin/rules`，现地址 `/config/rules`）→ 都改为 `"/"`。原先这两处会跳到 404。
 
 **验收**：六个子页可直达、旧 `/admin/settings` 仍是有效入口、导航七项高亮正确、首次向导与登录不再跳 404。实施取证：`ndr/frontend` `npx tsc --noEmit` 通过（`agent/frontend` 未改动，另行复跑）；后端本轮无改动，收尾仍复跑 ruff/pyright。**未取证**：浏览器里的实际渲染与交互（未起前端 dev server，按 AGENTS.md 也不本地 build）。
 
@@ -700,7 +700,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
 ### 2026-10 「总览」页：默认落地页 + 服务器/组件/威胁/流量与协议 + 全页图表化
 
 
-**入口（路由不变）**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 仍 `/admin/status`**；`/` 的重定向写进 `next.config.mjs` 的 `redirects()`（`/` → `/admin/status`，307）；`app/admin/status/page.tsx` 标题改「总览」，原 `app/page.tsx`（内含 `redirect()`）**已删**——原因见下面「上线复验」。
+**入口**：`components/nav.tsx` 把「总览」（原「运行状态」）放到第一项、icon 换 `LayoutDashboard`，**href 当时是 `/admin/status`，现为 `/console`**（旧 `/admin/status` 保留为 307 别名）；`/` 的重定向一度写进 `next.config.mjs` 的 `redirects()`（`/` → `/admin/status`，307），后因首屏闪烁改为 `app/page.tsx` 客户端判断——**现在配置里不做根路径静态重定向**，现行 `redirects()` 只有 `/admin/*` → 新地址的别名；`app/console/page.tsx`（原 `app/admin/status/page.tsx`）标题改「总览」，原 `app/page.tsx`（内含 `redirect()`）**已删**——原因见下面「上线复验」。
 
 **后端（4 个新端点 + 1 个采样）**：
 
@@ -840,7 +840,7 @@ NDR 对外提供 **MCP server**，智能体在分析事件时通过它查询、�
   `snapshot()` 多回 `oldest_first_seen` / `next_warm_at`（**观测期倒计时**，与总数/预热数同一条聚合 SQL）。
 - 保存后会清掉总览的 30 秒进程内缓存，避免界面继续显示旧标量。
 
-**前端**：新增导航项「行为分析」（放在「总览」之后 —— 两个都是「看数据」的页）+ `app/admin/behavior/page.tsx`
+**前端**：新增导航项「行为分析」（放在「总览」之后 —— 两个都是「看数据」的页）+ `app/behavior/page.tsx`（当时在 `app/admin/behavior/page.tsx`）
 + `components/behavior-panel.tsx`。**主页面只做展示，三块**：①学习进度与检测器心跳（含**观测期倒计时**与
 当前风险 TOP）；②数值基线 **IP 列表**；③**画像列表**。后两块都带**状态列：`生效中` / `观测中`** ——
 运维第一眼要知道的就是「这个维度/实体现在能不能出判定」：

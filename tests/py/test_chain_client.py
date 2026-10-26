@@ -140,7 +140,7 @@ def test_page_does_not_say_unknown_client(request: pytest.FixtureRequest) -> Non
     """界面文案守卫：不再出现「未知请求IP」，改为「客户端未记录」+ 原因。"""
     if request.config.getoption("--stack") != "ndr":
         pytest.skip("攻击链页只在 NDR 侧")
-    src = (ROOT / "ndr" / "frontend" / "app" / "admin" / "chain" / "page.tsx").read_text(
+    src = (ROOT / "ndr" / "frontend" / "app" / "chain" / "page.tsx").read_text(
         encoding="utf-8"
     )
     assert "未知请求IP" not in src
@@ -171,7 +171,7 @@ def test_origin_shows_ip_primary(chain: ModuleType, stub: dict[str, Any]) -> Non
 
 def test_chain_page_shows_origin_ip_first() -> None:
     """界面守卫：源站优先用 origin_ip 渲染（域名作括号补充）。"""
-    src = (ROOT / "ndr" / "frontend" / "app" / "admin" / "chain" / "page.tsx").read_text(
+    src = (ROOT / "ndr" / "frontend" / "app" / "chain" / "page.tsx").read_text(
         encoding="utf-8"
     )
     assert "origin_ip" in src and "originLabel" in src

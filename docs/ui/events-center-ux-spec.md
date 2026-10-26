@@ -638,7 +638,7 @@ hover 反馈（`hover:bg-brand-50`）只服务指针设备；触屏没有 hover 
 
 ### 10.3 明确不动的东西
 
-- `/console` 与 `/admin/status` 路由（`console/page.tsx` 是 re-export；书签与文档引用保留）；
+- `/console` 路由（`console/page.tsx` 直接承载实现；旧地址 `/admin/status` 由 `next.config.mjs` 的 307 别名兜住，书签与文档引用仍可用）；
 - `/api/detector/*` 全部契约（硬约束）；
 - 运营中心的 5 秒轮询（§8.3 的不迁移只针对事件中心）；
 - `CONSOLE_SHORTCUTS` **不新增**「事件中心」（§1.3：一级菜单已可达，shortcuts 保持 4 个）；
@@ -896,7 +896,7 @@ const [msg, setMsg] = React.useState<{ kind: "ok" | "err"; text: string } | null
 - [ ] `status-panel.tsx` 删除项精确到 §10.1 表格；helper 搬到 `lib/hits.ts` 而非重写
 - [ ] 运营中心「威胁事件」区块保留三张图 + 新增「完整列表与处置 → 事件中心」链接
 - [ ] `nav-config.ts` 插入 events section（§1.1）；不改 `sectionOf`/`sidebarOf`/`sectionActive`
-- [ ] `/console`、`/admin/status` 路由、`/api/detector/*` 契约、运营中心 5 秒轮询均不动
+- [ ] `/console` 路由与 `/admin/status` 307 别名、`/api/detector/*` 契约、运营中心 5 秒轮询均不动
 
 ### 16.10 建议回填（不在本任务范围，记录备查）
 

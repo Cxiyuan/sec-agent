@@ -15,11 +15,11 @@
 - `ndr/frontend/components/page-shell.tsx`（三档宽度；**h1 已 sr-only**，页面不再显示标题段落）
 - `ndr/frontend/lib/nav-config.ts`
 
-**既有页面（版式先例）**
-- `app/admin/rules/page.tsx`（Section + 卡片内工具栏 + 树 + 抽屉表单 + Dialog 删除确认）
-- `app/admin/behavior/page.tsx` + `components/behavior-panel.tsx`（**最贴近本次**：多 Section + Stat 行 + 表 + 参数 Drawer w-[720px] + `overridden` 标记 + `field_errors`）
-- `app/admin/config/page.tsx`（Stat 行 + SettingsGrid 主列/侧列 + 三态写法）
-- `app/admin/filters/page.tsx`、`components/ingest-filters-panel.tsx`（SettingsBoard/SettingsBlock + 条件树 + **试运行结果块**）
+**既有页面（版式先例）**（下列路径已于 2026-10 从 `app/admin/*` 整体搬到新地址，`app/admin/` 目录已删除）
+- `app/config/rules/page.tsx`（Section + 卡片内工具栏 + 树 + 抽屉表单 + Dialog 删除确认）
+- `app/behavior/page.tsx` + `components/behavior-panel.tsx`（**最贴近本次**：多 Section + Stat 行 + 表 + 参数 Drawer w-[720px] + `overridden` 标记 + `field_errors`）
+- `app/config/health/page.tsx`（Stat 行 + SettingsGrid 主列/侧列 + 三态写法；原 `app/admin/config`）
+- `app/config/filters/page.tsx`、`components/ingest-filters-panel.tsx`（SettingsBoard/SettingsBlock + 条件树 + **试运行结果块**）
 - `components/exclusions-panel.tsx`（同一族过滤器的列表/统计写法）
 - `components/condition-editor.tsx`（`ConditionEditor`、`condsToRules`、`conditionsToConds`、`EMPTY_COND`，并**导出 `SELECT_CLS`（:37）**，`rules/page.tsx:33` 已在用）
 
@@ -178,7 +178,7 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 ```
 
 - **为什么单页不拆 5 个子路由**：队列页是「盯屏 + 偶尔深挖」，拆开会让「队列」与「验收指标」分离。演进路径：结论量 > 5k 再拆 `/analysis/results`。
-- **不做侧边栏**（设计 / 体验 / 前端三方一致，已冻结）：单页 + 3 个浮层（详情 / 参数 / 人工派工），与 `/admin/behavior` 同构。
+- **不做侧边栏**（设计 / 体验 / 前端三方一致，已冻结）：单页 + 3 个浮层（详情 / 参数 / 人工派工），与 `/behavior` 同构。
 - **主列 vs 侧列**：只有 ④ 用双列（主列=盲区表，侧列=只读口径说明）；①②③⑤ 全幅（宽表塞进 19rem 会变竖排省略号，`SettingsRail` 白名单也禁止列数>3）。
 
 ### 4.2 关键组件与视觉权重
@@ -469,7 +469,7 @@ PageShell width="wide"（h1 = 精准抑制）
 ```
 
 - **`ShieldOff` 当前未 import**（`nav-config.ts` 只 import 了 `ClipboardList / Filter / Radar / ScanSearch / Siren` 等）。→ 二选一：**补 `ShieldOff` 进 import**（语义最准，推荐），或改用已 import 的 `Filter`。不补就编译失败。
-- 路由：直接实现 `app/analysis/page.tsx` 与 `app/config/suppressions/page.tsx`。**不要再建 `app/admin/*` 镜像 + 薄壳**（那是 2026-10 迁移期存量模式）；新页直接落地。
+- 路由：直接实现 `app/analysis/page.tsx` 与 `app/config/suppressions/page.tsx`。**不要再建 `app/admin/*` 镜像 + 薄壳**（那是 2026-10 迁移期存量模式，现已整体撤销、`app/admin/` 目录已删除）；新页直接落地。
 - `/analysis` 在 dropdown 里靠 `sectionOf()` / `sidebarOf()` 自动归属：有高亮、**不出侧边栏**，不需要额外 `match` 字段。
 - 命名：「派工队列」比「分析机制」好（用户找的是「活在哪」）；「分析机制」留给首块 Section 副标题。
 - 「精准抑制」保留（安全运营通用词），desc 点出复核/试算/撤销。
@@ -521,7 +521,7 @@ PageShell width="wide"（h1 = 精准抑制）
 
 - **给 ux-designer**：三条交互状态机 —— ①队列行→详情抽屉→回列表焦点归位；②抑制抽屉「条件变更→debounce 试算→mode 可能翻转→两段式确认→保存」（含 `degraded` / `invalid` / `netfail` 三分支，`degraded` 必须可保存）；③撤销 Dialog 原因可空 + 4 个常见原因 chip。
 - **给 fe-engineer**：按 §8 的 18 条坑实现（尤其 1、2、11、15、16）；类型新建 `KnobItem`（无 `value`）与 `SuppressionItem`（26 字段），运行时常量/中文映射放新建 `lib/analysis.ts`（照 `lib/hits.ts` 先例），**不塞 `api.ts`**；参数抽屉复用 `behavior-panel.tsx` 的 draft/`overridden`/`field_errors` 渲染骨架（但**不要**照抄 `item.value` 与 `kind === "regex"` 两行）；条件树复用 `components/condition-editor.tsx`（`condsToRules`/`conditionsToConds` 已处理 `in`→数组、数值转换、`exists` 不带值），字段源换成 `allowed_fields` 12 项。
-- **已拍板口径**：①抑制清单恒 `include_expired=true` + 只留「仅启用」开关；②派工队列**不做侧边栏**（单页 + 3 浮层）；③`/analysis` 与 `/config/suppressions` 直接落地，不建 `app/admin/*` 镜像。
+- **已拍板口径**：①抑制清单恒 `include_expired=true` + 只留「仅启用」开关；②派工队列**不做侧边栏**（单页 + 3 浮层）；③`/analysis` 与 `/config/suppressions` 直接落地，不建 `app/admin/*` 镜像（该模式已整体撤销）。
 
 ---
 
