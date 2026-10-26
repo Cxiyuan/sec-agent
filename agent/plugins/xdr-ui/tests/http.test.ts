@@ -36,6 +36,7 @@ function makeApp(options: Partial<{
     saveModel: (patch: unknown) => Promise<unknown>
     saveKey: (patch: unknown) => Promise<unknown>
     saveEndpoint: (patch: unknown) => Promise<unknown>
+    saveProvider: (patch: unknown) => Promise<unknown>
   }
 }> = {}) {
   const auth = new UiAuth(
@@ -55,6 +56,7 @@ function makeApp(options: Partial<{
       saveModel: async () => ({ ok: false, error: '未接线' }),
       saveKey: async () => ({ ok: false, error: '未接线' }),
       saveEndpoint: async () => ({ ok: false, error: '未接线' }),
+      saveProvider: async () => ({ ok: false, error: '未接线' }),
     },
   })
   return { server: createServer(handler), ingest: ingestRef }
@@ -396,6 +398,34 @@ test('系统设置：未登录 401；GET 返回快照；POST 模型校验失败 
 
     const wrongMethod = await fetch(`${base}${BASE}/api/system`, { method: 'POST', headers: { cookie } })
     assert.equal(wrongMethod.status, 405)
+  } finally {
+    server.close()
+  }
+})
+
+test('系统设置：自定义服务商 POST 透传并返回结果', async () => {
+  const seen: unknown[] = []
+  const system = {
+    snapshot: async () => ({ available: true, plugins: [], model: null, key: null, providers: [], notes: [] }),
+    saveModel: async () => ({ ok: true }),
+    saveKey: async () => ({ ok: true }),
+    saveEndpoint: async () => ({ ok: true }),
+    saveProvider: async (patch: unknown) => {
+      seen.push(patch)
+      return { ok: true, snapshot: { providers: [{ route: 'kimi' }] } }
+    },
+  }
+  const { server } = makeApp({ system })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const res = await fetch(`${base}${BASE}/api/system/provider`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ route: 'kimi', modelId: 'kimi-k2' }),
+    })
+    assert.equal(res.status, 200)
+    assert.deepEqual(seen[0], { route: 'kimi', modelId: 'kimi-k2' })
   } finally {
     server.close()
   }

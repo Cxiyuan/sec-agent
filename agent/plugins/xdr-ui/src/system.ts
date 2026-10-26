@@ -63,6 +63,17 @@ export interface SystemSnapshot {
     writable: boolean
     source: string
   } | null
+  /** 已注册的服务商路由（pi-ai 自定义 + DeepSeek 官方通道）。 */
+  providers: Array<{
+    route: string
+    displayName: string
+    api: string
+    baseURL: string
+    models: string[]
+    apiKeyRef: string
+    configured: boolean
+    writable: boolean
+  }>
   /** 给界面看的说明（服务缺失、配置来自环境变量等）。 */
   notes: string[]
 }
@@ -93,6 +104,11 @@ function serviceOf<T>(context: unknown, name: string): T | null {
     return null
   }
 }
+
+/** 支持的线协议（pi-ai 适配器）。 */
+const PROTOCOLS = new Set(['openai-completions', 'anthropic-messages'])
+const ROUTE_PATTERN = /^[a-z][a-z0-9-]{1,32}$/u
+const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
 
 /** 只接受短文本：这些值会写进 profile patch，不做长度上限就是给自己留坑。 */
 function textOf(value: unknown): string | null {
@@ -211,7 +227,82 @@ export async function systemSnapshot(context: unknown): Promise<SystemSnapshot> 
     key = { ...pickedKey, configured, writable, source }
   }
 
-  return { available: true, plugins, model, key, notes }
+  const providers = await providerRows(settings, credentials, notes)
+  return { available: true, plugins, model, key, providers, notes }
+}
+
+/** 列出可用的服务商路由：pi-ai 的 providers 字典 + DeepSeek 官方通道。 */
+async function providerRows(
+  settings: SettingsLike,
+  credentials: CredentialsLike | null,
+  notes: string[],
+): Promise<SystemSnapshot['providers']> {
+  const rows: SystemSnapshot['providers'] = []
+  let described: ReturnType<SettingsLike['describe']>
+  try {
+    described = settings.describe({ redactSecrets: true })
+  } catch {
+    return rows
+  }
+  for (const row of described) {
+    const value: unknown = row.value
+    if (!isPlainObject(value)) continue
+    const dict = value['providers']
+    if (!isPlainObject(dict)) continue
+    for (const [route, profile] of Object.entries(dict)) {
+      if (!isPlainObject(profile)) continue
+      const apiKeyRef = typeof profile['apiKeyEnv'] === 'string' ? profile['apiKeyEnv'] : ''
+      const models = Array.isArray(profile['models'])
+        ? profile['models'].flatMap(model => (isPlainObject(model) && typeof model['id'] === 'string' ? [model['id']] : []))
+        : []
+      const info = apiKeyRef === '' || credentials === null ? null : await safeDescribe(credentials, apiKeyRef)
+      rows.push({
+        route,
+        displayName: typeof profile['displayName'] === 'string' ? profile['displayName'] : route,
+        api: typeof profile['api'] === 'string' ? profile['api'] : '',
+        baseURL: typeof profile['baseURL'] === 'string' ? profile['baseURL'] : '',
+        models,
+        apiKeyRef,
+        configured: info?.configured === true,
+        writable: info?.writable === true,
+      })
+    }
+  }
+  // DeepSeek 官方通道（独立适配器，不在 pi-ai 字典里）
+  for (const row of described) {
+    const value: unknown = row.value
+    if (!isPlainObject(value)) continue
+    if (typeof value['providers'] === 'object') continue
+    const ref = value['apiKeyEnv']
+    if (typeof ref !== 'string' || ref.trim() === '') continue
+    const info = credentials === null ? null : await safeDescribe(credentials, ref.trim())
+    rows.push({
+      route: 'deepseek-official',
+      displayName: 'DeepSeek（官方通道）',
+      api: 'anthropic-messages',
+      baseURL: typeof value['baseURL'] === 'string' ? value['baseURL'] : '',
+      models: Array.isArray(value['models'])
+        ? value['models'].flatMap(model => (isPlainObject(model) && typeof model['id'] === 'string' ? [model['id']] : []))
+        : [],
+      apiKeyRef: ref.trim(),
+      configured: info?.configured === true,
+      writable: info?.writable === true,
+    })
+    break
+  }
+  if (rows.length === 0) notes.push('还没有可用的模型服务商，请在下方添加（或用 DeepSeek 官方通道填 Key）')
+  return rows
+}
+
+async function safeDescribe(
+  credentials: CredentialsLike,
+  ref: string,
+): Promise<{ configured: boolean, writable?: boolean } | null> {
+  try {
+    return await credentials.describe(ref)
+  } catch {
+    return null
+  }
 }
 
 /** 保存模型选择（provider / model / 可选 reasoningEffort）。 */
@@ -274,6 +365,86 @@ export async function saveEndpoint(context: unknown, patch: unknown): Promise<Sy
       await settings.mutate(picked.ns, [{ op: 'unset', path: ['baseURL'] }], picked.revision)
     } else {
       await settings.update(picked.ns, { baseURL }, picked.revision)
+    }
+    return { ok: true, snapshot: await systemSnapshot(context) }
+  } catch (error) {
+    return { ok: false, error: describeWriteError(error) }
+  }
+}
+
+/**
+ * 新增或更新一个自定义服务商：写 pi-ai 的 providers 字典、存 Key、可选设为默认模型。
+ * 覆盖同一 route 即更新；不动其他 route（settings.update 对普通对象是深合并）。
+ */
+export async function saveProvider(context: unknown, patch: unknown): Promise<SystemResult> {
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  const credentials = serviceOf<CredentialsLike>(context, 'credentials')
+  if (settings === null) return { ok: false, error: 'settings 服务不在场' }
+  if (!isPlainObject(patch)) return { ok: false, error: '参数必须是 JSON 对象' }
+
+  const route = textOf(patch['route'])
+  const displayName = textOf(patch['displayName'] ?? '')
+  const api = textOf(patch['api'] ?? 'openai-completions')
+  const baseURL = textOf(patch['baseURL'])
+  const modelId = textOf(patch['modelId'])
+  const apiKeyEnv = textOf(patch['apiKeyEnv'] ?? '')
+  const apiKey = typeof patch['apiKey'] === 'string' ? patch['apiKey'].trim() : ''
+  const makeDefault = patch['makeDefault'] !== false
+  const contextWindowRaw = patch['contextWindow']
+  const contextWindow = contextWindowRaw === undefined || contextWindowRaw === '' || contextWindowRaw === null
+    ? undefined
+    : Number(contextWindowRaw)
+
+  if (route === null || !ROUTE_PATTERN.test(route)) {
+    return { ok: false, error: '服务商标识（route）只能是小写字母开头、含小写字母/数字/短横线，长度 2~33' }
+  }
+  if (baseURL === null || !/^https?:\/\/\S+$/u.test(baseURL)) return { ok: false, error: 'Base URL 必须是 http(s) 地址' }
+  if (modelId === null || modelId === '') return { ok: false, error: '模型 ID 不能为空' }
+  if (api === null || !PROTOCOLS.has(api)) return { ok: false, error: '协议只支持 openai-completions / anthropic-messages' }
+  if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || contextWindow < 1024 || contextWindow > 10_000_000)) {
+    return { ok: false, error: '上下文窗口必须是 1024~10000000 的整数（可留空）' }
+  }
+  if (apiKeyEnv !== null && apiKeyEnv !== '' && !REF_PATTERN.test(apiKeyEnv)) {
+    return { ok: false, error: '凭据变量名只能是字母/数字/下划线，且不能以数字开头' }
+  }
+  if (apiKey.length > 4_096) return { ok: false, error: '密钥过长' }
+
+  let described: ReturnType<SettingsLike['describe']>
+  try {
+    described = settings.describe({ redactSecrets: true })
+  } catch (error) {
+    return { ok: false, error: describeWriteError(error) }
+  }
+  const piRow = described.find(row => row.ns === 'llm-pi-ai')
+  if (piRow === undefined) return { ok: false, error: '这台 dsh 没有启用通用模型适配器（llm-pi-ai）' }
+  const ref = apiKeyEnv !== null && apiKeyEnv !== ''
+    ? apiKeyEnv
+    : `${route.replace(/[^a-z0-9]+/gu, '_').toUpperCase()}_API_KEY`
+
+  const profile: Record<string, unknown> = {
+    displayName: displayName === null || displayName === '' ? route : displayName,
+    api,
+    baseURL,
+    apiKeyEnv: ref,
+    models: [{
+      id: modelId,
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+    }],
+  }
+  try {
+    await settings.update('llm-pi-ai', { providers: { [route]: profile } }, piRow.revision)
+    if (apiKey !== '') {
+      if (credentials === null) return { ok: false, error: '服务商已保存，但 credentials 服务不在场，密钥未写入' }
+      await credentials.set(ref, apiKey)
+    }
+    if (makeDefault) {
+      const modelRow = described.find(row => {
+        const value: unknown = row.value
+        return isPlainObject(value) && typeof value['provider'] === 'string' && typeof value['model'] === 'string'
+      })
+      if (modelRow !== undefined) {
+        await settings.update(modelRow.ns, { provider: route, model: modelId }, modelRow.revision)
+      }
     }
     return { ok: true, snapshot: await systemSnapshot(context) }
   } catch (error) {

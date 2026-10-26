@@ -2,7 +2,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { saveEndpoint, saveKey, saveModel, systemSnapshot } from '../src/system.ts'
+import { saveEndpoint, saveKey, saveModel, saveProvider, systemSnapshot } from '../src/system.ts'
 
 type Calls = Array<{ kind: string, args: unknown[] }>
 
@@ -21,7 +21,7 @@ function fakeContext(options: {
 
 function fakeSettings(calls: Calls, value: Record<string, unknown> = {
   provider: 'deepseek-official', model: 'deepseek-chat',
-}): unknown {
+}, providers: Record<string, unknown> = {}): unknown {
   return {
     describe: (opts?: { redactSecrets?: boolean }) => {
       assert.equal(opts?.redactSecrets, true)
@@ -29,6 +29,7 @@ function fakeSettings(calls: Calls, value: Record<string, unknown> = {
         { ns: 'ui-settings-general', revision: 0, value: { welcomeNoticeVersion: 'x' } },
         { ns: 'default-model', revision: 7, value },
         { ns: 'llm-deepseek-api-key', revision: 2, value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com/anthropic' } },
+        { ns: 'llm-pi-ai', revision: 4, value: { providers } },
       ]
     },
     update: async (ns: string, patch: Record<string, unknown>, revision?: number) => {
@@ -129,4 +130,71 @@ test('保存接口地址：非 http(s) 拒绝；空值走 unset 回落默认', a
   assert.equal((await saveEndpoint(ctx, { baseURL: '' })).ok, true)
   const unset = calls.find(call => call.kind === 'mutate')
   assert.deepEqual(unset?.args, ['llm-deepseek-api-key', [{ op: 'unset', path: ['baseURL'] }], 2])
+})
+
+test('快照：列出 pi-ai 自定义服务商与 DeepSeek 官方通道', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({
+    settings: fakeSettings(calls, { provider: 'kimi', model: 'kimi-k2' }, {
+      kimi: {
+        displayName: 'Kimi',
+        api: 'openai-completions',
+        baseURL: 'https://api.moonshot.cn/v1',
+        apiKeyEnv: 'KIMI_API_KEY',
+        models: [{ id: 'kimi-k2' }],
+      },
+    }),
+    credentials: fakeCredentials(calls),
+  })
+  const snap = await systemSnapshot(ctx)
+  const routes = snap.providers.map(p => p.route).sort()
+  assert.deepEqual(routes, ['deepseek-official', 'kimi'])
+  const kimi = snap.providers.find(p => p.route === 'kimi')
+  assert.equal(kimi?.displayName, 'Kimi')
+  assert.equal(kimi?.baseURL, 'https://api.moonshot.cn/v1')
+  assert.deepEqual(kimi?.models, ['kimi-k2'])
+  assert.equal(kimi?.configured, true)
+})
+
+test('保存服务商：写 pi-ai providers、存 Key、设为默认模型', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettings(calls), credentials: fakeCredentials(calls) })
+  const result = await saveProvider(ctx, {
+    route: 'kimi',
+    displayName: 'Kimi',
+    api: 'openai-completions',
+    baseURL: 'https://api.moonshot.cn/v1',
+    modelId: 'kimi-k2',
+    contextWindow: 131072,
+    apiKey: 'sk-kimi',
+    makeDefault: true,
+  })
+  assert.equal(result.ok, true)
+  const piUpdate = calls.find(call => call.kind === 'update' && call.args[0] === 'llm-pi-ai')
+  assert.deepEqual(piUpdate?.args[1], {
+    providers: {
+      kimi: {
+        displayName: 'Kimi',
+        api: 'openai-completions',
+        baseURL: 'https://api.moonshot.cn/v1',
+        apiKeyEnv: 'KIMI_API_KEY',
+        models: [{ id: 'kimi-k2', contextWindow: 131072 }],
+      },
+    },
+  })
+  assert.equal(piUpdate?.args[2], 4)
+  assert.deepEqual(calls.find(call => call.kind === 'set')?.args, ['KIMI_API_KEY', 'sk-kimi'])
+  const modelUpdate = calls.find(call => call.kind === 'update' && call.args[0] === 'default-model')
+  assert.deepEqual(modelUpdate?.args[1], { provider: 'kimi', model: 'kimi-k2' })
+  assert.equal(modelUpdate?.args[2], 7)
+})
+
+test('保存服务商：非法 route / URL / 协议直接拒绝', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettings(calls), credentials: fakeCredentials(calls) })
+  const base = { route: 'kimi', baseURL: 'https://api.moonshot.cn/v1', modelId: 'm', apiKey: '' }
+  assert.equal((await saveProvider(ctx, { ...base, route: 'Kimi!' })).ok, false)
+  assert.equal((await saveProvider(ctx, { ...base, baseURL: 'ftp://x' })).ok, false)
+  assert.equal((await saveProvider(ctx, { ...base, api: 'grpc' })).ok, false)
+  assert.equal((await saveProvider(ctx, { ...base, modelId: '' })).ok, false)
 })

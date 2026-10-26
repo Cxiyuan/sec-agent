@@ -345,6 +345,62 @@ ${THEME}
         <div class="kv-list" style="margin-top:1rem"><dt>密钥状态</dt><dd id="key-state">—</dd></div>
       </div>
 
+      <h2>模型接入（自定义服务商）</h2>
+      <div class="panel">
+        <table>
+          <thead><tr><th>标识</th><th>显示名</th><th>协议</th><th>Base URL</th><th>模型</th><th>密钥</th></tr></thead>
+          <tbody id="provider-rows"></tbody>
+        </table>
+        <div class="form-grid" style="margin-top:1rem">
+          <div class="field">
+            <label for="p-route">服务商标识（route）</label>
+            <input id="p-route" placeholder="kimi">
+            <small>小写字母开头，可含数字与 -；同一标识再次保存即覆盖</small>
+          </div>
+          <div class="field">
+            <label for="p-name">显示名</label>
+            <input id="p-name" placeholder="Kimi">
+          </div>
+          <div class="field">
+            <label for="p-api">协议</label>
+            <select id="p-api" style="width:100%;padding:.5rem .65rem;border-radius:8px;border:1px solid var(--line);background:#0a1322;color:var(--text)">
+              <option value="openai-completions">openai-completions（OpenAI 兼容）</option>
+              <option value="anthropic-messages">anthropic-messages（Anthropic 兼容）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="p-baseurl">Base URL</label>
+            <input id="p-baseurl" placeholder="https://api.moonshot.cn/v1">
+            <small>填到版本段（/v1 或 /api/paas/v4 等），不要带 /chat/completions</small>
+          </div>
+          <div class="field">
+            <label for="p-model">模型 ID</label>
+            <input id="p-model" placeholder="kimi-k2">
+          </div>
+          <div class="field">
+            <label for="p-ctx">上下文窗口（可选）</label>
+            <input id="p-ctx" type="number" min="1024" step="1" placeholder="131072">
+            <small>留空用默认 262144</small>
+          </div>
+          <div class="field">
+            <label for="p-key">API Key</label>
+            <input id="p-key" type="password" autocomplete="new-password" placeholder="填了才会写入凭证库">
+            <small>留空 = 保留已有密钥，只改地址/模型</small>
+          </div>
+        </div>
+        <div class="form-actions">
+          <label class="chip" style="display:inline-flex;gap:.35rem;align-items:center">
+            <input id="p-default" type="checkbox" checked> 设为默认模型
+          </label>
+          <button id="save-provider" class="btn" style="border-color:var(--accent);color:var(--accent)">保存服务商</button>
+          <span id="provider-msg" class="msg"></span>
+        </div>
+        <div class="notice" style="margin-top:.8rem">
+          支持任意 OpenAI / Anthropic 兼容网关（Kimi、GLM、MiniMax、opencode 网关、自建反代等）：
+          填标识 + 协议 + Base URL + 模型 ID + Key 即可，保存后立即生效并设为默认。
+        </div>
+      </div>
+
       <h2>插件</h2>
       <div class="panel">
         <table>
@@ -624,6 +680,14 @@ ${THEME}
         + (k.source ? ' <span class="tag">来源 ' + esc(k.source) + '</span>' : '')
         + (k.writable ? '' : ' <span class="tag bad">不可写</span>')
       : '未找到 API Key 配置条目'
+    const providerRows = (data.providers || []).map(p =>
+      '<tr><td class="mono">' + esc(p.route) + '</td><td>' + esc(p.displayName) + '</td>'
+      + '<td class="mono">' + esc(p.api || '—') + '</td><td class="mono">' + esc(p.baseURL || '—') + '</td>'
+      + '<td class="mono">' + esc((p.models || []).join(', ') || '目录默认') + '</td>'
+      + '<td>' + (p.configured ? '<span class="tag ok">已配置</span>' : '<span class="tag bad">未配置</span>')
+      + ' <span class="mono">' + esc(p.apiKeyRef || '') + '</span></td></tr>')
+    document.getElementById('provider-rows').innerHTML = providerRows.join('') ||
+      '<tr><td colspan="6" class="empty">还没有自定义服务商</td></tr>'
     const rows = (data.plugins || []).map(p =>
       '<tr><td class="mono">' + esc(p.id) + '</td><td class="mono">' + esc(p.name) + '</td>'
       + '<td>' + esc(p.phase) + '</td><td>' + (p.disabled ? '否' : '是') + '</td></tr>')
@@ -643,6 +707,20 @@ ${THEME}
     toast('设置已更新')
     await loadSystem()
   }
+
+  document.getElementById('save-provider').addEventListener('click', () => {
+    const ctxRaw = document.getElementById('p-ctx').value.trim()
+    void postJson('/api/system/provider', {
+      route: document.getElementById('p-route').value.trim(),
+      displayName: document.getElementById('p-name').value.trim(),
+      api: document.getElementById('p-api').value,
+      baseURL: document.getElementById('p-baseurl').value.trim(),
+      modelId: document.getElementById('p-model').value.trim(),
+      contextWindow: ctxRaw === '' ? undefined : Number(ctxRaw),
+      apiKey: document.getElementById('p-key').value,
+      makeDefault: document.getElementById('p-default').checked,
+    }, 'provider-msg').then(() => { document.getElementById('p-key').value = '' }).catch(onError)
+  })
 
   document.getElementById('save-model').addEventListener('click', () => {
     void postJson('/api/system/model', {

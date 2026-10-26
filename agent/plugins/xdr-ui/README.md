@@ -15,7 +15,7 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、剩余预算快照、热层/冷库条数、最近 5 条分析 | `xdrIngest.status()/cacheStats()/listAnalyses()` |
 | 分析记录 | PG 冷库的历史结论：规则、源 IP、严重度、结论摘要、出现次数、最近出现；分页 + 搜索 + 详情（身份、结论、处置建议、原始 JSON） | `xdrIngest.listAnalyses()/getAnalysis()` |
 | 配置 | 运行参数（轮询间隔 / 本机并发 / 单次领取条数）热更新并持久化；连接与凭据状态（NDR MCP 地址与令牌是否配置、门铃令牌、冷库类型、登录账号与密码来源、会话时长）；NDR 控制台与原始会话界面入口 | `xdrIngest.settings()/updateSettings()` + 部署环境缝 |
-| 系统 | 模型与密钥：provider / model / reasoningEffort、接口地址、模型 API Key（写入 dsh 凭证库，可清除）；插件清单（条目、包名、Fiber 状态、是否禁用，只读）；其余原生设置入口 | 宿主机服务 `ctx.settings` / `ctx.credentials` / `ctx.loader` |
+| 系统 | 默认模型（provider / model / reasoningEffort）、DeepSeek 官方通道的接口地址与 Key；**自定义服务商**（任意 OpenAI/Anthropic 兼容网关：Kimi/GLM/MiniMax/自建反代，填 route + 协议 + BaseURL + 模型 + Key，保存即设为默认）；插件清单（只读）；原生设置入口 | 宿主机服务 `ctx.settings` / `ctx.credentials` / `ctx.loader` |
 
 左侧固定功能菜单（运行总览 / 分析记录 / 配置），无聊天输入框。原始会话界面上
 注入一枚「返回控制台」角标（`webserver.tapIndex`，登记式注入，不改 dsh 上游文件）
@@ -49,6 +49,7 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | `{basePath}/api/system/model` | POST | `{provider, model, reasoningEffort?}`；写 dsh settings（乐观并发，失败 400） |
 | `{basePath}/api/system/key` | POST | `{value}` 或 `{clear:true}`；写 dsh credentials，不落 profile |
 | `{basePath}/api/system/endpoint` | POST | `{baseURL}`；空串表示清掉覆盖、回落 provider 默认/环境变量 |
+| `{basePath}/api/system/provider` | POST | `{route,displayName,api,baseURL,modelId,contextWindow?,apiKey?,makeDefault?}`；写 pi-ai providers、存 Key、可设默认 |
 
 ## 配置
 

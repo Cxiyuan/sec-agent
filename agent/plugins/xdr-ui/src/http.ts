@@ -51,6 +51,7 @@ export interface UiHandlerOptions {
     saveModel: (patch: unknown) => Promise<unknown>
     saveKey: (patch: unknown) => Promise<unknown>
     saveEndpoint: (patch: unknown) => Promise<unknown>
+    saveProvider: (patch: unknown) => Promise<unknown>
   }
 }
 
@@ -206,7 +207,7 @@ export function createUiHandler(
         respondJson(res, 200, await options.system.snapshot())
         return
       }
-      if (tail === '/api/system/model' || tail === '/api/system/key' || tail === '/api/system/endpoint') {
+      if (tail === '/api/system/model' || tail === '/api/system/key' || tail === '/api/system/endpoint' || tail === '/api/system/provider') {
         if (method !== 'POST') {
           respondJson(res, 405, { error: 'method not allowed' })
           return
@@ -226,7 +227,9 @@ export function createUiHandler(
         }
         const save = tail === '/api/system/model'
           ? options.system.saveModel
-          : tail === '/api/system/key' ? options.system.saveKey : options.system.saveEndpoint
+          : tail === '/api/system/key'
+            ? options.system.saveKey
+            : tail === '/api/system/provider' ? options.system.saveProvider : options.system.saveEndpoint
         const result = await save(patch) as { ok?: boolean }
         respondJson(res, result.ok === false ? 400 : 200, result)
         return
