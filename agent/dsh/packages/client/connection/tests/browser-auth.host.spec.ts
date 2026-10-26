@@ -393,8 +393,8 @@ describe('launch token deployment seam', () => {
 
   it('generates a random token when the env seam is absent', () => {
     return import('../src/browser-auth.ts').then(({ resolveLaunchToken }) => {
-      const a = resolveLaunchToken({ fresh: 1 }, {})
-      const b = resolveLaunchToken({ fresh: 2 }, {})
+      const a = resolveLaunchToken({}, {})
+      const b = resolveLaunchToken({}, {})
       expect(a).not.toBe(b)
       expect(a.length).toBeGreaterThanOrEqual(32)
     })
