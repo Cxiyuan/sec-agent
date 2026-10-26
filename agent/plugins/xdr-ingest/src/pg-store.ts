@@ -101,17 +101,28 @@ export class PostgresColdStore implements ColdStore, SettingsStore {
     this.ready = this.init()
   }
 
+  /**
+   * schema 初始化。容器启动瞬间 docker 网络/隧道可能还没就绪（实测
+   * `Connection terminated due to connection timeout`），失败一次就永久降级
+   * 代价太大，这里退避重试几次再放弃。
+   */
   private async init(): Promise<boolean> {
-    try {
-      await this.pool.query(SCHEMA_SQL)
-      return true
-    } catch (error) {
-      console.error(
-        `${LOG_PREFIX} schema init failed, degrading to memory-only dedup:`,
-        error instanceof Error ? error.message : String(error),
-      )
-      return false
+    const attempts = 5
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await this.pool.query(SCHEMA_SQL)
+        return true
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (attempt === attempts) {
+          console.error(`${LOG_PREFIX} schema init failed, degrading to memory-only dedup:`, message)
+          return false
+        }
+        console.warn(`${LOG_PREFIX} schema init failed (${attempt}/${attempts}), retrying in 2s:`, message)
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
     }
+    return false
   }
 
   /** 统一降级闸门：初始化失败或运行期故障后返回 false，调用方走空实现。 */

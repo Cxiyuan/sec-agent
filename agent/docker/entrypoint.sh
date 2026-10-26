@@ -1,37 +1,27 @@
 #!/bin/sh
-# 智能体容器入口：种 profile → 自愈插件 → 组装信任围栏参数 → 起 dsh web。
+# 智能体容器入口：种 profile → 同步镜像里的插件 → 自愈缺失插件 → 起 dsh web。
 set -eu
 
 DSH_HOME="${DSH_HOME:-/data/dsh}"
 BIN="/opt/agent/dsh/apps/cli/lib/bin.js"
 BAKED_HOME="/opt/dsh-home"
 PROFILE_PKG="$DSH_HOME/profiles/web/package.json"
+BAKED_PROFILE="$BAKED_HOME/profiles/web"
+STAMP="$DSH_HOME/.plugins.stamp"
+BAKED_STAMP="$BAKED_HOME/.plugins.stamp"
 
 mkdir -p "$DSH_HOME"
 
 # 首次运行（卷为空）：把镜像里 bake 好的 profile 种进去。
-# bake 时 file: 依赖已快照进 profile 自带 store，种入后无需联网。
 if [ ! -d "$DSH_HOME/profiles/web" ]; then
   echo "[xdr-agent] seeding dsh home from image..."
   cp -a "$BAKED_HOME/." "$DSH_HOME/"
 fi
 
-# 自愈：卷里有旧 profile 但插件依赖缺失（镜像新增插件、手工清过 node_modules）时补装。
-# 优先从镜像里 bake 好的 profile 离线合并：卷里 node_modules 记录的 pnpm store
-# 路径来自上一次构建（/home/node/.local/share/pnpm/store/v11），新镜像的 pnpm
-# 会改用卷内 store，于是现场 `plugin add` 直接 ERR_PNPM_UNEXPECTED_STORE 起不来
-# （2026-10-26 上线踩过：新增 xdr-ui 后容器无限重启）。
-sync_from_image() {
-  pkg="$1"
-  baked="$BAKED_HOME/profiles/web"
-  vol="$DSH_HOME/profiles/web"
-  [ -e "$baked/node_modules/$pkg/package.json" ] || return 1
-  echo "[xdr-agent] syncing $pkg from baked profile (offline)"
-  mkdir -p "$vol/node_modules"
-  # 目录并集：镜像新增的插件/依赖补进卷，用户自己加装的插件不被删。
-  cp -a "$baked/node_modules/." "$vol/node_modules/"
-  # 依赖声明按并集合并：镜像期望的插件必须出现，卷里已有的额外插件保留。
-  node - "$PROFILE_PKG" "$baked/package.json" <<'NODE'
+# 依赖声明按并集合并：镜像期望的插件必须出现，卷里已有的额外插件保留。
+# （node 脚本从 stdin 读，参数是「卷里的 package.json」与「镜像里的 package.json」。）
+merge_profile_manifest() {
+  node - "$PROFILE_PKG" "$BAKED_PROFILE/package.json" <<'NODE'
 const fs = require('node:fs')
 const [volPath, bakedPath] = process.argv.slice(2)
 const vol = JSON.parse(fs.readFileSync(volPath, 'utf8'))
@@ -44,16 +34,37 @@ vol.dsh.profile.bundles = [
 ]
 fs.writeFileSync(volPath, `${JSON.stringify(vol, null, 2)}\n`)
 NODE
-  cp -f "$baked/pnpm-lock.yaml" "$vol/pnpm-lock.yaml" 2>/dev/null || true
-  cp -f "$baked/pnpm-workspace.yaml" "$vol/pnpm-workspace.yaml" 2>/dev/null || true
-  return 0
 }
 
+# 目录并集：镜像新增/更新的插件与依赖覆盖进卷，用户自己加装的插件不被删。
+sync_profile_from_image() {
+  mkdir -p "$DSH_HOME/profiles/web/node_modules"
+  cp -a "$BAKED_PROFILE/node_modules/." "$DSH_HOME/profiles/web/node_modules/"
+  merge_profile_manifest
+  cp -f "$BAKED_PROFILE/pnpm-lock.yaml" "$DSH_HOME/profiles/web/pnpm-lock.yaml" 2>/dev/null || true
+  cp -f "$BAKED_PROFILE/pnpm-workspace.yaml" "$DSH_HOME/profiles/web/pnpm-workspace.yaml" 2>/dev/null || true
+}
+
+# 镜像重建后插件代码会变，而卷里是上一次构建的副本。只补「缺失」不够——
+# 升级后容器会一直跑旧插件（2026-10-26 控制台上线踩过）。指纹不同就整体刷新。
+if [ -f "$BAKED_STAMP" ] && [ "$(cat "$BAKED_STAMP" 2>/dev/null || true)" != "$(cat "$STAMP" 2>/dev/null || true)" ]; then
+  echo "[xdr-agent] image plugins changed: refreshing profile from image"
+  sync_profile_from_image
+  cp -f "$BAKED_STAMP" "$STAMP"
+fi
+
+# 自愈：卷里有旧 profile 但插件依赖缺失（手工清过 node_modules）时补装。
+# 优先从镜像离线合并：卷里 node_modules 记录的 pnpm store 路径来自上一次构建
+# （/home/node/.local/share/pnpm/store/v11），新镜像的 pnpm 会改用卷内 store，
+# 现场 `plugin add` 直接 ERR_PNPM_UNEXPECTED_STORE 起不来。
 install_checked() {
   pkg="$1"; dir="$2"
   if ! grep -q "\"$pkg\"" "$PROFILE_PKG" 2>/dev/null \
     || [ ! -e "$DSH_HOME/profiles/web/node_modules/$pkg/package.json" ]; then
-    if sync_from_image "$pkg"; then
+    if [ -e "$BAKED_PROFILE/node_modules/$pkg/package.json" ]; then
+      echo "[xdr-agent] $pkg missing from web profile, syncing from image"
+      sync_profile_from_image
+      cp -f "$BAKED_STAMP" "$STAMP" 2>/dev/null || true
       return 0
     fi
     echo "[xdr-agent] $pkg missing from web profile, installing..."

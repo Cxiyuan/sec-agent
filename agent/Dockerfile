@@ -58,6 +58,12 @@ USER node
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ingest
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ui
 
+# 插件指纹：镜像每次重建都会刷新它，入口脚本据此判断卷里的插件副本是不是旧镜像
+# 留下的。只比版本号不够——本项目插件版本号长期不变，代码却每次都在变。
+RUN cd /opt/dsh-home/profiles/web \
+  && find node_modules/@sec-agent -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum \
+  | cut -d' ' -f1 > /opt/dsh-home/.plugins.stamp
+
 # 运行期：数据目录用卷持久化（dsh home：profile、会话历史、插件管理状态）
 ENV DSH_HOME=/data/dsh
 VOLUME /data/dsh
