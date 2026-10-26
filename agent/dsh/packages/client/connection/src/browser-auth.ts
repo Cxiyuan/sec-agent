@@ -19,7 +19,31 @@ const COOKIE_PREFIX = 'dsh-auth-'
 const COOKIE_PAYLOAD_VERSION = 1
 const STORED_SECRET_VERSION = 1
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
-const PROCESS_LAUNCH_TOKENS = new WeakMap<object, string>()
+const PROCESS_LAUNCH_TOKENS = new WeakMap<ActivationOwner, string>()
+
+/**
+ * 激活身份：只作 WeakMap 的键（进程内每个 harness 激活一个），无形状要求。
+ * 可选标记属性让「任何对象都满足」在类型上成立，同时避免空接口的 lint。
+ */
+interface ActivationOwner {
+  readonly __activation?: unique symbol
+}
+
+/** 账号密码登录缝：现场部署的默认认证形态（launch-token URL 仍兼容可用）。 */
+export const LOGIN_PATH = '/login'
+
+function authCredentials(): { readonly user: string; readonly password: string } {
+  const user = process.env['DSH_WEB_AUTH_USER']?.trim() || 'admin'
+  const password = process.env['DSH_WEB_AUTH_PASSWORD'] || 'admin123'
+  return { user, password }
+}
+
+/** 恒时比较（先哈希定长，避免长度泄露）。 */
+function matches(actual: string, expected: string): boolean {
+  const a = createHash('sha256').update(actual, 'utf8').digest()
+  const b = createHash('sha256').update(expected, 'utf8').digest()
+  return timingSafeEqual(a, b)
+}
 
 interface StoredSecretPayload {
   readonly version: typeof STORED_SECRET_VERSION
@@ -67,7 +91,9 @@ function decodeBase64Url(value: string): Buffer | undefined {
  * 固定 token 让登录地址长期稳定；**没有"免 token"模式**：web 界面能执行
  * 任意工具命令，免认证等于把 RCE 暴露给整个局域网。
  */
-export function resolveLaunchToken(owner: object, env: NodeJS.ProcessEnv = process.env): string {
+export function resolveLaunchToken(
+  owner: ActivationOwner, env: NodeJS.ProcessEnv = process.env,
+): string {
   const fromEnv = env['DSH_WEB_LAUNCH_TOKEN']?.trim()
   if (fromEnv !== undefined && fromEnv.length >= 16) return fromEnv
   const existing = PROCESS_LAUNCH_TOKENS.get(owner)
@@ -77,7 +103,7 @@ export function resolveLaunchToken(owner: object, env: NodeJS.ProcessEnv = proce
   return created
 }
 
-function processLaunchToken(owner: object): string {
+function processLaunchToken(owner: ActivationOwner): string {
   return resolveLaunchToken(owner)
 }
 
@@ -223,7 +249,7 @@ export class BrowserAuth {
   private readonly maxAgeMilliseconds: number
 
   private constructor(
-    processOwner: object,
+    processOwner: ActivationOwner,
     private readonly secret: Buffer,
     maxAgeDays: number,
   ) {
@@ -257,7 +283,13 @@ export class BrowserAuth {
    * @returns the same URL carrying the process token as its sole authentication input.
    */
   authenticatedUrl(baseUrl: string): string {
-    const url = new URL(baseUrl)
+    let url: URL
+    try {
+      url = new URL(baseUrl)
+    } catch {
+      // 非法 baseUrl：返回裸 token（调用方至少还能看到令牌本身）
+      return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${TOKEN_QUERY}=${this.launchToken}`
+    }
     url.searchParams.set(TOKEN_QUERY, this.launchToken)
     return url.href
   }
@@ -315,7 +347,9 @@ export class BrowserAuth {
       return false
     }
     if (this.isAuthenticated(req, secure)) return true
-    this.writeUnauthorized(req, res)
+    // 未认证的浏览器访问不再返回 401 文本，而是登录页（账号密码表单）。
+    // launch-token URL 通道保持兼容：带 token 仍可直接登录。
+    this.writeLoginPage(req, res)
     return false
   }
 
@@ -405,5 +439,126 @@ export class BrowserAuth {
     res.end(req.method === 'HEAD'
       ? undefined
       : 'dsh web authentication required; reopen the URL printed by dsh web.\n')
+  }
+
+  /**
+   * 账号密码登录（现场部署的默认入口）：POST /login，body 为表单或 JSON。
+   * 校验用恒时比较；成功 mint 与 launch-token 同一条会话 cookie（30 天，
+   * 绑定访问时的 authority），失败重定向回登录页并带错误提示。
+   */
+  authorizeLogin(req: ConnectionIndexRequest, res: ConnectionIndexResponse, secure = false): void {
+    const authority = requestAudience(req.headers, secure)
+    if (req.method !== 'POST' || authority === undefined) {
+      res.writeHead(405, { 'cache-control': 'no-store', 'content-type': 'text/plain; charset=utf-8' })
+      res.end('login accepts POST only\n')
+      return
+    }
+    void this.readLoginBody(req).then((body) => {
+      const expected = authCredentials()
+      const ok = matches(body.user, expected.user) && matches(body.password, expected.password)
+      if (!ok) {
+        res.writeHead(303, {
+          'cache-control': 'no-store',
+          'location': '/?login_error=1',
+          'referrer-policy': 'no-referrer',
+        })
+        res.end()
+        return
+      }
+      const issuedAt = Date.now()
+      const expiresAt = issuedAt + this.maxAgeMilliseconds
+      const value = encodeCookie({
+        version: COOKIE_PAYLOAD_VERSION,
+        authority,
+        issuedAt,
+        expiresAt,
+      }, this.secret)
+      res.writeHead(303, {
+        'cache-control': 'no-store',
+        'location': './',
+        'referrer-policy': 'no-referrer',
+        'set-cookie': sessionCookie(
+          cookieName(authority), value, expiresAt, Math.floor(this.maxAgeMilliseconds / 1000), secure,
+        ),
+      })
+      res.end()
+    }, () => this.writeLoginPage(req, res))
+  }
+
+  private async readLoginBody(req: ConnectionIndexRequest): Promise<{ user: string; password: string }> {
+    // 与 http-bridge 同一读法：异步迭代（容器侧传入的是 node:http 的 IncomingMessage）。
+    // 不用 on('data')：接口类型上没有这个方法，且迭代写法在 close 时也会自然结束。
+    const chunks: Buffer[] = []
+    let total = 0
+    // SAFETY：路由 handler 运行时传入的是 node:http 的 IncomingMessage（可异步迭代），
+    // 但 ConnectionIndexRequest 接口没声明这个能力，TypeScript 无法证明 —— 这里收窄。
+    for await (const chunk of req as unknown as AsyncIterable<Buffer>) {
+      total += chunk.length
+      if (total > 8 * 1024) throw new Error('login body too large')
+      chunks.push(chunk)
+    }
+    const text = Buffer.concat(chunks).toString('utf8')
+    const contentType = String((req.headers as Record<string, unknown>)['content-type'] ?? '')
+    const fields = new URLSearchParams(contentType.includes('application/json') ? '' : text)
+    let user = fields.get('user') ?? ''
+    let password = fields.get('password') ?? ''
+    if (contentType.includes('application/json')) {
+      try {
+        const parsed: unknown = JSON.parse(text)
+        if (typeof parsed === 'object' && parsed !== null) {
+          const record = parsed as Record<string, unknown>
+          user = typeof record['user'] === 'string' ? record['user'] : ''
+          password = typeof record['password'] === 'string' ? record['password'] : ''
+        }
+      } catch {
+        // 解析失败按空凭据处理（登录必然失败并回登录页）
+      }
+    }
+    return { user, password }
+  }
+
+  /** 未认证访问的默认页：账号密码表单（错误提示走 `?login_error=1`）。 */
+  private writeLoginPage(req: ConnectionIndexRequest, res: ConnectionIndexResponse): void {
+    const url = new URL(req.url ?? '/', 'http://dsh.invalid')
+    const error = url.searchParams.get('login_error') === '1'
+    const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深瞳 · 智能体登录</title>
+<style>
+  body { font-family: system-ui, sans-serif; display: grid; place-items: center;
+         min-height: 100vh; margin: 0; background: #f5f7fb; }
+  form { background: #fff; padding: 2.5rem 3rem; border-radius: 12px;
+         box-shadow: 0 2px 12px rgba(0,0,0,.08); width: 260px; }
+  h1 { font-size: 1.1rem; margin: 0 0 1.2rem; color: #1e293b; text-align: center; }
+  label { display: block; font-size: .8rem; color: #64748b; margin: .8rem 0 .25rem; }
+  input { width: 100%; box-sizing: border-box; padding: .55rem .7rem;
+          border: 1px solid #cbd5e1; border-radius: 6px; font-size: .9rem; }
+  button { margin-top: 1.4rem; width: 100%; padding: .6rem; border: none;
+           border-radius: 6px; background: #2563eb; color: #fff;
+           font-size: .95rem; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  .error { color: #dc2626; font-size: .8rem; margin-top: .8rem; text-align: center; }
+</style>
+</head>
+<body>
+<form method="POST" action="${LOGIN_PATH}">
+  <h1>深瞳 · 智能体</h1>
+  <label for="user">账号</label>
+  <input id="user" name="user" autocomplete="username" autofocus>
+  <label for="password">密码</label>
+  <input id="password" name="password" type="password" autocomplete="current-password">
+  <button type="submit">登录</button>
+  ${error ? '<div class="error">账号或密码不正确</div>' : ''}
+</form>
+</body>
+</html>`
+    res.writeHead(200, {
+      'cache-control': 'no-store',
+      'content-type': 'text/html; charset=utf-8',
+    })
+    res.end(req.method === 'HEAD' ? undefined : html)
   }
 }

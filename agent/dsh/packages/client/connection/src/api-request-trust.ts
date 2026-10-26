@@ -174,3 +174,18 @@ function isSameAuthorityOrigin(origin: string, host: string): boolean {
   const hostUrl = parseAuthority(host, scheme)
   return hostUrl !== undefined && originUrl.host === hostUrl.host
 }
+
+
+/**
+ * URL 解析的健壮封装：非法/缺失的 URL 返回根路径，而不是抛异常。
+ * 为什么存在：桥接层的 request.url 来自请求方，不能因单个畸形请求让整个
+ * 处理链中断（与上文 Host fence 的"先校验后处理"一致）。
+ */
+export function trustedPathOf(raw: string | undefined): string {
+  if (raw === undefined || raw === '') return '/'
+  try {
+    return new URL(raw, 'http://dsh.invalid').pathname
+  } catch {
+    return '/'
+  }
+}

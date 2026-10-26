@@ -11,7 +11,7 @@ import {
 } from './rpc.ts'
 import { clientRequestSchema } from './rpc-schema.ts'
 import { bridge } from './http-bridge.ts'
-import { isRemoteAuthority, isTrustedApiRequest } from './api-request-trust.ts'
+import { isRemoteAuthority, isTrustedApiRequest, trustedPathOf } from './api-request-trust.ts'
 import { API_PATH } from './api-path.ts'
 import type { BrowserAuth } from './browser-auth.ts'
 import { Peer } from './peer.ts'
@@ -194,6 +194,13 @@ export class HostConnectionService extends Service implements HostConnectionHand
     return this.browserAuth.authorizeIndex(request, response, this.ctx.get('webServer')?.protocol === 'https:')
   }
 
+  /**
+   * 账号密码登录（现场部署默认入口）：POST /login。
+   */
+  authorizeLogin(request: ConnectionIndexRequest, response: ConnectionIndexResponse): void {
+    this.browserAuth.authorizeLogin(request, response, this.ctx.get('webServer')?.protocol === 'https:')
+  }
+
   /** Add this process's launch token to the clean application URL. */
   authenticatedUrl(baseUrl: string): string {
     return this.browserAuth.authenticatedUrl(baseUrl)
@@ -213,7 +220,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
         return route?.methods.has(method) === true ? route.requestBody : 'buffered'
       },
       fetch: (request, peer) => {
-        const pathname = new URL(request.url).pathname
+        const pathname = trustedPathOf(request.url)
         const route = this.fetchRoutes.get(pathname)
         if (route?.methods.has(request.method) === true) {
           // Exact routes bypass Gateway access checks, so only the owner reaches them.
@@ -308,7 +315,7 @@ function rpcFetchHandler(
   return {
     requestBodyMode: () => 'buffered',
     async fetch(request: Request, peer: PeerScope): Promise<Response> {
-      const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
+      const endpoint = endpointFromPath(channel, trustedPathOf(request.url))
       if (request.method !== 'POST' || endpoint === undefined) {
         return new Response('not found', { status: 404 })
       }

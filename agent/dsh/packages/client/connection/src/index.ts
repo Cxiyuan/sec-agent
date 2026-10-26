@@ -10,7 +10,7 @@ import { API_PATH } from './api-path.ts'
 import { CONNECT_PATH } from './connect-protocol.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
-import { BrowserAuth } from './browser-auth.ts'
+import { BrowserAuth, LOGIN_PATH } from './browser-auth.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { ConnectionRecoveryConfigSchema, resolveConnectionConfig, type ConnectionRecoveryConfig } from './recovery-config.ts'
 
@@ -162,6 +162,10 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
       kind: 'exact', path: CONNECT_PATH,
       handler: (req, res) => { connection.authorizeConnect(req, res) },
     }), 'client-connection: /connect route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: LOGIN_PATH,
+      handler: (req, res) => { connection.authorizeLogin(req, res) },
+    }), 'client-connection: /login route')
   })
   ctx.inject(['attachments'], (attachmentCtx) => {
     assertImageBodyCapacity(attachmentCtx, maxRequestBodyBytes)
