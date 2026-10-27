@@ -15,12 +15,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.base import get_db
-from app.db.models import User
+from app.db.models import AnalysisSuppression, ExclusionFilter, User
 from app.detector import suppression
+from app.ingestion import exclusion
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -66,6 +68,12 @@ class PreviewIn(BaseModel):
     """试算请求：只给条件树，不落库。"""
 
     match: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToExclusionIn(BaseModel):
+    """转人工排除规则的选项：默认生成**停用**草稿，人审后启用。"""
+
+    enabled: bool = False
 
 
 def _field_errors(errors: list[dict[str, str]]) -> JSONResponse:
@@ -250,3 +258,57 @@ def restore_suppression(
     if "error" in out:
         raise HTTPException(status_code=404, detail=out["error"])
     return out
+
+
+@router.post("/{item_id}/to-exclusion")
+def to_exclusion(
+    item_id: str,
+    _: Annotated[User, Depends(get_current_user)],
+    body: ToExclusionIn | None = None,
+    db: Annotated[Session, Depends(get_db)] = None,
+):
+    """反例学习：把一条抑制条目沉淀为「人工排除规则」草稿（**默认停用**）。
+
+    为什么要单独一个入口（2026-10 规则评审）：抑制条目会过期、语义是"这类现象
+    我交过结论"；排除规则的语义是"这类流量跳过模型与报告"——**更重**，必须人审。
+    这里只做机械搬运（同一棵条件树），默认 `enabled=False`，界面确认后再启用。
+    同名排除规则已存在时直接返回它（不重复建）。
+    """
+    item = db.get(AnalysisSuppression, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="没有这条抑制条目")
+    match = item.match or {}
+    if not (isinstance(match, dict) and match.get("rules")):
+        return JSONResponse(
+            status_code=400,
+            content={"conflict": "field_error", "detail": "这条抑制没有结构化条件（match.rules），无法转排除规则"},
+        )
+    errors = exclusion.validate_conditions(match)
+    if errors:
+        return _field_errors(errors)
+    base_name = f"反例-{item.name or item_id[:8]}"[:120]
+    row = db.execute(select(ExclusionFilter).where(ExclusionFilter.name == base_name)).scalar_one_or_none()
+    created = False
+    if row is None:
+        row = ExclusionFilter(
+            name=base_name,
+            description=(
+                f"由抑制条目「{item.name}」转写（反例学习）。条件与该抑制一致；"
+                f"来源 {item.origin or 'agent'} · 证据 {len(item.evidence_refs or [])} 条 · "
+                f"任务 {item.source_task_id or '—'}。启用前请复核影响面（GET /api/exclusions/stats）。"
+            ),
+            conditions=match,
+            enabled=bool(body.enabled) if body is not None else False,
+            priority=90,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        created = True
+    return {
+        "created": created,
+        "enabled": row.enabled,
+        "id": row.id,
+        "name": row.name,
+        "conditions": row.conditions,
+    }

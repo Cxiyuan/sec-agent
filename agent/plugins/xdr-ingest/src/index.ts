@@ -168,6 +168,8 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   console.log(`[xdr-ingest] apply(): routes at ${config.basePath}/*, cold store: ${store.kind}`)
+  // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃（analysis.enabled=true
+  // 时不推摘要）。端点保留以便一键回滚到推送契约，日常流量不会走到它。
   const cache = new TieredCache({
     ttlMs: config.resultTtlHours * 3_600_000,
     hotMaxEntries: config.hotMaxEntries,

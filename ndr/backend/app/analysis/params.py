@@ -103,6 +103,16 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.retest_max_per_round", "每轮复测上限", "int", 5,
          low=0, high=50, unit="个",
          note="复测是老对象的回头检查，不能挤掉新线索；0=关闭复测"),
+    Knob("analysis.cold_start_hours", "冷启动窗口", "int", 48,
+         low=0, high=720, unit="小时",
+         note="基线/画像从零学习的窗口（ES/PG 重建后必开）：期间 novelty/coverage/structure 强度封顶、盲区轮询降频，把保留名额留给真正的命中等异常。0=关闭"),
+    Knob("analysis.cold_start_scale", "冷启动降频倍数", "float", 2.0,
+         low=1.0, high=10.0,
+         note="冷启动期间 coverage/retest 轮询间隔的放大倍数（6h 基准时它乘几）"),
+    Knob("analysis.cold_start_strength_cap", "冷启动强度封顶", "float", 0.7,
+         low=0.0, high=1.0,
+         unit="0~1",
+         note="冷启动期间首见/盲区/结构类线索的强度上限：低于保留名额门槛（默认 0.8），保证插队名额不被人人都新的线索吃光"),
     Knob("analysis.trace_retention_days", "过程轨迹保留期", "int", 60,
          low=1, high=365, unit="天",
          note="轨迹是派生线索，过期即清理（结论与原始数据不受影响）"),
@@ -175,6 +185,18 @@ def reserved_slots() -> int:
 def reserved_min_strength() -> float:
     # 硬下限：调低于 0.5 一律按 0.5（否则保留名额对谁都开放，等于没有兜底）
     return max(_RESERVED_FLOOR, _num(_BY_KEY["analysis.reserved_min_strength"]))
+
+
+def cold_start_hours() -> int:
+    return int(_num(_BY_KEY["analysis.cold_start_hours"]))
+
+
+def cold_start_scale() -> float:
+    return max(1.0, _num(_BY_KEY["analysis.cold_start_scale"]))
+
+
+def cold_start_strength_cap() -> float:
+    return max(0.0, min(1.0, _num(_BY_KEY["analysis.cold_start_strength_cap"])))
 
 
 def lease_seconds() -> int:

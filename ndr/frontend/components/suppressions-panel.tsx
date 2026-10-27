@@ -634,6 +634,32 @@ export function SuppressionsPanel() {
     }
   }
 
+  // ---------- 反例学习：把抑制条目转成人工排除规则草稿 ----------
+
+  // 排除规则比抑制更重（跳过模型+报告），所以只生成**停用**草稿，转前端人审启用：
+  // 同名规则已存在时不重复建（agent 判过的反例会沉淀成长期降噪）。
+  const [exclBusyId, setExclBusyId] = React.useState("");
+
+  async function doToExclusion(item: SuppressionItem) {
+    setExclBusyId(item.id);
+    try {
+      const data = await apiFetch<{ created: boolean; name: string; enabled: boolean }>(
+        `/api/suppressions/${item.id}/to-exclusion`,
+        { method: "POST", body: JSON.stringify({ enabled: false }) },
+      );
+      setNotice({
+        text: data.created
+          ? `已生成排除规则草稿「${data.name}」（默认停用）——请在「排除过滤」页复核后启用`
+          : `排除规则「${data.name}」已存在，未重复创建`,
+        tone: "ok",
+      });
+    } catch (error) {
+      setNotice({ text: apiErrorText(error, "转排除规则失败"), tone: "err" });
+    } finally {
+      setExclBusyId("");
+    }
+  }
+
   // ---------- 参数 ----------
 
   function knobValue(item: KnobItem): string | number | boolean {
@@ -977,6 +1003,17 @@ export function SuppressionsPanel() {
                               }}
                             >
                               编辑
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={exclBusyId === item.id}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void doToExclusion(item);
+                              }}
+                            >
+                              转排除
                             </Button>
                             {item.enabled ? (
                               <Button

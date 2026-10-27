@@ -722,7 +722,7 @@ _NDR_TOOL_FUNCS = (
 #: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
 #: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
 #:
-#: `analyst` 是智能体分析闭环够用的最小集（15 个）；排查/运维/复现用 `/mcp/full`（全部）。
+#: `analyst` 是智能体分析闭环够用的最小集（18 个）；排查/运维/复现用 `/mcp/full`（全部）。
 _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "analyst": (
         # 取数（最小必要集：先看数据地图，再按需检索与聚合）
@@ -746,6 +746,9 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         # 抑制（申请与查看；撤销留给人在界面或 full 档上做）
         "submit_suppression",
         "list_suppressions",
+        # 底座：没有这两把"尺子"，agent 只能去 ES 自己算"正常长什么样"
+        "baseline_lookup",
+        "entity_profile",
     ),
 }
 

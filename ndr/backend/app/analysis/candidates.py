@@ -32,7 +32,7 @@ from typing import Any
 
 from sqlalchemy import func, select, tuple_
 
-from app.analysis import feedback, params, queue, subjects
+from app.analysis import cold_start as cold_start_mod, feedback, params, queue, subjects
 from app.baseline import poisson
 from app.db.base import SessionLocal
 from app.db.models import AnalysisResult, ObservedSubject
@@ -199,6 +199,8 @@ def _novelty_tasks(db: Any, fresh: list[tuple[str, str]], now: datetime, client:
         strength = feedback.apply(
             combined_strength(rarity_strength(0, first_seen=True), stale), "novelty", value
         )
+        # 冷启动保护：基线重学期内首见一律压到保留名额之下（见 cold_start 模块说明）
+        strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="novelty",
             subject_kind="asset" if kind == subjects.KIND_ASSET else kind,
@@ -259,6 +261,8 @@ def _structure_tasks(collector: Collector, now: datetime, client: Any) -> int:
         if fails < _MIN_FAIL_EVENTS or (fails / total) < _FAIL_RATIO:
             continue
         strength = feedback.apply(combined_strength(scale_strength(fails), 0.5), "structure", src)
+        # 冷启动保护：结构特征也是冷启动噪声大户（大量链路第一次出现）
+        strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="structure",
             subject_kind="ip",
@@ -321,6 +325,53 @@ def enqueue_shift(deviations: list[dict[str, Any]], client: Any) -> int:
     return made
 
 
+def _hit_hint(
+    digest: dict[str, Any], rule: str, event_id: str, strength: float, distinct_dst: int
+) -> dict[str, Any]:
+    """命中线索的 hint：在客观事实之外补上"省一次查询"的元数据。
+
+    全部是**客观字段**——绝不带 `rule_severity`（严重度判断权在智能体，
+    与 candidates 模块顶部的边界一致）。中继链路提示很值钱：代理后面的"在扫内网"
+    经常是外部流量转发，agent 拿到就能少跑一轮方向判定。
+    """
+    hint: dict[str, Any] = {
+        "事实": f"规则「{rule}」命中 {digest.get('count')} 次，目的 {distinct_dst} 个",
+        "事件ID": event_id,
+        "客观强度": strength,
+    }
+    source_label = _hits_source_label(str(digest.get("rule_source") or ""))
+    if source_label:
+        hint["命中来源"] = source_label
+    ports = digest.get("dst_ports") or []
+    if ports:
+        hint["目的端口"] = [str(p) for p in ports[:8]]
+    types = digest.get("event_types") or []
+    if types:
+        hint["事件类型"] = [str(t) for t in types[:4]]
+    states = digest.get("conn_states") or []
+    if states:
+        # 连接状态是客观字段（ShR 等）：出现过 S 建立即"这条流水里有真实会话"，
+        # 智能体能直接回答"成功没有"，不必再查
+        hint["会话状态"] = [str(t) for t in states[:6]]
+    if digest.get("proxied"):
+        hint["中继提示"] = "命中经代理/中继：源 IP 可能是转发点，方向判定看 real_client_ips"
+        reals = digest.get("real_client_ips") or []
+        if reals:
+            hint["真实客户端"] = [str(v) for v in reals[:5]]
+    return hint
+
+
+def _hits_source_label(rule_source: str) -> str:
+    """把 rule_source 译成来源类别（与 hits.SOURCE_LABELS 的三类对齐）。"""
+    mapping = {
+        "suricata": "特征签名",
+        "baseline": "基线偏离",
+        "builtin": "内置规则",
+        "rules": "内置规则",
+    }
+    return mapping.get(rule_source, "")
+
+
 def enqueue_hit(digest: dict[str, Any], event_id: str, client: Any) -> str:
     """规则命中 → `hit` 线索。
 
@@ -348,11 +399,7 @@ def enqueue_hit(digest: dict[str, Any], event_id: str, client: Any) -> str:
         subject=src,
         strength=strength,
         feature=rule,
-        hint={
-            "事实": f"规则「{rule}」命中 {digest.get('count')} 次，目的 {distinct_dst} 个",
-            "事件ID": event_id,
-            "客观强度": strength,
-        },
+        hint=_hit_hint(digest, rule, event_id, strength, distinct_dst),
         window_start=_as_dt(digest.get("first_seen")),
         window_end=_as_dt(digest.get("last_seen")) or now,
         client=client,
@@ -371,6 +418,8 @@ def enqueue_coverage(client: Any) -> int:
         strength = feedback.apply(
             combined_strength(stale * 0.35, 0.05), "coverage", str(item.get("subject") or "")
         )
+        # 冷启动保护：盲区线索同样压到保留名额之下
+        strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="coverage",
             subject_kind="asset",

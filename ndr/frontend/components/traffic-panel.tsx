@@ -7,8 +7,7 @@ import {
   Card,
   CardContent,
   Chart,
-  ChartSkeleton,
-  Drawer,
+  Dialog,
   EmptyState,
   LoadingBlock,
   Section,
@@ -28,6 +27,14 @@ import { ArrowLeftRight } from "lucide-react";
 
 import { PanelError, usePanelErrors } from "@/components/panel-error";
 import { useAliases } from "@/lib/aliases";
+import { layoutTopology, type NodeKind } from "@/lib/topology-layout";
+import {
+  EXTERNAL_HOST_ASPECT,
+  EXTERNAL_HOST_SRC,
+  EXTERNAL_HOST_SYMBOL,
+  INTERNAL_HOST_SRC,
+  INTERNAL_HOST_SYMBOL,
+} from "@/lib/topology-icons";
 
 /**
  * 可视化流量（分析中心）：三个视角共用一套表格与抽屉，只是「主语/对方/列」不同。
@@ -149,6 +156,11 @@ export function TrafficPanel({ view }: { view: View }) {
   const [loading, setLoading] = React.useState(false);
   const [peers, setPeers] = React.useState<PeersResult | null>(null);
   const [peersLoading, setPeersLoading] = React.useState(false);
+  // 中心节点的主机名（后端 nodes[0] 不带 hostname，从表格行带进来，标签才不用只显示 IP）
+  const [centerHost, setCenterHost] = React.useState("");
+  // 画布实测尺寸：graph 的坐标是画布像素，必须知道容器多大才能铺满
+  const [canvasSize, setCanvasSize] = React.useState({ w: 0, h: 0 });
+  const canvasRef = React.useRef<HTMLDivElement | null>(null);
   const SRC = React.useMemo(() => ({ ips: `流量聚合（/api/traffic/ips?view=${view}）` }), [view]);
   // 图例色块复用图表色（与节点保持一致，切暗色跟着变）
   const t = chartTokens();
@@ -173,8 +185,10 @@ export function TrafficPanel({ view }: { view: View }) {
   }, [load]);
 
   const openPeers = React.useCallback(
-    async (ip: string) => {
+    async (ip: string, hostname?: string) => {
       setPeersLoading(true);
+      setCenterHost(hostname && hostname !== ip ? hostname : "");
+      // 先占位再请求：Dialog 立刻弹出来（骨架态），不会等一下才"咔"地出现
       setPeers({ center: ip, nodes: [], edges: [] });
       const res = await apiFetch<PeersResult>(
         `/api/traffic/peers?ip=${encodeURIComponent(ip)}&view=${view}&minutes=${minutes}&limit=${limit}`,
@@ -185,63 +199,113 @@ export function TrafficPanel({ view }: { view: View }) {
     [minutes, view, limit],
   );
 
+  // 画布尺寸跟随容器（Dialog 可拉伸、窗口可改大小、侧栏宽度是 CSS 变量）
+  React.useEffect(() => {
+    if (!peers) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    let raf = 0;
+    const read = () => {
+      const w = Math.round(el.clientWidth);
+      const h = Math.round(el.clientHeight);
+      // 首帧还没布局时是 0，等 ResizeObserver 下一轮，别用 0 去算坐标
+      if (w < 4 || h < 4) return;
+      setCanvasSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    raf = requestAnimationFrame(read);
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [peers]);
+
   const meta = VIEW_META[view];
   const rows = data?.items ?? [];
 
-  // 拓扑图（2026-10 用户要求，参照参考图样式）：
-  // - **以当前选中的 IP 为中心**，其它 IP 环绕排布（手动算坐标，不用 force，位置稳定不飘）；
-  // - 节点用**服务器图标**（不是圆圈）；
-  // - 连线为**直线**（非曲线）；实线 = 双向流量已捕获，虚线 = 尝试连接但对方无响应回包（推测/未直接抓到）；
-  // - 可拖拽节点、可滚轮缩放（画布类型）；
-  // - 鼠标移到线路上提示**上行/下行各多少**。
+  // 标题与空态都要用到：内/外网各几个对端（后端 `internal` 按监控网段判定，恒为布尔）
+  const peerList = peers ? peers.nodes.filter((n) => n.ip !== peers.center) : [];
+  const internalCount = peerList.filter((n) => n.internal === true).length;
+  const externalCount = peerList.length - internalCount;
+  const peerCount = peerList.length;
+
+  // 连接拓扑（2026-10 用户要求：**居中大画布**，不再是右侧抽屉）：
+  // - 坐标直接算成**画布像素**；配合 series 四边钉 0 + 四角锚点，让 ECharts 的 view
+  //   坐标系退化成 1:1 恒等映射（默认 viewRect 会留一圈边距，把整张图缩到 80% 居中）；
+  // - **外网对端在上、内网对端在下**，各自连回中间那台中心服务器；
+  // - 图标用桌面原稿：内网 = 服务器.svg（等距 3D 机架），外网 = bindBox.svg（云 + 链路）。
+  //   两份稿子都是多色的，所以走 `image://` data URI 而不是单色 `path://`（见 lib/topology-icons.ts）；
+  // - 直线；实线 = 双向流量已捕获，虚线 = 尝试连接但对方无响应回包（推测/未直接抓到）。
   const graphOption = React.useMemo<EChartsOption>(() => {
-    if (!peers) return {};
-    // 颜色从 chartTokens() 取（原来是 5 个硬编码 hex）：图表蓝必须等于 UI 蓝，切暗色要跟着变
+    if (!peers || canvasSize.w < 4 || canvasSize.h < 4) return {};
+    // 颜色从 chartTokens() 取：图表蓝必须等于 UI 蓝，切暗色要跟着变
     const t = chartTokens();
     const center = peers.center;
     const peersOnly = peers.nodes.filter((n) => n.ip !== center);
-    const rings = peersOnly.length > 12 ? [230, 360] : [260];
-    const perRing = Math.max(1, Math.ceil(peersOnly.length / rings.length));
-    const maxBytes = Math.max(1, ...peersOnly.map((n) => n.bytes));
-    // 服务器图标：来自 桌面/服务器.svg（iconfont 风格，1024 基准坐标，多子路径单色）。
-    // 合并全部子路径为一个复合 path，交给 ECharts 按 symbolSize 自适应缩放；
-    // 颜色由 itemStyle 控制（中心蓝 / 网段内浅蓝 / 网段外灰），随主题切换。
-    const SERVER_ICON =
-      "path://M264.815304 86.77287v850.498782h573.217392V86.77287H264.815304z m286.630957 761.010087a48.217043 48.217043 0 1 1-0.044522-96.389566 48.217043 48.217043 0 0 1 0.044522 96.389566z m0-187.392a27.826087 27.826087 0 1 1 0 55.652173 27.826087 27.826087 0 0 1 0-55.652173z m-27.826087-64.912696a27.826087 27.826087 0 1 1 55.652174 0 27.826087 27.826087 0 0 1-55.652174 0z m185.032348-138.195478H394.195478V411.336348h314.457044v45.946435z m0-82.098087H394.195478V329.282783h314.457044v45.901913z m0-79.293218H394.195478V167.891478h314.457044v128z M551.446261 799.521391m-18.565565 0a18.565565 18.565565 0 1 0 37.13113 0 18.565565 18.565565 0 1 0-37.13113 0Z M437.337043 212.368696h228.173914v42.651826H437.337043z";
+    // 内外网分翼：`internal` 由后端按监控网段判定（恒为布尔）；缺字段时按外网处理，
+    // 因为"不确定"的节点放在上翼不会污染内网那一侧的语义
+    const internalNodes = peersOnly.filter((n) => n.internal === true);
+    const externalNodes = peersOnly.filter((n) => n.internal !== true);
+    const centerBytes = peers.nodes.find((n) => n.ip === center)?.bytes ?? 0;
+    const placed = layoutTopology(
+      canvasSize.w,
+      canvasSize.h,
+      center,
+      centerHost,
+      centerBytes,
+      internalNodes,
+      externalNodes,
+    );
 
-    const nodeData: Array<Record<string, unknown>> = [
-      {
-        id: center,
-        name: center,
-        x: 0,
-        y: 0,
-        symbol: SERVER_ICON,
-        symbolSize: [56, 56],
-        symbolOffset: [0, 0],
-        itemStyle: { color: t.series[0] },
-        label: { show: true, position: "bottom", fontSize: 11, fontWeight: "bold", color: t.fg },
-        category: "中心",
+    // 四角透明锚点：只为把 view 坐标系的 boundingRect 钉成 [0,0,画布宽,画布高]。
+    // 没有它们，bbox 只包住真实节点 → ECharts 会等比放大到铺满，图标尺寸跟着失真。
+    // symbolSize:0 + silent 让它既不被画出来、也不吃 hover。
+    const anchors = (
+      [
+        [0, 0],
+        [canvasSize.w, 0],
+        [0, canvasSize.h],
+        [canvasSize.w, canvasSize.h],
+      ] as const
+    ).map(([x, y], i) => ({
+      id: `__bbox_${i}`,
+      name: "",
+      x,
+      y,
+      symbol: "circle",
+      symbolSize: 0,
+      itemStyle: { opacity: 0 },
+      label: { show: false },
+      silent: true,
+    }));
+
+    const nodeData = placed.map((n) => ({
+      id: n.ip,
+      name: n.label,
+      x: n.x,
+      y: n.y,
+      value: n.bytes,
+      kind: n.kind,
+      // 内网（含中心）用机架图标，外网用云图标 —— 区分靠**形状**，不靠色相：
+      // 两份原稿都是蓝色系，再叠一层颜色语义只会让人以为颜色在说威胁等级
+      symbol: n.kind === "external" ? EXTERNAL_HOST_SYMBOL : INTERNAL_HOST_SYMBOL,
+      symbolSize: n.size,
+      symbolKeepAspect: true,
+      z: n.kind === "center" ? 20 : 10,
+      label: {
+        show: true,
+        position: "bottom" as const,
+        distance: n.kind === "center" ? 9 : 7,
+        fontSize: n.kind === "center" ? 12 : 10,
+        fontWeight: (n.kind === "center" ? "bold" : "normal") as "bold" | "normal",
+        color: t.fg,
+        lineHeight: n.kind === "center" ? 15 : 13,
+        // 文字压到连线上也要读得清：给标签加一圈背景色描边当底衬
+        textBorderColor: t.surface,
+        textBorderWidth: 2,
       },
-    ];
-    peersOnly.forEach((node, index) => {
-      const ring = Math.floor(index / perRing);
-      const radius = rings[Math.min(ring, rings.length - 1)];
-      const inRing = Math.min(perRing, peersOnly.length - ring * perRing);
-      const slot = index - ring * perRing;
-      const angle = (slot / Math.max(1, inRing)) * Math.PI * 2 - Math.PI / 2;
-      const weight = Math.log10(1 + node.bytes) / Math.log10(1 + maxBytes);
-      nodeData.push({
-        id: node.ip,
-        name: node.hostname ? `${node.hostname}\n${node.ip}` : node.ip,
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius,
-        symbol: SERVER_ICON,
-        symbolSize: [26 + weight * 14, 26 + weight * 14],
-        itemStyle: { color: node.internal ? t.series[1] : t.axis },
-        label: { show: true, position: "bottom", fontSize: 9, color: t.fg },
-        category: node.internal ? "网段内" : "网段外",
-      });
-    });
+    }));
 
     const linkData = peers.edges.map((e) => {
       const bytesOut = (e as { bytes_out?: number }).bytes_out ?? 0;
@@ -271,7 +335,14 @@ export function TrafficPanel({ view }: { view: View }) {
         formatter: (params: unknown) => {
           const item = params as {
             dataType?: string;
-            data?: { name?: string; value?: number; bytesOut?: number; bytesIn?: number; inferred?: boolean };
+            data?: {
+              name?: string;
+              value?: number;
+              kind?: NodeKind;
+              bytesOut?: number;
+              bytesIn?: number;
+              inferred?: boolean;
+            };
           };
           if (item.dataType === "edge") {
             // 线路：上下行分开报（用户明确要求）
@@ -286,27 +357,44 @@ export function TrafficPanel({ view }: { view: View }) {
               .filter(Boolean)
               .join("<br/>");
           }
-          return `<b>${item.data?.name ?? ""}</b><br/>流量 ${formatBytes(Number(item.data?.value || 0))}`;
+          const kind = item.data?.kind;
+          // 四角锚点没有 kind：tooltip 直接返回空串，不弹一个只有流量 0 的空气泡
+          if (kind !== "center" && kind !== "internal" && kind !== "external") return "";
+          const where =
+            kind === "center" ? "中心服务器" : kind === "internal" ? "内网（监控网段内）" : "外网（监控网段外）";
+          return [
+            `<b>${(item.data?.name ?? "").replace(/\n/g, "<br/>")}</b>`,
+            where,
+            `流量 ${formatBytes(Number(item.data?.value || 0))}`,
+          ].join("<br/>");
         },
       },
       series: [
         {
           type: "graph" as const,
-          // 位置全部手算（以中心 IP 为原点画同心圆），不用 force：拖拽后不飘、刷新不跳
+          // 位置全部手算成画布像素，不用 force：拖拽后不飘、刷新不跳
           layout: "none" as const,
+          // 四条边钉死 0：viewRect 默认会内缩一圈（实测 1200×700 时是 80% 居中），
+          // 钉死之后 viewRect == 容器，配合四角锚点，坐标映射就是恒等的
+          left: 0,
+          top: 0,
+          right: 0,
+          bottom: 0,
           roam: true,
+          // 缩放范围收紧：默认能拉到看不出来是什么，画布已经铺满，只需要小幅微调
+          scaleLimit: { min: 0.7, max: 3 },
           draggable: true,
           symbolKeepAspect: true,
           edgeSymbol: ["none", "arrow"],
-          edgeSymbolSize: [0, 6],
-          data: nodeData,
+          edgeSymbolSize: [0, 5],
+          data: [...nodeData, ...anchors],
           links: linkData,
           labelLayout: { hideOverlap: true },
-          emphasis: { focus: "adjacency", lineStyle: { width: 3, opacity: 0.9 } },
+          emphasis: { focus: "adjacency", lineStyle: { width: 3, opacity: 1 } },
         },
       ],
     };
-  }, [peers]);
+  }, [peers, canvasSize, centerHost]);
 
   return (
     <div className="space-y-4">
@@ -423,12 +511,12 @@ export function TrafficPanel({ view }: { view: View }) {
                         {i + 1}
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
-                        {/* 主机名(IP) 整块可点：点开右侧抽屉看连接拓扑（2026-10 用户要求，
-                            不再单独给一列「拓扑」按钮） */}
+                        {/* 主机名(IP) 整块可点：点开居中画布看连接拓扑（2026-10 用户要求，
+                            不再单独给一列「拓扑」按钮）。hostname 一起带进去当中心标签 */}
                         <button
                           type="button"
                           title="点击查看该 IP 的连接拓扑"
-                          onClick={() => void openPeers(row.ip)}
+                          onClick={() => void openPeers(row.ip, row.hostname)}
                           className="cursor-pointer text-left text-primary underline-offset-2 hover:underline"
                         >
                           <span className="font-medium">{row.hostname || row.ip}</span>
@@ -490,67 +578,84 @@ export function TrafficPanel({ view }: { view: View }) {
         </Card>
       </Section>
 
-      {/* 右侧抽屉：某个 IP 与对端的拓扑。换共享 Drawer 后焦点陷阱/Esc/锁滚动都齐了；
-          图例放 footer，抽屉正文只放图，滚动条不会和图抢位置。 */}
-      <Drawer
+      {/* 居中大画布（2026-10 用户要求，原来是右侧 720px 抽屉）：
+          抽屉只有 720×420 一块画布，节点全挤在中间；改成居中弹窗后画布随窗口走，
+          「外网上翼 / 内网下翼」这种横向铺开的排布也才放得下。
+          图例放 footer、正文只放画布 —— 画布内浮一层图例会盖住节点。 */}
+      <Dialog
         open={!!peers}
         onClose={() => setPeers(null)}
-        widthClass="w-[720px]"
+        wrapperClassName="w-[min(1440px,94vw)]"
+        widthClass="w-full h-[min(880px,88vh)] max-h-none"
+        bodyClassName="flex-1 min-h-0 overflow-hidden p-0"
         title={
-          /* 标题节点用 span：Drawer 把 title 放进 <h2>，块级元素套在标题里不合语法 */
           <span className="flex min-w-0 flex-col">
             <span className="text-sm font-medium">{meta.title} · 连接拓扑</span>
             <span className="truncate font-mono text-xs font-normal text-muted-foreground">
-              {peers?.center} · 最近 {minutes} 分钟 · {(peers?.nodes.length ?? 1) - 1} 个对端
+              {peers?.center}
+              {centerHost && centerHost !== peers?.center ? `（${centerHost}）` : ""} · 最近 {minutes}{" "}
+              分钟 · {peerCount} 个对端
+              {peerCount > 0 ? `（内网 ${internalCount} · 外网 ${externalCount}）` : ""}
             </span>
           </span>
         }
         footer={
-          peers ? (
-            <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
-              <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.series[0] }} />
-                  中心（你点进去的 IP）
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.series[1] }} />
-                  网段内
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-xs" style={{ background: t.axis }} />
-                  网段外
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <svg width="24" height="6" className="inline-block align-middle" aria-hidden="true">
-                    <line x1="0" y1="3" x2="24" y2="3" stroke={t.series[0]} strokeWidth="2" strokeDasharray="5 3" />
-                  </svg>
-                  虚线 = 尝试连接但对方无响应（推测）
-                </span>
-              </div>
-              <p className="mb-1">
-                中心：<span className="font-mono text-foreground">{peers.center}</span> · 连线粗细 = 流量 ·
-                悬停线路看上行/下行 · 可拖拽节点、滚轮缩放
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {peers.edges.slice(0, 20).map((e) => (
-                  <span key={`${e.source}-${e.target}`} className="rounded-xs bg-surface-1 px-1.5 py-0.5">
-                    {e.target === peers.center ? e.source : e.target} · {formatBytes(e.bytes)}
-                  </span>
-                ))}
-              </div>
+          peers && peerCount > 0 ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-4 w-4 bg-contain bg-center bg-no-repeat"
+                  style={{ backgroundImage: `url("${INTERNAL_HOST_SRC}")` }}
+                />
+                内网（监控网段内）
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-4 w-[23px] bg-contain bg-center bg-no-repeat"
+                  style={{ backgroundImage: `url("${EXTERNAL_HOST_SRC}")` }}
+                />
+                外网（监控网段外）
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <svg width="24" height="6" className="inline-block align-middle" aria-hidden="true">
+                  <line x1="0" y1="3" x2="24" y2="3" stroke={t.series[0]} strokeWidth="2" />
+                </svg>
+                已捕获双向流量
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <svg width="24" height="6" className="inline-block align-middle" aria-hidden="true">
+                  <line x1="0" y1="3" x2="24" y2="3" stroke={t.series[0]} strokeWidth="2" strokeDasharray="5 3" />
+                </svg>
+                对方无响应回包（推测）
+              </span>
+              <span className="ml-auto hidden sm:inline">线粗 = 流量 · 滚轮缩放 · 拖拽节点</span>
             </div>
           ) : null
         }
       >
-        {peersLoading ? (
-          <ChartSkeleton height={360} />
-        ) : peers?.error ? (
-          <EmptyState title="拓扑读取失败" hint={peers.error} tone="danger" />
-        ) : (
-          <Chart option={graphOption} height={420} />
-        )}
-      </Drawer>
+        {/* 画布容器必须有确定高度：Chart 的 height="100%" 靠它，父级塌了图就成 0 高 */}
+        <div ref={canvasRef} className="h-full w-full">
+          {peersLoading ? (
+            <LoadingBlock className="h-full" />
+          ) : peers?.error ? (
+            <div className="flex h-full items-center justify-center p-6">
+              <EmptyState title="拓扑读取失败" hint={peers.error} tone="danger" />
+            </div>
+          ) : peerCount === 0 ? (
+            <div className="flex h-full items-center justify-center p-6">
+              <EmptyState
+                title="该时间段内没有对端连接"
+                hint="换一个时间范围再试；也可能是这条会话只有单向报文、对端地址没落进日志"
+                tone="muted"
+              />
+            </div>
+          ) : (
+            <Chart option={graphOption} height="100%" />
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }

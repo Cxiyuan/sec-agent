@@ -24,6 +24,7 @@ from typing import Any
 from app import triage_policy
 from app.analysis import (
     candidates,
+    cold_start,
     params as analysis_params,
     queue as analysis_queue,
     subjects as analysis_subjects,
@@ -842,11 +843,15 @@ def _analysis_round(
     if now - float(state.get("last_round") or 0.0) < gap:
         return
     state["last_round"] = now
+    # 冷启动保护：起点标记只在第一次进这里写一次（基线重学期，见 analysis.cold_start）
+    cold_start.started(client)
     try:
         made = candidates.flush(collector, client, stats=stats)
         stats["candidate_novelty"] += int(made.get("novelty") or 0)
         stats["candidate_structure"] += int(made.get("structure") or 0)
-        if now - float(state.get("last_coverage") or 0.0) >= 6 * 3600:
+        # 冷启动期把盲区扫描降频（放大倍数可调，见 params.cold_start_scale）
+        coverage_gap = 6 * 3600 * cold_start.interval_scale(client)
+        if now - float(state.get("last_coverage") or 0.0) >= coverage_gap:
             state["last_coverage"] = now
             stats["candidate_coverage"] += candidates.enqueue_coverage(client)
         # 复测与冷摘要：低频（6 小时一次）的"回头看"任务。
