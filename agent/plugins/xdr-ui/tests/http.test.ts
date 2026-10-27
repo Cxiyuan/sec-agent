@@ -12,7 +12,7 @@ const BASE = '/xdr/ui'
 function makeIngest(overrides: Partial<IngestServiceView> = {}): IngestServiceView {
   const views: Array<Record<string, unknown>> = []
   return {
-    status: () => ({ analysis: 'enabled', poll_seconds: 900, max_concurrent: 2, loop: { polls: 3, claimed: 4, started: 4, running: 1, failedClaims: 0, doorbells: 5, droppedByConcurrency: 0, consecutiveErrors: 0, lastError: '', lastBudget: '12+5/2' } }),
+    status: () => ({ analysis: 'enabled', poll_seconds: 900, max_concurrent: 2, loop: { polls: 3, claimed: 4, started: 4, running: 1, failedClaims: 0, doorbells: 5, droppedByConcurrency: 0, consecutiveErrors: 0, lastError: '' } }),
     cacheStats: async () => ({ hot: 10, cold: 20, analyzed: 5, reused: 9, reanalyzed: 2 }),
     wake: () => overrides.wake?.() ?? true,
     listAnalyses: async query => {

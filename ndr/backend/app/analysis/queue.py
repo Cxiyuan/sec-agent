@@ -1,11 +1,10 @@
-"""客观线索队列：入队（去重/容量/合并）、原子领取（配额/保留名额/租约）、结论回收。
+"""客观线索队列：入队（去重/容量/合并）、原子领取（不设额度/并发上限）、结论回收。
 
 三个不可妥协的点：
 
 1. **不静默丢**：队列满时要么与同族合并计数（`merged`）、要么按强度替换（`superseded`）、
    要么计数后丢弃（`dropped_overflow`）—— 三个数都进 Redis 统计，界面能看见；
-2. **配额在服务端强制**：不指望智能体自觉。Redis 算不出配额时**拒绝领取**
-   （宁可不分析，也不能失去成本上限）；
+2. **NDR 不限制领取额度或并发**：领取多少、多久领一次由智能体自己决定；
 3. **领取必须原子**：多令牌/多次长轮询同时抢同一任务会重复分析。用 PG
    `SELECT ... FOR UPDATE SKIP LOCKED` + 同事务改状态，抢不到的自动跳过而不是等待。
 """
@@ -32,7 +31,8 @@ UTC = timezone.utc
 log = get_logger(__name__)
 
 STATS_KEY = "shentong:analysis:stats"
-_CLAIM_PREFIX = "shentong:analysis:claim"
+# 保持旧 Redis 键名，让已有的门铃状态自然过期；此处只存队列水位和门铃去抖标记。
+_DOORBELL_PREFIX = "shentong:analysis:claim"
 _STATE_COUNTER = {
     "pending": "enqueued",
     "deferred": "deferred",
@@ -41,11 +41,6 @@ _STATE_COUNTER = {
     "stuck": "stuck",
     "expired": "expired",
 }
-
-
-def _hour_bucket(now: datetime | None = None) -> str:
-    ts = now or datetime.now(UTC)
-    return ts.strftime("%Y%m%d%H")
 
 
 def dedupe_key(
@@ -199,51 +194,7 @@ def enqueue(
         return "error"
 
 
-# ---------- 领取（原子 + 配额） ----------
-
-
-def _budget(client: Any, token: str) -> dict[str, Any]:
-    """算本令牌当前可用额度。Redis 不可用时 `ok=False`（调用方必须拒绝领取）。"""
-    hour = _hour_bucket()
-    quota = params.rate_per_token_hour()
-    total_quota = params.rate_total_hour()
-    reserved = params.reserved_slots()
-    try:
-        used = int(client.get(f"{_CLAIM_PREFIX}:{token}:{hour}") or 0)
-        used_total = int(client.get(f"{_CLAIM_PREFIX}:_all:{hour}") or 0)
-        used_reserved = int(client.get(f"{_CLAIM_PREFIX}:{token}:res:{hour}") or 0)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("算领取配额失败（本次拒绝领取）：%s", exc)
-        return {"ok": False, "reason": f"配额计算失败：{str(exc)[:120]}"}
-    room_token = max(0, quota - used)
-    room_total = max(0, total_quota - used_total)
-    room_reserved = max(0, reserved - used_reserved)
-    # 普通额度不能吃掉保留名额
-    room_normal = max(0, min(room_token, room_total) - room_reserved)
-    return {
-        "ok": True,
-        "hourly_quota": quota,
-        "used": used,
-        "normal_remaining": room_normal,
-        "reserved_remaining": room_reserved,
-        "inflight": None,
-    }
-
-
-def _inflight(db: Any, token: str) -> int:
-    now = datetime.now(UTC)
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(AnalysisTask)
-            .where(
-                AnalysisTask.state == "claimed",
-                AnalysisTask.claimed_by == token,
-                AnalysisTask.lease_until > now,
-            )
-        )
-        or 0
-    )
+# ---------- 领取（原子，不限制额度/并发） ----------
 
 
 def _pick(
@@ -291,74 +242,24 @@ def claim_tasks(
     kinds: set[str] | None = None,
     min_strength: float = 0.0,
 ) -> dict[str, Any]:
-    """原子领取一批任务；同时回带剩余额度（智能体据此自我节流）。"""
+    """原子领取请求数量的任务；不按令牌、小时或并发数限制领取。"""
     want = max(1, min(int(limit or 1), 20))
-    if client is None:
-        return {"error": "Redis 不可用，无法核算配额（宁可不派工，也不能失去成本上限）"}
-    budget = _budget(client, token)
-    if not budget.get("ok"):
-        return {"error": budget.get("reason") or "配额不可用"}
-    reserved_floor = params.reserved_min_strength()
-    strong_room = int(budget["reserved_remaining"])
-    normal_room = int(budget["normal_remaining"])
-    want = min(want, strong_room + normal_room)
-    if want <= 0:
-        return {
-            "tasks": [],
-            "reason": "budget_exhausted",
-            "budget": {**budget, "max_inflight": params.max_inflight()},
-        }
     picked_kinds = set(kinds or ()) & set(params.KINDS)
     now = datetime.now(UTC)
     lease = timedelta(seconds=params.lease_seconds())
     taken: list[AnalysisTask] = []
     try:
         with SessionLocal() as db:
-            inflight = _inflight(db, token)
-            slots = params.max_inflight() - inflight
-            if slots <= 0:
-                return {
-                    "tasks": [],
-                    "reason": "inflight_full",
-                    "budget": {
-                        **budget,
-                        "inflight": inflight,
-                        "max_inflight": params.max_inflight(),
-                    },
-                }
-            want = min(want, slots)
-            # 先取保留名额内的高强度线索，再取普通线索
-            strong = _pick(
+            taken = _pick(
                 db,
-                min(want, strong_room),
-                min_strength=reserved_floor,
+                want,
+                min_strength=min_strength,
                 cap=1.01,
                 kinds=picked_kinds,
             )
-            rest = (
-                _pick(
-                    db,
-                    want - len(strong),
-                    min_strength=min_strength,
-                    cap=reserved_floor,
-                    kinds=picked_kinds,
-                )
-                if want > len(strong)
-                else []
-            )
-            taken = strong + rest
-            reserved_used = sum(1 for t in strong if float(t.strength or 0) >= reserved_floor)
             if not taken:
                 db.rollback()
-                return {
-                    "tasks": [],
-                    "reason": "queue_empty",
-                    "budget": {
-                        **budget,
-                        "inflight": inflight,
-                        "max_inflight": params.max_inflight(),
-                    },
-                }
+                return {"tasks": [], "reason": "queue_empty"}
             ids = [str(t.id) for t in taken]
             db.execute(
                 update(AnalysisTask)
@@ -380,36 +281,9 @@ def claim_tasks(
         log.warning("领取任务失败：%s", exc)
         return {"error": f"领取失败：{str(exc)[:160]}"}
 
-    try:
-        hour = _hour_bucket()
-        pipe = client.pipeline()
-        pipe.incrby(f"{_CLAIM_PREFIX}:{token}:{hour}", len(taken))
-        pipe.incrby(f"{_CLAIM_PREFIX}:_all:{hour}", len(taken))
-        if reserved_used:
-            pipe.incrby(f"{_CLAIM_PREFIX}:{token}:res:{hour}", reserved_used)
-        for key in (
-            f"{_CLAIM_PREFIX}:{token}:{hour}",
-            f"{_CLAIM_PREFIX}:_all:{hour}",
-            f"{_CLAIM_PREFIX}:{token}:res:{hour}",
-        ):
-            pipe.expire(key, 7200)  # 跨小时边界留 2 小时余量
-        pipe.execute()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("领取计数写入失败（不影响已派任务，但下一轮可能多派）：%s", exc)
     bump(client, "claimed", len(taken))
 
-    return {
-        "tasks": out,
-        "budget": {
-            **budget,
-            "inflight": (budget.get("inflight") or 0) + len(taken)
-            if isinstance(budget.get("inflight"), int)
-            else len(taken),
-            "max_inflight": params.max_inflight(),
-            "lease_seconds": params.lease_seconds(),
-        },
-        "watermark": now.isoformat(),
-    }
+    return {"tasks": out, "watermark": now.isoformat()}
 
 
 # ---------- 交回 / 延后 ----------
@@ -639,7 +513,7 @@ def _mark_analyzed(db: Any, subject_kind: str, subject: str, now: datetime) -> N
 
 
 def stats(client: Any) -> dict[str, Any]:
-    """队列总览（界面 + 智能体自我节流都读它）。"""
+    """队列总览（界面与智能体读同一份队列状况）。"""
     now = datetime.now(UTC)
     with SessionLocal() as db:
         by_state = {
@@ -683,12 +557,7 @@ def stats(client: Any) -> dict[str, Any]:
         "avg_tools_used": round(float(avg_tools or 0), 2),
         "avg_duration_ms": int(avg_ms or 0),
         "counters": read_stats(client),
-        "budget": {
-            "rate_per_token_hour": params.rate_per_token_hour(),
-            "rate_total_hour": params.rate_total_hour(),
-            "max_inflight": params.max_inflight(),
-            "reserved_slots": params.reserved_slots(),
-            "reserved_min_strength": params.reserved_min_strength(),
+        "queue_policy": {
             "lease_seconds": params.lease_seconds(),
             "queue_capacity": params.queue_capacity(),
             "pending_ttl_hours": params.pending_ttl_hours(),
@@ -806,13 +675,13 @@ def should_ring(client: Any, payload: dict[str, Any]) -> bool:
         if int(payload.get("queue_len") or 0) <= 0:
             return False
         # 空→非空跃迁：不看冷却，直接叫醒（这是"最该快"的一次）
-        last_len = client.get(f"{_CLAIM_PREFIX}:qlen")
+        last_len = client.get(f"{_DOORBELL_PREFIX}:qlen")
         jumped = last_len is None or int(last_len or 0) <= 0
-        client.set(f"{_CLAIM_PREFIX}:qlen", int(payload.get("queue_len") or 0))
+        client.set(f"{_DOORBELL_PREFIX}:qlen", int(payload.get("queue_len") or 0))
         if jumped:
-            client.delete(f"{_CLAIM_PREFIX}:bell")
+            client.delete(f"{_DOORBELL_PREFIX}:bell")
         if cooldown > 0:
-            got = client.set(f"{_CLAIM_PREFIX}:bell", "1", nx=True, ex=cooldown)
+            got = client.set(f"{_DOORBELL_PREFIX}:bell", "1", nx=True, ex=cooldown)
             if not got and not jumped:
                 return False
         return True
@@ -899,7 +768,7 @@ def manual_task(
     kind: str = "hit",
     strength: float = 0.6,
 ) -> dict[str, Any]:
-    """人工派工：运维"我就想看看这台"直接进队列（不插队、走同一套配额与去重）。"""
+    """人工派工：运维"我就想看看这台"直接进队列（不插队、走同一套容量与去重）。"""
     result = enqueue(
         kind=kind if kind in params.KINDS else "hit",
         subject_kind=subject_kind or "ip",

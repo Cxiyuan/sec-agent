@@ -963,7 +963,7 @@ def _kinds_of(value: Any) -> set[str]:
 
 
 def _claim_tasks(args: dict[str, Any]) -> dict[str, Any]:
-    """领取待分析线索（原子、带配额）。服务端强制预算，不靠智能体自觉。"""
+    """领取待分析线索（原子）。领取数量与节奏由智能体自己决定。"""
     import time as _time
 
     client = _client()
@@ -979,7 +979,7 @@ def _claim_tasks(args: dict[str, Any]) -> dict[str, Any]:
             kinds=_kinds_of(args.get("kinds")),
             min_strength=float(args.get("min_strength") or 0),
         )
-        # 只有"队列空"才值得继续等；预算用尽/并发满了等也没用
+        # 只有"队列空"才值得继续等；其它正常/错误回执直接返回
         if out.get("tasks") or out.get("error") or out.get("reason") != "queue_empty":
             return out
         if _time.monotonic() >= deadline:
@@ -1537,7 +1537,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _add_task,
         "desc": (
             "主动登记一条线索进队列（不经过领取也能留痕）。"
-            "从外部情报或巡逻中发现「这事值得看」时用；与自动线索同一套去重、容量与配额，不插队"
+            "从外部情报或巡逻中发现「这事值得看」时用；与自动线索同一套去重与容量，不插队"
         ),
         "params": {
             "subject": "对象（IP / 资产 / 账号）",
@@ -1653,8 +1653,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     "claim_tasks": {
         "run": _claim_tasks,
         "desc": (
-            "领取待分析的**客观线索**（队列）。服务端按令牌强制预算：每小时配额、并发在跑数、"
-            "高强度保留名额，响应里回 budget（剩余额度）。领到的任务只含事实（偏离倍数、"
+            "领取待分析的**客观线索**（队列）。领取数量与节奏由你决定，NDR 不设令牌额度、"
+            "不设每小时配额、不设领取并发上限。领到的任务只含事实（偏离倍数、"
             "是否首见、涉及对象数），不含严重度与结论——判断权在你"
         ),
         "params": {

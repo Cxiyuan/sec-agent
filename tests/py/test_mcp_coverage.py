@@ -387,9 +387,7 @@ def test_token_consuming_tools_inject_the_token(mcp_mods: dict[str, Any]) -> Non
     """凡是读 `_token` 的工具，包装层都必须走 `_with_ctx` 注入。
 
     2026-10 实机踩过：`claim_tasks` 的包装只用 `_clean`，`_token` 是空的 →
-    落到兜底名 `mcp`，于是**所有调用方共用一个配额/并发桶**。后果不是报错而是
-    静默：两条租约未到期的任务让每个智能体都拿到 `inflight_full`，看起来
-    "队列里明明有 2000 条却一条也领不到"。
+    落到兜底名 `mcp`，任务领取人无法区分，租约与审计都记到同一个名字上。
     """
     import inspect
     import re

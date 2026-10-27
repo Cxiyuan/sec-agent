@@ -185,7 +185,7 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 
 - **指标卡（Stat，不描边、只有 `bg-surface-1`）**：`tone` 只用三处——卡住→`medium`、覆盖率<阈值→`medium`、其余 `default`。**没读到数据显示 `—` 而非 `0`**。
 - **容量压力条**（全页唯一自绘图元，6px 高，`rounded-full`）：
-  `track = bg-border-subtle`，`fill` 按 `(pending+deferred)/budget.queue_capacity`：<80% `bg-primary`；80–99% `bg-sev-medium-fg`；≥100% `bg-sev-critical-fg` + 右侧 `text-sev-critical-fg` 写「已满，新线索会被丢弃（dropped_overflow）」。旁永远带 `tabular-nums` 的「1834 / 2000」。
+  `track = bg-border-subtle`，`fill` 按 `(pending+deferred)/queue_policy.queue_capacity`：<80% `bg-primary`；80–99% `bg-sev-medium-fg`；≥100% `bg-sev-critical-fg` + 右侧 `text-sev-critical-fg` 写「已满，新线索会被丢弃（dropped_overflow）」。旁永远带 `tabular-nums` 的「1834 / 2000」。
 - **容量与丢线索的唯一落点**：压力条 + `counters.dropped_overflow` / `counters.superseded` 两个数字（12px，`text-muted-foreground`，在压力条右侧竖排两行，title 解释）。**不要**把它们做成 Stat 卡（会发生「6 张卡里 2 张永远 0」）。
 - **`counters` 是 Redis 哈希、可能整体为空对象**（`read_stats` 在 `client is None` 或异常时返回 `{}`）→ counters 区整块显示 `—`，不要渲染一排 0。
 - **`counters` 只有这些键**：`enqueued / merged / superseded / dropped_overflow / expired / reclaimed / stuck / claimed / deferred / done / followup_accepted / candidate_error / suppression_rebound`。**没有 `doorbell_*`**（README 写错）→ 门铃状态只能从 `budget` 与参数抽屉读，不在总览放「门铃冷却剩余」。
@@ -203,10 +203,10 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 | 4 | **状态** | `w-24` | §2.2 徽章（**全表唯一彩色列**）；`expired` 行下方 12px muted 写「被更强线索挤掉」 | 唯一需颜色扫描的维度 |
 | 5 | 线索摘要 | `min-w-0` | 从 `hint` 抽一条最能区分的，`truncate`+`title` 全文 | 全量在抽屉 |
 | 6 | 合并/尝试 | `w-20` | `coalesced / attempts`（如 `7/2`），title 解释 | 「同现象反复 7 次」 |
-| 7 | 时效 | `w-32` | `formatDateTime(created_at)` + 「剩 42h」（按 `budget.pending_ttl_hours` 推算，<6h 用 `text-sev-medium-fg`） | 过期要能提前看到 |
+| 7 | 时效 | `w-32` | `formatDateTime(created_at)` + 「剩 42h」（按 `queue_policy.pending_ttl_hours` 推算，<6h 用 `text-sev-medium-fg`） | 过期要能提前看到 |
 | 8 | 详情 | `w-12` | ghost 图标按钮，aria-label 带对象名 | 键盘真焦点目标 |
 
-**明确不做**：不提供「领取」按钮、不做「派工给我」、不做批量状态变更（领取/交回/延后是 MCP 通道职责，界面绕过配额是红线）；不做「结束原因 note」列（接口不返回，见 §4.6）。
+**明确不做**：不提供「领取」按钮、不做「派工给我」、不做批量状态变更（领取/交回/延后是智能体 MCP 通道职责，界面不绕过领取流程）；不做「结束原因 note」列（接口不返回，见 §4.6）。
 
 ### 4.4 结论列表（③）列
 
@@ -241,14 +241,13 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 - 详情不存在时后端**返回 HTTP 200 + `{error:"任务不存在"}`** → 必须判 `data.error` 走 danger 态，不能当空任务渲染。
 - `lease_until` 只在 `claimed=True` 时才有值（详情给空串）→ 无值时整行不渲染。
 
-### 4.7 派工参数抽屉（23 knob，分 6 组）
+### 4.7 派工参数抽屉（18 knob，分 5 组）
 
-复用 behavior-panel 的参数渲染模式（draft / `已改`·`默认`·`未保存` 三徽章 / 范围与默认值说明 / 逐字段 `field_errors` / 单键与全部恢复默认）。按 `analysis.*` 前缀分组，**共 23 项**（`params.py:31-95`）：
+复用 behavior-panel 的参数渲染模式（draft / `已改`·`默认`·`未保存` 三徽章 / 范围与默认值说明 / 逐字段 `field_errors` / 单键与全部恢复默认）。按 `analysis.*` 前缀分组，**共 18 项**（`params.py`）：
 
 | 组 | 键 | 项 |
 |---|---|---|
 | 开关与线索 | `enabled`、`candidate_kinds` | 2 |
-| 配额与保留 | `rate_limit_per_hour_per_token`、`rate_limit_per_hour_total`、`max_inflight_per_token`、`reserved_slots_per_hour`、`reserved_min_strength` | 5 |
 | 租约与卡住 | `lease_seconds`、`stuck_after_attempts`、`followup_depth`、`followup_max_per_task` | 4 |
 | 容量与时效 | `queue_capacity`、`pending_ttl_hours`、`dedupe_bucket_minutes`、`flush_seconds` | 4 |
 | 门铃 | `doorbell_enabled`、`doorbell_cooldown_seconds` | 2 |
@@ -256,7 +255,7 @@ PageShell width="wide"（h1 sr-only = 派工队列）
 
 - **当前值的取法（最容易错的一处）**：`/config` 的 `items[]` 只有 `{key,label,kind,default,low,high,unit,note,overridden}`，**没有 `value`**；当前生效值在**顶层** `effective[item.key]`。渲染式：`const value = effective[item.key] ?? item.default;`。→ 新建 `KnobItem` 类型，**不要复用 `BaselineConfigItem`**，也**不要照抄 `behavior-panel.tsx:1150` 的 `item.value`**（那会让整列渲染成 `undefined`）。
 - **控件按 `kind` 分支，只有 4 种**：`bool` → `Switch size="sm"`（`checked/onCheckedChange/label` 三个 props，**不接受 children**）；`int`/`float` → `Input type="number"`（`step` 由 `kind` 决定：int 用 `1`，float 用 `0.01`），右侧 12px muted 显示 `unit`，下方 12px muted 写「默认 {default} · 范围 {low}–{high}」；`text` → **只有 `candidate_kinds` 一个**，用 checkbox 组，其余 text 走 `Input` + `font-mono`。**没有 `regex` 这个 kind**（照抄 behavior-panel 的 `item.kind === "regex"` 分支永远不会命中）。
-- **`candidate_kinds` 专属交互**：5 个 checkbox（`novelty/shift/structure/coverage/hit`，默认值 `"novelty,shift,coverage,hit"`，structure 默认关），**不让人手敲逗号串**；提交前拼成逗号串。**5 个全不勾时不要灰掉保存按钮**，点击时拦下并提示：「至少保留 1 类线索。要整体停掉派工，请关『启用派工队列』」——因为该键是 `text` 型，空串会被后端 400「不能为空」（`params.py:253`）。
+- **`candidate_kinds` 专属交互**：5 个 checkbox（`novelty/shift/structure/coverage/hit`，默认值 `"novelty,shift,coverage,hit"`，structure 默认关），**不让人手敲逗号串**；提交前拼成逗号串。**5 个全不勾时不要灰掉保存按钮**，点击时拦下并提示：「至少保留 1 类线索。要整体停掉派工，请关『启用派工队列』」——因为该键是 `text` 型，空串会被后端 400「不能为空」。
 - **`queue_capacity` 的说明文案**必须写「只影响后续入队，已入队任务不受影响」（`note` 原文）。
 - 生效文案：**「改完 30 秒内生效」**（`analysis.py:33` HINT 原文），不要写「立即」。
 - `field_errors` 的 `field` 就是裸键名（`analysis.enabled` 这种全名，不是去前缀的短名）→ 回填时**不要** strip 前缀。
@@ -495,7 +494,7 @@ PageShell width="wide"（h1 = 精准抑制）
 
 1. **列表接口失败返回 HTTP 200 + `{error, items:[], total:0}`。** 只看 `items.length` 会把「后端挂了」渲染成「今天很安静」。必须 `if (data?.error)` 走 danger 态。`/tasks` `/results` `/coverage` `/inventory` `/suppressions` 同理；`/tasks/{id}` 与 `/coverage`、`/inventory` 的 `error` 也都在 200 里。
 2. **抑制清单 `total` 与可见行数不一致。** `list_items` 先 SQL 分页（`total` 不过滤过期）再 Python filter 掉 expired。**恒传 `include_expired=true` 直接消坑**（后端默认 `False`，必须显式传）。
-3. **不提供「领取任务」入口。** 领取/交回/延后只走 MCP（带令牌配额）。界面加一个「派工给我」= 绕过配额红线。
+3. **不提供「领取任务」入口。** 领取/交回/延后只走智能体 MCP。界面加一个「派工给我」会绕过智能体自己的领取流程。
 4. **没有 `state="overflow"`。** 超容量只有 `dropped_overflow` / `superseded` 计数器 + `expired` 行小字「被更强线索挤掉」。不要造第七种徽章。
 5. **抑制清单没有 `mode` / 排序参数**（只有 `q` / `enabled_only` / `include_expired` / `limit` / `offset`）。不要放排序下拉；mode 筛选只能前端过滤当前页并标注。
 6. **结论列表没有关键词搜索**（只有 `task_id` / `subject` / `verdict`），且 `subject` 是精确等值。

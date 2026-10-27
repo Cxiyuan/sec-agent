@@ -3,7 +3,7 @@
 来自 2026-10-26 架构评审的处理项：
 - 旧摘要推送契约降级为回滚档（入口保留，语义以注释/文档为准）；
 - 命中线索 hint 富化（客观元数据，省 agent 查询；绝不带严重度）；
-- 冷启动窗口（基线重学期把"人人都新"的线索压到保留名额之下）；
+- 冷启动窗口（基线重学期把"人人都新"的线索压到高强度档之下）；
 - analyst 档补上 baseline_lookup / entity_profile（agent 从"没有尺子"到有尺子）；
 - 抑制条目一键转人工排除规则草稿（反例学习）。
 """
@@ -138,7 +138,7 @@ def test_cold_start_lifecycle_and_damping(monkeypatch: pytest.MonkeyPatch) -> No
 def test_cold_start_only_caps_weak_kinds() -> None:
     cold = _mod("app.analysis.cold_start")
     assert cold.CAPPED_KINDS == frozenset({"novelty", "coverage", "structure"}), (
-        "hit/shift 是真异常信号不能封顶（保留名额留给它们）"
+        "hit/shift 是真异常信号不能封顶（应保持更高优先级）"
     )
 
 

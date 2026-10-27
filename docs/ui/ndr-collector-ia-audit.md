@@ -363,17 +363,13 @@ Section 改名「**线索与派工态势**」，副标题写"本页只报运行�
 
 （本节编号保留占位，避免下文 P1-2…P1-9 与落地清单里的引用失效。）
 
-#### P1-2 预算只展示上限，不展示余量
+#### P1-2 预算只展示上限，不展示余量（已作废）
 
-**现状** `analysis-panel.tsx:714-720`：五个徽章「单令牌 20/h / 全局 120/h / 并发 2 / 保留 5 名 / 租约 900s」——全是**配置值**。
+**现状** 该审计项针对旧的领取额度设计。额度限制已从 NDR 移除：`claim_tasks` 不再返回 `budget`，参数页也不再展示单令牌/全局/保留名额。运维要看的「待派/在跑/卡住」已经在队列总览里。
 
-**为什么不成立**
-契约 `claim_tasks` 的 `budget` 有 `used / normal_remaining / reserved_remaining / inflight / max_inflight`。运维真正要回答的是"这个小时还能派多少活""是不是已经打满"。现在看到的"并发 2"是上限，不是当前在跑数（虽然 `stats.claimed` 近似，但没并排展示，用户不会自己换算）。
-
-**改成什么**
-- 后端：`stats.budget` 补 `used` / `remaining` / `inflight`（Redis 配额键已有现成读取，`claim_tasks` 在用）；
-- 前端：改成一个"预算条"组件：`本小时 已用 3 / 20 · 普通余 12 · 保留余 5 · 在跑 1/2`，余量为 0 时整条转 medium；`reserved_remaining` 旁注明"只给 strength ≥ 0.8 的线索"。
-- 若后端短期不改：至少把 `stats.claimed` 与 `max_inflight` 并排（`在跑 {claimed} / 上限 {max_inflight}`），不新增字段也能消掉最常见的误读。
+**当前口径**
+- 后端 `stats` 只保留 `queue_policy`（租约、队列容量、线索保留期）；
+- 前端容量条按 `(pending + deferred) / queue_policy.queue_capacity` 展示，不再有「剩余额度」。
 
 #### P1-3 `suppression_rebound` 有数但不显示
 
@@ -583,7 +579,7 @@ Section 改名「**线索与派工态势**」，副标题写"本页只报运行�
 1. **不要删 `rule_severity` 的展示，只改它的名分与位置。** 它仍是签名引擎的真实属性，运维排"哪条签名在刷"时要用。要求是：叫「级别」不叫「严重度」、徽章空心（不用实心底）、不与智能体 verdict 并排。**注意**：`hits.py:609/:643` 那两行给基线行现算/硬编码的值属于后端 D2 违反项（P0-3 第 5 条），前端不要试图用配色掩盖它 —— 掩盖会让"这个值是谁算的"永久失传。
 2. **不要撤「忽略」和「加白」。** 值班需要"我先不看这条"的能力；加白写的是 `exclusion_filters`（人工降噪，事件仍生成），与新机制不冲突。只改文案与账本说明（P1-5）。
 3. **不要撤人工派工。** `/api/analysis/tasks` 是机制文档 §9 明确要的端点（"运维『我想看看这台』直接进队"），语义是"登记一个线索"而非"下判断"。现有五出口文案（`analysis-panel.tsx:182-198`）已经写得很准，别动。
-4. **不要在派工队列加"领取/交回/延后"按钮。** `analysis-panel.tsx:72-76` 已经把理由写死（绕过令牌配额会打穿成本上限）。这是红线，不是风格选择。
+4. **不要在派工队列加"领取/交回/延后"按钮。** `analysis-panel.tsx:72-76` 已经把理由写死（领取/交回是智能体的 MCP 职责）。这是分工边界，不是风格选择。
 5. **不要撤 `record_disposition`（画像降权）。** 契约 §6 明确它与 `submit_suppression` 分工不同（实体 vs 事件流），两者都需要。只改措辞。
 6. **不要因为"`hit` 只是线索"就删事件检索页。** 原始记录是"原始数据永不被抑制影响"这一红线的**唯一界面出口**；抑制错了要靠它重建（契约 §5.2）。它只是不该占一级菜单。
 7. **不要撤行为画像页，也不要把它并进事件中心。** 画像的 2σ/风险分是 NDR 的合法统计职责（红线一禁的是"写威胁语义"，不是"做统计"）。撤掉它等于让 `baseline_deviation` 类线索失去解释面。
@@ -736,7 +732,7 @@ Section 改名「**线索与派工态势**」，副标题写"本页只报运行�
 |---|---|---|---|
 | 1 | 门铃发送失败**是否真的落重试队列**？`push.send_doorbell`（`app/detector/push.py:160-189`）失败只返回 False，`runner.py:884-886` 只计数，**没有入队**；而 `docs/ndr-analysis-mechanism.md` 第十节写"失败落现有重试队列" | 确认 `push.py` 是否有未读到的入队分支；再对 `analysis.doorbell_*` 的实现定论 | 决定 B4 的"立即重发"是删还是保留；决定两处文档谁对 |
 | 2 | `/api/agent-push/retry` 在派工模式下是否还有意义？ | `app/api/routes/agent_push.py` + `push.retry_pending` | 决定该按钮存留 |
-| 3 | `stats.budget` 能否补 `used / remaining / inflight`？ | `app/analysis/queue.py` 的 `stats()` 与 `claim_tasks` 的配额读取（Redis 键名） | 决定 B5 的预算是"真余量"还是"claimed/max_inflight"兜底 |
+| 3 | ~~`stats.budget` 能否补 `used / remaining / inflight`？~~ | 已作废：NDR 已移除领取额度限制，`stats` 不再返回 `budget` | — |
 | 4 | `/api/analysis/results` 为何没复用 `_result_dict`（`queue.py:1006`）？是刻意精简还是漏了 | `app/api/routes/analysis.py:99-153` 与 git 历史 | 决定 B5-a 是"补字段"还是"改成复用同一个序列化函数" |
 | 5 | 事件详情能否关联 `analysis_results`？关联键用 `subject=IP` 还是 `cluster_id`？一个 IP 可能有多条结论，取哪条（最新 / 最高置信 / TP 优先） | `app/detector/hits.py::get_hit`、`app/analysis/queue.py::prior_findings`、`app/analysis/anchors.py` | 决定 B3-b 的返回结构与列表"结论"列的取值规则 |
 | 6 | 基线来源要不要再细分？现有 `rule_source` 只能分到 `builtin` / `baseline`（`hits.py:514,610,644`），分不开"画像风险折算"（`:609`）与"2σ 硬编码 high"（`:643`）。是否加 `severity_source`（`signature` / `baseline_risk` / `baseline_numeric`），还是干脆让基线行停写 `rule_severity`、改回传 `strength`？ | `app/db/models.py:610` 的 `rule_source`、`app/detector/hits.py` 三个写入点 | 决定 P0-3 的 `†` 标记能细到哪一层。**前端现在已能区分"规则 vs 基线"**（`source_kind` + `rule_source`），所以这不是阻断项；只有想进一步区分两种基线算法时才需要后端加字段 |

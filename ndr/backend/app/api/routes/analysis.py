@@ -4,7 +4,7 @@
 
 这里全部是**只读浏览 + 人工派工 + 参数读写**：真正"领活/交活"走 MCP
 （`claim_tasks` / `complete_task` / `defer_task`），因为那是智能体的通道，
-带令牌身份与配额；界面不该绕过配额去领任务。
+带令牌身份；界面不该绕过智能体自己的领取流程。
 """
 
 from __future__ import annotations
@@ -185,7 +185,7 @@ def create_manual_task(
     payload: ManualTaskIn,
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """人工派工（与自动线索同一套去重、容量与配额，不插队）。"""
+    """人工派工（与自动线索同一套去重、容量规则，不插队）。"""
     if not payload.subject.strip():
         return JSONResponse(status_code=400, content={"detail": "要派工的对象（subject）不能为空"})
     return tasks.manual_task(

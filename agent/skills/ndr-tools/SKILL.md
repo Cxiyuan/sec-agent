@@ -43,7 +43,7 @@ whenToUse: 领到分析工单、需要查事件/资产/历史结论、准备 com
 
 ## 一条工单的标准流程
 
-1. `claim_tasks` 领活（领不到就看 reason：`queue_empty` 正常，`budget_exhausted` 别硬撞）。
+1. `claim_tasks` 领活（领不到看 reason：`queue_empty` 是正常回执；NDR 不设领取额度上限）。
 2. `describe_data` 确认时间窗与字段。
 3. `prior_findings` 看历史，`asset_context` 看资产。
 4. `search_events` / `aggregate_events` 取证；关键证据用 `raw_evidence` 固化。

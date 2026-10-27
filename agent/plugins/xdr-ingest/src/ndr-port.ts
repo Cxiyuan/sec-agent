@@ -60,9 +60,8 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
       const reason = typeof reply['reason'] === 'string' ? reply['reason'] : undefined
       const tasks = asTasks(reply['tasks'])
       if (tasks.length === 0) {
-        // 「领到 0 条」本身是正常回执（queue_empty / budget_exhausted / inflight_full），
-        // 但**不显示 reason 的空任务**不是 —— 那说明两侧的回执形状没对上（实测踩过）。
-        // 这里把原始键打出来，下次一眼就能看出差在哪。
+        // 「领到 0 条」本身是正常回执（queue_empty），但**不显示 reason 的空任务**
+        // 不是 —— 那说明两侧的回执形状没对上（实测踩过）。这里把原始键打出来。
         if (!reason) {
           console.warn(
             `[xdr-ingest] claim_tasks returned 0 tasks with no reason; reply keys: `
@@ -72,11 +71,7 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
           console.warn(`[xdr-ingest] claim_tasks: ${reason}`)
         }
       }
-      // 预算快照原样透传（工作台展示；不参与本进程判断）
-      const budget = typeof reply['budget'] === 'object' && reply['budget'] !== null
-        ? reply['budget'] as ClaimReply['budget']
-        : undefined
-      return { tasks, ...(budget ? { budget } : {}), ...(reason ? { reason } : {}) }
+      return { tasks, ...(reason ? { reason } : {}) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[xdr-ingest] claim_tasks threw: ${message.slice(0, 240)}`)

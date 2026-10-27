@@ -147,7 +147,7 @@ test('task failure does not leak the concurrency slot', async () => {
   assert.match(loop.stats.lastError, /blew up/u)
 })
 
-test('budget from the claim reply lands in stats as a snapshot; running tracks concurrency', async () => {
+test('running tracks concurrency without server budget fields', async () => {
   const loop = new ClaimLoop(
     base(
       async () => {
@@ -155,21 +155,17 @@ test('budget from the claim reply lands in stats as a snapshot; running tracks c
         assert.equal(loop.stats.running >= 0, true)
         await new Promise(resolve => setTimeout(resolve, 20))
       },
-      async () => ({
-        tasks: [task('bt')],
-        budget: { normal_remaining: 12, reserved_remaining: 5, inflight: 1, max_inflight: 2 },
-      }),
+      async () => ({ tasks: [task('bt')] }),
     ),
   )
   await loop.tick()
   assert.equal(loop.stats.started, 1)
-  assert.equal(loop.stats.lastBudget, '12+5/2')
   await new Promise(resolve => setTimeout(resolve, 60))
   assert.equal(loop.stats.running, 0)
-  // 缺 budget 字段不碰快照
+  // 队列空是正常回执：不启动任务，也不影响后续轮询。
   const quiet = new ClaimLoop(base(async () => undefined, async () => ({ reason: 'queue_empty' })))
   await quiet.tick()
-  assert.equal(quiet.stats.lastBudget, '')
+  assert.equal(quiet.stats.started, 0)
 })
 
 test('configure：热更新领取条数与并发，立刻影响下一轮', async () => {

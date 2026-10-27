@@ -31,10 +31,10 @@
 | D3 | 找活方式 | **双通道**：① 数据地图（智能体自主选目标）② 客观线索队列（NDR 报"变了/第一次见/很久没看"） |
 | D4 | 规则命中的地位 | `hit_events` **进队列**（`kind=hit`），但只按客观强度排队（规模/首见），**不用 rule_severity**；智能体可整体不领这类活 |
 | D5 | 切换方式 | 门铃**直接复用现有推送路径**，载荷一次性换成门铃对象（不分两条路径、不留双载荷语义）；两侧同版本上线 |
-| D6 | 预算溢出 | **预留名额 + 延后重排**：不静默丢弃；同族线索合并计数（`coalesced`），高强度线索保留专属名额 |
+| D6 | 队列溢出 | **延后重排 + 队列容量**：不静默丢弃；同族线索合并计数（`coalesced`），超过容量按强度替换或可见计数后丢弃 |
 | D7 | 误报抑制 | **全自动生效**（够证据就连事件生成都抑制），但必须过**机械护栏**（见第七节）；理由必须落白名单码，不接受自由文本当判据 |
 
-**范围边界**：本方案只做 **NDR 侧 + 给智能体团队的接口契约**；`@sec-agent/xdr-ingest` 插件侧（收门铃、起会话、领取循环、token 预算）由智能体团队实现。
+**范围边界**：本方案只做 **NDR 侧 + 给智能体团队的接口契约**；`@sec-agent/xdr-ingest` 插件侧（收门铃、起会话、领取循环）由智能体团队实现。NDR 不限制领取额度或并发。
 
 ---
 
@@ -148,20 +148,16 @@ strength = max(rarity, significance, scale, staleness, coalescing)
 
 ---
 
-## 六、预算、公平、溢出（D6）
+## 六、队列容量、公平与溢出（D6）
 
-### 6.1 配额（全部界面可调，进 `system_config`）
+### 6.1 队列与租约参数（界面可调，进 `system_config`）
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `analysis.rate_limit_per_hour_per_token` | 20 | 单令牌每小时最多领这么多任务 |
-| `analysis.rate_limit_per_hour_total` | 120 | 全局每小时上限 |
-| `analysis.max_inflight_per_token` | 2 | 并发在跑的任务数 |
 | `analysis.followup_depth` | 2 | 追问链深度 |
 | `analysis.lease_seconds` | 900 | 租约（超时回收，`attempts += 1`） |
 | `analysis.pending_ttl_hours` | 48 | 过老的线索自动 `expired` |
 | `analysis.queue_capacity` | 2000 | 队列硬上限 |
-| `analysis.reserved_slots_per_hour` | 5 | **只给 `strength ≥ 0.8` 的保留名额** |
 | `analysis.stuck_after_attempts` | 5 | 反复领取不交回 → `stuck`，不再派发，界面可见 |
 | `analysis.doorbell_cooldown_seconds` | 180 | 门铃合并限频 |
 | `analysis.enabled` | true | 总开关 |
@@ -172,9 +168,8 @@ strength = max(rarity, significance, scale, staleness, coalescing)
 AND (lease_until IS NULL OR lease_until < now) ORDER BY priority DESC, created_at
 FOR UPDATE SKIP LOCKED LIMIT n`，然后同事务把状态改成 `claimed` 并写租约。
 
-**配额在服务端强制**（不靠智能体自觉）：响应里回 `budget_remaining`、
-`reserved_remaining`、`queue_len`。Redis 不可用导致算不出配额时**拒绝领取**并返回
-结构化 error（宁可不分析，也不能失去成本上限）。
+**NDR 不限制领取额度或并发**：没有每令牌/每小时的配额、没有保留名额、没有按令牌的在跑数上限。
+一次领取多少、多久领一次由智能体自己决定；服务端只负责原子领取和任务生命周期。
 
 ### 6.3 队列满 / 溢出
 
@@ -344,8 +339,7 @@ artex 用"系统提示尾部只列工具名、skill 加载时解锁"来省上下
 claim_tasks(limit=0, kinds="", min_strength=0.0, wait_seconds=0)
  → {tasks:[{id,kind,strength,priority,subject_kind,subject,feature,window_start,window_end,hint,
             attempts,coalesced}],
-     budget:{hourly_remaining, reserved_remaining, inflight, max_inflight},
-     queue:{pending, deferred, merged_total}, watermark}
+     watermark}
 
 complete_task(task_id, verdict, summary, confidence=0.0, findings={}, evidence_refs=[],
               next_tasks=[], tools_used=0, duration_ms=0, suppression={})
@@ -354,15 +348,14 @@ complete_task(task_id, verdict, summary, confidence=0.0, findings={}, evidence_r
 defer_task(task_id, reason="", retry_after_seconds=3600) → {ok, state, next_due_at}
 
 task_stats() → {queue_by_kind, queue_by_state, wait_p50_s, throughput_per_hour,
-                merged, superseded, stuck, coverage:{assets_total, assets_analyzed_7d, never_analyzed},
-                budget, my_token}
+                merged, superseded, stuck, coverage:{assets_total, assets_analyzed_7d, never_analyzed}}
 ```
 
 规则：
 
 - `next_tasks` 受 `followup_depth` 限制，超限**拒绝并说明原因**（不静默丢）；
 - `complete_task` 的 `verdict` 必须落词表，未知值报错并列出可选值（沿用 `record_conclusion` 的做法）；
-- `inflight` 超上限时 `claim_tasks` 直接返回 `budget_exhausted`，不排队；
+- `claim_tasks` 不设令牌额度、小时配额或并发额度，领取数量/节奏由智能体决定；
 - `wait_seconds` 长轮询上限 30 秒。
 
 ### 8.2 事件面与抑制（G1 / G2 / G3，✅ 已实施）
@@ -381,7 +374,7 @@ list_suppressions(q, enabled_only, include_expired, limit)
 revoke_suppression(suppression_id, reason)
    → 主动收回一条抑制；reason 必填（抑制是关掉一部分检测，放开同样要留审计）
 add_task(subject, subject_kind, kind, note, strength)
-   → 智能体自己登记线索（外部情报/巡逻发现时用）；同一套去重与配额，不插队
+   → 智能体自己登记线索（外部情报/巡逻发现时用）；同一套去重与容量规则，不插队
 ```
 
 护栏（均在打库前的早退路径上）：未知的 `source_kinds` / `kind` 直接报错并列出可选值；
@@ -464,7 +457,7 @@ coverage_report(days=7, kind="", limit=100)
 
 - **合并限频**：Redis `SET ... NX EX doorbell_cooldown_seconds`；队列**从空变非空**时立即发一次（不受冷却）；
 - 失败落现有重试队列（"一批"= 一次门铃），语义不变；
-- `detector_max_digests_per_minute` / `max_per_push` 对门铃失去意义 → 从配置面移除（改由 `analysis.*` 预算参数承担）；
+- `detector_max_digests_per_minute` / `max_per_push` 对门铃失去意义 → 从配置面移除（门铃自身由 `analysis.doorbell_cooldown_seconds` 限频）；
 - **未配置地址时不发门铃、也不累加 `undelivered`**（当前该值已在无消费者时长期增长，属噪声）。
 
 ---
@@ -474,7 +467,7 @@ coverage_report(days=7, kind="", limit=100)
 | 指标 | 目标 | 来源 |
 | --- | --- | --- |
 | **自主度** | 智能体自建任务（`coverage`/`structure` + 追问）占完成总数 ≥ 40% | `analysis_results` vs `tasks.kind` |
-| **成本** | 每小时完成任务数 ≤ 预算；平均 `tools_used` ≤ 8 | `task_stats` |
+| **成本** | 平均 `tools_used` ≤ 8（NDR 不设领取额度上限） | `task_stats` |
 | **覆盖率** | 近 7 天被分析过的内网资产占比 ≥ 60%，且逐周上升 | `/api/analysis/coverage` |
 | **积压** | `pending` p95 等待 < 2 小时 | `/api/analysis/stats` |
 | **误抑制回弹** | 被抑制匹配后来又判 `true_positive` 的次数 = 0（出现即人工复查） | 抑制条目 ↔ `analysis_results` 关联 |
@@ -487,7 +480,7 @@ coverage_report(days=7, kind="", limit=100)
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | **P0** | 精准抑制：表 + 匹配 + 试算降级 + 护栏 + 8 个 REST + 热路径接入 + 守卫 | ✅ 完成（待提交/部署） |
-| **P1** | 队列骨架：`analysis_tasks` + `claim/complete/defer/task_stats` + `shift`/`novelty` 两类候选 + 门铃替换推送载荷 + `analysis.*` 参数 | ✅ 完成（含 `observed_subjects`、`hit`/`coverage` 候选、预算与保留名额、租约回收、`analysis.enabled` 回滚开关；待提交/部署） |
+| **P1** | 队列骨架：`analysis_tasks` + `claim/complete/defer/task_stats` + `shift`/`novelty` 两类候选 + 门铃替换推送载荷 + `analysis.*` 参数 | ✅ 完成（含 `observed_subjects`、`hit`/`coverage` 候选、租约回收、`analysis.enabled` 回滚开关；待提交/部署） |
 | **P2** | 数据地图：`describe_data` 增强 + `asset_map` + `coverage_report` + `observed_subjects` + `coverage` 候选 | ✅ 完成（`describe_data` 给出每来源量级 / 近 24h 增量 / 字段数 / 可聚合字段，并提示「查不到不等于没发生」；与时间边界共用**一次**聚合，不多打 ES） |
 | **P3** | 只读 REST + 前端（归 workbuddy）+ 人工派工 + 覆盖率看板 | ⚠️ 后端全部完成（10 个只读/派工/参数端点 + 全部 `analysis.*` 参数（以 `GET /api/analysis/config` 的 `items` 为准））；**前端页面归 workbuddy**，接口与字段已写进 `docs/api/README.md` |
 | **P4** | 学习闭环：`hit`/`structure` 候选调优、误抑制回弹、FP 衰减、`analysis_results` 驱动强度重排 | ✅ 完成（`analysis/feedback.py`：一次 GROUP BY 出系数表 + 120 秒缓存；五类线索全部套系数；**只衰减不否决**，区间 0.4~1.6；`true_positive` 自动撤销该对象身上的抑制并计数 `suppression_rebound`） |
@@ -503,7 +496,7 @@ coverage_report(days=7, kind="", limit=100)
 ## 十三、给智能体团队的契约要点（他们实现，我们不写插件代码）
 
 1. 接收端点改为解析 **门铃对象**（不是摘要数组）；未配置/关闭时 NDR 不发；
-2. 收到门铃 → `claim_tasks(limit=min(budget.hourly_remaining, 3))`；
+2. 收到门铃 → `claim_tasks(limit=3)`（NDR 不限制额度，领多少由智能体决定）；
 3. 每任务按 `hint` 自主规划；`describe_data` 校字段，再取数；
 4. 必须 `complete_task` 或 `defer_task` 释放租约（900 秒不交回自动回收，`attempts` 累加）；
 5. 误报判定时按第七节提交 `suppression`（含理由码 + 真取过的证据引用），否则会持续被派同一现象；

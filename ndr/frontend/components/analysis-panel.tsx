@@ -71,7 +71,7 @@ import {
  * 派工队列（`/analysis`）：队列总览 + 任务队列 + 任务结论 + 覆盖率 + 对象清单 + 三个浮层。
  *
  * 三条不可越的红线（体验规范 §0）：
- * 1. **不提供「领取/交回/延后」** —— 那是 MCP 通道（带令牌配额），界面绕过配额会把成本上限打穿；
+ * 1. **不提供「领取/交回/延后」** —— 那是智能体自己的 MCP 通道，界面不应绕过它的领取流程；
  * 2. 列表接口**失败也返回 200** `{error, items:[], total:0}` → 三态必须三选一，不能把故障画成"今天很安静"；
  * 3. `state` 是**精确单值**、不支持多选；`state=""` 会把历史 `done` 混排进来，所以默认筛 `pending`。
  *
@@ -110,23 +110,12 @@ const SUBJECT_KINDS = [
   "peer",
 ];
 
-/** 派工参数抽屉的 6 组分法（键名带 `analysis.` 前缀，顺序按"从总开关到细项"） */
+/** 派工参数抽屉的 5 组分法（键名带 `analysis.` 前缀，顺序按"从总开关到细项"） */
 const PARAM_GROUPS: { title: string; hint: string; keys: string[] }[] = [
   {
     title: "开关与线索",
     hint: "总开关关掉后不再生成新任务（已有任务仍可被领取）；线索类型用勾选，不要手敲逗号串",
     keys: ["analysis.enabled", "analysis.candidate_kinds"],
-  },
-  {
-    title: "配额与保留",
-    hint: "领取侧的成本上限：单令牌每小时、全局每小时、并发在跑数，以及留给高强度线索的保留名额",
-    keys: [
-      "analysis.rate_limit_per_hour_per_token",
-      "analysis.rate_limit_per_hour_total",
-      "analysis.max_inflight_per_token",
-      "analysis.reserved_slots_per_hour",
-      "analysis.reserved_min_strength",
-    ],
   },
   {
     title: "租约与卡住",
@@ -140,7 +129,7 @@ const PARAM_GROUPS: { title: string; hint: string; keys: string[] }[] = [
   },
   {
     title: "容量与时效",
-    hint: "队列容量只影响后续入队（满了按强度替换或合并计数，绝不静默丢）",
+    hint: "队列容量只影响后续入队（满了按强度替换或合并计数，绝不静默丢）；NDR 不限制智能体的领取额度或并发",
     keys: [
       "analysis.queue_capacity",
       "analysis.pending_ttl_hours",
@@ -612,7 +601,7 @@ export function AnalysisPanel() {
   // ---------- 派生值 ----------
 
   const counters = stats?.counters || {};
-  const capacity = stats?.budget?.queue_capacity;
+  const capacity = stats?.queue_policy?.queue_capacity;
   const queueUsed = (stats?.pending ?? 0) + (stats?.deferred ?? 0);
   const kinds = cfg?.kinds?.length ? cfg.kinds : Object.keys(TASK_KIND_LABEL_FALLBACK);
   const verdicts = cfg?.verdicts?.length ? cfg.verdicts : [];
@@ -712,11 +701,8 @@ export function AnalysisPanel() {
             superseded={counters.superseded}
           />
           <span className="ml-auto flex flex-wrap items-center gap-1.5">
-            <Badge variant="outline">单令牌 {numText(stats?.budget?.rate_per_token_hour)}/h</Badge>
-            <Badge variant="outline">全局 {numText(stats?.budget?.rate_total_hour)}/h</Badge>
-            <Badge variant="outline">并发 {numText(stats?.budget?.max_inflight)}</Badge>
-            <Badge variant="outline">保留 {numText(stats?.budget?.reserved_slots)} 名</Badge>
-            <Badge variant="outline">租约 {numText(stats?.budget?.lease_seconds)}s</Badge>
+            <Badge variant="outline">租约 {numText(stats?.queue_policy?.lease_seconds)}s</Badge>
+            <Badge variant="outline">线索保留 {numText(stats?.queue_policy?.pending_ttl_hours)}h</Badge>
           </span>
         </div>
         {statsFailed ? (
@@ -729,7 +715,7 @@ export function AnalysisPanel() {
       {/* ── ② 任务队列 ─────────────────────────────────────────────── */}
       <Section
         title="任务队列"
-        description="按客观强度降序。界面只做浏览与人工派工 —— 领取/交回/延后是智能体的 MCP 通道（带令牌配额），这里不提供。"
+        description="按客观强度降序。界面只做浏览与人工派工 —— 领取/交回/延后走智能体的 MCP 通道，这里不提供。"
       >
         <Card>
           <PanelToolbar
@@ -831,7 +817,7 @@ export function AnalysisPanel() {
                 </TableHeader>
                 <TableBody>
                   {taskItems.map((task: AnalysisTaskItem) => {
-                    const rest = remainingHours(task, stats?.budget?.pending_ttl_hours);
+                    const rest = remainingHours(task, stats?.queue_policy?.pending_ttl_hours);
                     const soon = rest !== null && rest > 0 && rest < 6;
                     return (
                       <TableRow

@@ -107,4 +107,4 @@ PG 集成测试（`tests/pg-store.integration.test.ts`、`tests/pg-state-store.i
 （单行 JSONB；内存冷库则只在进程内）。启动时先读回上次保存的值覆盖 cordis 配置
 默认；读不到（或没有 PG）就用配置默认，不影响运行。
 
-配额、租约、保留名额、强度门槛仍在 NDR 侧强制，这里不接受修改。
+租约、队列容量与任务有效期仍在 NDR 侧；NDR 不设领取额度或并发上限。

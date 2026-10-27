@@ -1,8 +1,7 @@
-"""分析机制的运行时参数（界面可改、30 秒生效，沿用 runtime_config 约定）。
+"""分析机制的线索生成、队列容量与保留期参数（界面可改、30 秒生效）。
 
-预算为什么必须有：改造后智能体是"主动领取"，如果 NDR 不设上限，一次攻击面爆发就能把
-它的会话数顶上天；反过来队列不设上限，pending 会无限增长。所以**两侧都有硬闸门**：
-领取侧（每小时配额 + 并发 + 保留名额）、入队侧（队列容量 + 同族合并 + 强度替换）。
+NDR 不限制智能体的领取额度或并发；智能体自行决定何时领任务、分析多少。队列容量、
+任务有效期与租约回收仍保留，用于管理 NDR 自己的存储和任务生命周期。
 """
 
 from __future__ import annotations
@@ -33,19 +32,6 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.candidate_kinds", "生成哪些线索", "text",
          "novelty,shift,coverage,hit",
          note="逗号分隔；structure 需额外统计，默认不开；关掉某类即不再生成该类任务"),
-    Knob("analysis.rate_limit_per_hour_per_token", "单令牌每小时领取上限", "int", 20,
-         low=1, high=10000, unit="个",
-         note="成本上限的主要抓手：一个智能体令牌每小时最多领这么多任务"),
-    Knob("analysis.rate_limit_per_hour_total", "全局每小时领取上限", "int", 120,
-         low=1, high=100000, unit="个", note="所有令牌合计"),
-    Knob("analysis.max_inflight_per_token", "单令牌并发在跑数", "int", 2,
-         low=1, high=64, unit="个",
-         note="超了直接返回 budget_exhausted（不排队占位），防止会话卡死把任务吊住"),
-    Knob("analysis.reserved_slots_per_hour", "高强度保留名额", "int", 5,
-         low=0, high=1000, unit="个",
-         note="这些名额只给 strength≥0.8 的线索：预算用尽时最异常的事仍能插队（用户定的兜底）"),
-    Knob("analysis.reserved_min_strength", "保留名额门槛", "float", 0.8,
-         low=0.0, high=1.0, note="客观强度达到它才算「最异常」"),
     Knob("analysis.lease_seconds", "租约", "int", 900,
          low=60, high=7200, unit="秒",
          note="领取后多久没交回就自动回收（LLM 一次分析可能十几分钟，默认给 15 分钟）"),
@@ -105,14 +91,14 @@ KNOBS: tuple[Knob, ...] = (
          note="复测是老对象的回头检查，不能挤掉新线索；0=关闭复测"),
     Knob("analysis.cold_start_hours", "冷启动窗口", "int", 48,
          low=0, high=720, unit="小时",
-         note="基线/画像从零学习的窗口（ES/PG 重建后必开）：期间 novelty/coverage/structure 强度封顶、盲区轮询降频，把保留名额留给真正的命中等异常。0=关闭"),
+         note="基线/画像从零学习的窗口（ES/PG 重建后必开）：期间 novelty/coverage/structure 强度封顶并降低盲区轮询频率。0=关闭"),
     Knob("analysis.cold_start_scale", "冷启动降频倍数", "float", 2.0,
          low=1.0, high=10.0,
          note="冷启动期间 coverage/retest 轮询间隔的放大倍数（6h 基准时它乘几）"),
     Knob("analysis.cold_start_strength_cap", "冷启动强度封顶", "float", 0.7,
          low=0.0, high=1.0,
          unit="0~1",
-         note="冷启动期间首见/盲区/结构类线索的强度上限：低于保留名额门槛（默认 0.8），保证插队名额不被人人都新的线索吃光"),
+         note="冷启动期间首见/盲区/结构类线索的强度上限：低于高强度档（默认 0.8），避免人人都新的线索长期占据队列前部"),
     Knob("analysis.trace_retention_days", "过程轨迹保留期", "int", 60,
          low=1, high=365, unit="天",
          note="轨迹是派生线索，过期即清理（结论与原始数据不受影响）"),
@@ -123,10 +109,6 @@ EDITABLE_KEYS: tuple[str, ...] = tuple(_BY_KEY)
 
 #: 已知的线索类型（校验与界面下拉用）
 KINDS: tuple[str, ...] = ("novelty", "shift", "structure", "coverage", "hit", "retest")
-#: 保留名额的客观强度门槛不能低于这个值（防止把门槛调到 0 让保留名额形同虚设）
-_RESERVED_FLOOR = 0.5
-
-
 def _num(knob: Knob) -> float:
     try:
         number = float(rc_get(knob.key, knob.default))
@@ -164,27 +146,6 @@ def candidate_kinds() -> set[str]:
     raw = _text(_BY_KEY["analysis.candidate_kinds"]).lower()
     picked = {p.strip() for p in raw.split(",") if p.strip() in KINDS}
     return picked or {"novelty", "shift", "coverage", "hit"}
-
-
-def rate_per_token_hour() -> int:
-    return int(_num(_BY_KEY["analysis.rate_limit_per_hour_per_token"]))
-
-
-def rate_total_hour() -> int:
-    return int(_num(_BY_KEY["analysis.rate_limit_per_hour_total"]))
-
-
-def max_inflight() -> int:
-    return int(_num(_BY_KEY["analysis.max_inflight_per_token"]))
-
-
-def reserved_slots() -> int:
-    return int(_num(_BY_KEY["analysis.reserved_slots_per_hour"]))
-
-
-def reserved_min_strength() -> float:
-    # 硬下限：调低于 0.5 一律按 0.5（否则保留名额对谁都开放，等于没有兜底）
-    return max(_RESERVED_FLOOR, _num(_BY_KEY["analysis.reserved_min_strength"]))
 
 
 def cold_start_hours() -> int:

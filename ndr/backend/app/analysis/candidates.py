@@ -200,7 +200,7 @@ def _novelty_tasks(db: Any, fresh: list[tuple[str, str]], now: datetime, client:
         strength = feedback.apply(
             combined_strength(rarity_strength(0, first_seen=True), stale), "novelty", value
         )
-        # 冷启动保护：基线重学期内首见一律压到保留名额之下（见 cold_start 模块说明）
+        # 冷启动保护：基线重学期内首见一律压到高强度档之下（见 cold_start 模块说明）
         strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="novelty",
@@ -442,7 +442,7 @@ def enqueue_coverage(client: Any) -> int:
         strength = feedback.apply(
             combined_strength(stale * 0.35, 0.05), "coverage", str(item.get("subject") or "")
         )
-        # 冷启动保护：盲区线索同样压到保留名额之下
+        # 冷启动保护：盲区线索同样压到高强度档之下
         strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="coverage",

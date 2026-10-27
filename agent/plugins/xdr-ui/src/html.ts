@@ -490,7 +490,6 @@ ${THEME}
       ['运行状态', [
         ['分析循环', analysisOn ? '启用' : '停用', analysisOn ? 'ok' : 'off'],
         ['在跑 / 并发上限', esc(String(loop.running ?? 0) + ' / ' + (s.max_concurrent ?? '—')), ''],
-        ['剩余预算', esc(loop.lastBudget == null || loop.lastBudget === '' ? '—' : loop.lastBudget), ''],
         ['门铃次数', esc(loop.doorbells ?? 0), ''],
         ['轮询次数', esc(loop.polls ?? 0), ''],
         ['已领取', esc(loop.claimed ?? 0), ''],

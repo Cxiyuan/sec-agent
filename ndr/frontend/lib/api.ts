@@ -1353,13 +1353,8 @@ export interface AnalysisVerdictCount {
   count: number;
 }
 
-/** `stats.budget`：当前预算（也用于容量压力条的分母 `queue_capacity`） */
-export interface AnalysisBudget {
-  rate_per_token_hour: number;
-  rate_total_hour: number;
-  max_inflight: number;
-  reserved_slots: number;
-  reserved_min_strength: number;
+/** `stats.queue_policy`：队列存储与租约参数（容量压力条的分母也是这里）。 */
+export interface AnalysisQueuePolicy {
   lease_seconds: number;
   queue_capacity: number;
   pending_ttl_hours: number;
@@ -1387,7 +1382,7 @@ export interface AnalysisStats {
   avg_tools_used: number;
   avg_duration_ms: number;
   counters: Record<string, number>;
-  budget: AnalysisBudget;
+  queue_policy: AnalysisQueuePolicy;
   generated_at: string;
   error?: string;
 }

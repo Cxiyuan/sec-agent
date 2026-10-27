@@ -1,10 +1,10 @@
 """冷启动窗口：基线/画像从零学习的保护期。
 
 为什么必须有它：ES/PG 重建（或环境首次上线）之后，数值基线与画像都从零开始学，
-前 48 小时「第一次见」洪峰会把队列与保留名额占满——**人人都新**等于人人都排不上。
+前 48 小时「第一次见」洪峰会把队列前部占满——**人人都新**等于真异常排不上。
 窗口内做的事（都在调用方）：
 
-- novelty / coverage / structure 的强度封顶在保留名额门槛之下（真异常仍可插队）；
+- novelty / coverage / structure 的强度封顶在高强度档之下（真异常仍排得更前）；
 - coverage / retest 低频轮询间隔按倍数放大（`cold_start_scale`）。
 
 起点记在哪：Redis `SETNX` 一个时间戳（**持久**），第一次进分析机制时写。
@@ -23,7 +23,7 @@ from app.analysis import params
 COLD_START_KEY = "shentong:analysis:cold_start_ts"
 
 #: 冷启动期间封顶只作用于这三类：它们正是"人人都新"的来源；
-#: hit / shift 是真异常信号，不封顶，保留名额留给它们。
+#: hit / shift 是真异常信号，不封顶，让它们保持更高优先级。
 CAPPED_KINDS: frozenset[str] = frozenset({"novelty", "coverage", "structure"})
 
 
@@ -58,7 +58,7 @@ def interval_scale(client: Any) -> float:
 
 
 def damped(strength: float, client: Any) -> float:
-    """把冷启动类线索的强度封顶（低于保留名额门槛；非活动期原样返回）。"""
+    """把冷启动类线索的强度封顶（低于高强度档；非活动期原样返回）。"""
     if not active(client):
         return strength
     cap = params.cold_start_strength_cap()

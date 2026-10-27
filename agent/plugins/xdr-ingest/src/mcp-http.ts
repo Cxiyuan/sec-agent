@@ -64,8 +64,8 @@ function parseSse(text: string): string[] {
  *
  * 为什么必须同时管 `structuredContent` 和 `content[].text` 两条路：
  * 服务端两个都给，而 structuredContent 分支会**提前返回**——2026-10 实测
- * 只在 text 分支做剥壳时，reason/budget/tasks 全留在里层，调用方把
- * inflight_full 当成「没 reason 的空回执」静默吞掉（队列 2000 条却领不到）。
+ * 只在 text 分支做剥壳时，`reason` 等字段全留在里层，调用方把「有 reason 的空回执」
+ * 当成「没 reason 的空回执」静默吞掉（队列有积压却看不出回执形状不对）。
  */
 /** NDR 信封：外层唯一键 `result`，值是序列化后的 JSON 字符串。 */
 interface NdrEnvelope {

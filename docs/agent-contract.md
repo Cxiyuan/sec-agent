@@ -16,8 +16,8 @@
 ## 0.1 一句话变化
 
 NDR **不再把摘要推给你**。它只在有新线索时按一次「门铃」（不含任何事件数据），
-你按自己的预算用 MCP `claim_tasks` 领取客观线索，自己决定查什么、查多久，
-最后 `complete_task` 交回结论。判断权在智能体，NDR 只提供事实与成本闸门。
+你按自己的节奏用 MCP `claim_tasks` 领取客观线索，自己决定查什么、查多久，
+最后 `complete_task` 交回结论。判断权在智能体，NDR 只提供事实与任务元数据。
 
 ---
 
@@ -46,7 +46,7 @@ NDR 复用原来的推送 URL / `Authorization: Bearer <token>` / 超时 / 持�
 | 触发 | 队列 0→非 0 **立即发一次**（不受冷却）；其余按 `suppression` 无关的 `analysis.doorbell_cooldown_seconds`（默认 180 秒）合并 |
 | 失败 | NDR 落持久重试队列；`undelivered` 只表示「这次没叫醒你」，**队列数据仍完整可拉**，不是丢数据 |
 | 不配地址 | NDR 不发门铃，也不累加 `undelivered` 噪声；此时完全靠你的定时自轮询 |
-| 你的动作 | 收到 → `claim_tasks`；**不要**因为门铃频繁就提高轮询频率（预算在服务端，领不到也白搭） |
+| 你的动作 | 收到 → `claim_tasks`，领取数量由你决定（NDR 不设额度上限，门铃只管叫醒、不派工） |
 
 **兜底**：请另外每 **15 分钟**自轮询一次 `claim_tasks`（门铃会因重启/网络丢）。
 
@@ -58,7 +58,7 @@ NDR 复用原来的推送 URL / `Authorization: Bearer <token>` / 超时 / 持�
 claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 ```
 
-- `limit` 上限 20；服务端会按**剩余预算**再取 min，你不用自己算。
+- `limit` 上限 20；NDR 不设领取额度或并发上限，领多少由你决定。
 - `kinds` 逗号分隔：`novelty`（首见）/ `shift`（自身基线偏离）/ `structure`（结构特征）/
   `coverage`（盲区）/ `hit`（规则命中）。留空=全都要。
 - `wait_seconds` 0~30 长轮询：队列空时最多等这么久（服务端只在「队列空」时继续等）。
@@ -75,9 +75,6 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
     "coalesced": 2, "attempts": 0, "depth": 0, "state": "claimed",
     "lease_until": "...", "created_at": "..."
   }],
-  "budget": {"hourly_quota": 20, "used": 3, "normal_remaining": 12,
-             "reserved_remaining": 5, "inflight": 1, "max_inflight": 2,
-             "lease_seconds": 900},
   "watermark": "..."
 }
 ```
@@ -86,9 +83,8 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 
 1. **任务只带对象元数据与客观事实**，不带严重度、结论或建议取数工具；查询什么、查多大范围由智能体决定。也不要把 `kind` 当结论用；
 2. 领到就是**租约**（默认 900 秒）：到期没交回会自动回收，`attempts` 累加，`attempts ≥ 5` 置 `stuck` 不再派发；
-3. `reason` 里可能出现 `queue_empty` / `budget_exhausted` / `inflight_full`（**都是正常回执，不是错误**）；
-4. 服务端算不出预算时返回 `error`（Redis 不可用）—— 此时**不要重试轰炸**，等下一轮；
-5. `reserved_remaining` 是留给高强度线索（`strength ≥ 0.8`）的专属名额，普通线索用不到它。
+3. `reason` 正常只有 `queue_empty`（**正常回执，不是错误**）；
+4. NDR 不限制领取额度、小时配额或并发，不需要为额度做自我节流；
 
 ---
 
@@ -268,14 +264,14 @@ submit_suppression(match, reason_code, evidence_refs, confidence, name?, note?, 
 
 ---
 
-## 7. 自我节流
+## 7. 领取节奏（自己掌握）
 
 `task_stats()` 给你：队列各状态条数、按类型/结论分布、平均成本、覆盖率、
 计数（`merged` / `superseded` / `dropped_overflow` / `stuck` / `expired` / `doorbell_*` /
-`suppression_rebound`）、以及**本令牌预算余量**。
+`suppression_rebound`）。
 
-建议节奏：每小时领 `budget.normal_remaining` 条以内的活；单任务工具调用 ≤ 8 次；
-产出若长期是 `false_positive`，反馈层会**自动压低**该对象+该现象的强度（按天线性回弹），
+NDR 不限制每小时领取数量或并发；根据队列积压和自己的会话容量自行决定领多少。
+单任务工具调用建议 ≤ 8 次；产出若长期是 `false_positive`，反馈层会**自动压低**该对象+该现象的强度（按天线性回弹），
 不用你手动记。
 
 ---
@@ -285,9 +281,6 @@ submit_suppression(match, reason_code, evidence_refs, confidence, name?, note?, 
 | 场景 | 你会看到 | 该怎么处理 |
 |---|---|---|
 | 队列空 | `reason: "queue_empty"` | 正常，下一轮再来 |
-| 预算用尽 | `reason: "budget_exhausted"` | 正常，等下一个小时 |
-| 并发已满 | `reason: "inflight_full"` | 先交回手头的活 |
-| Redis 不可用 | `error: "配额计算失败…"` | 别重试轰炸，等下一轮 |
 | 任务不存在/被回收 | `error: "任务不存在"` | 重新领，别复用旧 id |
 | 引用是编的 | `evidence_not_found` / `没真取回过` | 重新取数，别编 |
 | 抑制被拒 | `field_errors[]` | 按提示改条件（维度/字段/置信度/保护期） |
@@ -298,7 +291,7 @@ submit_suppression(match, reason_code, evidence_refs, confidence, name?, note?, 
 ## 9. 你要改的东西（清单）
 
 1. webhook 接收端：解析 `{"doorbell": {...}}`（不是 `{"items": [...]}`）；
-2. 收到门铃 → `claim_tasks`（按 `budget.normal_remaining` 决定 `limit`）；
+2. 收到门铃 → `claim_tasks`（领取数量由你决定，NDR 不设额度上限）；
 3. 分析循环：`prior_findings` → 取数 → 结论 → `complete_task`（必交回，否则租约回收）；
 4. 不想现在看就 `defer_task`；
 5. 误报且证据够硬 → `submit_suppression`（或内联），**遵守 5.3 反投毒红线**；

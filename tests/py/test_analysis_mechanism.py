@@ -3,7 +3,7 @@
 要钉住的是"这次改造没偷偷退回老样子"。六条红线：
 
 1. **不替智能体下判断**：任务载荷里不得出现严重度/结论字段；
-2. **成本必须有上限**：预算、并发、保留名额、队列容量、追问深度都在服务端强制；
+2. **队列有边界**：容量、租约、任务有效期与追问深度在服务端强制；领取额度不设上限；
 3. **门铃不含数据**：载荷只能是队列状况（含了事件数据，智能体就又变成被动解释器）；
 4. **每事件零 I/O**：候选累积器不得碰数据库/网络（否则 240 事件/秒会把检测器压垮）；
 5. **回滚开关存在**：关掉 `analysis.enabled` 就回到"摘要直接推送"的老契约；
@@ -277,28 +277,25 @@ class SimpleNamespaceBump:
         return "skipped"
 
 
-# ===== ⑥ 预算在服务端强制（不靠智能体自觉）=====
+# ===== ⑥ 领取不设额度限制（领取节奏由智能体决定）=====
 
 
-def test_claim_refuses_without_redis(queue_mod: Any) -> None:
-    """Redis 不可用算不出配额时必须拒绝领取：宁可不分析，也不能失去成本上限。"""
-    out = queue_mod.claim_tasks(None, token="t")
-    assert "error" in out and "配额" in out["error"]
-
-
-def test_claim_carries_remaining_budget(queue_mod: Any) -> None:
-    """响应必须回剩余额度 —— 智能体据此自我节流，否则只能盲领。"""
+def test_claim_has_no_quota_gate(queue_mod: Any) -> None:
+    """领取必须直接按请求数量捞任务：不再有小时额度、保留名额或并发额度闸门。"""
     src = inspect.getsource(queue_mod.claim_tasks)
-    assert '"budget"' in src
-    assert "budget_exhausted" in src and "inflight_full" in src
+    for forbidden in ("_budget", "rate_per_token_hour", "rate_total_hour",
+                      "reserved_slots", "reserved_min_strength", "max_inflight"):
+        assert forbidden not in src, f"claim_tasks 仍包含额度限制：{forbidden}"
+    assert "_pick(" in src, "领取应直接按请求数量/筛选条件取任务"
 
 
-def test_quota_reads_are_clamped(params_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """脏值不能把成本上限搞没：区间夹紧 + 保留名额门槛有硬下限。"""
-    monkeypatch.setattr(params_mod, "rc_get", lambda key, default=None: 0)
-    assert params_mod.reserved_min_strength() >= 0.5, "保留门槛调到 0 等于没有兜底"
+def test_queue_policy_reads_are_clamped(params_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """存储/保留期参数仍要有区间夹紧（脏值不能把队列容量或 TTL 弄成 0）。"""
     monkeypatch.setattr(params_mod, "rc_get", lambda key, default=None: 999999)
-    assert params_mod.rate_per_token_hour() <= 10000  # 上限夹紧，不被脏值放大成无限
+    assert params_mod.queue_capacity() <= 200000  # 上限夹紧
+    monkeypatch.setattr(params_mod, "rc_get", lambda key, default=None: 0)
+    assert params_mod.queue_capacity() >= 10, "队列容量不能是 0"
+    assert params_mod.pending_ttl_hours() >= 1
 
 
 def test_queue_overflow_is_never_silent(queue_mod: Any) -> None:

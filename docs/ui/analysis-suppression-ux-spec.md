@@ -16,7 +16,7 @@
 - **精准抑制** `/config/suppressions`（配置管理侧栏「检测与过滤」组）。
 
 **红线 1｜派工队列只读浏览，不开放领/交/延**
-「领取 / 交回 / 延后」走 MCP（带令牌配额），界面**不提供**这些按钮。界面只做：浏览队列 + 人工派工 + 看结论/覆盖率/对象清单 + 参数读写。
+「领取 / 交回 / 延后」走智能体 MCP，界面**不提供**这些按钮。界面只做：浏览队列 + 人工派工 + 看结论/覆盖率/对象清单 + 参数读写。
 
 **红线 2｜抑制「新建/改条件」必须过试算**
 `mode=suppress` 会让该类现象**不再生成事件**。任何新增/修改条件树都必须在提交前完成一次试算并回显影响面；影响面未知时按 `record_only` 保守降级，且不得"蒙眼"保存。
@@ -63,10 +63,10 @@
 
 **「超容量」不是状态**。满队列时 `enqueue`：新线索强度高于队尾 `pending` 就挤掉那条（置 `expired`+note「被更强线索挤掉」并 `bump("superseded")`），否则 `bump("dropped_overflow")` 直接丢弃（**不产生行**）。
 
-- 取值：`(stats.pending + stats.deferred) / stats.budget.queue_capacity`。
+- 取值：`(stats.pending + stats.deferred) / stats.queue_policy.queue_capacity`。
 - 形态：240px × 6px `rounded-full`；`<80%` `bg-primary`；`80–99%` `bg-sev-medium-fg`；`≥100%` `bg-sev-critical-fg` + 右侧 `text-sev-critical-fg`「已满，新线索会被丢弃（dropped_overflow）」。
 - 永远配 `tabular-nums` 的「{used} / {cap}」；旁挂 `text-xs muted`：`丢弃 {counters.dropped_overflow} · 挤出 {counters.superseded}`。这俩是计数器，位置固定、**不随筛选、不升徽章**。
-- `queue_capacity` 从 `stats.budget.queue_capacity` 读，不写死。
+- `queue_capacity` 从 `stats.queue_policy.queue_capacity` 读，不写死。
 
 ### 2.3 任务队列列表
 
@@ -529,7 +529,7 @@
 | `set_enabled` 不校验 `expired`/`enabled` → 撤销原因对任何条目都能写并落库（截断 200） | `suppression.py:999-1019` |
 | 6 状态与容量判满 `pending+deferred >= queue_capacity` | `queue.py:35-42 / :148-168` |
 | `enqueue`：挤出 `superseded`（仍返回 new）/ 丢弃 `dropped_overflow` | `queue.py:156-168` |
-| `stats`：`budget.queue_capacity`、`counters`（无 doorbell_*）、`by_state` | `queue.py:595-651` |
+| `stats`：`queue_policy.queue_capacity`、`counters`（无 doorbell_*）、`by_state` | `queue.py:595-651` |
 | `manual_task` 返回 `{ok,result}`，`ok=result∈(new,merged)` | `queue.py:846-865` |
 | 列表接口失败 200 `{error,items:[],total:0}` | `analysis.py:129-130` |
 | 抑制列表 `include_expired` 默认 `False` | `suppressions.py:87` |

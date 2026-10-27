@@ -375,7 +375,7 @@ def file_content(fuid: str = "", encoding: str = "", max_bytes: int = 0) -> str:
 def _with_ctx(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """注入两样模型不该自己填的东西：令牌名、本会话真取回过的证据引用。
 
-    - `_token`：任务要记"谁领的"（租约与配额都按令牌算）；
+    - `_token`：任务要记"谁领的"（租约归属与审计）；
     - `_valid_refs`：只有本会话真取回过的 `es:/ev:` 引用才能作为抑制的证据，
       否则随便编几条引用就能换到一条永久抑制（这是全自动抑制的关键防线）。
     """
@@ -391,11 +391,9 @@ def _with_ctx(name: str, args: dict[str, Any]) -> dict[str, Any]:
 def claim_tasks(
     limit: int = 0, kinds: str = "", min_strength: float = 0.0, wait_seconds: int = 0
 ) -> str:
-    """领取待分析的客观线索（服务端按令牌强制预算，响应回剩余额度）。"""
-    # 必须走 `_with_ctx` 注入 `_token`：领取要记"谁领的"，
-    # 配额与并发（inflight）也**按令牌**算。漏了它所有调用方会落到兜底名
-    # `mcp` 上共用一个桶 —— 一个卡住的会话就能把全体挡住（2026-10 实测：
-    # 两条租约未到期的任务让所有智能体都拿到 inflight_full）。
+    """领取待分析的客观线索（NDR 不限制领取额度或并发）。"""
+    # 必须走 `_with_ctx` 注入 `_token`：领取要记"谁领的"（租约归属、任务审计），
+    # 漏了它所有调用方会落到兜底名 `mcp` 上，无法区分是哪个智能体持有任务。
     return _run(
         "claim_tasks",
         _with_ctx(
@@ -616,7 +614,7 @@ def add_task(
     note: str = "",
     strength: float = 0.0,
 ) -> str:
-    """主动登记一条线索（外部情报或巡逻发现时用；同一套去重与配额，不插队）。"""
+    """主动登记一条线索（外部情报或巡逻发现时用；同一套去重与容量，不插队）。"""
     return _run(
         "add_task",
         _clean(subject=subject, subject_kind=subject_kind, kind=kind, note=note, strength=strength),
@@ -794,7 +792,7 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
 
     if has("claim_tasks"):
         claim_line = (
-            "**分析任务靠自己领**（新架构不再把摘要推给你）：claim_tasks 按预算领取客观线索"
+            "**分析任务靠自己领**（新架构不再把摘要推给你）：claim_tasks 领取客观线索"
             "（只含事实与客观强度，不含严重度与结论）；complete_task 交回结论"
             "（可 next_tasks 追问、可提精准抑制）；defer_task 延后；task_state 看状态。"
         )

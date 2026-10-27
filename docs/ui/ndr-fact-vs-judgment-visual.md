@@ -416,7 +416,7 @@ export function VerdictBadge({ verdict, terminalReason }: { verdict: string; ter
 **为什么"长度连续 + 颜色三档"要分开**：长度承载精确量级（可跨行比较），颜色只承载"落在哪一档"。三档不是平均切分，而是**按产品真实门槛切**：
 
 ```ts
-// 0.8 = analysis.reserved_min_strength 默认值（保留名额只给 ≥0.8 的线索）
+// 0.8 = 高强度档：客观强度 ≥0.8 用最深一档（不涉及任何领取额度）
 // 0.4 = rarity 分量的「14 天内见 ≥2 次」档（docs/ndr-analysis-mechanism.md §5.2）
 const STRENGTH_TONE: Record<1 | 2 | 3, string> = {
   1: "bg-intensity-1",
@@ -436,7 +436,7 @@ export function strengthTone(s: number): string {
 
 > 必须用**静态映射表**而不是 `` `bg-intensity-${n}` ``：Tailwind 的 JIT 只扫描源码里的完整类名字符串，拼出来的类名会被 purge 掉（这条同样适用于 §6.1 的 `SEV_HOLLOW`——它本来就是静态表，是对的）。
 
-这样"第三档"在语义上就是"够进保留名额的强度"，而不是随便画的阈值。
+这样"第三档"在语义上就是"高强度"，而不是随便画的阈值。
 
 ### 4.3 具体代码
 
@@ -459,7 +459,7 @@ export function strengthTone(s: number): string {
 **不在条上画 0.8 刻度**：4px 高的条里，1px 刻度线无论用亮色还是暗色，都会有一半长度落在同色像素上而消失；而"第三档颜色本身就是 0.8 门槛"（`strengthStep` 只在 `≥0.8` 时返回 3）——门槛已经由颜色表达了，再画一条线是重复编码。列头 tooltip 里说明门槛即可：
 
 ```tsx
-<TableHead className="w-[5.5rem]" title="客观强度 0~1（显著性/规模，不是严重度）；最深一档 = ≥0.8，够进保留名额">强度</TableHead>
+<TableHead className="w-[5.5rem]" title="客观强度 0~1（显著性/规模，不是严重度）；最深一档 = ≥0.8（高强度）">强度</TableHead>
 ```
 
 窄列（替换 `analysis-panel.tsx:1391`）：
@@ -468,7 +468,7 @@ export function strengthTone(s: number): string {
 <span className="inline-flex items-center gap-1 tabular-nums">
   强度 {detail.strength.toFixed(2)}
   {detail.strength >= 0.8 ? (
-    <span className="h-1.5 w-1.5 rounded-[1px] bg-intensity-3" aria-hidden title="≥0.8：够进保留名额" />
+    <span className="h-1.5 w-1.5 rounded-[1px] bg-intensity-3" aria-hidden title="≥0.8：高强度档" />
   ) : null}
 </span>
 ```

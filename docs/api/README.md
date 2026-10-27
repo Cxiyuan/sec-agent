@@ -167,7 +167,7 @@
 
 ### 分析机制 — `/api/analysis`
 
-派工队列（客观线索）、智能体结论、覆盖率与对象清单（数据地图）、预算参数读写、人工派工
+派工队列（客观线索）、智能体结论、覆盖率与对象清单（数据地图）、队列参数读写、人工派工
 
 | 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
 | --- | --- | --- | --- | --- |
@@ -352,17 +352,16 @@ MCP 令牌与工具清单
   `counters` 里的 `merged / superseded / dropped_overflow / stuck / expired / doorbell_*`）、
   `GET /api/analysis/coverage`（覆盖率与盲区）、`GET /api/analysis/inventory`（对象清单）
 - 人工派工：`POST /api/analysis/tasks`，body `{subject, subject_kind, kind, note, strength}`；
-  与自动线索同一套去重/容量/配额，**不插队**
-- 预算参数：`GET/PUT /api/analysis/config`、`POST /api/analysis/config/reset`
+  与自动线索同一套去重/容量规则，**不插队**
+- 队列参数：`GET/PUT /api/analysis/config`、`POST /api/analysis/config/reset`
   （全部 `analysis.*` 参数都以 `GET /api/analysis/config` 返回的 `items` 为准，形状与 `/api/baseline/config` 一致，可复用同一套表单渲染）
-- **界面不提供「领取任务」入口**：领取是智能体通道（MCP `claim_tasks`），带令牌身份与配额；
-  界面绕过配额去领活会把成本上限打穿
+- **界面不提供「领取任务」入口**：领取是智能体通道（MCP `claim_tasks`）；NDR 不设领取额度
 
 ### 智能体侧 MCP 新工具（不是 REST，但契约要一起看）
 
 `claim_tasks` / `complete_task` / `defer_task` / `task_stats` / `asset_map` / `coverage_report`。
 
-- NDR 不再推摘要，改为只发一次「门铃」（载荷只有队列状况）；智能体按自己预算 `claim_tasks` 领取；
+- NDR 不再推摘要，改为只发一次「门铃」（载荷只有队列状况）；智能体自行决定何时 `claim_tasks` 领取；
 - 领到的任务只含客观事实（偏离倍数 / 是否首见 / 涉及对象数），**不含严重度与结论**；
 - `complete_task` 可内联 `next_tasks` 追问（受深度上限）与 `suppression` 提交精准抑制：
   后者只在 `verdict=false_positive` 时允许，且 `evidence_refs` 必须是**本次会话真取回过**的引用。
