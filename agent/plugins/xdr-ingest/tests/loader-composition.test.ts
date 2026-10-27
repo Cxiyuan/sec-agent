@@ -107,7 +107,8 @@ test('test-only cordis.yml loads xdr-ingest through Loader and disposes its tool
   })
   await context.loader.await()
 
-  const names = context.tools.schemas().map(schema => schema.name)
+  const tools = context.tools
+  const names = tools.schemas().map(schema => schema.name)
   for (const name of SCRIPT_TOOLS) assert.ok(names.includes(name), `${name} must be model-visible`)
 
   const response = await fetch(`${context.webServer.getOrigin()}/xdr/ingest/ping`, {
@@ -116,7 +117,7 @@ test('test-only cordis.yml loads xdr-ingest through Loader and disposes its tool
   assert.equal(response.status, 200)
   assert.equal(await response.text(), 'ok')
 
-  const saved = await context.tools.execute({
+  const saved = await tools.execute({
     signal: new AbortController().signal,
     callId: ToolCallId('loader-save-script'),
     name: 'save_analysis_script',
@@ -133,7 +134,7 @@ test('test-only cordis.yml loads xdr-ingest through Loader and disposes its tool
   assert.ok(savedText?.type === 'text')
   assert.equal(JSON.parse(savedText.text).ok, true)
 
-  const found = await context.tools.execute({
+  const found = await tools.execute({
     signal: new AbortController().signal,
     callId: ToolCallId('loader-find-script'),
     name: 'find_analysis_scripts',
@@ -146,7 +147,7 @@ test('test-only cordis.yml loads xdr-ingest through Loader and disposes its tool
 
   await context.fiber.dispose()
   assert.equal(
-    context.tools.schemas().some(schema => SCRIPT_TOOLS.includes(schema.name)),
+    tools.schemas().some(schema => SCRIPT_TOOLS.includes(schema.name)),
     false,
     'disposing the Loader composition must unregister all script tools',
   )

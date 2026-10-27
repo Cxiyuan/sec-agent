@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **122 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **123 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 
 ## 一、通用约定
@@ -209,6 +209,7 @@
 | `PUT` | `/api/suppressions/{item_id}` | — | `item_id` | body |
 | `POST` | `/api/suppressions/{item_id}/restore` | — | `item_id` | — |
 | `POST` | `/api/suppressions/{item_id}/revoke` | — | `item_id` | body |
+| `POST` | `/api/suppressions/{item_id}/to-exclusion` | — | `item_id` | body |
 
 ### 配置管理 — `/api/zeek`
 
