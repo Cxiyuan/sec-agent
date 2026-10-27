@@ -85,9 +85,9 @@ export function SettingsBlock({
       {title ? (
         <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-1 bg-surface-1 px-4 py-2.5">
           <div className="min-w-0">
-            <h2 className="flex items-center gap-2 text-13 font-medium leading-5 text-foreground">
+            <h2 className="flex items-center gap-2 text-sm font-medium leading-5 text-foreground">
               {/* 深信服式分区标尺：3px 圆角竖条 + 标题 */}
-              <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full bg-primary" />
+              <span aria-hidden className="h-3 w-[3px] shrink-0 rounded-full bg-primary" />
               {title}
               {help ? (
                 <button

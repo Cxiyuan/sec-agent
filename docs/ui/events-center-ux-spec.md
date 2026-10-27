@@ -163,7 +163,7 @@
 
 筛选区结构照抄 `logs-panel.tsx` 第 244–443 行的三段式，控件 class 也照抄，**一处都不新造**：
 
-- 主行：时间范围 `select`（`h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground`）+ 关键字 `Input`（`min-w-[260px] flex-1`）
+- 主行：时间范围 `select`（`h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground`）+ 关键字 `Input`（`min-w-[260px] flex-1`）
 - 字段网格：`grid gap-3 sm:grid-cols-2 lg:grid-cols-4`，四个 `Field` 位（来源/严重度/事件归类/IP）
 - 操作行：搜索（`Button size="sm"` + `Search` 图标）、重置（`variant="outline"` + `RotateCcw` 图标）、排序 select、每页 select、包含已忽略 checkbox；右侧 `ml-auto` 是「共 N 条」
 

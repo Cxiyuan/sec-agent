@@ -35,7 +35,7 @@ export const OPS = ["eq", "ne", "in", "contains", "regex", "gt", "gte", "lt", "l
 
 /** 与 `Input` 同一套边框/底色/聚焦态：下拉框和输入框混排时不能是两种材质。 */
 export const SELECT_CLS =
-  "h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50";
+  "h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50";
 
 /** 条件行的列宽：字段 / 操作符 / 值 / 删除。窄屏（<sm）叠成单列，不挤成一团。 */
 const ROW_GRID =

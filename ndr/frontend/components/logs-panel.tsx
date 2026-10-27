@@ -249,7 +249,7 @@ export function LogsPanel() {
                 <select
                   value={minutes}
                   onChange={(e) => setMinutes(Number(e.target.value))}
-                  className="mt-1 block h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   {TIME_RANGES.map(([m, label]) => (
                     <option key={m} value={m}>
@@ -278,7 +278,7 @@ export function LogsPanel() {
                 <select
                   value={form.logType}
                   onChange={(e) => setForm({ ...form, logType: e.target.value })}
-                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   <option value="">全部类型</option>
                   {(facets?.log_types ?? []).map((item) => (
@@ -293,7 +293,7 @@ export function LogsPanel() {
                 <select
                   value={form.eventType}
                   onChange={(e) => setForm({ ...form, eventType: e.target.value })}
-                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   <option value="">全部事件</option>
                   {/* 界面只显示中文名；值仍是英文标识（查询用） */}
@@ -392,7 +392,7 @@ export function LogsPanel() {
                 <select
                   value={order}
                   onChange={(e) => setOrder(e.target.value as "desc" | "asc")}
-                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   <option value="desc">时间倒序（最新在前）</option>
                   <option value="asc">时间正序</option>
@@ -406,7 +406,7 @@ export function LogsPanel() {
                     setSize(Number(e.target.value));
                     setOffset(0);
                   }}
-                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   {PAGE_SIZES.map((n) => (
                     <option key={n} value={n}>

@@ -148,7 +148,7 @@ function ChainInner() {
         <div className="flex flex-wrap items-center gap-2">
           <select
             aria-label="统计时间窗"
-            className="h-9 rounded-sm border border-border bg-surface-2 px-2 text-sm text-foreground"
+            className="h-9 rounded-sm border border-border bg-surface-2 px-2 text-13 text-foreground"
             value={minutes}
             onChange={(e) => setMinutes(Number(e.target.value))}
           >

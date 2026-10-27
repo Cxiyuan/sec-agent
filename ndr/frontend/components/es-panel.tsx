@@ -231,7 +231,7 @@ export function EsPanel() {
           <Stat
             size="sm"
             label="集群"
-            value={<span className="font-mono text-sm">{status.health.cluster_name ?? "-"}</span>}
+            value={<span className="font-mono text-13">{status.health.cluster_name ?? "-"}</span>}
           />
           <Stat size="sm" label="节点" value={status.health.nodes ?? "-"} />
           <Stat

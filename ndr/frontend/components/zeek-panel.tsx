@@ -19,7 +19,7 @@ import { loadInto, PanelError, usePanelErrors } from "@/components/panel-error";
 
 /** 与 `Input` 同一套边框/底色/聚焦态，下拉框与文本域不能各自一套材质。 */
 const SELECT_CLS =
-  "h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50";
+  "h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50";
 const TEXTAREA_CLS =
   "min-h-28 w-full rounded-sm border border-input bg-surface-2 p-2 font-mono text-xs leading-relaxed transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 

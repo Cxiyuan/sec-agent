@@ -1101,7 +1101,7 @@ export default function RulesPage() {
               />
 
               <div className="flex flex-wrap items-end gap-3 rounded-xs bg-surface-1 px-3 py-2">
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-13">
                   <input
                     type="checkbox"
                     className="h-4 w-4 accent-brand-500"
@@ -1175,7 +1175,7 @@ export default function RulesPage() {
                   />
                 </Field>
                 <Field label="状态">
-                  <label className="flex h-9 items-center gap-2 text-sm">
+                  <label className="flex h-9 items-center gap-2 text-13">
                     <input
                       type="checkbox"
                       className="h-4 w-4 accent-brand-500"

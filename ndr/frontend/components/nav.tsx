@@ -65,7 +65,7 @@ export function SideNav() {
           图标轨（<1024）下 56px 放不下 4 个中文字符（会挤成竖排），整块隐藏。 */}
       {section ? (
         <div className="shrink-0 border-b border-border-subtle px-4 py-2.5 max-lg:hidden">
-          <p className="text-xs font-medium text-muted-foreground">{section.label}</p>
+          <p className="text-13 font-medium text-muted-foreground">{section.label}</p>
         </div>
       ) : null}
       <nav aria-label={section?.label} className="flex-1 overflow-auto px-2 py-2">
@@ -104,7 +104,7 @@ export function SideNav() {
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   // relative：给激活项的 before 竖条当定位锚（见下）
-                  "group relative mb-0.5 flex h-8 items-center gap-2 rounded-sm px-3 text-13 transition-colors",
+                  "group relative mb-0.5 flex h-8 items-center gap-2 rounded-sm px-3 text-xs transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                   // 图标轨（<1024）：居中图标、取消横向 padding
                   "max-lg:justify-center max-lg:gap-0 max-lg:px-0",

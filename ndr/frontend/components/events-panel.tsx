@@ -735,7 +735,7 @@ export function EventsPanel() {
                 <select
                   value={form.minutes}
                   onChange={(e) => applyForm({ minutes: Number(e.target.value) })}
-                  className="mt-1 block h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   {TIME_RANGES.map(([m, label]) => (
                     <option key={m} value={m}>
@@ -764,7 +764,7 @@ export function EventsPanel() {
                 <select
                   value={form.sourceKind}
                   onChange={(e) => applyForm({ sourceKind: e.target.value })}
-                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   <option value="">全部来源</option>
                   {SOURCE_KINDS.map(([key, label]) => (
@@ -779,7 +779,7 @@ export function EventsPanel() {
                 <select
                   value={form.severity}
                   onChange={(e) => applyForm({ severity: e.target.value })}
-                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="mt-1 block h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   <option value="">全部严重度</option>
                   {SEVERITIES.map(([key, label]) => (
@@ -829,7 +829,7 @@ export function EventsPanel() {
                 <select
                   value={form.sort}
                   onChange={(e) => applyForm({ sort: e.target.value as HitForm["sort"] })}
-                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 >
                   {SORTS.map(([value, label]) => (
                     <option key={value} value={value}>

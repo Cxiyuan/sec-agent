@@ -536,7 +536,7 @@ export function BehaviorPanel() {
           <select
             value={timeRange}
             onChange={(e) => setTimeRange(e.target.value)}
-            className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+            className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
           >
             <option value="1h">近1小时</option>
             <option value="6h">近6小时</option>
@@ -699,7 +699,7 @@ export function BehaviorPanel() {
               />
               <select
                 aria-label="按维度筛选"
-                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 value={nfeature}
                 onChange={(e) => {
                   setNfeature(e.target.value);
@@ -715,7 +715,7 @@ export function BehaviorPanel() {
               </select>
               <select
                 aria-label="排序方式"
-                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 value={nsort}
                 onChange={(e) => {
                   setNsort(e.target.value);
@@ -799,7 +799,7 @@ export function BehaviorPanel() {
             <div className="flex flex-wrap items-center gap-2">
               <select
                 aria-label="画像类型"
-                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 value={kind}
                 onChange={(e) => {
                   setKind(e.target.value);
@@ -822,7 +822,7 @@ export function BehaviorPanel() {
               />
               <select
                 aria-label="最低风险"
-                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
                 value={minRisk}
                 onChange={(e) => {
                   setMinRisk(e.target.value);
@@ -1260,7 +1260,7 @@ export function BehaviorPanel() {
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">备注（可选）</label>
             <textarea
-              className="h-20 w-full resize-none rounded-sm border border-input bg-surface-1 p-2 text-sm text-foreground"
+              className="h-20 w-full resize-none rounded-sm border border-input bg-surface-1 p-2 text-13 text-foreground"
               value={dispNote}
               onChange={(e) => setDispNote(e.target.value)}
               placeholder="补充说明这次处置的原因"

@@ -1516,7 +1516,7 @@ export function AnalysisPanel() {
                 aria-label="对象类型"
                 value={mKind}
                 onChange={(event) => setMKind(event.target.value)}
-                className="h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm"
+                className="h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13"
               >
                 {SUBJECT_KINDS.map((value) => (
                   <option key={value} value={value}>
@@ -1530,7 +1530,7 @@ export function AnalysisPanel() {
                 aria-label="线索类型"
                 value={mTaskKind}
                 onChange={(event) => setMTaskKind(event.target.value)}
-                className="h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-sm"
+                className="h-9 w-full rounded-sm border border-input bg-surface-2 px-2 text-13"
               >
                 {kinds.map((value) => (
                   <option key={value} value={value}>

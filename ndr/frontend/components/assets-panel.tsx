@@ -291,7 +291,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
       <select
         value={minutes}
         onChange={(e) => setMinutes(Number(e.target.value))}
-        className="ml-1 h-8 rounded-md border border-border bg-surface-2 px-2 text-sm text-foreground"
+        className="ml-1 h-8 rounded-md border border-border bg-surface-2 px-2 text-13 text-foreground"
       >
         <option value={60}>1 小时</option>
         <option value={360}>6 小时</option>
@@ -666,7 +666,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   <select
                     value={form.group_id}
                     onChange={(e) => setForm({ ...form, group_id: e.target.value })}
-                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-sm text-foreground"
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-13 text-foreground"
                   >
                     <option value="">未分组</option>
                     {groups.map((g) => (
@@ -681,7 +681,7 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   <select
                     value={form.criticality}
                     onChange={(e) => setForm({ ...form, criticality: e.target.value })}
-                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-sm text-foreground"
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-13 text-foreground"
                   >
                     {Object.entries(CRITICALITY_LABEL).map(([k, label]) => (
                       <option key={k} value={k}>

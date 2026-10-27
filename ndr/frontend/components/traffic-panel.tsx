@@ -418,7 +418,7 @@ export function TrafficPanel({ view }: { view: View }) {
               <select
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
-                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
               >
                 <option value={15}>15 分钟</option>
                 <option value={60}>1 小时</option>
@@ -434,7 +434,7 @@ export function TrafficPanel({ view }: { view: View }) {
               <select
                 value={limit}
                 onChange={(e) => setLimit(Number(e.target.value))}
-                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-sm text-foreground"
+                className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
               >
                 {[50, 100, 200, 300].map((n) => (
                   <option key={n} value={n}>

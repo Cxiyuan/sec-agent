@@ -502,7 +502,7 @@ export function IngestFiltersPanel() {
 
           {dry && (
             <div className="space-y-2 rounded-xs bg-surface-1 p-3">
-              <p className="text-sm">
+              <p className="text-13">
                 试运行结果：取样自{" "}
                 <b>{SOURCE_TEXT[String(dry.source || "none")] || String(dry.source || "-")}</b>
                 {typeof dry.scanned === "number" && (
