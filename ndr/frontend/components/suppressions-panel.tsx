@@ -127,7 +127,16 @@ const PARAM_GROUPS: { title: string; hint: string; keys: string[] }[] = [
   },
 ];
 
-type TrialState = "idle" | "debouncing" | "trialing" | "success" | "degraded" | "invalid" | "netfail";
+type TrialState =
+  | "idle"
+  | "debouncing"
+  | "trialing"
+  | "success"
+  | "degraded"
+  | "invalid"
+  | "netfail"
+  /** 过期响应：期间又发起了更新的试算，本次结果整体丢弃（不是错误，不该展示）。 */
+  | "stale";
 
 /** 到期列的文案：≤3 天转 medium 字色（不加第三个徽章）。 */
 function expiryOf(iso: string | null): { text: string; urgent: boolean } {
@@ -351,8 +360,13 @@ export function SuppressionsPanel() {
 
   // ---------- 试算 ----------
 
+  // 并发守卫：条件树 600ms debounce + 手动试算可能交叠，慢响应晚到会覆盖新结果。
+  // 每次发起自增序号，落响应时比对——序号已过期（期间又发起了新的试算）则整体丢弃。
+  const trialSeqRef = React.useRef(0);
+
   const runTrial = React.useCallback(
     async (match: SuppressionMatch): Promise<TrialState> => {
+      const seq = ++trialSeqRef.current;
       setTrialState("trialing");
       setTrialOut(null);
       setMatchError("");
@@ -362,12 +376,14 @@ export function SuppressionsPanel() {
           method: "POST",
           body: JSON.stringify({ match }),
         });
+        if (seq !== trialSeqRef.current) return "stale";
         setTrialOut(out);
         setTrialKey(key);
         const degraded = Boolean(out.trial?.error) || (out.trial?.events ?? 0) < 0;
         setTrialState(degraded ? "degraded" : "success");
         return degraded ? "degraded" : "success";
       } catch (error) {
+        if (seq !== trialSeqRef.current) return "stale";
         if (error instanceof ApiError && error.status === 400) {
           const map = fieldErrorsOf(error);
           setMatchError(map.match ?? apiErrorText(error, "条件不合法"));
@@ -528,7 +544,7 @@ export function SuppressionsPanel() {
     const hasFresh = trialFresh && (trialState === "success" || trialState === "degraded");
     if (!hasFresh) {
       const result = await runTrial(currentMatch);
-      if (result === "invalid" || result === "netfail") {
+      if (result === "invalid" || result === "netfail" || result === "stale") {
         setFormMsg(
           result === "invalid"
             ? "条件不合法，已阻止保存（见条件树下方红字）"
@@ -908,7 +924,7 @@ export function SuppressionsPanel() {
                     <TableHead>名称</TableHead>
                     <TableHead className="w-44">模式</TableHead>
                     <TableHead>条件</TableHead>
-                    <TableHead className="w-20">
+                    <TableHead className="w-20" aria-describedby="hits-lag">
                       <span title="按命中数降序：吞得多的最需要复核">命中数</span>
                     </TableHead>
                     <TableHead className="w-24">状态</TableHead>
@@ -973,11 +989,9 @@ export function SuppressionsPanel() {
                         </TableCell>
                         <TableCell
                           className={cn("tabular-nums", hot ? "text-sev-medium-fg" : undefined)}
-                          title={
-                            hot
-                              ? `接近熔断上限 ${item.hits}/${hitCap ?? "—"}，超过上限将自动撤销`
-                              : "约 30 秒内更新"
-                          }
+                          // 30 秒滞后说明不再逐行挂 title（读屏要逐行重复一遍），统一由表格下方的
+                          // hits-lag 脚注 + 列头 aria-describedby 承担；这里只留熔断相关的事实。
+                          title={hot ? `接近熔断上限 ${item.hits}/${hitCap ?? "—"}，超过上限将自动撤销` : undefined}
                         >
                           {item.hits}
                         </TableCell>
@@ -1048,6 +1062,9 @@ export function SuppressionsPanel() {
                   })}
                 </TableBody>
               </Table>
+              <p id="hits-lag" className="px-3 pt-2 text-xs text-muted-foreground">
+                命中数每 30 秒落库一次，约 30 秒内更新
+              </p>
               <div className="px-3 py-2">
                 <Pagination
                   page={page}
@@ -1120,7 +1137,16 @@ export function SuppressionsPanel() {
         open={formOpen}
         title={editId ? "编辑抑制" : "新建抑制"}
         widthClass="w-[720px]"
-        onClose={() => setFormOpen(false)}
+        onClose={() => {
+          // 档位不符时 Esc / 点遮罩都不直接关：条目已写入、档位和试算不一致，
+          // 用户必须先看到警示条并做出「接受 / 撤销」的决定（WCAG 2.1.2 也不能让 Esc 变陷阱，
+          // 所以这里把焦点送去警示条内的主按钮，而不是什么都不做）。
+          if (mismatch) {
+            if (typeof document !== "undefined") document.getElementById("mismatch-accept")?.focus();
+            return;
+          }
+          setFormOpen(false);
+        }}
         footer={
           <>
             <Button size="sm" variant="outline" onClick={() => setFormOpen(false)}>
@@ -1170,6 +1196,7 @@ export function SuppressionsPanel() {
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
+                  id="mismatch-accept"
                   onClick={() => {
                     setMismatch(null);
                     setFormOpen(false);
