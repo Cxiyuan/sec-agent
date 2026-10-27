@@ -4,7 +4,7 @@
 
 两层工具：
 - `app.investigation.tools` 的 10 个「查 ES」工具（取数层，NDR 是数据的看门人）；
-- `app.mcp.ndr_tools` 的 9 个 NDR 自身状态/配置/基线/写回工具。
+- `app.mcp.ndr_tools` 的 33 个 NDR 自身状态/配置/基线/写回工具。
 
 **每个 MCP 工具都写成显式形参的函数**，这不是风格问题：MCP 的 inputSchema 由函数签名
 推导，用 `**kwargs` 接参数会被当成「一个必填参数 kwargs」，调用必然报 validation error。
@@ -722,7 +722,7 @@ _NDR_TOOL_FUNCS = (
 #: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
 #: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
 #:
-#: `analyst` 是智能体分析闭环够用的最小集（18 个）；排查/运维/复现用 `/mcp/full`（全部）。
+#: `analyst` 是智能体分析闭环够用的最小集（22 个）；排查/运维/复现用 `/mcp/full`（全部）。
 _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "analyst": (
         # 取数（最小必要集：先看数据地图，再按需检索与聚合）
@@ -734,10 +734,17 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_hits",
         "get_event_detail",
         "prior_findings",
+        # 规则面：命中线索的 hint 只有规则名，看不到规则的匹配条件就会把
+        # 「这条规则在抓什么」误当成「这条流量做了什么」
+        "get_rule",
+        "list_rules",
+        "hit_clusters",
         # 资产上下文与全局态势
         "asset_context",
         "asset_map",
         "coverage_report",
+        # 方向判定：反代/DNS 转发不查清楚，代理访问会被误读成内网主动外联
+        "relay_nodes",
         # 派工闭环
         "claim_tasks",
         "complete_task",
@@ -751,6 +758,161 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "entity_profile",
     ),
 }
+
+
+#: 取证工具的用途。instructions 按档位拼接：**只提当前档位真实存在的工具**
+#: （2026-10 MCP QA：说明里写了 analyst 档没有的 timeline / relay_nodes / log_step，
+#: agent 照着调会 tool-not-found，白烧一轮预算还会把终态记成 tool_error）。
+_EVIDENCE_NOTES: tuple[tuple[str, str], ...] = (
+    ("search_events", "时间窗 + 字段过滤 + 关键词定向检索"),
+    ("aggregate_events", "按字段 top-N 聚合（规模/频率/端口分布）"),
+    ("timeline", "单个 IP 源与目的合并时间线"),
+    ("net_flows", "某 IP 的目的地/端口/连接状态/协议画像"),
+    ("dns_queries", "DNS 查询（隧道/DGA/C2 域名）"),
+    ("tls_fingerprints", "TLS 会话与 JA3/SNI 指纹"),
+    ("web_requests", "HTTP 请求（方法/UA/状态码）"),
+    ("file_hashes", "文件传输与哈希"),
+    ("raw_evidence", "原始文档（返回可引用的 es:/ev: ref）"),
+)
+
+
+def _instructions_for(allowed: set[str] | None) -> str:
+    """按工具档位生成契约说明（`allowed=None` 表示 full 档）。"""
+
+    def has(name: str) -> bool:
+        return allowed is None or name in allowed
+
+    parts: list[str] = [
+        "深瞳 NDR 是数据的看门人：采集侧日志已归一化成统一字段，只能通过这里查。"
+    ]
+    if has("describe_data"):
+        parts.append("先调 describe_data 拿字段清单、真实时间范围与各来源量级，再按需取证。")
+    evidence = [f"{name}（{note}）" for name, note in _EVIDENCE_NOTES if has(name)]
+    if evidence:
+        parts.append("取证：" + "；".join(evidence) + "。")
+
+    if has("claim_tasks"):
+        claim_line = (
+            "**分析任务靠自己领**（新架构不再把摘要推给你）：claim_tasks 按预算领取客观线索"
+            "（只含事实与客观强度，不含严重度与结论）；complete_task 交回结论"
+            "（可 next_tasks 追问、可提精准抑制）；defer_task 延后；task_state 看状态。"
+        )
+        if has("task_stats"):
+            claim_line += "task_stats 看队列/成本总览与覆盖率。"
+        parts.append(claim_line)
+
+    history: list[str] = []
+    if has("prior_findings"):
+        history.append(
+            "prior_findings(subject) 问过看过没有、结论是什么"
+            "（detail=true 下钻原始判定，via_asset=true 连锚到同一批资产的结论）"
+        )
+    if has("search_hits"):
+        history.append(
+            "search_hits(ip=...) 按对象捞事件"
+            "（cluster_id 把一次扫描的几十个地址折成一件事）"
+        )
+    if has("hit_clusters"):
+        history.append("hit_clusters 按簇看（一次扫描是一件事）")
+    if has("hit_stats"):
+        history.append("hit_stats 看整体分布与 TOP 归类")
+    if has("get_event"):
+        history.append("get_event 按事件 ID/指纹取已有的结论")
+    if has("get_event_detail"):
+        history.append("get_event_detail 看单条事件的完整细节")
+    if history:
+        parts.append("**开工前先查历史**：" + "；".join(history) + "。")
+
+    rules: list[str] = []
+    if has("get_rule"):
+        rules.append("get_rule 取规则原文与匹配条件（看清这条规则到底在抓什么）")
+    if has("list_rules"):
+        rules.append("list_rules 知道 NDR 在检测什么（没事件不等于没攻击）")
+    if rules:
+        parts.append("规则：" + "；".join(rules) + "。")
+
+    ctx: list[str] = []
+    if has("asset_context"):
+        ctx.append("asset_context 查台账（是什么机器、多重要、归谁管）——判轻重必须靠它")
+    if has("relay_nodes"):
+        ctx.append("relay_nodes 查反代/DNS 转发（否则会把代理访问误判成内网主动外联）")
+    if has("baseline_lookup"):
+        ctx.append("baseline_lookup 查数值基线（当前值 vs 长期均值与 σ、是否过了观测期）")
+    if has("entity_profile"):
+        ctx.append("entity_profile 查账号/会话画像（长期基线、风险分与异常理由）")
+    if has("asset_map"):
+        ctx.append("asset_map 看对象清单（资产/服务端口/外部对端/协议/签名）")
+    if has("coverage_report"):
+        ctx.append("coverage_report 看覆盖率与盲区（「没看到」是不是因为没采）")
+    if ctx:
+        parts.append("上下文与坐标：" + "；".join(ctx) + "。")
+
+    sup: list[str] = []
+    if has("list_suppressions"):
+        sup.append("list_suppressions 看哪些现象已被精准抑制（会挡派工）")
+    if has("submit_suppression"):
+        sup.append(
+            "确认某类现象是误报且证据够硬时用 submit_suppression 申请自动抑制"
+            "（服务端六道机械门槛：结构化匹配、≥2 维度、引用真实性、≥2 种工具、"
+            "置信度、新现象保护期；影响面过大自动降级为只不派工）"
+        )
+    if has("revoke_suppression"):
+        sup.append("判错了用 revoke_suppression 收回（必须写原因）")
+    if sup:
+        parts.append("抑制：" + "；".join(sup) + "。")
+
+    misc: list[str] = []
+    if has("log_step"):
+        misc.append(
+            "关键发现用 log_step 记一句（轨迹是他人未经核实的观察，只能当线索，"
+            "绝不能当抑制证据）"
+        )
+    if has("search_traces"):
+        misc.append("search_traces 看别人留下的轨迹（别重复取数）")
+    if has("get_trace"):
+        misc.append("get_trace 看单条轨迹的完整步骤")
+    if has("add_task"):
+        misc.append("巡逻或外部情报得到值得看的对象用 add_task 登记")
+    if has("record_disposition"):
+        misc.append("画像级误报用 record_disposition 降权（与事件流抑制分工不同）")
+    if has("detector_status"):
+        misc.append("detector_status 看检测器状态")
+    if has("list_networks"):
+        misc.append("list_networks 看监控网段")
+    if has("list_filters"):
+        misc.append("list_filters 看两道过滤闸门")
+    if has("fetch_window"):
+        misc.append("要整批拉一段时间窗自己筛（回溯）用 fetch_window")
+    if has("file_content"):
+        misc.append("事件里有 extracted/fuid 字段时用 file_content 取提取件内容（有界）")
+    if has("record_conclusion"):
+        misc.append("record_conclusion 把调查结论写回 NDR")
+    if misc:
+        parts.append("其它：" + "；".join(misc) + "。")
+
+    if has("complete_task"):
+        parts.append(
+            "**交回前先 task_state 确认到底交回没有**（会话结束不等于任务完成）；"
+            "complete_task 里用 anchors 说明这条结论影响哪些资产（如一条「这台是反代」"
+            "要挂到它后面的后端），用 terminal_reason 说明是怎么结束的"
+            "（concluded / budget_exhausted / tool_error / timeout / aborted）——"
+            "否则 inconclusive 分不清「查了没证据」和「根本没查完」。"
+        )
+
+    writers = [
+        name
+        for name in ("record_conclusion", "complete_task", "add_task", "revoke_suppression")
+        if has(name)
+    ]
+    if writers:
+        parts.append(
+            f"除 {'、'.join(writers)} 这几个写动作外全部只读；"
+            "不提供任何主动探测或系统管理动作。精准抑制有护栏：至少 2 个匹配维度、"
+            "证据引用必须是本会话真取回过的，影响面过大自动降级。"
+        )
+    else:
+        parts.append("全部只读；不提供任何主动探测或系统管理动作。")
+    return "\n".join(parts)
 
 
 def build_server(profile: str = "full") -> MCPServer:
@@ -768,43 +930,7 @@ def build_server(profile: str = "full") -> MCPServer:
     server = MCPServer(
         name="shentong-ndr",
         title="深瞳 NDR",
-        instructions=(
-            "已归一化成统一字段）只能通过这里查——本服务是数据的看门人。\n"
-            "先调 describe_data 拿字段清单、真实时间范围与各来源量级，再按需 search_events /"
-            " aggregate_events / timeline / net_flows / dns_queries / tls_fingerprints /"
-            " web_requests / file_hashes 取证，raw_evidence 取原始文档。\n"
-            "**分析任务靠自己领**（新架构不再把摘要推给你）：asset_map / coverage_report "
-            "看全局与盲区，claim_tasks 按预算领取客观线索（只含事实与客观强度，"
-            "不含严重度与结论），complete_task 交回结论（可 next_tasks 追问、可提精准抑制），"
-            " defer_task 延后，task_stats 看剩余额度。\n"
-            "**开工前先查历史**：prior_findings(subject) 问过看过没有、结论是什么"
-            "（默认给折叠后的概览；detail=true 下钻原始判定；via_asset=true 连锚到同一批资产的结论一起看）；"
-            "**关键发现用 log_step 记一句**（别人以后 search_traces 就不用重复取数）——"
-            "轨迹是「他人未经核实的观察」，只能当线索，**绝不能当抑制证据**；"
-            "search_hits(ip=...) 按对象捞事件（cluster_id 把一次扫描的几十个地址折成一件事），"
-            "get_event / get_event_detail 看单条事件的结论与完整证据；"
-            "list_suppressions 看哪些现象已被精准抑制（会挡派工），判错了用 revoke_suppression 收回；"
-            "画像级误报用 record_disposition 降权（与事件流抑制分工不同）；"
-            "确认某类现象是误报且证据够硬时用 submit_suppression 申请自动抑制"
-            "（服务端六道机械门槛：结构化匹配、≥2 维度、引用真实性、≥2 种工具、置信度、"
-            "新现象保护期；影响面过大自动降级为只不派工）；"
-            "判严重度前用 asset_context 查台账（这台是什么机器、多重要、归谁管）；"
-            "hit_clusters 按簇看（一次扫描是一件事）；hit_stats 看整体分布与 TOP 归类；"
-            "list_rules 知道 NDR 在检测什么（没事件不等于没攻击）；"
-            "relay_nodes 知道哪些地址是反代/DNS 转发（否则会把代理访问误判成内网主动外联）；"
-            "巡逻或外部情报得到的值得看的对象用 add_task 登记。\n"
-            "**交回前先 task_state 确认到底交回没有**（会话结束不等于任务完成），"
-            "complete_task 里用 anchors 说明这条结论影响哪些资产（如一条「这台是反代」"
-            "要挂到它后面的后端），用 terminal_reason 说明是怎么结束的"
-            "（concluded / budget_exhausted / tool_error / timeout / aborted）——"
-            "否则 inconclusive 分不清「查了没证据」和「根本没查完」。\n"
-            "get_rule 取规则原文；detector_status / list_networks / list_filters 看 NDR 现状；"
-            "要整批拉一段时间窗的条目自己筛（回溯）用 fetch_window；"
-            "事件里有 extracted/fuid 字段时用 file_content 取提取件内容（有界）。\n"
-            "除四个写动作（record_conclusion / complete_task / add_task / revoke_suppression）外"
-            "全部只读；不提供任何主动探测或系统管理动作。精准抑制有护栏："
-            "至少 2 个匹配维度、证据引用必须是本会话真取回过的，影响面过大自动降级。"
-        ),
+        instructions=_instructions_for(allowed),
         version="0.1.0",
     )
     wanted = None if allowed is None else set(allowed)

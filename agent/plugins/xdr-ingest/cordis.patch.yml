@@ -30,7 +30,7 @@
         warmupLimit: 1000
         pruneIntervalMinutes: 60
         # ---- 派工闭环（新架构）----
-        # NDR 的 MCP 地址：默认走容器服务名；analyst 档（16 个工具）够完整闭环，
+        # NDR 的 MCP 地址：默认走容器服务名；analyst 档（22 个工具）够完整闭环，
         # 排查时人工连 /mcp/full 拿全量 43 个。
         mcpUrl: !!js process.env.XDR_NDR_MCP_URL ?? 'http://ndr-mcp:8090/mcp'
         # 令牌来自 NDR 界面生成（stmcp_ 前缀）。留空 = 只回执门铃、不跑分析（会显式告警）。
@@ -46,7 +46,7 @@
         provider: ''
         model: ''
 
-# NDR 的 MCP 服务（analyst 档）：把 16 个工具暴露给模型，命名形如 mcp__ndr__claim_tasks。
+# NDR 的 MCP 服务（analyst 档）：把 22 个工具暴露给模型，命名形如 mcp__ndr__claim_tasks。
 # 为什么要单独一行而不是复用上面的配置：dsh 的 mcp-client 是**独立插件**，
 # 一个 entry 对应一个 MCP 服务；命名空间固定进工具名，换服务名等于换一套工具名。
 - insert:

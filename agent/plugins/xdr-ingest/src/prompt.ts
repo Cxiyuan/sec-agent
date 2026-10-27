@@ -54,7 +54,7 @@ export function buildAnalysisPrompt(task: PromptTask): string {
     '',
     '## 先加载技能',
     '工具用法与处置口径写在两个技能里，复杂线索先用 `skill` 工具加载：',
-    '- `skill(ndr-tools)`：16 个 NDR 工具的用途、证据引用规则、抑制门槛；',
+    '- `skill(ndr-tools)`：22 个 NDR 工具的用途、证据引用规则、抑制门槛；',
     '- `skill(alert-triage)`：扫描/爆破/横向/C2/外传/Web 攻击的取证要点与误报特征。',
     '',
     '## 怎么干（按顺序，别跳）',

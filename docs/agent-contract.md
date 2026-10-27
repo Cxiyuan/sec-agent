@@ -7,7 +7,7 @@
 
 | 地址 | 工具数 | 用途 |
 |---|---|---|
-| `http://ndr-mcp:8090/mcp` | **18**（analyst 档） | 智能体默认入口：闭环动作 + 取数底座（`baseline_lookup` / `entity_profile`），**不含**撤销抑制、取提取件正文、改结论、取规则原文等 |
+| `http://ndr-mcp:8090/mcp` | **22**（analyst 档） | 智能体默认入口：闭环动作 + 取数底座（`baseline_lookup` / `entity_profile`）+ 方向/规则上下文（`relay_nodes` / `hit_clusters` / `get_rule` / `list_rules`），**不含**撤销抑制、取提取件正文、改结论、改规则等 |
 | `http://ndr-mcp:8090/mcp/full` | 43（全量） | 人工排查 / 复现 / 运维 |
 
 两档共用同一层 Bearer 鉴权（`stmcp_` 令牌）。**按能力收窄工具面**的理由：既省上下文，

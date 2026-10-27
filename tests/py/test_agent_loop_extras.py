@@ -37,12 +37,17 @@ def mods(request: pytest.FixtureRequest) -> dict[str, Any]:
 
 
 def test_analyst_profile_is_a_strict_subset(mods: dict[str, Any]) -> None:
-    """analyst 档必须是 full 的真子集，且数量明显更少（否则"收窄"没意义）。"""
+    """analyst 档必须是 full 的真子集，且明显收窄（不超过 60%）。
+
+    阈值从 50% 放宽到 60%（2026-10 MCP QA）：分析闭环需要 `relay_nodes`（方向判定）、
+    `hit_clusters`（一次扫描折成一件）、`get_rule/list_rules`（规则在抓什么）——
+    这些是只读的分析必需件，不是运维动作。真正的护栏是下面那条「禁止动作不得入档」。
+    """
     server = mods["server"]
     analyst = set(server.build_server("analyst")._tool_manager._tools)
     full = set(server.build_server("full")._tool_manager._tools)
     assert analyst < full, "analyst 必须是 full 的真子集"
-    assert len(analyst) < len(full) / 2, f"analyst 收窄不足：{len(analyst)}/{len(full)}"
+    assert len(analyst) <= len(full) * 0.6, f"analyst 收窄不足：{len(analyst)}/{len(full)}"
 
 
 def test_analyst_profile_covers_whole_loop(mods: dict[str, Any]) -> None:
@@ -66,8 +71,42 @@ def test_analyst_profile_covers_whole_loop(mods: dict[str, Any]) -> None:
     assert required <= analyst, f"analyst 档缺闭环必需工具：{sorted(required - analyst)}"
 
 
+def test_analyst_profile_has_direction_and_rule_context(mods: dict[str, Any]) -> None:
+    """方向与规则上下文是分析必需件（2026-10 MCP QA）。
+
+    - `relay_nodes`：不查反代/DNS 转发，代理访问会被误判成"内网主动外联"；
+      分析提示词本来就让 agent 调它，但档位里没有 → 必然 tool-not-found。
+    - `hit_clusters`：一次扫描命中几十个地址要靠簇折叠，否则逐个分析烧预算。
+    - `get_rule` / `list_rules`：hint 只给规则名，看不到匹配条件只能猜。
+    """
+    server = mods["server"]
+    analyst = set(server.build_server("analyst")._tool_manager._tools)
+    required = {"relay_nodes", "hit_clusters", "get_rule", "list_rules"}
+    assert required <= analyst, f"analyst 档缺分析必需件：{sorted(required - analyst)}"
+
+
+def test_instructions_only_mention_available_tools(mods: dict[str, Any]) -> None:
+    """契约说明里只能出现当前档位真实存在的工具（tool-not-found 的根因）。
+
+    模型是先读 instructions 再动手的：说明里写着一个档位没有的工具，它会照着调，
+    失败会被记成 tool_error，还会白烧一轮预算。
+    """
+    import re as _re
+
+    server = mods["server"]
+    catalog = set(server.ndr_tools.TOOLS) | {fn.__name__ for fn in server._ES_TOOL_FUNCS}
+    for profile in ("analyst", "full"):
+        built = server.build_server(profile)
+        tools = set(built._tool_manager._tools)
+        mentioned = {
+            name for name in catalog if _re.search(rf"\b{_re.escape(name)}\b", built.instructions)
+        }
+        assert mentioned <= tools, f"{profile} 档说明提到不存在的工具：{sorted(mentioned - tools)}"
+        assert mentioned == tools, f"{profile} 档说明漏了工具：{sorted(tools - mentioned)}"
+
+
 def test_analyst_profile_excludes_privileged_actions(mods: dict[str, Any]) -> None:
-    """危险/运维动作不进 analyst 档：撤销抑制、取提取件正文、改结论、取规则原文等。"""
+    """危险/运维动作不进 analyst 档：撤销抑制、取提取件正文、改结论等。"""
     server = mods["server"]
     analyst = set(server.build_server("analyst")._tool_manager._tools)
     forbidden = {
