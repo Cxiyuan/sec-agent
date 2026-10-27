@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Collection
 from contextvars import ContextVar
 from typing import Any
 
@@ -776,7 +777,7 @@ _EVIDENCE_NOTES: tuple[tuple[str, str], ...] = (
 )
 
 
-def _instructions_for(allowed: set[str] | None) -> str:
+def _instructions_for(allowed: Collection[str] | None) -> str:
     """按工具档位生成契约说明（`allowed=None` 表示 full 档）。"""
 
     def has(name: str) -> bool:

@@ -19,6 +19,12 @@ export interface XdrIngestService {
   /** 两级缓存规模与计数（热层/冷库条数、分析/复用/重分析；对齐 /stats）。 */
   cacheStats(): Promise<unknown>
 
+  /** 智能体侧结论复用计数（进程内计数，重启归零）。 */
+  taskReuseStats(): { readonly reused: number, readonly stored: number }
+
+  /** 脚本库规模与存储类型（`store=memory` 表示重启会丢）。 */
+  scriptStats(): Promise<{ readonly store: 'memory' | 'postgres', readonly count: number }>
+
   /** 手动触发一次领取。等同一记门铃：仍受并发与服务端预算约束。返回是否真的叫醒了循环。 */
   wake(): boolean
 

@@ -14,6 +14,8 @@ export interface PromptTask {
   readonly priority?: number
   readonly subject_kind: string
   readonly subject: string
+  /** 现象特征（命中线索=规则名，偏移线索=指标名）；同类结论复用靠它区分。 */
+  readonly feature?: string
   readonly window_start?: string | null
   readonly window_end?: string | null
   readonly hint?: unknown
@@ -21,22 +23,13 @@ export interface PromptTask {
   readonly attempts?: number
 }
 
-/** 各线索类型的"该往哪查"的提示（只是建议，不是结论）。 */
-const KIND_HINTS = {
-  novelty: '这是个刚出现的对象：先确认它是什么（台账 / 服务端口 / 协议），再判断新出现本身是否正常。',
-  shift: '这个对象的行为偏离了它自己的历史常态：先取数值基线看偏离量，再看同一时段有没有对应的业务变化。',
-  structure: '结构特征异常（端口组合 / 协议组合不像常规业务）：先看它和谁通信、用的什么协议。',
-  coverage: '这是个**长期没人看过**的对象：目标是把它的基本情况摸清，不是非要找出问题。摸清就可以交回。',
-  hit: '规则命中了：规则名只是"哪条规则报的"，**不是结论**。去看真实事件，判断这是攻击还是误报。',
-  retest: '这是一次**复测**：上次判过误报/良性并挂了抑制，现在回头确认那个判断还成立。三态表达即可。',
-} satisfies Record<string, string>
-
 export function buildAnalysisPrompt(task: PromptTask): string {
   const facts = {
     task_id: task.id,
     kind: task.kind,
     subject_kind: task.subject_kind,
     subject: task.subject,
+    feature: task.feature ?? null,
     objective_strength: task.strength,
     priority: task.priority ?? null,
     window: { start: task.window_start ?? null, end: task.window_end ?? null },
@@ -46,7 +39,9 @@ export function buildAnalysisPrompt(task: PromptTask): string {
   }
 
   return [
-    '你是深瞳 NDR 的分析智能体。下面这条线索是 NDR 用**客观统计**挑出来的，没有任何结论。',
+    '你是深瞳 NDR 的分析智能体。NDR 只用客观统计挑线索并提供元数据，不判断事件、不指定取数工具。',
+    '你主导分析：自己决定要回答的问题、查哪些数据源/字段、分析多大时间范围，以及何时证据足够。',
+    '`window` 和 `hint` 只是可选起点，不是强制分析边界或结论；需要时可以扩大、缩小或换方向。',
     '',
     '<task>',
     JSON.stringify(facts, null, 2),
@@ -57,16 +52,24 @@ export function buildAnalysisPrompt(task: PromptTask): string {
     '- `skill(ndr-tools)`：22 个 NDR 工具的用途、证据引用规则、抑制门槛；',
     '- `skill(alert-triage)`：扫描/爆破/横向/C2/外传/Web 攻击的取证要点与误报特征。',
     '',
-    '## 怎么干（按顺序，别跳）',
+    '## 规划与取证（由你决定）',
     'NDR 工具在模型侧带命名空间，形如 `mcp__ndr__search_events`（下文写裸名，指同一批工具）。',
-    '1. `prior_findings(subject=...)`：这台/这个对象**看过没有**、之前结论是什么。',
-    '   已经判过误报且没有新变化 → 不要重复分析，直接按历史结论交回并说明理由。',
-    '2. `asset_context(ips=[...])`：查台账（是什么机器、多重要、归谁管）。判轻重必须靠它。',
-    '   顺手看 `relay_nodes`：反代/DNS 转发的地址看起来"在扫内网"，其实是在转发外部请求。',
-    '3. 取数：`describe_data` 先看字段与量级，再 `search_events` / `search_hits` / `aggregate_events`；',
-    '   要看原始文档用 `raw_evidence`。**证据引用必须来自这些真取回的调用**（es:/ev:）。',
-    '4. 判断：是攻击 / 是误报 / 是正常业务 / 可疑但证据不足。',
-    '5. `complete_task`：交回结论。**这一步不做等于白干**（任务会被租约回收、算一次浪费）。',
+    '先用 `prior_findings(subject=...)` 查看是否有相关历史结论，避免从头重复已知部分；',
+    '然后自己拟定调查问题与范围，只调用能回答问题的工具。台账、代理链路、基线、原始事件等',
+    '按需取用，不要求每条任务都查全。**引用必须来自本会话实际取回的证据**（es:/ev:）。',
+    '查询范围由你定：任务给的时间窗可以作为起点，需追溯/对照时自行调整，并在结论里说清范围。',
+    '最终判断：攻击 / 误报 / 正常业务 / 可疑但证据不足。随后调用 `complete_task` 交回；',
+    '**交回是唯一硬性收尾要求**（否则任务会被租约回收，算一次浪费）。',
+    '',
+    '## 复用与工具脚本（省预算的两件事）',
+    '- 同类现象在有效期内由插件直接复用上次结论（命中时你根本不会收到这条任务，不用管）；',
+    '  你要做的只有：先用 `prior_findings` 查历史，别把已经判过的东西从头再查一遍。',
+    '- 需要临时写脚本处理数据时：先 `find_analysis_scripts` 看有没有现成的；',
+    '  有就 `get_analysis_script` 取全文、**只改变量**；真的新写且以后还能用的，',
+    '  用 `save_analysis_script` 存起来（`scenario` 写清什么场景用，`variables` 列出可改变量，',
+    '  变量集中放在脚本开头并由代码引用）。脚本里不得存真实口令、令牌、私钥或原始事件内容；',
+    '  需要凭据时只引用环境变量名。',
+    '- 脚本只是取数工具：脚本输出**不算证据**，支撑结论仍要用 `raw_evidence` 真取回并引用。',
     '',
     '## 交回时怎么填',
     '- `verdict`：true_positive / false_positive / benign / suspicious / inconclusive。',
@@ -90,6 +93,6 @@ export function buildAnalysisPrompt(task: PromptTask): string {
     '写进 `findings` 与 `anchors`（锚点挂上受影响的资产）。后续任务经 `prior_findings`',
     '与锚点直接复用，不必重查。',
     '',
-    (KIND_HINTS as Record<string, string>)[task.kind] ?? '按上面的通用流程处理。',
+    '线索类型只说明 NDR 为什么把它排进队列，不规定你必须分析什么或怎么分析。',
   ].join('\n')
 }

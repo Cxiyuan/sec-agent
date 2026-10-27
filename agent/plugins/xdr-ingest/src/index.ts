@@ -1,12 +1,10 @@
 /**
- * xdr-ingest — NDR 摘要接收插件（dsh out-of-tree bundle）。
+ * xdr-ingest — NDR 门铃派工与智能体记忆插件（dsh out-of-tree bundle）。
  *
- * 职责分两条腿：
- * 1. **旧路径（回滚用）**：收 NDR 的摘要推送，内容派生「事件分析 ID」+ 两级缓存判重，
- *    用启发式分诊（`analyzer.ts`）。新架构上线后 NDR 不再推摘要，这条路保留以便回滚。
- * 2. **新路径（派工闭环）**：收**门铃**（只带队列状况，不含事件）→ `claim_tasks` 领客观线索
- *    → 起分析会话（`ctx.agents`）→ 模型用 MCP 工具取证并 `complete_task` 交回 →
- *    本插件回查 `task_state` 确认真的交回了（没交回就 `defer_task`，别占着租约）。
+ * 主路径：NDR 只发门铃与客观任务元数据；智能体自行选择数据、问题和分析范围，
+ * 模型用 MCP 工具取证并 `complete_task` 交回；本插件回查 `task_state`，没交回则延后。
+ * 智能体侧结论库负责同类现象复用，脚本库保存可按场景重用的分析工具。
+ * 旧摘要推送与 EA 判重只为回滚保留。
  *
  * 挂载：插件经 plugin manager / profile 依赖安装后，由本包的 cordis.patch.yml
  * 声明默认配置；token 与 PG 连接串必须由部署层提供（token 默认从
@@ -29,6 +27,11 @@ import { MemoryColdStore } from './store.ts'
 import type { ColdStore } from './store.ts'
 import { mergeSettings, settingsView } from './settings.ts'
 import type { RuntimeSettings, SettingsStore } from './settings.ts'
+import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
+import { MemoryStateStore } from './state-store.ts'
+import { PostgresStateStore } from './pg-state-store.ts'
+import type { ScriptStore } from './state-store.ts'
+import type { TaskResultStore } from './task-results.ts'
 
 export type * from './types.ts'
 export { analysisIdOf, identityKey, normalizeDigest, ANALYSIS_ID_PREFIX } from './identity.ts'
@@ -48,6 +51,12 @@ export { PostgresColdStore } from './pg-store.ts'
 export type { ColdEntry, ColdStore, AnalysesPage, AnalysesQuery } from './store.ts'
 export { mergeSettings, settingsView, SETTING_LIMITS } from './settings.ts'
 export type { RuntimeSettings, SettingsStore } from './settings.ts'
+export { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
+export { MemoryStateStore } from './state-store.ts'
+export { PostgresStateStore } from './pg-state-store.ts'
+export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore } from './state-store.ts'
+export { taskResultKey, reuseDecision, REUSABLE_VERDICTS } from './task-results.ts'
+export type { TaskResultRecord, TaskResultStore } from './task-results.ts'
 export type { XdrIngestService } from './workbench.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
@@ -58,12 +67,12 @@ export const name = 'xdr-ingest'
 // 「模块没 import」「apply 没跑」三种根因。
 console.log('[xdr-ingest] module loaded')
 
-/** 路由注册需要宿主 webServer。 */
-export const inject = ['webServer']
+/** 路由注册需要宿主 webServer；脚本库工具需要 tools 注册表。 */
+export const inject = ['webServer', 'tools']
 
 /** 插件配置（web 设置页 / profile patch 均可提供）。 */
 export interface Config {
-  /** 路由基路径：/digests、/ping、/stats 三个端点挂在它下面。 */
+  /** 路由基路径：门铃/旧摘要、连通性、状态与旧缓存统计端点的共同前缀。 */
   readonly basePath: string
   /** Bearer token，与 NDR 侧 agent_push.token 一致；留空插件拒绝加载。 */
   readonly token: string
@@ -105,6 +114,16 @@ export interface Config {
   /** 分析用的模型（留空 = 用 dsh 部署默认）。 */
   readonly provider: string
   readonly model: string
+
+  // ---------- 智能体侧记忆（结论复用 + 脚本库） ----------
+  /** 同类现象结论复用有效期（小时，从上次真实分析起算）；0 = 关闭复用。 */
+  readonly taskReuseTtlHours: number
+  /** 新线索强度比上次高多少就重查（现象变强，旧结论可能不够用）。 */
+  readonly taskReuseStrengthDelta: number
+  /** 单条脚本正文上限（字节）。 */
+  readonly scriptMaxCodeBytes: number
+  /** 脚本检索默认返回条数。 */
+  readonly scriptMaxResults: number
 }
 
 export const Config: z<Config> = z.object({
@@ -128,6 +147,11 @@ export const Config: z<Config> = z.object({
   backoffMaxMs: z.number().step(1).min(1_000).max(3_600_000).default(300_000),
   provider: z.string().default(''),
   model: z.string().default(''),
+
+  taskReuseTtlHours: z.number().min(0).max(24 * 90).default(24),
+  taskReuseStrengthDelta: z.number().min(0).max(1).default(0.15),
+  scriptMaxCodeBytes: z.number().step(1).min(1024).max(262_144).default(65_536),
+  scriptMaxResults: z.number().step(1).min(1).max(20).default(5),
 })
 
 /** Schemastery 表达不了的约束在这里校验，加载期即失败。 */
@@ -155,7 +179,7 @@ function assertConfig(config: Config): void {
   }
 }
 
-/** 注册 NDR 摘要接收路由，并管理两级缓存的生命周期。 */
+/** 注册 NDR 路由、智能体脚本工具与持久化存储的生命周期。 */
 export function apply(ctx: Context, config: Config): void {
   assertConfig(config)
   const store: ColdStore & SettingsStore = config.pgUrl.trim() === ''
@@ -168,6 +192,17 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   console.log(`[xdr-ingest] apply(): routes at ${config.basePath}/*, cold store: ${store.kind}`)
+  // 智能体侧记忆：结论复用（task-results）与脚本库（scripts）共用同一份 PG。
+  // 内存兜底只保证进程内可用；重启丢失会在启动日志和 /status 里显示。
+  const stateStore: TaskResultStore & ScriptStore = config.pgUrl.trim() === ''
+    ? new MemoryStateStore()
+    : new PostgresStateStore({ connectionString: config.pgUrl.trim() })
+  if (stateStore.kind === 'memory') {
+    console.warn(
+      '[xdr-ingest] 结论复用与脚本库使用内存存储（pgUrl 为空）：重启后丢失。'
+      + '生产请配置 pgUrl / XDR_INGEST_PG_URL。',
+    )
+  }
   // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃（analysis.enabled=true
   // 时不推摘要）。端点保留以便一键回滚到推送契约，日常流量不会走到它。
   const cache = new TieredCache({
@@ -181,6 +216,7 @@ export function apply(ctx: Context, config: Config): void {
   // （宁可显式不分析，也不要假装在分析）。
   const agents = agentsOf(ctx)
   let loop: ClaimLoop | null = null
+  let analyst: Analyst | null = null
   if (config.mcpToken.trim() !== '' && agents !== null) {
     const client = new McpHttpClient({
       url: config.mcpUrl.trim(),
@@ -189,14 +225,18 @@ export function apply(ctx: Context, config: Config): void {
       clientVersion: '0.2.0',
     })
     const ndr = new NdrTaskPortAdapter(client)
-    const analyst = new Analyst({
+    analyst = new Analyst({
       agents,
       ndr,
       timeoutMs: config.analysisTimeoutSeconds * 1000,
       source: 'xdr-ingest',
       ...(config.provider.trim() !== '' ? { provider: config.provider.trim() } : {}),
       ...(config.model.trim() !== '' ? { model: config.model.trim() } : {}),
+      taskResults: stateStore,
+      taskReuseTtlMs: config.taskReuseTtlHours * 3_600_000,
+      taskReuseStrengthDelta: config.taskReuseStrengthDelta,
     })
+    const activeAnalyst = analyst
     loop = new ClaimLoop({
       pollSeconds: config.pollSeconds,
       maxConcurrent: config.maxConcurrent,
@@ -205,7 +245,7 @@ export function apply(ctx: Context, config: Config): void {
       backoffMaxMs: config.backoffMaxMs,
       claimTasks: limit => ndr.claimTasks(limit),
       runTask: async task => {
-        const outcome = await analyst.run(task)
+        const outcome = await activeAnalyst.run(task)
         if (!outcome.completed) {
           console.warn(
             `[xdr-ingest] 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
@@ -236,6 +276,11 @@ export function apply(ctx: Context, config: Config): void {
       analysis: loop === null ? 'disabled' : 'enabled',
       ...settingsView(currentSettings()),
       store_kind: store.kind,
+      state_store_kind: stateStore.kind,
+      script_tool_names: ANALYSIS_SCRIPT_TOOL_NAMES.filter(name =>
+        ctx.tools.schemas().some(schema => schema.name === name),
+      ),
+      ...(analyst === null ? {} : { task_reuse: analyst.reuseStats }),
       ...(loop === null ? {} : { loop: loop.stats }),
     }
   }
@@ -258,6 +303,8 @@ export function apply(ctx: Context, config: Config): void {
   const service = {
     status: statusSnapshot,
     cacheStats: () => cache.stats(),
+    taskReuseStats: () => analyst?.reuseStats ?? { reused: 0, stored: 0 },
+    scriptStats: async () => ({ store: stateStore.kind, count: await stateStore.countScripts() }),
     wake: () => {
       if (loop === null) return false
       loop.wake()
@@ -283,6 +330,16 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(
     () => {
       const disposeRoute = ctx.webServer.register(route)
+      let disposeScriptTools = (): void => undefined
+      try {
+        disposeScriptTools = registerScriptTools(ctx, stateStore, {
+          maxCodeBytes: config.scriptMaxCodeBytes,
+          maxResults: config.scriptMaxResults,
+        })
+      } catch (error) {
+        disposeRoute()
+        throw error
+      }
       // 工作台保存过的运行参数优先于 cordis 配置默认值；读失败就用默认值继续跑。
       void store.loadSettings().then(saved => {
         if (saved === null) return
@@ -304,13 +361,18 @@ export function apply(ctx: Context, config: Config): void {
         void cache.pruneExpired().catch(error => {
           console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
         })
+        void stateStore.prune(new Date().toISOString()).catch(error => {
+          console.warn('[xdr-ingest] task result prune failed:', error instanceof Error ? error.message : String(error))
+        })
       }, config.pruneIntervalMinutes * 60_000)
       timer.unref()
       return () => {
         loop?.stop()
         clearInterval(timer)
+        disposeScriptTools()
         disposeRoute()
         void store.close().catch(() => undefined)
+        void stateStore.close().catch(() => undefined)
       }
     },
     `xdr-ingest: ${config.basePath}/*`,

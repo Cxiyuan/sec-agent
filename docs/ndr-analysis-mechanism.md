@@ -79,7 +79,7 @@ NDR（只做廉价统计与派工，不替智能体下威胁判断）           
 | `priority` | `round(strength*100)`；同分按 `created_at` 先进先出 |
 | `subject_kind` / `subject` | `ip` / `asset` / `segment` / `protocol` / `account` / `cluster` |
 | `window_start` / `window_end` | 建议分析的时间窗 |
-| `hint` | **客观事实**：均值/当前值/p 值/是否首见/涉及对象数/建议查询参数。不含 severity |
+| `hint` | **客观元数据**：均值/当前值/p 值/是否首见/涉及对象数/原始日志字段。不含 severity、结论或查询计划 |
 | `state` | `pending` / `claimed` / `done` / `deferred` / `stuck` / `expired` |
 | `lease_until` / `claimed_by` / `attempts` | 租约（超时自动回收）、领取令牌名、领取次数 |
 | `coalesced` | 被合并的同族条数 |
@@ -342,8 +342,8 @@ artex 用"系统提示尾部只列工具名、skill 加载时解锁"来省上下
 
 ```text
 claim_tasks(limit=0, kinds="", min_strength=0.0, wait_seconds=0)
- → {tasks:[{id,kind,strength,priority,subject_kind,subject,window_start,window_end,hint,
-            suggested_tools,attempts,coalesced}],
+ → {tasks:[{id,kind,strength,priority,subject_kind,subject,feature,window_start,window_end,hint,
+            attempts,coalesced}],
      budget:{hourly_remaining, reserved_remaining, inflight, max_inflight},
      queue:{pending, deferred, merged_total}, watermark}
 

@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -331,13 +332,16 @@ def _hit_hint(
     """命中线索的 hint：在客观事实之外补上"省一次查询"的元数据。
 
     全部是**客观字段**——绝不带 `rule_severity`（严重度判断权在智能体，
-    与 candidates 模块顶部的边界一致）。中继链路提示很值钱：代理后面的"在扫内网"
-    经常是外部流量转发，agent 拿到就能少跑一轮方向判定。
+    与 candidates 模块顶部的边界一致）。中继状态与客户端地址只按原始字段下发，
+    由智能体自行判断是否影响分析方向。
     """
     hint: dict[str, Any] = {
         "事实": f"规则「{rule}」命中 {digest.get('count')} 次，目的 {distinct_dst} 个",
         "事件ID": event_id,
         "客观强度": strength,
+        # 跨时间窗的同类事件身份（不含时间桶），只用于智能体侧去重；
+        # 不含计数/严重度/结论，也不参与线索强弱和 NDR 的任何判定。
+        "reuse_identity": _hit_reuse_identity(digest, rule),
     }
     source_label = _hits_source_label(str(digest.get("rule_source") or ""))
     if source_label:
@@ -354,11 +358,31 @@ def _hit_hint(
         # 智能体能直接回答"成功没有"，不必再查
         hint["会话状态"] = [str(t) for t in states[:6]]
     if digest.get("proxied"):
-        hint["中继提示"] = "命中经代理/中继：源 IP 可能是转发点，方向判定看 real_client_ips"
+        # 只下发原始元数据，不把“这是中继/该如何判方向”写成 NDR 的分析建议。
+        hint["proxied"] = True
         reals = digest.get("real_client_ips") or []
         if reals:
             hint["真实客户端"] = [str(v) for v in reals[:5]]
     return hint
+
+
+def _hit_reuse_identity(digest: dict[str, Any], rule: str) -> str:
+    """同一规则命中事件的跨窗口身份：规则 + 源 + 目标/端口/事件类型集合。
+
+    与旧事件分析 ID 使用同一组稳定字段，刻意不含时间桶和易变计数；
+    与 `digest_fingerprint` 的区别也正是去掉桶起点（后者用来区分窗口）。
+    这是对象身份元数据，不是 NDR 对事件的分析结论。
+    """
+    src = str(digest.get("src_ip") or "").strip()
+    dsts = ",".join(sorted(str(x) for x in (digest.get("dst_ips") or []))[:20])
+    ports = ",".join(
+        sorted({str(p) for p in (digest.get("dst_ports") or []) if p is not None})[:20]
+    )
+    etypes = ",".join(sorted(str(x) for x in (digest.get("event_types") or []))[:10])
+    if not rule.strip() or not src or not (dsts or ports or etypes):
+        return ""
+    raw = f"{rule}|{src}|{dsts}|{ports}|{etypes}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def _hits_source_label(rule_source: str) -> str:

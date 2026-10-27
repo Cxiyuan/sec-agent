@@ -1007,7 +1007,7 @@ def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
         task_id,
         verdict=str(args.get("verdict") or ""),
         summary=str(args.get("summary") or ""),
-        confidence=_bounded_int(args.get("confidence"), default=0, lo=0, hi=1) / 1.0,
+        confidence=_bounded_float(args.get("confidence"), default=0.0, lo=0.0, hi=1.0),
         findings=args.get("findings") if isinstance(args.get("findings"), dict) else {},
         evidence_refs=refs,
         tools_used=_bounded_int(args.get("tools_used"), default=0, lo=0, hi=100000),
@@ -1256,6 +1256,19 @@ def _bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     """模型传来的数字要夹：脏值走默认值，越界走边界（不抛异常炸掉整次调用）。"""
     try:
         number = int(float(value)) if value not in (None, "", 0) else default
+    except (TypeError, ValueError):
+        number = default
+    return max(lo, min(hi, number))
+
+
+def _bounded_float(value: Any, *, default: float, lo: float, hi: float) -> float:
+    """模型传来的小数要夹（**不能先 int**：0.9 会被截成 0）。
+
+    置信度、比例这类 0~1 的值必须走这里；`_bounded_int` 只用于条数/毫秒。
+    脏值（None/空串/非数字）走默认值，越界走边界，不抛异常炸掉整次调用。
+    """
+    try:
+        number = float(value) if value not in (None, "") else default
     except (TypeError, ValueError):
         number = default
     return max(lo, min(hi, number))

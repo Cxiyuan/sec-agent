@@ -497,9 +497,13 @@ def complete_task(
         task_kind = str(row.kind or "")
         task_subject = str(row.subject or "")
     # 反馈学习（会话已关，不占事务）：
-    # - 结论一进库就作废系数缓存，下一轮派工就能用上新判定；
-    # - 本次判为真阳性而该对象身上还挂着生效中的抑制 → 自动撤销（误抑制回弹）。
-    rebound = int(feedback.note_verdict(task_kind, task_subject, verdict).get("rebound") or 0)
+    # - 新分析结论一进库就作废系数缓存；真阳性会触发误抑制回弹；
+    # - 复用结论只是把旧判断写到新任务作审计，**不是新证据**，不能再次训练反馈，
+    #   尤其不能因为复用旧 true_positive 就误撤一条后来新增的抑制。
+    reused_from = str((findings or {}).get("reused_from") or "").strip()
+    rebound = 0
+    if not reused_from:
+        rebound = int(feedback.note_verdict(task_kind, task_subject, verdict).get("rebound") or 0)
     if rebound:
         bump(client, "suppression_rebound", rebound)
     return {
@@ -586,8 +590,6 @@ def sweep(client: Any) -> dict[str, int]:
 
 def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
     hint = dict(row.hint or {})
-    # 建议查询参数：只给"从哪查起"，不给结论
-    hint.setdefault("suggested_tools", _suggested(row.kind))
     return {
         "id": str(row.id),
         "kind": row.kind,
@@ -595,6 +597,11 @@ def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
         "priority": int(row.priority or 0),
         "subject_kind": row.subject_kind,
         "subject": row.subject,
+        # 现象特征（命中=规则名、偏移=指标名……）：智能体侧的同类结论复用靠它
+        # 区分"同一台机器上的不同规则"，不参与任何判定。
+        "feature": _feature_of(
+            row.dedupe_key, row.kind, row.subject_kind, row.subject
+        ),
         "window_start": row.window_start.isoformat() if row.window_start else "",
         "window_end": row.window_end.isoformat() if row.window_end else "",
         "hint": hint,
@@ -608,15 +615,20 @@ def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
     }
 
 
-def _suggested(kind: str) -> list[str]:
-    """按线索类型给"可以从哪查起"的提示（是提示，不是流程规定）。"""
-    return {
-        "novelty": ["describe_data", "net_flows", "timeline", "aggregate_events"],
-        "shift": ["describe_data", "baseline_lookup", "search_events", "aggregate_events"],
-        "structure": ["web_requests", "dns_queries", "tls_fingerprints", "aggregate_events"],
-        "coverage": ["asset_map", "net_flows", "search_events"],
-        "hit": ["get_rule", "raw_evidence", "fetch_window", "search_events"],
-    }.get(kind, ["describe_data", "search_events"])
+def _feature_of(dedupe_key: str, kind: str, subject_kind: str, subject: str) -> str:
+    """从去重键里取出现象特征：`kind|subject_kind:subject|feature|时间桶`。
+
+    按任务字段匹配前缀，再从右侧拆掉时间桶；这样 feature 可含 `|`，subject
+    也不靠固定下标解析。形状不符（老数据/手写行）时返回空串，智能体会跳过复用。
+    """
+    key = str(dedupe_key or "")
+    prefix = f"{kind}|{subject_kind}:{subject}|"
+    if not key.startswith(prefix):
+        return ""
+    feature, separator, bucket = key[len(prefix):].rpartition("|")
+    if not separator or "#" not in bucket:
+        return ""
+    return "" if feature == "-" else feature
 
 
 def _mark_analyzed(db: Any, subject_kind: str, subject: str, now: datetime) -> None:
@@ -738,6 +750,7 @@ def task_detail(task_id: str) -> dict[str, Any]:
         out["results"] = [
             {
                 "verdict": r.verdict,
+                "terminal_reason": r.terminal_reason,
                 "confidence": r.confidence,
                 "summary": r.summary,
                 "tools_used": r.tools_used,

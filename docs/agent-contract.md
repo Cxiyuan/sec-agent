@@ -69,9 +69,9 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
   "tasks": [{
     "id": "...", "kind": "shift", "strength": 0.72, "priority": 72,
     "subject_kind": "ip", "subject": "10.0.0.5",
+    "feature": "conn_count",
     "window_start": "...", "window_end": "...",
-    "hint": {"事实": "conn_count 本窗口=42，历史均值=6", "上尾概率": 0.0001,
-             "suggested_tools": ["describe_data", "baseline_lookup", "..."]},
+    "hint": {"事实": "conn_count 本窗口=42，历史均值=6", "上尾概率": 0.0001},
     "coalesced": 2, "attempts": 0, "depth": 0, "state": "claimed",
     "lease_until": "...", "created_at": "..."
   }],
@@ -84,7 +84,7 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 
 语义（务必照做）：
 
-1. **`hint` 只有客观事实**，没有「疑似攻击」这类结论 —— 也不要把 `kind` 当结论用；
+1. **任务只带对象元数据与客观事实**，不带严重度、结论或建议取数工具；查询什么、查多大范围由智能体决定。也不要把 `kind` 当结论用；
 2. 领到就是**租约**（默认 900 秒）：到期没交回会自动回收，`attempts` 累加，`attempts ≥ 5` 置 `stuck` 不再派发；
 3. `reason` 里可能出现 `queue_empty` / `budget_exhausted` / `inflight_full`（**都是正常回执，不是错误**）；
 4. 服务端算不出预算时返回 `error`（Redis 不可用）—— 此时**不要重试轰炸**，等下一轮；
@@ -106,6 +106,40 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 | `asset_context(ips=[...])` | 台账上下文（主机名/重要级别/责任人/分组）—— 判严重度的唯一依据 |
 | `list_rules()` | NDR 现在到底在检测什么（**没事件 ≠ 没攻击**） |
 | `relay_nodes()` | 哪些地址是反代/DNS 转发（否则会把代理访问误判成内网主动外联） |
+
+---
+
+## 3.1 同类现象复用（智能体侧，NDR 不参与）
+
+NDR 的任务去重键带时间桶：同一现象跨窗口会**再次派工**。智能体侧（`xdr-ingest`）
+维护一份结论库，身份是 `kind | subject_kind | subject | feature`：
+
+- `hit` 线索还用 `hint.reuse_identity` 区分同源同规则下不同目标/端口/事件类型；
+  不带这份客观身份元数据时不会复用。
+
+- 有效期（默认 24h，`taskReuseTtlHours`）内，同一现象再来一次：**不起分析会话**，
+  直接把上次的 `verdict/confidence/summary` 交回（`findings.reused_from` 标来源）；
+- 只复用 `true_positive / false_positive / benign / inconclusive`；`suspicious`
+  必须重查（可疑 = 还没查完）；
+- 新线索强度比上次高出 `taskReuseStrengthDelta`（默认 0.15）→ 重查；
+- TTL 从**上次真实分析**起算，复用时只累加次数、不续期；
+- 复用结果会落入 NDR 任务记录，但不会再次训练反馈系数或触发“真阳性撤抑制”——它不是新证据；
+- 拿不到 `feature` 时**不复用**（宁可多查一次，也不能把同机不同规则混成一条结论）。
+
+这是省预算的兜底，不替代 `prior_findings`：开工前仍然先查历史结论。
+
+## 3.2 工具脚本库（智能体侧）
+
+分析中临时写的取数/处理脚本可以存进库，下次同类场景只改变量：
+
+| 工具 | 用途 |
+|---|---|
+| `find_analysis_scripts(query, tag?, limit?)` | 按场景/名字/标签找；只回摘要（场景、变量、大小） |
+| `get_analysis_script(name)` | 取全文 + 变量表（累计使用次数） |
+| `save_analysis_script(name, scenario, code, variables?, tags?, replace?)` | 保存/覆盖；`scenario` 写清“什么场景用、输入什么、输出什么”，`variables` 写可改变量 |
+
+库在 PG（与结论库同实例，表 `xdr_ingest_script`）；PG 不可用时退化为进程内内存并显式告警。
+**脚本输出不是证据**：支撑结论仍要用 `raw_evidence` 真取回并引用。
 
 ---
 

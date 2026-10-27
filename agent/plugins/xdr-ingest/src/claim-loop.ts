@@ -16,6 +16,12 @@ export interface ClaimedTask {
   readonly priority?: number
   readonly subject_kind: string
   readonly subject: string
+  /**
+   * 现象特征（NDR 下发）：命中线索是规则名、偏移线索是指标名、首见是
+   * `first:ip`…… 结论复用的身份必须带上它，否则同一台机器上的不同规则
+   * 会被当成同一件事。老版本 NDR 不带这个字段时为 undefined（此时不复用）。
+   */
+  readonly feature?: string
   readonly window_start?: string | null
   readonly window_end?: string | null
   readonly hint?: unknown

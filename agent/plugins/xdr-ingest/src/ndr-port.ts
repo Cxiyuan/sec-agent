@@ -1,13 +1,13 @@
 /**
- * 把 MCP 客户端适配成领取循环/会话收尾要用的三段接口：
- * `claimTasks` / `taskState` / `deferTask`。
+ * 把 MCP 客户端适配成领取循环/会话收尾要用的语义接口：
+ * 领取、状态查询、直接交回复用结果与延后任务。
  *
  * 单独一层的原因：`claim-loop` 与 `analyst` 只该依赖这三个语义动作，
  * 而不该知道 MCP 的方法名、参数形状与错误码 —— 测试里替换成桩也不用碰 HTTP。
  */
 
 import type { ClaimedTask, ClaimReply } from './claim-loop.ts'
-import type { NdrTaskPort, TaskStateReply } from './analyst.ts'
+import type { CompleteReply, NdrTaskPort, TaskStateReply } from './analyst.ts'
 import type { McpHttpClient } from './mcp-http.ts'
 
 /** 只依赖 `callTool` 这一件事，便于测试注入。 */
@@ -30,6 +30,9 @@ function asTasks(value: unknown): ClaimedTask[] {
       priority: Number(row['priority'] ?? 0),
       subject_kind: String(row['subject_kind'] ?? ''),
       subject: String(row['subject'] ?? ''),
+      ...(typeof row['feature'] === 'string' && row['feature'] !== ''
+        ? { feature: row['feature'] }
+        : {}),
       window_start: row['window_start'] === undefined ? null : (row['window_start'] as string | null),
       window_end: row['window_end'] === undefined ? null : (row['window_end'] as string | null),
       hint: row['hint'] ?? null,
@@ -93,6 +96,50 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
       if (value !== null) {
         ;(out as Record<string, string>)[key] = value
       }
+    }
+    // `task_detail` 会带回该任务的历史结论（最新在前）：复用库要靠它拿
+    // verdict/summary/confidence，否则只能存一个"看起来完成了"的空壳。
+    if (Array.isArray(reply['results'])) {
+      const results = reply['results']
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .slice(0, 5)
+        .map(item => ({
+          ...(typeof item['verdict'] === 'string' ? { verdict: item['verdict'] } : {}),
+          ...(typeof item['terminal_reason'] === 'string' ? { terminal_reason: item['terminal_reason'] } : {}),
+          ...(typeof item['confidence'] === 'number' ? { confidence: item['confidence'] } : {}),
+          ...(typeof item['summary'] === 'string' ? { summary: item['summary'] } : {}),
+          ...(typeof item['created_at'] === 'string' ? { created_at: item['created_at'] } : {}),
+        }))
+      ;(out as { results?: unknown }).results = results
+    }
+    return out
+  }
+
+  /** 直接交回一条结论（复用命中时用，省掉一次完整分析会话）。 */
+  async completeTask(
+    taskId: string,
+    payload: {
+      readonly verdict: string
+      readonly summary: string
+      readonly confidence: number
+      readonly findings: Record<string, unknown>
+      readonly terminal_reason: string
+      readonly tools_used: number
+      readonly duration_ms: number
+    },
+  ): Promise<CompleteReply> {
+    const reply = await this.caller.callTool('complete_task', { task_id: taskId, ...payload })
+    const out: CompleteReply = {}
+    const pick = (key: string): string | null =>
+      typeof reply[key] === 'string' && reply[key] !== '' ? (reply[key] as string) : null
+    for (const key of ['task_state', 'state', 'error'] as const) {
+      const value = pick(key)
+      if (value !== null) {
+        ;(out as Record<string, string>)[key] = value
+      }
+    }
+    if (reply['ok'] === true) {
+      ;(out as { ok?: boolean }).ok = true
     }
     return out
   }

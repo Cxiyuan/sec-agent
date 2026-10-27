@@ -30,7 +30,7 @@ def _mod(name: str) -> Any:
 def test_hit_hint_enriched_but_never_severity() -> None:
     cand = _mod("app.analysis.candidates")
     src = inspect.getsource(cand.enqueue_hit) + inspect.getsource(cand._hit_hint)
-    for field in ("命中来源", "目的端口", "事件类型", "会话状态", "中继提示"):
+    for field in ("命中来源", "目的端口", "事件类型", "会话状态", "proxied"):
         assert field in src, f"hint 富化缺 {field}"
     assert 'get("rule_severity")' not in src, "hint 富化绝不读 rule_severity（判断权在智能体）"
     assert "取代性的判断词" not in src and "疑似攻击" not in src
@@ -41,6 +41,8 @@ def test_hit_hint_keeps_digest_out_of_wrong_fields() -> None:
     hint = cand._hit_hint(
         {
             "rule": "ET SCAN",
+            "src_ip": "10.0.0.5",
+            "dst_ips": ["10.0.0.9", "10.0.0.10"],
             "count": 5,
             "dst_ports": [22, 80, 443],
             "event_types": ["alert"],
@@ -57,7 +59,18 @@ def test_hit_hint_keeps_digest_out_of_wrong_fields() -> None:
     assert hint["命中来源"] == "特征签名"
     assert hint["目的端口"] == ["22", "80", "443"]
     assert hint["会话状态"] == ["ShR"]
-    assert "中继提示" in hint and hint["真实客户端"] == ["1.2.3.4"]
+    assert hint["proxied"] is True and hint["真实客户端"] == ["1.2.3.4"]
+    assert len(hint["reuse_identity"]) == 32
+    same = cand._hit_reuse_identity(
+        {"src_ip": "10.0.0.5", "dst_ips": ["10.0.0.10", "10.0.0.9"], "dst_ports": [443, 80, 22], "event_types": ["alert"]},
+        "ET SCAN",
+    )
+    changed = cand._hit_reuse_identity(
+        {"src_ip": "10.0.0.5", "dst_ips": ["10.0.0.11"], "dst_ports": [443, 80, 22], "event_types": ["alert"]},
+        "ET SCAN",
+    )
+    assert hint["reuse_identity"] == same, "集合顺序与窗口计数不能改变同类事件身份"
+    assert hint["reuse_identity"] != changed, "目标变化必须得到不同身份"
     for value in hint.values():
         if isinstance(value, str):
             assert "high" not in value.lower(), "不允许再把严重度词写进 hint"

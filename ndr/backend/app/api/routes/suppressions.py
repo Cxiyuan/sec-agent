@@ -264,8 +264,8 @@ def restore_suppression(
 def to_exclusion(
     item_id: str,
     _: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
     body: ToExclusionIn | None = None,
-    db: Annotated[Session, Depends(get_db)] = None,
 ):
     """反例学习：把一条抑制条目沉淀为「人工排除规则」草稿（**默认停用**）。
 
@@ -285,7 +285,7 @@ def to_exclusion(
         )
     errors = exclusion.validate_conditions(match)
     if errors:
-        return _field_errors(errors)
+        return _field_errors([{"field": "conditions", "msg": error} for error in errors])
     base_name = f"反例-{item.name or item_id[:8]}"[:120]
     row = db.execute(select(ExclusionFilter).where(ExclusionFilter.name == base_name)).scalar_one_or_none()
     created = False

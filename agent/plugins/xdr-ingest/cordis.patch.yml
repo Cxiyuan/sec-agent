@@ -45,6 +45,14 @@
         # 留空 = 用 dsh 部署已配置的默认模型
         provider: ''
         model: ''
+        # ---- 智能体侧记忆（结论复用 + 脚本库）----
+        # 同类现象在有效期内直接复用上次结论（不起会话）；0 = 关闭复用。
+        taskReuseTtlHours: 24
+        # 新线索强度比上次高这么多就必须重查（现象变强）。
+        taskReuseStrengthDelta: 0.15
+        # 脚本库：单条正文上限（字节）与检索默认条数。
+        scriptMaxCodeBytes: 65536
+        scriptMaxResults: 5
 
 # NDR 的 MCP 服务（analyst 档）：把 22 个工具暴露给模型，命名形如 mcp__ndr__claim_tasks。
 # 为什么要单独一行而不是复用上面的配置：dsh 的 mcp-client 是**独立插件**，

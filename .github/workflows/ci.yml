@@ -559,6 +559,9 @@ jobs:
           echo "status: $OUT"
           printf '%s' "$OUT" | tail -1 | grep -qx 200
           printf '%s' "$OUT" | head -1 | grep -q '"analysis":"disabled"'
+          printf '%s' "$OUT" | head -1 | grep -q '"find_analysis_scripts"'
+          printf '%s' "$OUT" | head -1 | grep -q '"get_analysis_script"'
+          printf '%s' "$OUT" | head -1 | grep -q '"save_analysis_script"'
 
       # mcp-ndr 行必须真的进了组合后的 profile：只有 id+config 的补丁是空操作。
       # 插件自己的 MCP 客户端能跑，但**模型**拿不到 mcp__ndr__* 工具，

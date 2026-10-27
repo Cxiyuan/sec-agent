@@ -117,9 +117,44 @@ def test_task_payload_has_no_severity_field(queue_mod: Any) -> None:
     out = queue_mod._task_dict(row)
     assert "severity" not in out
     assert "verdict" not in out
-    want = {"id", "kind", "strength", "subject", "hint", "suggested_tools"}
-    assert want <= set(out) | set(out["hint"])
-    assert out["hint"]["suggested_tools"], "要给「从哪查起」的提示，但不能给结论"
+    want = {"id", "kind", "strength", "subject", "feature", "hint"}
+    assert want <= set(out)
+    assert out["feature"] == "conn_count"
+    assert "suggested_tools" not in out and "suggested_tools" not in out["hint"], (
+        "NDR 只派元数据，不替智能体规划取数工具"
+    )
+
+
+def test_task_payload_exposes_only_objective_feature(queue_mod: Any) -> None:
+    """feature 只用于智能体侧结论复用身份，不把 severity/verdict 偷渡进任务。"""
+    args = ("hit", "ip", "10.0.0.5")
+    assert queue_mod._feature_of("hit|ip:10.0.0.5|rule|with|pipe|2026102309#0", *args) == "rule|with|pipe"
+    assert queue_mod._feature_of("hit|ip:10.0.0.5|-|2026102309#0", *args) == ""
+    assert queue_mod._feature_of("malformed", *args) == ""
+
+
+def test_confidence_keeps_fraction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """0.9 的置信度必须原样到达数据库写入层，不能被 int 截成 0。"""
+    ndr_tools = _mod("app.mcp.ndr_tools")
+
+    assert ndr_tools._bounded_float(0.9, default=0.0, lo=0.0, hi=1.0) == 0.9
+    assert ndr_tools._bounded_float("0.42", default=0.0, lo=0.0, hi=1.0) == 0.42
+    assert ndr_tools._bounded_float(3, default=0.0, lo=0.0, hi=1.0) == 1.0
+    assert ndr_tools._bounded_float(None, default=0.0, lo=0.0, hi=1.0) == 0.0
+
+    seen: dict[str, Any] = {}
+
+    def complete(_client: Any, _task_id: str, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(ndr_tools, "_client", lambda: None)
+    monkeypatch.setattr(ndr_tools.analysis_queue, "complete_task", complete)
+    result = ndr_tools._complete_task(
+        {"task_id": "t-confidence", "verdict": "true_positive", "confidence": 0.9}
+    )
+    assert result["ok"] is True
+    assert seen["confidence"] == 0.9
 
 
 def _task_row() -> Any:
@@ -127,6 +162,7 @@ def _task_row() -> Any:
 
     return SimpleNamespace(
         id="t-1",
+        dedupe_key="shift|ip:10.0.0.5|conn_count|2026102309#0",
         kind="shift",
         strength=0.72,
         priority=72,
@@ -494,6 +530,8 @@ def test_complete_task_reports_rebound_and_counters() -> None:
     src = inspect.getsource(queue_mod.complete_task)
     assert "feedback.note_verdict" in src
     assert "suppression_rebound" in src
+    assert "reused_from" in src
+    assert "if not reused_from" in src, "复用旧真阳性不能当新证据触发抑制回弹"
     assert "feedback" in inspect.getsource(queue_mod)
 
 
