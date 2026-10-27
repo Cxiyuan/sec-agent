@@ -12,6 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
@@ -230,6 +231,14 @@ export function apply(ctx: Context, config: Config): void {
       ndr,
       timeoutMs: config.analysisTimeoutSeconds * 1000,
       source: 'xdr-ingest',
+      // Read the current DSH selection for every task. The model prompt's
+      // {{model}} variable is assembled from agentOptions.model.
+      modelSelection: () => {
+        const selected = ctx.get('agentDefaultModel')?.currentSelection()
+        return selected === undefined
+          ? undefined
+          : { provider: selected.provider, model: selected.model }
+      },
       ...(config.provider.trim() !== '' ? { provider: config.provider.trim() } : {}),
       ...(config.model.trim() !== '' ? { model: config.model.trim() } : {}),
       taskResults: stateStore,

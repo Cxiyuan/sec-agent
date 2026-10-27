@@ -10,7 +10,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { Analyst } from '../src/analyst.ts'
-import type { AgentHandleLike, AgentsServiceLike } from '../src/agent-port.ts'
+import type { AgentCreateOptions, AgentHandleLike, AgentsServiceLike } from '../src/agent-port.ts'
 import type { ClaimedTask } from '../src/claim-loop.ts'
 import type { NdrTaskPort, ReusePayload, TaskStateReply } from '../src/analyst.ts'
 import { MemoryStateStore } from '../src/state-store.ts'
@@ -27,6 +27,7 @@ const task: ClaimedTask = {
 
 interface Recorder {
   prompts: string[]
+  agentOptions: Array<NonNullable<AgentCreateOptions['agentOptions']>>
   cancelled: number
   disposed: number
   deferred: Array<{ id: string; reason: string }>
@@ -35,7 +36,8 @@ interface Recorder {
 
 function fakeAgents(rec: Recorder, idle: () => Promise<void>): AgentsServiceLike {
   return {
-    async create(): Promise<AgentHandleLike> {
+    async create(options: AgentCreateOptions): Promise<AgentHandleLike> {
+      rec.agentOptions.push(options.agentOptions ?? {})
       return {
         agent: {
           followup(input) {
@@ -74,7 +76,7 @@ function fakeNdr(rec: Recorder, state: () => TaskStateReply): NdrTaskPort {
 }
 
 function recorder(): Recorder {
-  return { prompts: [], cancelled: 0, disposed: 0, deferred: [], completed: [] }
+  return { prompts: [], agentOptions: [], cancelled: 0, disposed: 0, deferred: [], completed: [] }
 }
 
 test('completed when NDR says the task is done', async () => {
@@ -108,6 +110,30 @@ test('prompt carries the objective facts and the red lines', async () => {
   assert.match(prompt, /不是严重度/u)
   assert.match(prompt, /你主导分析/u)
   assert.match(prompt, /不是强制分析边界/u)
+})
+
+test('inherits the current DSH default model unless the plugin explicitly overrides it', async () => {
+  const rec = recorder()
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    modelSelection: () => ({ provider: 'kimi', model: 'kimi-k2' }),
+  })
+  await analyst.run(task)
+  assert.deepEqual(rec.agentOptions[0], { provider: 'kimi', model: 'kimi-k2' })
+
+  const overrideRec = recorder()
+  const overrideAnalyst = new Analyst({
+    agents: fakeAgents(overrideRec, async () => undefined),
+    ndr: fakeNdr(overrideRec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    provider: 'glm',
+    model: 'glm-4',
+    modelSelection: () => ({ provider: 'kimi', model: 'kimi-k2' }),
+  })
+  await overrideAnalyst.run(task)
+  assert.deepEqual(overrideRec.agentOptions[0], { provider: 'glm', model: 'glm-4' })
 })
 
 test('idle without completion defers instead of leaking the task', async () => {

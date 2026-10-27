@@ -65,6 +65,8 @@ export interface AnalystOptions {
   readonly timeoutMs: number
   readonly provider?: string
   readonly model?: string
+  /** Current DSH default selection (read for each task so Settings changes take effect). */
+  readonly modelSelection?: () => { readonly provider: string, readonly model: string } | undefined
   /** 事件来源标记（出现在会话记录里，便于回溯是哪段代码起的） */
   readonly source?: string
   /** 同类现象结论库；不传 = 不复用（测试/回滚）。 */
@@ -133,11 +135,14 @@ export class Analyst {
     }
 
     const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
+    const selected = this.options.modelSelection?.()
+    const provider = this.options.provider?.trim() || selected?.provider.trim()
+    const model = this.options.model?.trim() || selected?.model.trim()
     const handle = await this.options.agents.create({
       sessionId,
       agentOptions: {
-        ...(this.options.provider ? { provider: this.options.provider } : {}),
-        ...(this.options.model ? { model: this.options.model } : {}),
+        ...(provider ? { provider } : {}),
+        ...(model ? { model } : {}),
       },
     })
     let timedOut = false
