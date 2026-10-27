@@ -49,7 +49,7 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-6 px-4">
       <div className="flex items-center gap-3">
-        <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
+        <span className="flex h-10 w-10 items-center justify-center rounded-md border border-brand-500/40 bg-brand-50 text-primary">
           <Shield className="h-5 w-5" />
         </span>
         <div>

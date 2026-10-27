@@ -7,7 +7,11 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-brand-600",
+        // 主按钮：浅蓝底 + 深蓝字 + 同色系描边（2026-10-27 用户裁定：深蓝底白字在部分
+        // 环境里文字渲染成深色、完全看不清，改为浅底深字后可读性不再依赖文字色正确解析）。
+        // 暗色下 --brand-50/--primary 自动翻转为深底亮蓝字，同一份代码两个主题都成立。
+        default:
+          "border border-brand-500/40 bg-brand-50 text-primary hover:border-brand-500/60 hover:bg-brand-500/15",
         destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline: "border border-border bg-surface-2 hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",

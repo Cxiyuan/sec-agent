@@ -20,7 +20,9 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
+        // 与 Button default 同步（2026-10-27）：深蓝底白字在部分环境文字渲染成深色，
+        // 统一改「浅蓝底 + 深蓝字」，可读性由底色保证，不再依赖文字色正确解析。
+        default: "border-brand-500/40 bg-brand-50 text-primary",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
         critical: "border-sev-critical-bd bg-sev-critical-bg text-sev-critical-fg",
         high: "border-sev-high-bd bg-sev-high-bg text-sev-high-fg",
