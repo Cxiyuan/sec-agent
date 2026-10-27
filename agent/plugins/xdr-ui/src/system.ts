@@ -25,6 +25,8 @@ interface SettingsLike {
 
 interface CredentialsLike {
   describe(ref: string): Promise<{ configured: boolean, writable?: boolean, source?: string }>
+  /** 解析一个引用到当前值（读取处用于拉模型清单时不让用户重复填 Key）。 */
+  resolve(ref: string): Promise<{ value: string, source: string } | undefined>
   set(ref: string, value: string): Promise<void>
   unset(ref: string): Promise<void>
 }
