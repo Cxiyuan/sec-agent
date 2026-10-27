@@ -353,6 +353,13 @@ ${THEME}
         </table>
         <div class="form-grid" style="margin-top:1rem">
           <div class="field">
+            <label for="p-preset">服务商预设</label>
+            <select id="p-preset" style="width:100%;padding:.5rem .65rem;border-radius:8px;border:1px solid var(--line);background:#0a1322;color:var(--text)">
+              <option value="">— 选择服务商 —</option>
+            </select>
+            <small>预设负责填好协议与地址；网关地址变了可手动改</small>
+          </div>
+          <div class="field">
             <label for="p-route">服务商标识（route）</label>
             <input id="p-route" placeholder="kimi">
             <small>小写字母开头，可含数字与 -；同一标识再次保存即覆盖</small>
@@ -374,8 +381,12 @@ ${THEME}
             <small>填到版本段（/v1 或 /api/paas/v4 等），不要带 /chat/completions</small>
           </div>
           <div class="field">
-            <label for="p-model">模型 ID</label>
-            <input id="p-model" placeholder="kimi-k2">
+            <label for="p-model">模型</label>
+            <div style="display:flex;gap:.4rem">
+              <select id="p-model" style="flex:1;width:auto;padding:.5rem .55rem;border-radius:8px;border:1px solid var(--line);background:#0a1322;color:var(--text)"></select>
+              <button id="refresh-models" class="btn" title="从服务商在线拉取最新模型列表">刷新</button>
+            </div>
+            <small>预设带一份机型清单作初值，点「刷新」取最新的</small>
           </div>
           <div class="field">
             <label for="p-ctx">上下文窗口（可选）</label>
@@ -396,8 +407,7 @@ ${THEME}
           <span id="provider-msg" class="msg"></span>
         </div>
         <div class="notice" style="margin-top:.8rem">
-          支持任意 OpenAI / Anthropic 兼容网关（Kimi、GLM、MiniMax、opencode 网关、自建反代等）：
-          填标识 + 协议 + Base URL + 模型 ID + Key 即可，保存后立即生效并设为默认。
+          支持任意 OpenAI / Anthropic 兼容网关（预设之外的选「自定义网关」手填）；模型清单可点「刷新」从服务商在线拉取。
         </div>
       </div>
 
@@ -622,6 +632,87 @@ ${THEME}
     void loadOverview().catch(onError)
   }
 
+  // ---- 内置服务商预设：负责一次点选填好 route/名称/协议/地址与模型初值 ----
+  // 清单是初值性质：点「刷新」会从服务商在线拉取最新模型列表。
+  const PRESETS = {
+    'kimi':            { name: 'Kimi（月之暗面）',      api: 'openai-completions',   baseURL: 'https://api.moonshot.cn/v1',            models: ['kimi-k2', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
+    'glm':             { name: 'GLM（智谱）',           api: 'openai-completions',   baseURL: 'https://open.bigmodel.cn/api/paas/v4',  models: ['glm-4.5', 'glm-4.5-air', 'glm-4-flash'] },
+    'minimax':         { name: 'MiniMax',              api: 'openai-completions',   baseURL: 'https://api.minimax.chat/v1',           models: ['MiniMax-M1', 'abab6.5s-chat'] },
+    'deepseek-openai': { name: 'DeepSeek（OpenAI 兼容）', api: 'openai-completions', baseURL: 'https://api.deepseek.com/v1',           models: ['deepseek-chat', 'deepseek-reasoner'] },
+    'anthropic':       { name: 'Anthropic',            api: 'anthropic-messages',   baseURL: 'https://api.anthropic.com',             models: ['claude-sonnet-4-5'] },
+    'custom':          { name: '自定义网关',            api: 'openai-completions',   baseURL: '',                                      models: [] },
+  }
+  const presetEl = document.getElementById('p-preset')
+  for (const [route, preset] of Object.entries(PRESETS)) {
+    const opt = document.createElement('option')
+    opt.value = route
+    if (route !== 'custom') opt.textContent = preset.name + '（' + route + '）'
+    else opt.textContent = '自定义网关'
+    presetEl.appendChild(opt)
+  }
+  const modelOptions = (models, selected) => {
+    const el = document.getElementById('p-model')
+    const ids = Array.from(new Set(models || []))
+    el.innerHTML = ids.length ? '' : '<option value="">— 暂无清单，点「刷新」拉取 —</option>'
+    for (const id of ids) {
+      const opt = document.createElement('option')
+      opt.value = id; opt.textContent = id
+      el.appendChild(opt)
+    }
+    if (selected && ids.includes(selected)) el.value = selected
+    else if (ids.length) { el.value = ids.includes(document.getElementById('p-model').value) ? document.getElementById('p-model').value : ids[0] }
+  }
+
+  presetEl.addEventListener('change', () => {
+    const preset = PRESETS[presetEl.value]
+    if (!preset) return
+    if (presetEl.value !== 'custom') {
+      document.getElementById('p-route').value = presetEl.value
+      document.getElementById('p-name').value = preset.name
+      document.getElementById('p-baseurl').value = preset.baseURL
+    }
+    document.getElementById('p-api').value = preset.api
+    modelOptions(preset.models)
+  })
+
+  document.getElementById('refresh-models').addEventListener('click', async () => {
+    const btn = document.getElementById('refresh-models')
+    msg('provider-msg', '拉取模型清单中…')
+    btn.disabled = true
+    try {
+      const body = {
+        route: document.getElementById('p-route').value.trim(),
+        api: document.getElementById('p-api').value,
+        baseURL: document.getElementById('p-baseurl').value.trim(),
+        key: document.getElementById('p-key').value,
+      }
+      const r = await fetch(BASE + '/api/system/models', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      if (r.status === 401) { location.href = BASE + '/login'; return }
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || data.ok === false) { msg('provider-msg', data.error || '拉取失败', 'bad'); return }
+      modelOptions(data.models)
+      msg('provider-msg', '已拉取 ' + data.models.length + ' 个模型，下拉框已更新', 'ok')
+    } catch (err) { msg('provider-msg', '拉取失败：网络错误', 'bad') }
+    finally { btn.disabled = false }
+  })
+
+  // 服务商清单行点击 → 载入到下方表单（模型下拉优先用已保存清单）
+  document.getElementById('provider-rows').addEventListener('click', event => {
+    const tr = event.target.closest('tr[data-provider]')
+    if (!tr) return
+    let p
+    try { p = JSON.parse(tr.dataset.provider) } catch { return }
+    document.getElementById('p-route').value = p.route
+    document.getElementById('p-name').value = p.displayName
+    if (p.api) document.getElementById('p-api').value = p.api
+    document.getElementById('p-baseurl').value = p.baseURL
+    const staticModels = PRESETS[p.route] ? PRESETS[p.route].models : []
+    modelOptions((p.models && p.models.length) ? p.models : staticModels, (p.models || [])[0])
+  })
+  modelOptions([])
+
   document.querySelectorAll('nav a[data-view]').forEach(link => {
     link.addEventListener('click', () => { location.hash = '#/' + link.dataset.view })
   })
@@ -681,7 +772,8 @@ ${THEME}
         + (k.writable ? '' : ' <span class="tag bad">不可写</span>')
       : '未找到 API Key 配置条目'
     const providerRows = (data.providers || []).map(p =>
-      '<tr><td class="mono">' + esc(p.route) + '</td><td>' + esc(p.displayName) + '</td>'
+      '<tr data-provider="' + esc(JSON.stringify(p)).replace(/"/g, '&quot;') + '" title="点击载入到下方表单">'
+      + '<td class="mono">' + esc(p.route) + '</td><td>' + esc(p.displayName) + '</td>'
       + '<td class="mono">' + esc(p.api || '—') + '</td><td class="mono">' + esc(p.baseURL || '—') + '</td>'
       + '<td class="mono">' + esc((p.models || []).join(', ') || '目录默认') + '</td>'
       + '<td>' + (p.configured ? '<span class="tag ok">已配置</span>' : '<span class="tag bad">未配置</span>')

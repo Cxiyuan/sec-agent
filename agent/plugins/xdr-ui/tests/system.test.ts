@@ -2,7 +2,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { saveEndpoint, saveKey, saveModel, saveProvider, systemSnapshot } from '../src/system.ts'
+import { listModels, saveEndpoint, saveKey, saveModel, saveProvider, systemSnapshot } from '../src/system.ts'
 
 type Calls = Array<{ kind: string, args: unknown[] }>
 
@@ -200,4 +200,73 @@ test('保存服务商：非法 route / URL / 协议直接拒绝', async () => {
   assert.equal((await saveProvider(ctx, { ...base, baseURL: 'ftp://x' })).ok, false)
   assert.equal((await saveProvider(ctx, { ...base, api: 'grpc' })).ok, false)
   assert.equal((await saveProvider(ctx, { ...base, modelId: '' })).ok, false)
+})
+
+type FetchStub = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
+  ok: boolean
+  status: number
+  text: () => Promise<string>
+}>
+
+function fetchOf(responses: Record<string, { status?: number, body: unknown | string }>): FetchStub {
+  return async (url: string) => {
+    const hit = responses[url]
+    if (hit === undefined) throw new Error(`unexpected fetch ${url}`)
+    const body = typeof hit.body === 'string' ? hit.body : JSON.stringify(hit.body)
+    return { ok: (hit.status ?? 200) < 300, status: hit.status ?? 200, text: async () => body }
+  }
+}
+
+test('拉取模型清单：OpenAI 兼容走 /models，anthropic 走 /v1/models，Key 优先用请求值', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettings(calls), credentials: fakeCredentials(calls) })
+  const openai = await listModels(ctx, {
+    baseURL: 'https://api.moonshot.cn/v1',
+    api: 'openai-completions',
+    apiKey: 'sk-test',
+  }, fetchOf({
+    'https://api.moonshot.cn/v1/models': { body: { data: [{ id: 'kimi-k2' }, { id: 'moonshot-v1-8k' }] } },
+  }))
+  assert.equal(openai.ok, true)
+  assert.deepEqual(openai.models, ['kimi-k2', 'moonshot-v1-8k'])
+
+  const anthropic = await listModels(ctx, {
+    baseURL: 'https://api.anthropic.com',
+    api: 'anthropic-messages',
+    apiKey: 'sk-a',
+  }, fetchOf({
+    'https://api.anthropic.com/v1/models': { body: { data: [{ id: 'claude-sonnet-4-5' }] } },
+  }))
+  assert.equal(anthropic.ok, true)
+  assert.deepEqual(anthropic.models, ['claude-sonnet-4-5'])
+})
+
+test('拉取模型清单：没传 Key 且已保存过，自动用凭证库里的值', async () => {
+  const calls: Calls = []
+  const ctx2 = fakeContext({
+    settings: fakeSettings(calls, { provider: 'deepseek-official', model: 'm' }, {
+      kimi: { api: 'openai-completions', baseURL: 'https://api.moonshot.cn/v1', apiKeyEnv: 'KIMI_API_KEY', models: [{ id: 'kimi-k2' }] },
+    }),
+    credentials: { describe: async () => ({ configured: true }), resolve: async () => ({ value: 'sk-saved', source: 'file' }) },
+  })
+  const result = await listModels(ctx2, { route: 'kimi' }, fetchOf({
+    'https://api.moonshot.cn/v1/models': { body: { data: [{ id: 'kimi-k2' }] } },
+  }))
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.models, ['kimi-k2'])
+})
+
+test('拉取模型清单：没有 Key/坏地址/非 JSON 都给可读错误', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettings(calls) })
+  assert.equal((await listModels(ctx, { route: 'kimi' }) as { ok?: boolean }).ok, false)
+  assert.equal((await listModels(ctx, { baseURL: 'ftp://x', api: 'openai-completions', apiKey: 'k' }) as { ok?: boolean }).ok, false)
+  const ctx2 = fakeContext({
+    settings: fakeSettings(calls, { provider: 'p', model: 'm' }),
+    credentials: fakeCredentials(calls),
+  })
+  const bad = await listModels(ctx2, {
+    baseURL: 'https://api.example.com/v1', api: 'openai-completions', apiKey: 'k',
+  }, fetchOf({ 'https://api.example.com/v1/models': { status: 401, body: 'auth failed' } }))
+  assert.equal(bad.ok, false)
 })

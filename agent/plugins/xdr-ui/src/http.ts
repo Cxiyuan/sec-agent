@@ -52,6 +52,7 @@ export interface UiHandlerOptions {
     saveKey: (patch: unknown) => Promise<unknown>
     saveEndpoint: (patch: unknown) => Promise<unknown>
     saveProvider: (patch: unknown) => Promise<unknown>
+    listProviderModels: (patch: unknown) => Promise<unknown>
   }
 }
 
@@ -205,6 +206,27 @@ export function createUiHandler(
         }
         if (!apiGuard()) return
         respondJson(res, 200, await options.system.snapshot())
+        return
+      }
+      if (tail === '/api/system/models') {
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        respondJson(res, 200, await options.system.listProviderModels(patch))
         return
       }
       if (tail === '/api/system/model' || tail === '/api/system/key' || tail === '/api/system/endpoint' || tail === '/api/system/provider') {

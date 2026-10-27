@@ -50,6 +50,7 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | `{basePath}/api/system/key` | POST | `{value}` 或 `{clear:true}`；写 dsh credentials，不落 profile |
 | `{basePath}/api/system/endpoint` | POST | `{baseURL}`；空串表示清掉覆盖、回落 provider 默认/环境变量 |
 | `{basePath}/api/system/provider` | POST | `{route,displayName,api,baseURL,modelId,contextWindow?,apiKey?,makeDefault?}`；写 pi-ai providers、存 Key、可设默认 |
+| `{basePath}/api/system/models` | POST | `{route?/baseURL,api,key?}`；代理服务商 `/models` 接口在线拉取模型清单（Key 可以是请求带的明文或已保存的凭证） |
 
 ## 配置
 

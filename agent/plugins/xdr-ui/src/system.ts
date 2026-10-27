@@ -464,6 +464,108 @@ export async function saveProvider(context: unknown, patch: unknown): Promise<Sy
   }
 }
 
+/**
+ * 从服务商在线拉取可用的模型清单。
+ *
+ * OpenAI 兼容网关：`GET {baseURL}/models`；Anthropic 兼容网关：`GET {baseURL}/v1/models`。
+ * Key 的取值顺序：请求里带的明文 → 该 route 已保存的凭证（经 credentials 服务）。
+ * 明文不落库、不写日志；失败把服务商返回的片段截短回显，方便排错。
+ */
+export async function listModels(
+  context: unknown,
+  patch: unknown,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<{ ok: boolean, error?: string, models?: string[] }> {
+  const settings = serviceOf<SettingsLike>(context, 'settings')
+  const credentials = serviceOf<CredentialsLike>(context, 'credentials')
+  if (settings === null) return { ok: false, error: 'settings 服务不在场' }
+  if (!isPlainObject(patch)) return { ok: false, error: '参数必须是 JSON 对象' }
+
+  const route = textOf(patch['route'] ?? '') ?? ''
+  const api = textOf(patch['api'] ?? 'openai-completions') ?? ''
+  let baseURL = textOf(patch['baseURL'] ?? '') ?? ''
+  const apiKeyRaw = typeof patch['apiKey'] === 'string' ? patch['apiKey'].trim() : ''
+
+  // route 对准已保存的配置：Base URL / 协议 / 凭证 ref 都以保存值为准
+  let savedRef = ''
+  if (route !== '') {
+    let described: ReturnType<SettingsLike['describe']>
+    try {
+      described = settings.describe({ redactSecrets: true })
+    } catch (error) {
+      return { ok: false, error: describeWriteError(error) }
+    }
+    const piRow = described.find(row => row.ns === 'llm-pi-ai')
+    const dict = piRow !== undefined && isPlainObject(piRow.value) && isPlainObject(piRow.value['providers'])
+      ? piRow.value['providers'] as Record<string, unknown>
+      : {}
+    const profile = isPlainObject(dict[route]) ? dict[route] as Record<string, unknown> : undefined
+    if (profile !== undefined) {
+      if (baseURL === '') baseURL = typeof profile['baseURL'] === 'string' ? profile['baseURL'] : ''
+      if (typeof profile['apiKeyEnv'] === 'string') savedRef = profile['apiKeyEnv']
+      if (patch['api'] === undefined && typeof profile['api'] === 'string') {
+        if (!PROTOCOLS.has(profile['api'])) return { ok: false, error: '已保存的路由协议不认识，请重新保存该服务商' }
+      }
+    }
+  }
+  if (baseURL === '' || !/^https?:\/\/\S+$/u.test(baseURL)) return { ok: false, error: 'Base URL 必须是 http(s) 地址' }
+  if (api === null || !PROTOCOLS.has(api)) return { ok: false, error: '协议只支持 openai-completions / anthropic-messages' }
+
+  let key = apiKeyRaw
+  if (key === '' && savedRef !== '' && credentials !== null) {
+    try {
+      const resolved = await credentials.resolve(savedRef)
+      key = resolved?.value ?? ''
+    } catch {
+      key = ''
+    }
+  }
+  if (key === '') return { ok: false, error: '该服务商还没有 API Key：先保存 Key，或在下拉按钮旁的输入框填一次' }
+
+  const url = api === 'anthropic-messages' && !/\/v1\/?$/u.test(baseURL)
+    ? `${baseURL.replace(/\/+$/u, '')}/v1/models`
+    : `${baseURL.replace(/\/+$/u, '')}/models`
+  const headers: Record<string, string> = {
+    'authorization': `Bearer ${key}`,
+    'x-api-key': key,
+    'anthropic-version': '2023-06-01',
+  }
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, error: `拉取失败：${message.slice(0, 160)}` }
+  }
+  const raw = (await response.text().catch(() => '')).slice(0, 4096)
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: `服务商返回 ${response.status}：${raw.replace(/\s+/gu, ' ').slice(0, 160) || '无响应体'}`,
+    }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { ok: false, error: '返回的不是 JSON（检查 Base URL 是否已包含 /v1 等版本段）' }
+  }
+  const shape = isPlainObject(parsed) && Array.isArray(parsed['data']) ? parsed['data']
+    : isPlainObject(parsed) && Array.isArray(parsed['models']) ? parsed['models']
+    : Array.isArray(parsed) ? parsed : []
+  const ids = shape
+    .flatMap(item => (isPlainObject(item) && typeof item['id'] === 'string' ? [item['id']] : []))
+    .filter(id => id.length <= 128 && !/[\u0000-\u001f]/u.test(id))
+  if (ids.length === 0) {
+    return { ok: false, error: '服务商返回里没有模型清单；检查 Base URL 与协议是否匹配（OpenAI 兼容 → /models）' }
+  }
+  return { ok: true, models: [...new Set(ids)].sort((a, b) => a.localeCompare(b)).slice(0, 300) }
+}
+
 /** 写失败原因：并发冲突/字段不可改/配置校验，都要能直接读懂。 */
 function describeWriteError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)

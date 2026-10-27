@@ -37,6 +37,7 @@ function makeApp(options: Partial<{
     saveKey: (patch: unknown) => Promise<unknown>
     saveEndpoint: (patch: unknown) => Promise<unknown>
     saveProvider: (patch: unknown) => Promise<unknown>
+    listProviderModels: (patch: unknown) => Promise<unknown>
   }
 }> = {}) {
   const auth = new UiAuth(
@@ -57,6 +58,7 @@ function makeApp(options: Partial<{
       saveKey: async () => ({ ok: false, error: '未接线' }),
       saveEndpoint: async () => ({ ok: false, error: '未接线' }),
       saveProvider: async () => ({ ok: false, error: '未接线' }),
+      listProviderModels: async () => ({ ok: true, models: [] }),
     },
   })
   return { server: createServer(handler), ingest: ingestRef }
@@ -426,6 +428,33 @@ test('系统设置：自定义服务商 POST 透传并返回结果', async () =>
     })
     assert.equal(res.status, 200)
     assert.deepEqual(seen[0], { route: 'kimi', modelId: 'kimi-k2' })
+  } finally {
+    server.close()
+  }
+})
+
+test('系统设置：模型清单拉取透传给系统层', async () => {
+  const seen: unknown[] = []
+  const system = {
+    snapshot: async () => ({ available: true, plugins: [], model: null, key: null, providers: [], notes: [] }),
+    saveModel: async () => ({ ok: true }),
+    saveKey: async () => ({ ok: true }),
+    saveEndpoint: async () => ({ ok: true }),
+    saveProvider: async () => ({ ok: true }),
+    listProviderModels: async (patch: unknown) => { seen.push(patch); return { ok: true, models: ['a', 'b'] } },
+  }
+  const { server } = makeApp({ system })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const res = await fetch(`${base}${BASE}/api/system/models`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ baseURL: 'https://api.example.com/v1', apiKey: 'x' }),
+    })
+    assert.equal(res.status, 200)
+    assert.deepEqual(await res.json(), { ok: true, models: ['a', 'b'] })
+    assert.deepEqual(seen[0], { baseURL: 'https://api.example.com/v1', apiKey: 'x' })
   } finally {
     server.close()
   }

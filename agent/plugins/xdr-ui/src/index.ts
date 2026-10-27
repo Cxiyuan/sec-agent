@@ -30,7 +30,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { escapeHtml, loginPage, workbenchPage } from './html.ts'
 import { createRootRedirect, createUiHandler, type IngestServiceView } from './http.ts'
-import { saveEndpoint, saveKey, saveModel, saveProvider, systemSnapshot } from './system.ts'
+import { listModels, saveEndpoint, saveKey, saveModel, saveProvider, systemSnapshot } from './system.ts'
 import { credentialsOf, resolveSessionSecret, UiAuth } from './ui-auth.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
@@ -159,6 +159,7 @@ export function apply(ctx: Context, config: Config): void {
         saveKey: patch => saveKey(ctx, patch),
         saveEndpoint: patch => saveEndpoint(ctx, patch),
         saveProvider: patch => saveProvider(ctx, patch),
+        listProviderModels: patch => listModels(ctx, patch),
       },
     }),
   }
