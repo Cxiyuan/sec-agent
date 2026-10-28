@@ -1275,8 +1275,11 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            enabled = EXCLUDED.enabled,
            workflow_id = CASE WHEN EXCLUDED.workflow_id = '' THEN xdr_ingest_project.workflow_id
                               ELSE EXCLUDED.workflow_id END,
-           model = EXCLUDED.model,
-           fallback_model = EXCLUDED.fallback_model,
+           -- 不传模型（空串）时保留已有配置：迁移脚本/老控制台不会把模型清空
+           model = CASE WHEN EXCLUDED.model = '' THEN xdr_ingest_project.model
+                        ELSE EXCLUDED.model END,
+           fallback_model = CASE WHEN EXCLUDED.fallback_model = '' THEN xdr_ingest_project.fallback_model
+                                 ELSE EXCLUDED.fallback_model END,
            updated_at = now()
          RETURNING *`,
         [
