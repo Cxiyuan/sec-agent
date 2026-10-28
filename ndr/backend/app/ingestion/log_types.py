@@ -125,6 +125,8 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "port_scan": "端口扫描",
     "http_request": "HTTP 请求",
     "http_login": "HTTP 登录",
+    "ftp_login": "FTP 登录",
+    "ftp_activity": "FTP 操作",
     "http_error": "HTTP 错误响应",
     "http_upload": "文件上传",
     "dns_query": "DNS 查询",

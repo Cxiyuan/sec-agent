@@ -413,6 +413,101 @@ KNOBS: tuple[Knob, ...] = (
         unit="天",
         note="长期无观测的画像到期删除",
     ),
+    # ---------- 外连目的地基线（2026-10 用户口径） ----------
+    Knob(
+        "egress.enabled",
+        "外连目的地基线",
+        "bool",
+        True,
+        note="监控网段内全部 IP：首次/罕见的外连目标（IP/域名/端口）只产出事实，不下结论",
+    ),
+    Knob(
+        "egress.rare_min",
+        "罕见目标门槛",
+        "int",
+        3,
+        low=2,
+        high=100,
+        unit="次",
+        note="同一个目的地累计出现次数少于它，就仍算「罕见」（持续观察，不用首次就报）",
+    ),
+    Knob(
+        "egress.learn_days",
+        "白名单·自学习天数",
+        "int",
+        7,
+        low=1,
+        high=90,
+        unit="天",
+        note="稳定出现至少这么多天（且次数达标）才自动进白名单；人工删除的条目不会再学",
+    ),
+    Knob(
+        "egress.learn_occurrences",
+        "白名单·自学习次数",
+        "int",
+        20,
+        low=2,
+        high=10000,
+        unit="次",
+        note="与天数同时满足才自动入白名单",
+    ),
+    # ---------- 账号地理 / 爆破 / 404 ----------
+    Knob(
+        "profile.geo_enabled",
+        "账号异地登录",
+        "bool",
+        True,
+        note="与「上一次成功登录的公网 IP」比国家+省；局域网登录只标记、不比较也不更新",
+    ),
+    Knob(
+        "profile.brute_account_ips",
+        "同账号多来源门槛",
+        "int",
+        5,
+        low=2,
+        high=100,
+        unit="个公网 IP",
+        note="同一账号在窗口内被这么多个不同公网 IP 尝试登录（失败）才产出事实",
+    ),
+    Knob(
+        "profile.brute_account_fails",
+        "同账号失败次数门槛",
+        "int",
+        20,
+        low=2,
+        high=10000,
+        unit="次",
+        note="与多来源同时满足才产出事实",
+    ),
+    Knob(
+        "profile.path_probe_min_requests",
+        "404 探测·请求量门槛",
+        "int",
+        30,
+        low=5,
+        high=100000,
+        unit="次",
+        note="单客户端窗口内至少这么多请求，才判「大量 404」",
+    ),
+    Knob(
+        "profile.path_probe_404_ratio",
+        "404 探测·占比门槛",
+        "float",
+        0.5,
+        low=0.1,
+        high=1.0,
+        note="404 占该客户端请求的比例达到它才产出事实",
+    ),
+    Knob(
+        "profile.session_retention_days",
+        "会话画像保留",
+        "int",
+        7,
+        low=1,
+        high=180,
+        unit="天",
+        note="会话画像（cookie 哈希）只留最近这么多天；账号画像不受影响",
+    ),
 )
 
 _BY_KEY: dict[str, Knob] = {k.key: k for k in KNOBS}
@@ -445,6 +540,46 @@ def _flag(knob: Knob) -> bool:
 def _text(knob: Knob) -> str:
     value = get(knob.key, knob.default)
     return str(value if value is not None else knob.default)
+
+
+def egress_enabled() -> bool:
+    return _flag(_BY_KEY["egress.enabled"])
+
+
+def egress_rare_min() -> int:
+    return int(_num(_BY_KEY["egress.rare_min"]))
+
+
+def egress_learn_days() -> int:
+    return int(_num(_BY_KEY["egress.learn_days"]))
+
+
+def egress_learn_occurrences() -> int:
+    return int(_num(_BY_KEY["egress.learn_occurrences"]))
+
+
+def geo_enabled() -> bool:
+    return _flag(_BY_KEY["profile.geo_enabled"])
+
+
+def brute_account_ips() -> int:
+    return int(_num(_BY_KEY["profile.brute_account_ips"]))
+
+
+def brute_account_fails() -> int:
+    return int(_num(_BY_KEY["profile.brute_account_fails"]))
+
+
+def path_probe_min_requests() -> int:
+    return int(_num(_BY_KEY["profile.path_probe_min_requests"]))
+
+
+def path_probe_404_ratio() -> float:
+    return _num(_BY_KEY["profile.path_probe_404_ratio"])
+
+
+def session_retention_days() -> int:
+    return int(_num(_BY_KEY["profile.session_retention_days"]))
 
 
 def baseline_enabled() -> bool:

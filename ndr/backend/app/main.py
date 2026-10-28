@@ -77,6 +77,8 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS terminal_reason VARCHAR(24) DEFAULT ''",
     # 冷摘要回标：非空 = 明细已进 analysis_digests（行本身永不删除）
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ",
+    # 2026-10 行为基线改造：账号上次成功登录的地理位置（国家/省），用于"异地登录"事实。
+    "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS last_geo JSONB NOT NULL DEFAULT '{}'::jsonb",
     # 冷摘要候选只扫“还没被摘要过的旧行”，且有 created_at 范围
     (
         "CREATE INDEX IF NOT EXISTS ix_analysis_results_oldest "

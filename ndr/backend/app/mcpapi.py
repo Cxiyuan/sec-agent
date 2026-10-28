@@ -38,7 +38,7 @@ from app.api.routes.files import (
     resolve_extract_path as _resolve_extract_path,
 )
 from app.api.routes.rules import all_rules as _all_rules
-from app.baseline import profile as _profile, stats as _stats
+from app.baseline import observations as _observations, profile as _profile, stats as _stats
 from app.db.base import SessionLocal as session_factory
 from app.db.models import (
     ConclusionRecord,
@@ -163,6 +163,16 @@ def networks_status() -> dict[str, int | bool]:
 def execute_es_tool(name: str, args: Any, ctx: Any) -> dict[str, Any]:
     """执行取数层的一个工具（唯一调度入口，内部仍是 `tools.execute` 的实现）。"""
     return _es_tool_execute(name, args, ctx)
+
+
+
+def list_observations(
+    *, kind: str = "", subject: str = "", minutes: int = 1440, limit: int = 50, offset: int = 0
+) -> dict[str, Any]:
+    """行为基线事实（外连新目标 / 异地登录 / 爆破 / 404 / 计数偏离）。"""
+    return _observations.list_observations(
+        kind=kind, subject=subject, minutes=minutes, limit=limit, offset=offset
+    )
 
 
 def stats_lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:

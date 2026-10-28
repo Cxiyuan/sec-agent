@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     extract_dir: str = "/extract"
     # Zeek 日志流分类（契约，两侧一致）：event=入库且进检测/画像；ops=只入库（当证据）。
     # 名单外的新流保留原名并标 log_type_known=False（先观察，不静默丢）。判定见 ingestion/log_types.py
-    zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh"
+    zeek_event_log_types: str = "conn,dns,http,ssl,files,dhcp,x509,weird,notice,smtp,ssh,ftp"
     zeek_ops_log_types: str = "ntp,packet_filter,reporter,stats,ja4ssh,ja4d"
     # Zeek weird.log 里属于「采集侧异常」的名字（逗号分隔）：镜像口丢包 / 非对称路由 / 网卡 offload
     # 造成的协议怪象，不是攻击信号。归一化把它们标成 `event_type=capture_anomaly`，

@@ -314,7 +314,11 @@ def test_queue_overflow_is_never_silent(queue_mod: Any) -> None:
 def test_runner_wiring_and_rollback_switch() -> None:
     runner = _mod("app.detector.runner")
     src = inspect.getsource(runner)
-    assert "candidates.enqueue_shift" in src
+    # 2026-10 行为基线改造：连接数偏离降级为事实（不再 enqueue_shift），
+    # 外连目的地基线在窗口出样时判"首次/罕见"，事实由 observation 通道派工。
+    assert "candidates.enqueue_observations" in src
+    assert "egress.observe_window(" in src
+    assert "observations.emit(" in src
     assert "candidates.enqueue_hit" in src
     assert "_analysis_round(" in src
     # 回滚开关：关掉 analysis.enabled 就恢复"摘要投递"

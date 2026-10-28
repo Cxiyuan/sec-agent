@@ -226,3 +226,77 @@ def status() -> dict[str, Any]:
         "db": path,
         "note": "" if ok else (_reader_error or "地理库不可用，地域一栏显示「未知」"),
     }
+
+
+@lru_cache(maxsize=16384)
+def locate(ip: str) -> dict[str, Any]:
+    """结构化地域：`{country, province, city, label, lan}`。
+
+    为什么不能只用 `resolve()` 的展示字符串做比较：那个串是给人看的（国内只到省、
+    国外只到国家），拿它做"地点变没变"的判据会把「四川→广东」和「美国→日本」当成
+    两种维度的比较，口径不一致。这里把国家与省分开返回，账号基线按 **国家 + 省** 比。
+    """
+    value = str(ip or "").strip()
+    out: dict[str, Any] = {"country": "", "province": "", "city": "", "label": "", "lan": False}
+    if value == "":
+        return out
+    try:
+        from app.iputil import is_public_ip
+
+        if not is_public_ip(value):
+            out.update({"label": "局域网", "lan": True})
+            return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("内外网判断失败，按公网查询：%s", exc)
+    reader = _open()
+    if reader is None:
+        return out
+    try:
+        record = reader.city(value)
+    except Exception:  # noqa: BLE001 — Country 库/地址不在库里
+        try:
+            record = reader.country(value)
+        except Exception:  # noqa: BLE001
+            return out
+    country = getattr(record, "country", None)
+    iso = str(getattr(country, "iso_code", "") or "").strip().upper()
+    names = getattr(country, "names", None) or {}
+    country_zh = str(names.get("zh-CN") or names.get("zh") or "").strip()
+    province = ""
+    city = ""
+    for sub in list(getattr(record, "subdivisions", None) or [])[:1]:
+        province = _province_zh(sub)
+        if province == "":
+            sub_names = getattr(sub, "names", None) or {}
+            province = str(sub_names.get("zh-CN") or sub_names.get("en") or "").strip()
+    city_obj = getattr(record, "city", None)
+    if city_obj is not None:
+        city_names = getattr(city_obj, "names", None) or {}
+        city = str(city_names.get("zh-CN") or city_names.get("zh") or "").strip()
+    return {
+        "country": iso or country_zh,
+        "country_label": country_zh,
+        "province": province,
+        "city": city,
+        "label": _label(record),
+        "lan": False,
+    }
+
+
+def same_place(prev: dict[str, Any] | None, cur: dict[str, Any] | None) -> bool:
+    """两个地点是否算"同一个地方"（口径：**国家 + 省**）。
+
+    局域网登录不参与比较（`lan=True` 由调用方先排除）；任一地点缺国家/省就无法比较，
+    按"相同"处理（宁可不报，也不凭空造一条异地事实）。
+    """
+    if not prev or not cur:
+        return True
+    if prev.get("lan") or cur.get("lan"):
+        return True
+    pc, cc = str(prev.get("country") or ""), str(cur.get("country") or "")
+    pp, cp = str(prev.get("province") or ""), str(cur.get("province") or "")
+    if pc == "" or cc == "":
+        return True
+    if pp == "" or cp == "":
+        return pc == cc
+    return pc == cc and pp == cp

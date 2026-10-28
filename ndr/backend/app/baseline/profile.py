@@ -24,12 +24,14 @@ from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, delete, func, or_, select
 
-from app.baseline import params
+from app import geoip
+from app.baseline import observations, params
 from app.baseline.stats import like_pattern
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import AlertDisposition, EntityProfile
 from app.ingestion.session_cookie import session_id_from_cookie as _shared_session_id
+from app.iputil import is_public_ip
 from app.schemas import UnifiedLog
 
 UTC = timezone.utc
@@ -947,6 +949,73 @@ def _kept_paths(paths: Any) -> dict[str, int]:
     return {k: _safe_int(v) for k, v in dict(paths or {}).items() if api_path(k)}
 
 
+
+def _account_facts(obs: dict[str, Any], row: EntityProfile, now: datetime) -> None:
+    """账号窗口观测 → 客观事实（爆破 / 异地），判断权在智能体。
+
+    口径（2026-10 用户定）：
+    - 地理只比**国家 + 省**，基准是**上一次成功登录**的公网 IP 位置；
+    - 失败登录也生成事实，但**不更新**基准；
+    - 局域网登录只标记（src 在内网），不比较、不更新。
+    """
+    srcs = {str(ip): int(n) for ip, n in (obs.get("src_ips") or {}).items()}
+    public = {ip: n for ip, n in srcs.items() if is_public_ip(ip)}
+    fails = int(obs.get("fail") or 0)
+    success = int(obs.get("success") or 0)
+    key = str(row.entity_key or "")
+
+    # 1) 同账号、多公网来源的失败登录（分布式爆破）
+    if fails >= params.brute_account_fails() and len(public) >= params.brute_account_ips():
+        observations.emit(
+            "login_bruteforce",
+            "account",
+            key,
+            {
+                "窗口失败次数": fails,
+                "来源公网 IP 数": len(public),
+                "来源示例": sorted(public.keys())[:5],
+                "说明": "同一账号在短时间内被多个公网来源尝试登录（失败）",
+            },
+            key="bruteforce",
+            now=now,
+        )
+
+    # 2) 异地登录：与上一次成功登录的位置比（国家+省）
+    if not params.geo_enabled() or not public:
+        return
+    ip = max(public.items(), key=lambda kv: kv[1])[0]
+    current = geoip.locate(ip)
+    if current.get("lan") or not current.get("country"):
+        return
+    previous = dict(row.last_geo or {})
+    if previous.get("country") and not geoip.same_place(previous, current):
+        observations.emit(
+            "geo_jump",
+            "account",
+            key,
+            {
+                "上次登录地点": previous.get("label") or previous.get("province") or previous.get("country"),
+                "上次登录时间": previous.get("at") or "",
+                "本次登录地点": current.get("label"),
+                "本次来源 IP": ip,
+                "本次结果": "成功" if success > 0 else "失败",
+                "说明": "同一账号的登录地点发生了变化（只比国家+省，不含时间阈值）",
+            },
+            key="geo",
+            now=now,
+        )
+    # 只有**成功登录**才更新基准；失败不回写（否则爆破会把基准带着跑）
+    if success > 0:
+        row.last_geo = {
+            "country": current.get("country") or "",
+            "province": current.get("province") or "",
+            "city": current.get("city") or "",
+            "label": current.get("label") or "",
+            "ip": ip,
+            "at": now.isoformat(),
+        }
+
+
 def update_profiles(
     observations: dict[str, dict[str, Any]],
     risks: dict[str, dict[str, Any]] | None = None,
@@ -985,6 +1054,9 @@ def update_profiles(
                 row.obs_count = (row.obs_count or 0) + _safe_int(obs["count"])
                 row.last_seen = now
                 row.src_ips = _merge(row.src_ips, obs["src_ips"], _LIMITS["src_ips"])
+                # 账号级事实：多来源爆破 / 异地登录（只产出事实，不下结论）
+                if obs["kind"] == ACCOUNT:
+                    _account_facts(obs, row, now)
                 row.dst_ips = _merge(row.dst_ips, obs["dst_ips"], _LIMITS["dst_ips"])
                 row.user_agents = _merge(
                     row.user_agents, obs["user_agents"], _LIMITS["user_agents"]
@@ -1027,12 +1099,25 @@ def cleanup() -> dict[str, int]:
     而且口径仍然只来自配置（不在 SQL 里重写一份正则，避免两处漂移）。
     """
     before = datetime.now(timezone.utc) - timedelta(days=params.profile_retention_days())
+    # 会话画像（cookie 哈希）单独一条更短的保留期：实测 11,117 条会话画像只有 14 条过线，
+    # 留太久只是把库撑大、把列表刷满。账号画像仍按 profile.retention_days。
+    session_before = datetime.now(timezone.utc) - timedelta(days=params.session_retention_days())
     deleted = pruned = 0
     try:
         with SessionLocal() as db:
             result = cast(
                 CursorResult[Any],
-                db.execute(delete(EntityProfile).where(EntityProfile.last_seen < before)),
+                db.execute(
+                    delete(EntityProfile).where(
+                        or_(
+                            EntityProfile.last_seen < before,
+                            and_(
+                                EntityProfile.kind == SESSION,
+                                EntityProfile.last_seen < session_before,
+                            ),
+                        )
+                    )
+                ),
             )
             deleted = result.rowcount or 0
             for row in db.scalars(select(EntityProfile)).all():

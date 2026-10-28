@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **124 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **131 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 > 智能体控制台（xdr-ui）自己的接口另见 [`agent-console.md`](./agent-console.md)（项目组织 / 分析过程 / 脚本 / 参数）。
 
@@ -163,7 +163,14 @@
 | `GET` | `/api/baseline/config` | — | — | — |
 | `PUT` | `/api/baseline/config` | — | — | body |
 | `POST` | `/api/baseline/config/reset` | — | — | body |
+| `GET` | `/api/baseline/egress` | `src_ip,kind,limit` | — | — |
+| `GET` | `/api/baseline/egress-allow` | `kind,scope,include_tombstone` | — | — |
+| `POST` | `/api/baseline/egress-allow` | — | — | body |
+| `DELETE` | `/api/baseline/egress-allow/{entry_id}` | — | `entry_id` | — |
+| `POST` | `/api/baseline/egress-allow/{entry_id}/restore` | — | `entry_id` | — |
 | `GET` | `/api/baseline/numeric` | `q,feature,sort,limit,offset,group,scope` | — | — |
+| `GET` | `/api/baseline/observations` | `kind,subject,minutes,limit,offset` | — | — |
+| `GET` | `/api/baseline/observations/stats` | `minutes` | — | — |
 | `GET` | `/api/baseline/profiles` | `kind,q,min_risk,limit,offset` | — | — |
 | `GET` | `/api/baseline/stats` | `ip,key,limit` | — | — |
 
@@ -394,6 +401,12 @@ MCP 令牌与工具清单
 
 | 接口 | 新增字段 | 说明 |
 | --- | --- | --- |
+| `GET /api/baseline/observations`、`/observations/stats` | **新端点**（2026-10 行为基线事实） | 行为基线只产出**客观事实**（`egress_new` 外连新目标 / `egress_rare` / `geo_jump` 账号异地登录 / `login_bruteforce` / `path_probe` 大量 404 / `conn_shift` 连接数偏离）。**没有 severity、没有 verdict**，判断权在智能体。响应 `{available,total,items[{id,kind,kind_label,subject_kind,subject,facts,strength,count,first_seen,last_seen}]}` |
+| `GET /api/baseline/egress` | **新端点** | 某台资产已学到的主动外连目的地（`src_ip` / `kind=dst_ip / domain / port` / `count` / 首末时间） |
+| `GET/POST /api/baseline/egress-allow`、`DELETE /{id}`、`POST /{id}/restore` | **新端点** | 外连白名单：自学习条目（稳定 N 天 + N 次自动入表）可手工新增/编辑/删除；**删除留墓碑**（`tombstone=true`，以后不再自动学回来），`restore` 撤销墓碑 |
+| `GET /api/baseline/config` | 新增参数键 | `egress.enabled` / `egress.rare_min` / `egress.learn_days` / `egress.learn_occurrences`；`profile.geo_enabled`（国家+省，基准=上次成功登录）/ `profile.brute_account_ips` / `profile.brute_account_fails` / `profile.path_probe_min_requests` / `profile.path_probe_404_ratio` / `profile.session_retention_days` |
+| **行为基线口径变化**（2026-10） | 规则与派工 | 停用「协议异常」「会话跨IP复用」（实测 0 真阳/全假阳）；连接数偏离降级为事实（不再派工）；规则命中不再默认生成任务（`analysis.candidate_kinds` 默认 `novelty,coverage,observation`，`hit`/`shift` 需显式打开）；Zeek 新增 `ftp.log` 采集，FTP 登录映射为 `ftp_login`（reply_code 230→成功、5xx→失败）进账号画像 |
+| MCP `/mcp` | 新工具 `list_observations`（analyst 档） | 查行为基线事实（按 kind/subject/时间窗），与界面同一份数据；智能体据此判断，不需要自己算"正常长什么样" |
 | `GET /api/traffic/ips` | **口径修正**（2026-10）+ 响应新增 `truncated` | `view=outbound`（对外业务）改为**公网来源全量 → 按被访问资产聚合**：旧实现按流量取 TOP-N 主语 + composite 只读第一页，会把"被公网扫一枪的小流量资产"和"第 5000 条之后的资产"丢掉（实测 1 小时 13 台只显示 8 台、24 小时 40 台只剩 1 台）。横向/外连仍是抽样（内网主语太多），但会翻页并在 `truncated=true` 时明确提示"不是全部"。响应字段：`items[]`（ip/hostname/bytes_out/bytes_in/bytes_total/conns/peers/ports/peers_top/last_seen/regions）、`scanned_pairs/kept_pairs/filtered_out/truncated/monitored_nets` |
 | `GET /api/system/license` | **新端点**（2026-10，项目组织身份） | 本机**授权ID**（8 位大写字母+数字，由硬件 UUID 派生）。响应：`{auth_id, source, source_label, stable, note}`；`source ∈ hardware / machine-id / hostname`，`stable=false` 表示只能靠主机名兜底（换名就变，界面要提示）。**是身份不是密钥**：可展示、可抄写，鉴权仍靠 MCP 令牌与推送令牌；换机后 ID 会变，需到智能体控制台改绑定。同一身份也出现在 MCP 响应的 `x-ndr-auth-id` 头与 `server_info` 工具里 |
 | MCP `/mcp` | `x-ndr-auth-id` 响应头 + `server_info` 工具 + 门铃 `project` 字段 | 多项目 agent 靠这三处核对绑定：每个 MCP 响应都带本 NDR 授权ID；`server_info` 返回 `{auth_id, source, stable}`（analyst 档共 23 个工具）；门铃载荷 `{project, queue_len, top_kind, max_strength, watermark, ts}`，`project` 即本机授权ID（**不含任何事件数据**）。绑定不一致时 agent 停掉该项目并报警 |

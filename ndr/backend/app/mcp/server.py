@@ -649,6 +649,17 @@ def hit_stats(minutes: int = 0) -> str:
     return _run("hit_stats", _clean(minutes=minutes), native=True)
 
 
+def list_observations(
+    kind: str = "", subject: str = "", minutes: int = 1440, limit: int = 50, offset: int = 0
+) -> str:
+    """行为基线事实：外连新目标/罕见、账号异地登录、爆破、404、连接数偏离（只有事实，没有结论）。"""
+    return _run(
+        "list_observations",
+        _clean(kind=kind, subject=subject, minutes=minutes, limit=limit, offset=offset),
+        native=True,
+    )
+
+
 def list_rules(source_kind: str = "", limit: int = 0) -> str:
     """列出 NDR 现在在检测什么（防「没事件」被误读成「没攻击」）。"""
     return _run("list_rules", _clean(source_kind=source_kind, limit=limit), native=True)
@@ -714,6 +725,7 @@ _NDR_TOOL_FUNCS = (
     hit_clusters,
     hit_stats,
     list_rules,
+    list_observations,
     relay_nodes,
     record_disposition,
     submit_suppression,
@@ -727,7 +739,7 @@ _NDR_TOOL_FUNCS = (
 #: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
 #: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
 #:
-#: `analyst` 是智能体分析闭环够用的最小集（22 个）；排查/运维/复现用 `/mcp/full`（全部）。
+#: `analyst` 是智能体分析闭环够用的最小集（24 个）；排查/运维/复现用 `/mcp/full`（全部）。
 _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "analyst": (
         # 取数（最小必要集：先看数据地图，再按需检索与聚合）
@@ -763,6 +775,8 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         # 底座：没有这两把"尺子"，agent 只能去 ES 自己算"正常长什么样"
         "baseline_lookup",
         "entity_profile",
+        # 行为基线事实（外连新目标/异地登录/爆破/404）：事实在前，判断在后
+        "list_observations",
     ),
 }
 
@@ -852,6 +866,11 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         ctx.append("baseline_lookup 查数值基线（当前值 vs 长期均值与 σ、是否过了观测期）")
     if has("entity_profile"):
         ctx.append("entity_profile 查账号/会话画像（长期基线、风险分与异常理由）")
+    if has("list_observations"):
+        ctx.append(
+            "list_observations 查行为基线事实（外连新目标/异地登录/爆破/404/连接数偏离）——"
+            "这里只有事实与强度，没有结论与严重度，判不判由你自己定"
+        )
     if has("asset_map"):
         ctx.append("asset_map 看对象清单（资产/服务端口/外部对端/协议/签名）")
     if has("coverage_report"):

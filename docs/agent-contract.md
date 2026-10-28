@@ -210,6 +210,19 @@ complete_task(task_id, verdict, summary, confidence?, findings?, evidence_refs?,
 
 ---
 
+## 4·补、行为基线事实（`observation` 类任务）
+
+2026-10 起，行为基线**只产出事实、不产出结论**：外连目的地首次/罕见、账号异地登录、
+同账号多来源爆破、客户端大量 404、连接数偏离。它们进入任务队列时 `kind=observation`，
+`hint` 只有事实（改了哪一维、基线值、观测值、时间），**没有 severity、没有 verdict**。
+
+- 取数：`list_observations(kind=?, subject=?, minutes=?)`（analyst 档）；
+- 判定：要不要当攻击处理、算不算异常，**由你自己结合证据下**；
+- 规则命中（`search_hits`）现在**只是证据**：默认不再单独派工，可以在你分析某个对象时
+  作为补充材料；`get_rule` 仍可查规则判据；
+- FTP 登录已进账号画像（`ftp_login`：`reply_code` 230=成功、5xx=失败），与 HTTP 登录同一套
+  「新源 IP / 认证失败突增 / 异地登录」事实。
+
 ## 5. 申请抑制：`submit_suppression`
 
 > 也可以内联在 `complete_task(suppression={...})`，**只在 `verdict=false_positive` 时允许**。

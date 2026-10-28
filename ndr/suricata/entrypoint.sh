@@ -59,7 +59,7 @@ HTTP_PORT_BASE="80,81,88,8000,8008,8010,8011,8048,8080,8088,8888"
 
 case "$RETENTION_MINUTES" in ''|*[!0-9]*) RETENTION_MINUTES=240 ;; esac
 
-log() { echo "[suricata-entry] $*"; }
+log() { echo "[suricata-entry] $*" >&2; }
 now_iso() { date -u +%FT%TZ; }
 
 # 自动挑网卡：只认物理网卡（sysfs 有 device 链接，docker0/veth/br-* 没有），
@@ -210,12 +210,25 @@ render_config_to() {
     return 1
   fi
   # 用 | 当分隔符：网段里有 /（CIDR），用 / 会切错
-  sed -e "s|%IFACE%|${iface}|g" \
+  if ! sed -e "s|%IFACE%|${iface}|g" \
       -e "s|%HOME_NET%|${nets}|g" \
       -e "s|%HTTP_PORTS%|${ports}|g" \
       -e "s|%RULE_DIR%|${rule_dir}|g" \
       -e "s|%RULE_FILES%|${files_yaml}|g" \
-      "$TEMPLATE" > "${out}.tmp"
+      "$TEMPLATE" > "${out}.tmp"; then
+    rm -f "${out}.tmp"
+    log "渲染配置失败（sed 报错）：模板=${TEMPLATE} 网卡=${iface}"
+    return 1
+  fi
+  # 哨兵：空文件 / 占位符没替换掉 = 渲染没成功。宁可让 Suricata 不启动并报健康告警，
+  # 也不能让它拿默认配置跑 —— 那会「零规则、抓错网卡、还没有任何可见错误」（2026-10 实机）。
+  if [ ! -s "${out}.tmp" ] || grep -qE "%(IFACE|HOME_NET|HTTP_PORTS|RULE_DIR|RULE_FILES)%" "${out}.tmp"; then
+    local left
+    left="$(grep -oE "%(IFACE|HOME_NET|HTTP_PORTS|RULE_DIR|RULE_FILES)%" "${out}.tmp" | sort -u | tr '\n' ' ')"
+    rm -f "${out}.tmp"
+    log "渲染结果不完整（残留占位符：${left:-无}，行数=$(wc -l < "$out" 2>/dev/null || echo 0)）"
+    return 1
+  fi
   mv "${out}.tmp" "$out"
 }
 
@@ -406,6 +419,11 @@ write_runtime_auto() {
 
 start_suricata() {
   local iface
+  if [ ! -s "$YAML_OUT" ] || grep -qE "%(IFACE|HOME_NET|RULE_FILES)%" "$YAML_OUT" 2>/dev/null; then
+    log "配置文件不可用（${YAML_OUT} 为空或仍是模板）：不启动 Suricata"
+    printf 'unhealthy %s 配置未渲染成功（%s）\n' "$(now_iso)" "$YAML_OUT" > "$HEALTH_FILE" 2>/dev/null || true
+    return 1
+  fi
   iface="$(resolved_iface)"
   if [ -z "$iface" ]; then
     log "没有可用网卡（共享配置为空且自动探测失败）：等待下一拍重试"
@@ -484,31 +502,37 @@ rules_signature() {
   sha256sum "$ACTIVE_DIR"/*.rules 2>/dev/null | sha256sum | cut -d' ' -f1
 }
 
-start_watchdog() {
-  (
-    local last_conf last_rules
-    last_conf="$(sha256sum "$IFACE_CONF" 2>/dev/null | awk '{print $1}')"
-    last_rules="$(rules_signature)"
-    while true; do
-      sleep "$WATCH_INTERVAL"
-      local cur_conf cur_rules
-      cur_conf="$(sha256sum "$IFACE_CONF" 2>/dev/null | awk '{print $1}')"
-      cur_rules="$(rules_signature)"
-      if [ "$cur_conf" != "$last_conf" ]; then
-        last_conf="$cur_conf"
-        log "检测到采集配置变化，重渲染配置并重启 Suricata"
-        render_config || true
+watchdog_loop() {
+  local last_conf last_rules
+  last_conf="$(sha256sum "$IFACE_CONF" 2>/dev/null | awk '{print $1}')"
+  last_rules="$(rules_signature)"
+  while true; do
+    sleep "$WATCH_INTERVAL"
+    local cur_conf cur_rules
+    cur_conf="$(sha256sum "$IFACE_CONF" 2>/dev/null | awk '{print $1}')"
+    cur_rules="$(rules_signature)"
+    if [ "$cur_conf" != "$last_conf" ]; then
+      last_conf="$cur_conf"
+      log "检测到采集配置变化，重渲染配置并重启 Suricata"
+      if render_config; then
+        # 网卡不能靠 reload-rules 切换：结束进程，主循环会用新网卡重新拉起
         if [ -f "$PID_FILE" ]; then
           kill "$(cat "$PID_FILE")" 2>/dev/null || true
         fi
-      elif [ "$cur_rules" != "$last_rules" ]; then
-        last_rules="$cur_rules"
-        log "检测到规则文件变化（外部直放），重载规则"
-        render_config || true
-        reload_suricata
+      else
+        printf 'unhealthy %s 采集配置渲染失败\n' "$(now_iso)" > "$HEALTH_FILE" 2>/dev/null || true
       fi
-    done
-  ) &
+    elif [ "$cur_rules" != "$last_rules" ]; then
+      last_rules="$cur_rules"
+      log "检测到规则文件变化（外部直放），重载规则"
+      render_config || true
+      reload_suricata
+    fi
+  done
+}
+
+start_watchdog() {
+  watchdog_loop &
   log "看门狗已启动（每 ${WATCH_INTERVAL}s 检查共享配置与规则目录）"
 }
 

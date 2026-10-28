@@ -32,6 +32,7 @@ from app.analysis import (
 from app.analysis.anchors import purge_old as purge_old_anchors
 from app.analysis.digests import run_digest_round
 from app.analysis.traces import purge_old as purge_old_traces
+from app.baseline import egress, observations
 from app.baseline.engine import BaselineEngine
 from app.baseline.sampler import WindowSampler
 from app.config import settings
@@ -318,11 +319,23 @@ def run() -> None:
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):
                 digest["baseline"] = engine.annotate(digest)
-                # 基线偏离也是"命中事件"的一类来源（第三类），与规则命中同表、同唯一事件 ID
-                if digest["baseline"]:
-                    hit_ids = hits.save_baseline_deviations(digest, digest["baseline"])
-                    if hit_ids:
-                        digest["baseline_event_ids"] = hit_ids
+                # 基线偏离**不再写成命中事件**（2026-10 用户口径）：规则名 + 严重度会被当成
+                # "小结论"。现在只落成客观事实（observations），由智能体自己判断。
+                for item in (digest["baseline"] or {}).get("numeric") or []:
+                    observations.emit(
+                        "conn_shift",
+                        "asset",
+                        str(item.get("src_ip") or digest.get("src_ip") or ""),
+                        {
+                            "特征": item.get("feature"),
+                            "本窗口值": item.get("value"),
+                            "基线均值": item.get("mean"),
+                            "标准差": item.get("std"),
+                            "说明": "该资产本窗口的计数高于自身历史基线",
+                        },
+                        key=f"conn_shift:{item.get('feature')}",
+                        strength=0.2,
+                    )
             _apply_routine_policy(digest, client, stats)
             if analysis_params.enabled():
                 # 派工模式（2026-10 改造）：摘要**不再推给智能体**，改成门铃 + 智能体按预算
@@ -335,12 +348,31 @@ def run() -> None:
             mark_digest(stats, digest)
         # 采样窗口到期 → 每 IP 一条样本：先判异、再学进基线（全量流量口径，见 baseline/sampler.py）
         deviations: list[dict[str, Any]] = []
-        for sample in sampler.pop_ready():
-            found = engine.observe_window(sample)
-            deviations.extend(found)
-        if deviations and analysis_params.enabled():
-            # 自身基线偏离 → shift 线索（判异结果与基线同源，不重算第二把尺子）
-            stats["candidate_shift"] += candidates.enqueue_shift(deviations, client)
+        window_samples = sampler.pop_ready()
+        for sample in window_samples:
+            deviations.extend(engine.observe_window(sample))
+        if window_samples:
+            # 主动外连目的地基线：首次/罕见表象（只产事实，不派工、不下结论）
+            counts = egress.observe_window(window_samples)
+            stats["observation_egress_new"] = stats.get("observation_egress_new", 0) + counts["new"]
+            stats["observation_egress_rare"] = stats.get("observation_egress_rare", 0) + counts["rare"]
+            stats["egress_allow_learned"] = stats.get("egress_allow_learned", 0) + counts["learned"]
+        # 连接数偏离降级（2026-10 用户口径）：不再生成派工线索，只作为低强度事实
+        for item in deviations:
+            observations.emit(
+                "conn_shift",
+                "asset",
+                str(item.get("src_ip") or ""),
+                {
+                    "特征": item.get("feature"),
+                    "本窗口值": item.get("value"),
+                    "基线均值": item.get("mean"),
+                    "标准差": item.get("std"),
+                    "说明": "该资产本窗口的计数高于自身历史基线（仅参考，不单独派工）",
+                },
+                key=f"conn_shift:{item.get('feature')}",
+                strength=0.2,
+            )
         # 派工机制的一轮：生成线索 / 盲区 / 清理 / 门铃（各自有节拍，不是每轮都做）
         _analysis_round(client, collector, analysis_state, stats)
         # 基线落库：画像观测 + 数值统计攒到这里一次性写（节奏由 baseline_flush_seconds 控制）
@@ -851,6 +883,10 @@ def _analysis_round(
         made = candidates.flush(collector, client, stats=stats)
         stats["candidate_novelty"] += int(made.get("novelty") or 0)
         stats["candidate_structure"] += int(made.get("structure") or 0)
+        # 行为基线事实 → 任务（事实在前、判断在后：hint 里不带任何结论/严重度）
+        if now - float(state.get("last_observation") or 0.0) >= 300:
+            state["last_observation"] = now
+            stats["candidate_observation"] += candidates.enqueue_observations(client)
         # 冷启动期把盲区扫描降频（放大倍数可调，见 params.cold_start_scale）
         coverage_gap = 6 * 3600 * cold_start.interval_scale(client)
         if now - float(state.get("last_coverage") or 0.0) >= coverage_gap:

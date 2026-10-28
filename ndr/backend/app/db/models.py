@@ -335,6 +335,9 @@ class EntityProfile(Base):
     hour_hist: Mapped[dict] = mapped_column(JSONB, default=dict)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: 账号**上一次成功登录**的公网 IP 位置 `{country, province, city, label, ip, at}`。
+    #: 只用于"地点变了"的事实（国家+省），局域网登录不写这一列（否则一次内网登录就废掉检测）。
+    last_geo: Mapped[dict] = mapped_column(JSONB, default=dict)
     #: 错误响应计数（status ≥ 400 且不是 401/403）。为什么要单独记：
     #: 成功只算 <400、失败只认 401/403，于是 404 风暴这类「探测/扫描」痕迹在画像里完全隐形
     #: （实测某账号 63,243 条 404，画像既不算成功也不算失败）。
@@ -674,6 +677,97 @@ class AssetRecord(Base):
     criticality: Mapped[str] = mapped_column(String(16), default="normal")
     tags: Mapped[str] = mapped_column(String(255), default="")  # 逗号分隔
     note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Observation(Base):
+    """**观察事实**：行为基线发现"和平时不一样"的地方，只描述事实，不下结论。
+
+    为什么单独一张表（不复用 `hit_events`）：命中事件是"某条规则判定了什么"，
+    带规则名与严重度；而基线偏离只是一个客观变化（"这台机器第一次连这个 IP:443"）。
+    判定权在智能体 —— 表里**没有 severity、没有 verdict**，只有事实、强度与时间。
+    同一 `dedupe_key`（kind + subject + 维度）在一个冷却期内只留一行，累加次数。
+    """
+
+    __tablename__ = "observations"
+    __table_args__ = (
+        Index("ix_observations_dedupe", "dedupe_key", unique=True),
+        Index("ix_observations_kind_last", "kind", "last_seen"),
+        Index("ix_observations_subject", "subject"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    #: egress_new / egress_rare / geo_jump / login_bruteforce / path_probe / conn_shift
+    kind: Mapped[str] = mapped_column(String(32), default="", index=True)
+    #: asset / account / session
+    subject_kind: Mapped[str] = mapped_column(String(16), default="asset")
+    subject: Mapped[str] = mapped_column(String(128), default="")
+    #: 客观事实（改了哪一维、旧值/新值、基线值、观测值…），键名中文，界面可直接展示
+    facts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    #: 客观强度（0~1，不是严重度）：只用于排序与预算，不表达"危不危险"
+    strength: Mapped[float] = mapped_column(Float, default=0.0)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EgressBaseline(Base):
+    """服务器主动外连的**目的地身份**基线（目的 IP / 域名 / 端口）。
+
+    与数值基线（连接数/端口数）不同：这里关心的是"这台机器以前连过谁"。
+    一台服务器第一次连某个 IP/域名/端口，通常就是新装的程序/更新/或者异常进程。
+    """
+
+    __tablename__ = "egress_baseline"
+    __table_args__ = (
+        Index("ix_egress_baseline_unique", "src_ip", "kind", "value", unique=True),
+        Index("ix_egress_baseline_last", "last_seen"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    src_ip: Mapped[str] = mapped_column(String(64), default="", index=True)
+    #: dst_ip / domain / port
+    kind: Mapped[str] = mapped_column(String(16), default="")
+    value: Mapped[str] = mapped_column(String(255), default="")
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EgressAllow(Base):
+    """外连白名单：自学习条目（可手工改/删）+ 手工条目。
+
+    `tombstone=True` 表示"这条被人工删过，不要再自动学回来" ——
+    没有墓碑的话删除毫无意义：下一窗口观察到同一个目标又会自动入表。
+    """
+
+    __tablename__ = "egress_allow"
+    __table_args__ = (
+        Index(
+            "ix_egress_allow_unique", "kind", "value", "scope", "asset", unique=True
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    #: dst_ip / domain / port
+    kind: Mapped[str] = mapped_column(String(16), default="")
+    value: Mapped[str] = mapped_column(String(255), default="")
+    #: global（所有资产）/ asset（仅某台）
+    scope: Mapped[str] = mapped_column(String(16), default="global")
+    asset: Mapped[str] = mapped_column(String(64), default="")
+    #: learned / manual
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tombstone: Mapped[bool] = mapped_column(Boolean, default=False)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

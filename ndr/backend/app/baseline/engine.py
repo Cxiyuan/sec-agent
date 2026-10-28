@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
-from app.baseline import params, profile as profiles
+from app.baseline import observations, params, profile as profiles
 from app.baseline.asset import (
     apply_window as assets_apply_window,
     cleanup as assets_cleanup,
@@ -29,6 +30,8 @@ from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
+
+UTC = timezone.utc
 
 log = get_logger(__name__)
 
@@ -152,6 +155,28 @@ class BaselineEngine:
             return []
         src = str(sample.get("src_ip") or "")
         if not src or src == "-":
+            return []
+        # 单客户端"大量 404"= 路径探测：这是行为事实，不是结论（是否在扫由智能体判）
+        requests = int(sample.get("requests") or 0)
+        errors_404 = int(sample.get("errors_404") or 0)
+        if requests >= params.path_probe_min_requests():
+            ratio = errors_404 / requests if requests > 0 else 0.0
+            if ratio >= params.path_probe_404_ratio():
+                observations.emit(
+                    "path_probe",
+                    "asset",
+                    src,
+                    {
+                        "窗口请求数": requests,
+                        "404 数": errors_404,
+                        "404 占比": round(ratio, 3),
+                        "说明": "该客户端在这些请求里大部分路径不存在",
+                    },
+                    key="path_probe",
+                    now=datetime.now(UTC),
+                )
+        # 公网来源只统计 404（入口路径探测），不建数值基线、不判异、不学习
+        if bool(sample.get("skip_baseline")):
             return []
         values = {feature: _num(sample.get(feature)) for feature in _FEATURES}
         # 顺序很重要：先用**旧**基线判异，再把本窗口样本学进去（否则拿自己跟自己比）

@@ -51,6 +51,7 @@ _ZEEK_TYPE_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ("ja4ssh", ("kex",)),
     ("ja4d", ("ja4d", "hash")),
     ("ssh", ("auth_success", "auth_attempts", "client", "server")),
+    ("ftp", ("command", "reply_code", "reply_msg")),
     ("stats", ("pkts_proc", "pkts_dropped", "events_proc", "pkt_lag")),
     ("ntp", ("stratum", "root_delay", "root_disp", "ref_id")),
     ("packet_filter", ("filter", "init", "success")),
@@ -753,6 +754,15 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
     query = str(doc.get("query") or uri or "")
     extra = _http_fields(doc, log_type, src_ip)
     status_code = _to_int(doc.get("status_code"))
+    # FTP 登录：ftp.log 用 reply_code 表达结果（230 登录成功 / 530 账号或口令错误）。
+    # 统一映射到 status_code，账号画像的「成功/失败突增」直接复用；非登录命令按普通操作记。
+    ftp_command = str(doc.get("command") or "").strip().upper() if log_type == "ftp" else ""
+    if log_type == "ftp":
+        reply = _to_int(doc.get("reply_code"))
+        if reply is not None and 200 <= reply < 300:
+            status_code = 200
+        elif reply is not None and 500 <= reply < 600:
+            status_code = 401
     # weird.log 的异常名（只在这种日志上有）：决定 event_type 是协议异常还是**采集类异常**
     weird_name = str(doc.get("name") or "") if log_type == "weird" else ""
     event_type = (
@@ -762,6 +772,9 @@ def normalize_zeek(doc: dict[str, Any]) -> UnifiedLog | None:
         if log_type == "http"
         else _zeek_event_type(log_type, note, conn_state, weird_name)
     )
+    if log_type == "ftp" and ftp_command in ("USER", "PASS", "ACCT"):
+        # 登录命令单独成类型，界面与画像能直接看出"这是一次登录尝试"
+        event_type = "ftp_login"
 
     # 账号 + **来源**：代理认证的用户名（校园出口代理的终端 ID）与登录表单里的账号
     # 在界面上会长得一样（如 t14919610950627），标出来运维才知道那是什么。
@@ -1037,6 +1050,8 @@ def _zeek_event_type(
         return "smtp_activity"
     if log_type == "ssh":
         return "ssh_activity"
+    if log_type == "ftp":
+        return "ftp_activity"
     if log_type == "dhcp":
         return "dhcp_activity"
     if log_type == "notice":

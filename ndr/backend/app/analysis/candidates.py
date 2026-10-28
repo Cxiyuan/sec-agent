@@ -36,7 +36,7 @@ from sqlalchemy import func, select, tuple_
 from app.analysis import cold_start as cold_start_mod, feedback, params, queue, subjects
 from app.baseline import poisson
 from app.db.base import SessionLocal
-from app.db.models import AnalysisResult, ObservedSubject
+from app.db.models import AnalysisResult, HitEvent, Observation, ObservedSubject
 from app.detector import suppression
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
@@ -270,6 +270,97 @@ def _novelty_tasks(
             made += 1
     return made
 
+
+
+#: 事实转任务的门槛：低于它的只留在库里给 MCP 查（避免"每条事实都派一单"）
+_OBS_MIN_STRENGTH = 0.45
+_OBS_WINDOW_MINUTES = 30
+_OBS_PER_ROUND = 30
+
+
+def _recent_rule_hits(subject: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """该对象最近的规则命中（作为事实的附加证据，不参与判定）。"""
+    if subject == "":
+        return []
+    since = datetime.now(UTC) - timedelta(hours=24)
+    try:
+        with SessionLocal() as db:
+            rows = list(
+                db.scalars(
+                    select(HitEvent)
+                    .where(
+                        HitEvent.created_at >= since,
+                        (HitEvent.src_ip == subject) | (HitEvent.client == subject),
+                    )
+                    .order_by(HitEvent.created_at.desc())
+                    .limit(max(1, min(limit, 20)))
+                ).all()
+            )
+    except Exception:  # noqa: BLE001
+        return []
+    return [
+        {
+            "rule": row.rule,
+            "source_kind": row.source_kind,
+            "count": int(row.count or 0),
+            "last_seen": row.last_seen.isoformat() if row.last_seen else "",
+            "event_id": str(row.id),
+        }
+        for row in rows
+    ]
+
+
+def enqueue_observations(client: Any) -> int:
+    """把**近期强事实**转成分析任务（hint 里只有事实，没有任何结论/严重度）。
+
+    为什么需要这一步：基线事实是给智能体看的，但它不会主动去翻库 ——
+    必须有一条"这些事实值得你看一眼"的派工路径。重复事实由队列的去重键合并，
+    同一对象同一类事实只会有一条任务。
+    """
+    if "observation" not in params.candidate_kinds():
+        return 0
+    since = datetime.now(UTC) - timedelta(minutes=_OBS_WINDOW_MINUTES)
+    try:
+        with SessionLocal() as db:
+            rows = list(
+                db.scalars(
+                    select(Observation)
+                    .where(
+                        Observation.last_seen >= since,
+                        Observation.strength >= _OBS_MIN_STRENGTH,
+                    )
+                    .order_by(Observation.strength.desc(), Observation.last_seen.desc())
+                    .limit(_OBS_PER_ROUND)
+                ).all()
+            )
+    except Exception as exc:  # noqa: BLE001 — 事实派工失败不能拖垮检测
+        log.warning("读观察事实失败：%s", exc)
+        return 0
+    made = 0
+    for row in rows:
+        subject_kind = "account" if str(row.subject_kind) == "account" else "ip"
+        # 规则命中只作为**附加证据**：默认不再单独派工，但对象被事实选中时把它带上，
+        # 免得 agent 又要单独去翻一遍（2026-10 用户口径：规则是证据，不是结论）
+        evidence = _recent_rule_hits(str(row.subject or ""))
+        result = queue.enqueue(
+            kind="observation",
+            subject_kind=subject_kind,
+            subject=str(row.subject or ""),
+            strength=float(row.strength or 0),
+            feature=str(row.kind or ""),
+            hint={
+                "事实类型": row.kind,
+                "事实": row.facts or {},
+                "出现次数": int(row.count or 0),
+                "首次观测": row.first_seen.isoformat() if row.first_seen else "",
+                "最近观测": row.last_seen.isoformat() if row.last_seen else "",
+                **({"相关规则命中": evidence} if evidence else {}),
+            },
+            client=client,
+        )
+        if result in ("new", "merged"):
+            made += 1
+    return made
 
 def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, int]:
     """窗口到期：登记对象 + 产出 novelty / structure 线索。返回各步计数。"""

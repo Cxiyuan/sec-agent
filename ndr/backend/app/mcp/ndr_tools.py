@@ -1115,6 +1115,26 @@ def _task_stats(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+
+def _list_observations(args: dict[str, Any]) -> dict[str, Any]:
+    """行为基线事实（外连新目标 / 异地登录 / 爆破 / 404 / 计数偏离）。
+
+    只给事实、不给结论：这里没有 severity，也没有"疑似攻击"这种词 —— 判不判、判什么，
+    由你结合证据自己下。
+    """
+    from app.mcpapi import list_observations as list_facts
+
+    limit = int(args.get("limit") or 50)
+    minutes = int(args.get("minutes") or 1440)
+    return list_facts(
+        kind=str(args.get("kind") or "").strip(),
+        subject=str(args.get("subject") or "").strip(),
+        minutes=max(1, min(minutes, 60 * 24 * 30)),
+        limit=max(1, min(limit, 200)),
+        offset=max(0, int(args.get("offset") or 0)),
+    )
+
+
 def _server_info(args: dict[str, Any]) -> dict[str, Any]:
     """这台 NDR 的身份（授权ID）：智能体用它核对「项目组织」的绑定是否一致。
 
@@ -1723,6 +1743,21 @@ TOOLS: dict[str, dict[str, Any]] = {
             "task_id": "任务 ID",
             "reason": "为什么延后（界面可见）",
             "retry_after_seconds": "多久后可以再领（默认 3600）",
+        },
+    },
+    "list_observations": {
+        "run": _list_observations,
+        "desc": (
+            "查**行为基线事实**（与界面同一份）：外连目的地首次/罕见、账号异地登录、"
+            "同账号多来源爆破、客户端大量 404、连接数偏离。只有客观事实与强度，"
+            "没有严重度、没有结论 —— 判断权在你"
+        ),
+        "params": {
+            "kind": "只看某类事实：egress_new / egress_rare / geo_jump / login_bruteforce / path_probe / conn_shift（可省）",
+            "subject": "只看某个对象（资产 IP / 账号，可省）",
+            "minutes": "回看多少分钟（默认 1440）",
+            "limit": "最多几条（默认 50）",
+            "offset": "翻页偏移（默认 0）",
         },
     },
     "server_info": {

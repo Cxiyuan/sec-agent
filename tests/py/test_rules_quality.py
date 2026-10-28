@@ -410,6 +410,9 @@ def test_web_attack_rules_moved_to_signature_engine(mods: dict[str, Any]) -> Non
         "多路径探测(漏洞挖掘)",
         "内网漏洞利用探测",
         "DNS-TXT隧道",
+        # 2026-10 行为基线改造：噪声规则删除，定义留档但播种跳过
+        "协议异常",
+        "会话跨IP复用",
     }
     assert CONVERGED <= moved, "收敛的 7 条必须都登记在删除清单里"
     assert not (moved & live) - CONVERGED, "已移交的规则不能再被播种（除收敛白名单）"

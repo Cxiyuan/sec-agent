@@ -15,6 +15,7 @@ from app.api.routes import (
     logs,
     logstash,
     mcp,
+    observations,
     rules,
     traffic_views,
     zeek,
@@ -44,6 +45,7 @@ api_router.include_router(stats_overview_router)
 api_router.include_router(system_metrics_router)
 api_router.include_router(health_components_router)
 api_router.include_router(baseline.router)
+api_router.include_router(observations.router)
 api_router.include_router(zeek.router)
 api_router.include_router(files.router)
 api_router.include_router(mcp.router)

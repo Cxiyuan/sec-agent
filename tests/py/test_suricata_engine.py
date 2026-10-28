@@ -43,10 +43,11 @@ def test_deleted_rules_do_not_come_back() -> None:
     """删掉的 48 条必须在 DELETED_RULES 名单里（否则下次启动会被内置定义重新 upsert 回库）。"""
     names = {spec["name"] for spec in builtin_mod.BUILTIN_RULES}
     deleted = set(builtin_mod.DELETED_RULES)
-    assert len(deleted) == 79, (
+    assert len(deleted) == 81, (
         "4 条历史 + 48 条重叠规则 + 1 条裸单条 TLS 异常 + 15 条主机规则（主机线下线）"
         " + 1 条停用转删除（扫描尝试连接）+ 7 条规则收敛（扫描/Web利用/DNS隧道交给特征匹配）"
         " + 3 条签名分流包装规则（2026-10：签名告警改为按 classtype 归类成事件类型）"
+        " + 2 条行为基线改造删除（协议异常 / 会话跨IP复用，2026-10）"
     )
     # 2026-10 规则收敛：扫描 / Web 利用 / DNS 陵道这 7 条名字**留在** BUILTIN_RULES（保留判据），
     # 但登记在 DELETED_RULES 且播种时跳过 —— 所以允许两边都在的只有这批白名单。
@@ -58,6 +59,8 @@ def test_deleted_rules_do_not_come_back() -> None:
         "多路径探测(漏洞挖掘)",
         "内网漏洞利用探测",
         "DNS-TXT隧道",
+        "协议异常",
+        "会话跨IP复用",
     }
     assert CONVERGED <= deleted, "收敛的 7 条必须在删除名单里"
     assert not (deleted & names) - CONVERGED, "删除名单里的规则又回到内置定义了"

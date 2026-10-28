@@ -30,8 +30,11 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.enabled", "启用派工队列", "bool", True,
          note="关掉后不再生成新任务（已有任务保留，智能体仍可领取）"),
     Knob("analysis.candidate_kinds", "生成哪些线索", "text",
-         "novelty,shift,coverage,hit",
-         note="逗号分隔；structure 需额外统计，默认不开；关掉某类即不再生成该类任务"),
+         "novelty,coverage,observation",
+         note=(
+             "逗号分隔。hit/shift 默认关闭（2026-10：规则命中与连接数偏离只作为事实/证据，"
+             "不再单独派工）；observation = 行为基线事实（外连新目标/异地登录/爆破/404）"
+         )),
     Knob("analysis.lease_seconds", "租约", "int", 900,
          low=60, high=7200, unit="秒",
          note="领取后多久没交回就自动回收（LLM 一次分析可能十几分钟，默认给 15 分钟）"),
@@ -112,7 +115,9 @@ _BY_KEY: dict[str, Knob] = {k.key: k for k in KNOBS}
 EDITABLE_KEYS: tuple[str, ...] = tuple(_BY_KEY)
 
 #: 已知的线索类型（校验与界面下拉用）
-KINDS: tuple[str, ...] = ("novelty", "shift", "structure", "coverage", "hit", "retest")
+KINDS: tuple[str, ...] = (
+    "novelty", "shift", "structure", "coverage", "hit", "retest", "observation",
+)
 def _num(knob: Knob) -> float:
     try:
         number = float(rc_get(knob.key, knob.default))
