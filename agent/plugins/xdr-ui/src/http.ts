@@ -17,7 +17,7 @@ import { loginPage, workbenchPage } from './html.ts'
 export interface IngestServiceView {
   status(): Record<string, unknown>
   cacheStats(): Promise<unknown>
-  wake(): boolean
+  wake(projectId?: string): boolean
   listAnalyses(query: { limit: number, offset: number, search: string }): Promise<{
     total: number
     entries: readonly unknown[]
@@ -27,25 +27,37 @@ export interface IngestServiceView {
    * 智能体交回的结论（NDR 的 `analysis_results`）——控制台「分析记录」页真正的数据源。
    * 可选：老版本 xdr-ingest 没有这一面，界面回落到旧的摘要缓存（那份表在新架构下是空的）。
    */
-  listConclusions?(query: { limit: number, offset: number, search: string }): Promise<{
+  listConclusions?(query: { limit: number, offset: number, search: string, project?: string }): Promise<{
     total: number
     entries: readonly unknown[]
   }>
-  getConclusion?(id: string): Promise<unknown>
-  conclusionStats?(): Promise<{ available: boolean, total: number }>
+  getConclusion?(id: string, projectId?: string): Promise<unknown>
+  conclusionStats?(projectId?: string): Promise<{ available: boolean, total: number }>
   /** 分析脚本库（P4 控制台管理）：列表/详情/新建编辑/启停/删除。 */
-  listScripts?(query: { search: string, limit: number, offset: number }): Promise<{
+  listScripts?(query: { search: string, limit: number, offset: number, project?: string }): Promise<{
     total: number
     items: readonly unknown[]
   }>
-  getScript?(nameOrId: string): Promise<unknown>
-  saveScript?(body: unknown): Promise<unknown>
-  setScriptEnabled?(nameOrId: string, enabled: boolean): Promise<boolean>
-  removeScript?(nameOrId: string): Promise<boolean>
+  getScript?(nameOrId: string, projectId?: string): Promise<unknown>
+  saveScript?(body: unknown, projectId?: string): Promise<unknown>
+  setScriptEnabled?(nameOrId: string, enabled: boolean, projectId?: string): Promise<boolean>
+  removeScript?(nameOrId: string, projectId?: string): Promise<boolean>
+  /** 项目组织（P2）：列表 / 新增编辑 / 删除 / 复核。 */
+  projects?(): Promise<readonly unknown[]>
+  saveProject?(body: unknown): Promise<{ ok: boolean, error?: string, project?: unknown }>
+  removeProject?(projectId: string): Promise<boolean>
+  verifyProject?(projectId: string): Promise<unknown>
+  /** 分析过程（P3）：列表 / 详情 / 会话时间线（after 增量）。 */
+  listProcesses?(query: { limit: number, offset: number, search: string, outcome: string, project?: string }): Promise<{
+    total: number
+    items: readonly unknown[]
+  }>
+  getProcess?(taskId: string, projectId?: string): Promise<unknown>
+  processEvents?(taskId: string, projectId?: string, after?: number): Promise<unknown>
   /** 运行参数快照（可选：老版本 xdr-ingest 没有，控制台显示"不可改"）。 */
-  settings?(): Promise<Record<string, unknown>>
+  settings?(projectId?: string): Promise<Record<string, unknown>>
   /** 保存运行参数（可选；校验在数据面做，控制台只透传）。 */
-  updateSettings?(patch: unknown): Promise<{
+  updateSettings?(patch: unknown, projectId?: string): Promise<{
     ok: boolean
     error?: string
     persisted?: boolean
@@ -122,6 +134,16 @@ export function createUiHandler(
     const at = req.url.indexOf('?')
     return at === -1 ? new URLSearchParams() : new URLSearchParams(req.url.slice(at + 1))
   }
+
+  /**
+   * 项目参数：`?project=XXXXXXXX`（NDR 授权ID）。
+   * 不传 = 数据面用默认项目（单项目部署等价于原来）。
+   */
+  const projectParam = (query: URLSearchParams): { project?: string } => {
+    const project = (query.get('project') ?? '').trim().toUpperCase()
+    return /^[A-Z0-9]{8}$/u.test(project) ? { project } : {}
+  }
+  const projectFrom = (req: IncomingMessage): string | undefined => projectParam(queryOf(req)).project
 
   /** 读全请求体并按上限拒绝（async-iter 语义与 dsh BrowserAuth 的登录读法相同）。 */
   const readBody = async (req: IncomingMessage, maxBytes: number): Promise<{ text: string, contentType: string } | undefined> => {
@@ -310,7 +332,7 @@ export function createUiHandler(
           respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
           return
         }
-        const result = await ingest.updateSettings(patch)
+        const result = await ingest.updateSettings(patch, projectParam(queryOf(req)).project)
         respondJson(res, result.ok === false ? 400 : 200, result)
         return
       }
@@ -335,7 +357,7 @@ export function createUiHandler(
         let conclusions: { available: boolean, total: number } = { available: false, total: 0 }
         if (typeof ingest.conclusionStats === 'function') {
           try {
-            conclusions = await ingest.conclusionStats()
+            conclusions = await ingest.conclusionStats(projectFrom(req))
           } catch {
             conclusions = { available: false, total: 0 }
           }
@@ -402,7 +424,7 @@ export function createUiHandler(
         const limit = clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT)
         const offset = clampInt(query.get('offset'), 0, 0, MAX_OFFSET)
         const search = (query.get('q') ?? '').slice(0, 128)
-        const page = await ingest.listConclusions({ limit, offset, search })
+        const page = await ingest.listConclusions({ limit, offset, search, ...projectParam(query) })
         respondJson(res, 200, { available: true, total: page.total, entries: page.entries })
         return
       }
@@ -422,12 +444,152 @@ export function createUiHandler(
           respondJson(res, 404, { error: 'data plane unavailable' })
           return
         }
-        const entry = await ingest.getConclusion(id)
+        const entry = await ingest.getConclusion(id, projectFrom(req))
         if (entry === null || entry === undefined) {
           respondJson(res, 404, { error: 'not found' })
           return
         }
         respondJson(res, 200, { entry })
+        return
+      }
+      // ---------- 项目组织（P2：一个 agent 接多台 NDR，数据按项目隔离） ----------
+      if (tail === '/api/projects') {
+        if (method === 'GET') {
+          if (!apiGuard()) return
+          const ingest = options.ingest()
+          if (ingest === null || typeof ingest.projects !== 'function') {
+            respondJson(res, 200, { available: false, projects: [] })
+            return
+          }
+          const projects = await ingest.projects()
+          respondJson(res, 200, { available: true, projects })
+          return
+        }
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        if (options.ingest() === null || typeof options.ingest()?.saveProject !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用，项目暂不可改' })
+          return
+        }
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        const result = await options.ingest()?.saveProject?.(patch)
+        respondJson(res, result?.ok === false ? 400 : 200, result ?? { ok: false })
+        return
+      }
+      if (tail.startsWith('/api/projects/')) {
+        if (!apiGuard()) return
+        const rest = decodeURIComponent(tail.slice('/api/projects/'.length)).trim().toUpperCase()
+        // 复核：POST /api/projects/{id}/verify
+        if (rest.endsWith('/VERIFY')) {
+          if (method !== 'POST') {
+            respondJson(res, 405, { error: 'method not allowed' })
+            return
+          }
+          const id = rest.slice(0, -'/VERIFY'.length)
+          const ingest = options.ingest()
+          if (ingest === null || typeof ingest.verifyProject !== 'function') {
+            respondJson(res, 503, { ok: false, error: '数据面不可用' })
+            return
+          }
+          const project = await ingest.verifyProject(id)
+          respondJson(res, project === null || project === undefined ? 404 : 200, { ok: project !== null, project })
+          return
+        }
+        if (!/^[A-Z0-9]{8}$/u.test(rest)) {
+          respondJson(res, 400, { error: 'invalid project id' })
+          return
+        }
+        if (method !== 'DELETE') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.removeProject !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用' })
+          return
+        }
+        const done = await ingest.removeProject(rest)
+        respondJson(res, done ? 200 : 404, { ok: done })
+        return
+      }
+      // ---------- 分析过程（P3：任务 → 会话 → 时间线，运行中可增量轮询） ----------
+      if (tail === '/api/processes') {
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.listProcesses !== 'function') {
+          respondJson(res, 200, { available: false, total: 0, items: [] })
+          return
+        }
+        const query = queryOf(req)
+        const limit = clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT)
+        const offset = clampInt(query.get('offset'), 0, 0, MAX_OFFSET)
+        const search = (query.get('q') ?? '').slice(0, 128)
+        const outcome = (query.get('outcome') ?? '').slice(0, 16)
+        const page = await ingest.listProcesses({ limit, offset, search, outcome, ...projectParam(query) })
+        respondJson(res, 200, { available: true, total: page.total, items: page.items })
+        return
+      }
+      if (tail.startsWith('/api/processes/')) {
+        if (!apiGuard()) return
+        const rest = decodeURIComponent(tail.slice('/api/processes/'.length)).trim()
+        if (rest === '' || rest.length > MAX_ANALYSIS_ID || /[\u0000-\u001f]/u.test(rest)) {
+          respondJson(res, 400, { error: 'invalid task id' })
+          return
+        }
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const ingest = options.ingest()
+        // 时间线：GET /api/processes/{taskId}/events?after=12
+        if (rest.endsWith('/events')) {
+          if (ingest === null || typeof ingest.processEvents !== 'function') {
+            respondJson(res, 503, { ok: false, error: '数据面不可用' })
+            return
+          }
+          const taskId = rest.slice(0, -'/events'.length)
+          const after = clampInt(queryOf(req).get('after'), 0, 0, Number.MAX_SAFE_INTEGER)
+          const timeline = await ingest.processEvents(taskId, projectFrom(req), after)
+          respondJson(res, 200, timeline)
+          return
+        }
+        if (ingest === null || typeof ingest.getProcess !== 'function') {
+          respondJson(res, 404, { error: 'data plane unavailable' })
+          return
+        }
+        const entry = await ingest.getProcess(rest, projectFrom(req))
+        if (entry === null || entry === undefined) {
+          respondJson(res, 404, { error: 'not found' })
+          return
+        }
+        // 详情顺带把会话时间线首段带回来，前端少一次往返
+        let timeline: unknown = null
+        if (typeof ingest.processEvents === 'function') {
+          try {
+            timeline = await ingest.processEvents(rest, projectFrom(req), 0)
+          } catch {
+            timeline = null
+          }
+        }
+        respondJson(res, 200, { entry, timeline })
         return
       }
       // ---------- 分析脚本（P4：控制台管理；模型侧仍走 find/get/save 工具） ----------
@@ -443,7 +605,7 @@ export function createUiHandler(
           const limit = clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT)
           const offset = clampInt(query.get('offset'), 0, 0, MAX_OFFSET)
           const search = (query.get('q') ?? '').slice(0, 128)
-          const page = await ingest.listScripts({ search, limit, offset })
+          const page = await ingest.listScripts({ search, limit, offset, ...projectParam(query) })
           respondJson(res, 200, { available: true, total: page.total, items: page.items })
           return
         }
@@ -469,7 +631,7 @@ export function createUiHandler(
           return
         }
         try {
-          const saved = await options.ingest()?.saveScript?.(patch)
+          const saved = await options.ingest()?.saveScript?.(patch, projectFrom(req))
           respondJson(res, 200, { ok: true, script: saved })
         } catch (error) {
           respondJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
@@ -511,7 +673,7 @@ export function createUiHandler(
             return
           }
           const key = rest.slice(0, -'/enabled'.length)
-          const done = await ingest.setScriptEnabled(key, patch.enabled)
+          const done = await ingest.setScriptEnabled(key, patch.enabled, projectFrom(req))
           respondJson(res, done ? 200 : 404, { ok: done })
           return
         }
@@ -520,7 +682,7 @@ export function createUiHandler(
             respondJson(res, 503, { ok: false, error: '数据面不可用' })
             return
           }
-          const done = await ingest.removeScript(rest)
+          const done = await ingest.removeScript(rest, projectFrom(req))
           respondJson(res, done ? 200 : 404, { ok: done })
           return
         }
@@ -532,7 +694,7 @@ export function createUiHandler(
           respondJson(res, 404, { error: 'data plane unavailable' })
           return
         }
-        const entry = await ingest.getScript(rest)
+        const entry = await ingest.getScript(rest, projectFrom(req))
         if (entry === null || entry === undefined) {
           respondJson(res, 404, { error: 'not found' })
           return

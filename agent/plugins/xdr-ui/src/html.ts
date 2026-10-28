@@ -208,6 +208,7 @@ ${THEME}
     <div class="brand"><span class="logo">瞳</span><div><b>深瞳</b><small>安全分析智能体</small></div></div>
     <nav>
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
+      <a href="#/processes" data-view="processes"><span class="dot"></span>分析过程</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
       <a href="#/scripts" data-view="scripts"><span class="dot"></span>分析脚本</a>
       <a href="#/settings" data-view="settings"><span class="dot"></span>配置</a>
@@ -258,6 +259,37 @@ ${THEME}
         <button id="prev">‹ 上一页</button>
         <button id="next">下一页 ›</button>
         <span id="page"></span>
+      </div>
+    </section>
+
+    <section id="view-processes" hidden>
+      <div class="toolbar">
+        <input id="pq" type="search" placeholder="搜任务 ID / 对象 / 模型…" maxlength="128">
+        <select id="poutcome">
+          <option value="">全部状态</option>
+          <option value="running">在跑</option>
+          <option value="done">已完成</option>
+          <option value="reused">复用（未起会话）</option>
+          <option value="suppressed">抑制跳过</option>
+          <option value="deferred">已延后</option>
+          <option value="failed">失败</option>
+        </select>
+        <button id="psearch">搜索 / 刷新</button>
+        <span class="count" id="pcount"></span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>开始</th><th>任务 / 对象</th><th>模型</th><th>工具</th><th>耗时</th><th>状态</th><th>判定</th></tr>
+        </thead>
+        <tbody id="prows"></tbody>
+      </table>
+      <div class="pager">
+        <button id="pprev">‹ 上一页</button>
+        <button id="pnext">下一页 ›</button>
+        <span id="ppage"></span>
+      </div>
+      <div class="notice" style="margin-top:.8rem">
+        点一行看时间线：任务下发 → 思考 → 工具调用/返回 → token 用量。运行中的会话每 3 秒自动追新。
       </div>
     </section>
 
@@ -462,6 +494,17 @@ ${THEME}
     <button id="close" class="btn">关闭</button>
   </div>
 </dialog>
+<dialog id="proc-dialog">
+  <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(820px,92vw);max-height:80vh">
+    <h3 id="proc-title" style="margin:0">分析过程</h3>
+    <div id="proc-meta" class="count" style="margin:0"></div>
+    <div id="proc-tools" class="count" style="margin:0"></div>
+    <div id="proc-events" style="overflow:auto;flex:1;border-top:1px solid rgba(255,255,255,.08);padding-top:.5rem"></div>
+    <div style="display:flex;justify-content:flex-end;gap:.6rem">
+      <button id="proc-close" class="btn">关闭</button>
+    </div>
+  </div>
+</dialog>
 <dialog id="script-dialog">
   <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(720px,90vw)">
     <h3 id="script-title" style="margin:0">新建脚本</h3>
@@ -491,12 +534,14 @@ ${THEME}
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
+    processes: { title: '分析过程', sub: '任务 → 会话：耗时、工具数、时间线；运行中实时追新' },
     scripts: { title: '分析脚本', sub: '模型写过的分析工具脚本：看、改、停用' },
     settings: { title: '配置', sub: '运行参数、连接状态与入口' },
     system: { title: '系统', sub: '模型与密钥、插件清单、原生设置入口' },
   }
   let offset = 0, total = 0, settingsLoaded = false
   let sOffset = 0, sTotal = 0, editing = ''
+  let pOffset = 0, pTotal = 0, procSeq = 0, procTimer = 0, procRunning = false
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
   const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
@@ -518,6 +563,7 @@ ${THEME}
     document.getElementById('view-title').textContent = VIEWS[view].title
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
+    if (view === 'processes') void loadProcesses().catch(onError)
     if (view === 'scripts') void loadScripts().catch(onError)
     if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
     if (view === 'system') void loadSystem().catch(onError)
@@ -625,6 +671,110 @@ ${THEME}
       '<div class="kv"><span class="k">结论</span>' + esc(e.summary) + '</div>' +
       '<pre>' + esc(JSON.stringify(e.findings ?? {}, null, 2)) + '</pre>'
     document.getElementById('detail').showModal()
+  }
+
+  /* ---------------- 分析过程（P3） ---------------- */
+
+  const duration = ms => {
+    const v = Number(ms || 0)
+    if (!v) return '—'
+    if (v < 1000) return v + ' ms'
+    if (v < 60000) return (v / 1000).toFixed(1) + ' s'
+    return Math.floor(v / 60000) + ' 分 ' + Math.round((v % 60000) / 1000) + ' 秒'
+  }
+  const outcomeLabel = o => ({
+    running: '在跑', done: '已完成', reused: '复用', suppressed: '抑制跳过',
+    deferred: '已延后', failed: '失败',
+  })[o] || (o || '—')
+
+  async function loadProcesses() {
+    const q = document.getElementById('pq').value.trim()
+    const outcome = document.getElementById('poutcome').value
+    const data = await json(BASE + '/api/processes?limit=' + PAGE + '&offset=' + pOffset +
+      '&q=' + encodeURIComponent(q) + '&outcome=' + encodeURIComponent(outcome))
+    pTotal = data.total || 0
+    const rows = (data.items || []).map(p => '<tr data-task="' + esc(p.taskId) + '">' +
+      '<td>' + esc(fmt(p.startedAt)) + '</td>' +
+      '<td><span class="mono">' + esc((p.kind || '') + ' · ' + (p.subject || '')) + '</span>' +
+      '<div class="count" style="margin:0">' + esc(p.taskId) + '</div></td>' +
+      '<td>' + esc(p.model || '—') + '</td>' +
+      '<td>' + esc(p.toolsUsed || 0) + '</td>' +
+      '<td>' + esc(duration(p.durationMs)) + '</td>' +
+      '<td>' + (p.outcome === 'running' ? '<span class="tag ok">' + esc(outcomeLabel(p.outcome)) + '</span>' : esc(outcomeLabel(p.outcome))) + '</td>' +
+      '<td>' + esc(p.verdict || '—') + '</td></tr>').join('')
+    document.getElementById('prows').innerHTML = rows ||
+      '<tr><td colspan="7" class="empty">还没有分析过程：智能体领到任务后会在这里出现</td></tr>'
+    document.getElementById('pcount').textContent = '共 ' + pTotal + ' 条'
+    document.getElementById('ppage').textContent = pTotal === 0 ? '' : ('第 ' + (pOffset / PAGE + 1) + ' / ' + Math.ceil(pTotal / PAGE) + ' 页')
+    document.getElementById('pprev').disabled = pOffset === 0
+    document.getElementById('pnext').disabled = pOffset + PAGE >= pTotal
+  }
+
+  function procRowHtml(ev) {
+    const cls = ev.isError ? 'tag bad' : (ev.kind === 'tool' ? 'tag ok' : 'count')
+    const label = ev.kind === 'tool' ? ev.label : ev.label
+    return '<div style="padding:.35rem 0;border-bottom:1px dashed rgba(255,255,255,.06)">' +
+      '<div><span class="' + cls + '" style="margin-right:.4rem">' + esc(label) + '</span>' +
+      '<span class="count" style="margin:0">' + esc(fmt(ev.time ? new Date(ev.time).toISOString() : '')) + '</span></div>' +
+      (ev.detail ? '<div class="mono" style="white-space:pre-wrap;word-break:break-word;opacity:.85">' + esc(ev.detail) + '</div>' : '') +
+      '</div>'
+  }
+
+  function renderProcMeta(tl) {
+    const tokens = tl.tokens || {}
+    document.getElementById('proc-meta').textContent =
+      (tl.running ? '● 运行中 · ' : '') +
+      'token：输入 ' + (tokens.input || 0) + ' / 输出 ' + (tokens.output || 0) +
+      '（合计 ' + (tokens.total || 0) + '）'
+    const tools = (tl.tools || []).map(x => x.name + ' ×' + x.count + (x.errors ? '（' + x.errors + ' 次报错）' : '')).join(' · ')
+    document.getElementById('proc-tools').textContent = tools ? ('工具：' + tools) : ''
+  }
+
+  function stopProcPoll() {
+    if (procTimer) { clearInterval(procTimer); procTimer = 0 }
+    procRunning = false
+  }
+
+  function appendEvents(tl) {
+    const box = document.getElementById('proc-events')
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40
+    box.insertAdjacentHTML('beforeend', (tl.events || []).map(procRowHtml).join(''))
+    if (atBottom) box.scrollTop = box.scrollHeight
+    if (typeof tl.nextSeq === 'number') procSeq = tl.nextSeq
+    renderProcMeta(tl)
+  }
+
+  async function pollProc(taskId) {
+    const tl = await json(BASE + '/api/processes/' + encodeURIComponent(taskId) + '/events?after=' + procSeq)
+    if (tl.ok === false) { stopProcPoll(); return }
+    appendEvents(tl)
+    if (!tl.running) stopProcPoll()
+  }
+
+  async function openProcess(taskId) {
+    stopProcPoll()
+    procSeq = 0
+    document.getElementById('proc-title').textContent = '分析过程：' + taskId
+    document.getElementById('proc-meta').textContent = '加载中…'
+    document.getElementById('proc-tools').textContent = ''
+    document.getElementById('proc-events').innerHTML = ''
+    document.getElementById('proc-dialog').showModal()
+    const data = await json(BASE + '/api/processes/' + encodeURIComponent(taskId))
+    const entry = data.entry || {}
+    document.getElementById('proc-title').textContent =
+      '分析过程：' + (entry.kind || '') + ' · ' + (entry.subject || taskId)
+    document.getElementById('proc-meta').textContent =
+      '任务 ' + taskId + ' · 会话 ' + (entry.sessionId || '（未起会话）') + ' · ' +
+      outcomeLabel(entry.outcome) + ' · 耗时 ' + duration(entry.durationMs) + ' · 工具 ' + (entry.toolsUsed || 0)
+    const tl = data.timeline || {}
+    if (tl.ok === false) {
+      document.getElementById('proc-events').innerHTML =
+        '<div class="empty">' + esc(tl.error || '没有会话日志（复用/抑制跳过不起会话）') + '</div>'
+      return
+    }
+    procRunning = tl.running === true
+    appendEvents(tl)
+    if (procRunning) procTimer = setInterval(() => { void pollProc(taskId).catch(onError) }, 3000)
   }
 
   /* ---------------- 分析脚本（P4） ---------------- */
@@ -865,6 +1015,16 @@ ${THEME}
   })
   window.addEventListener('hashchange', route)
 
+  document.getElementById('prows').addEventListener('click', ev => {
+    const tr = ev.target.closest('tr[data-task]')
+    if (tr) void openProcess(tr.dataset.task).catch(onError)
+  })
+  document.getElementById('psearch').addEventListener('click', () => { pOffset = 0; void loadProcesses().catch(onError) })
+  document.getElementById('pq').addEventListener('keydown', ev => { if (ev.key === 'Enter') { pOffset = 0; void loadProcesses().catch(onError) } })
+  document.getElementById('poutcome').addEventListener('change', () => { pOffset = 0; void loadProcesses().catch(onError) })
+  document.getElementById('pprev').addEventListener('click', () => { pOffset = Math.max(0, pOffset - PAGE); void loadProcesses().catch(onError) })
+  document.getElementById('pnext').addEventListener('click', () => { pOffset += PAGE; void loadProcesses().catch(onError) })
+  document.getElementById('proc-close').addEventListener('click', () => { stopProcPoll(); document.getElementById('proc-dialog').close() })
   document.getElementById('srows').addEventListener('click', ev => {
     const tr = ev.target.closest('tr[data-script]')
     if (tr) openScript(tr.dataset.script)
@@ -1001,6 +1161,7 @@ ${THEME}
     await loadOverview().catch(onError)
     if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
     if (viewOf(location.hash) === 'records') await loadList().catch(onError)
+    if (viewOf(location.hash) === 'processes') await loadProcesses().catch(onError)
     if (viewOf(location.hash) === 'scripts') await loadScripts().catch(onError)
     if (viewOf(location.hash) === 'system') await loadSystem().catch(onError)
   }

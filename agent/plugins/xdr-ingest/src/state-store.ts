@@ -60,6 +60,10 @@ export interface ProjectInput {
 /* 分析过程索引（任务 → 会话）                                          */
 /* ------------------------------------------------------------------ */
 
+/** 项目数据面：一个项目绑定一套（分析循环、脚本工具、控制台共用同一实例）。 */
+export type DataStore = TaskResultStore & ScriptStore & TaskSeenStore & ConclusionStore
+  & SettingsStore & ProcessStore
+
 /** 一次分析的结局。`running` 表示还没结束（控制台可实时看当前工具调用）。 */
 export type ProcessOutcome = 'running' | 'done' | 'reused' | 'suppressed' | 'deferred' | 'failed'
 

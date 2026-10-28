@@ -22,6 +22,11 @@ export interface ScriptToolsOptions {
   readonly maxCodeBytes: number
   /** find 默认返回条数（调用方仍可调小）。 */
   readonly maxResults: number
+  /**
+   * 多项目：按**当前分析会话**取该项目的脚本库。
+   * 不传 = 单项目（直接用 `store`）。
+   */
+  readonly storeOf?: (sessionId: string | undefined) => ScriptStore
 }
 
 /** Names registered globally for model-facing script-library access. */
@@ -79,6 +84,12 @@ export function registerScriptTools(
   options: ScriptToolsOptions,
 ): () => void {
   const disposers: Array<() => void> = []
+  /** 每次调用都按会话解析一次（同一进程里可能同时有多个项目的会话在跑）。 */
+  const pick = (exec: unknown): ScriptStore => {
+    if (options.storeOf === undefined) return store
+    const sessionId = (exec as { agent?: { sessionId?: string } } | null | undefined)?.agent?.sessionId
+    return options.storeOf(sessionId)
+  }
   try {
     disposers.push(ctx.tools.register(defineTool({
       name: ANALYSIS_SCRIPT_TOOL_NAMES[0],
@@ -95,8 +106,9 @@ export function registerScriptTools(
         limit: { type: 'number', description: '最多返回几条（默认 5）。' },
       },
       output: TEXT_OUTPUT,
-      async execute(args) {
-        const found = await store.find({
+      async execute(args: Record<string, unknown>, exec: unknown) {
+        const box = pick(exec)
+        const found = await box.find({
           query: text(args.query),
           tag: text(args.tag),
           limit: limitOf(args.limit, options.maxResults, Math.max(options.maxResults, 20)),
@@ -108,7 +120,7 @@ export function registerScriptTools(
           note: found.length === 0
             ? '没有匹配的脚本；如果这次写的东西以后还能用，记得用 save_analysis_script 存下来。'
             : '取全文用 get_analysis_script(name=...)，然后只改变量。',
-          store: store.kind,
+          store: box.kind,
         })
       },
     })))
@@ -122,12 +134,13 @@ export function registerScriptTools(
         name: { type: 'string', description: '脚本名字或 id（find_analysis_scripts 返回）。', required: true },
       },
       output: TEXT_OUTPUT,
-      async execute(args) {
+      async execute(args: Record<string, unknown>, exec: unknown) {
         const key = text(args.name)
         if (key === '') return JSON.stringify({ ok: false, error: 'name 必填' })
-        const script = await store.get(key)
+        const box = pick(exec)
+        const script = await box.get(key)
         if (script === null) return JSON.stringify({ ok: false, error: `没有名为 ${key} 的脚本` })
-        await store.bumpUsage(script.id, new Date().toISOString())
+        await box.bumpUsage(script.id, new Date().toISOString())
         return JSON.stringify({
           ok: true,
           ...meta(script),
@@ -168,7 +181,7 @@ export function registerScriptTools(
         replace: { type: 'boolean', description: '同名时是否覆盖（默认 false）。' },
       },
       output: TEXT_OUTPUT,
-      async execute(args) {
+      async execute(args: Record<string, unknown>, exec: unknown) {
         const name = clip(text(args.name), 80)
         const scenario = clip(text(args.scenario), 500)
         const code = typeof args.code === 'string' ? args.code : ''
@@ -182,7 +195,8 @@ export function registerScriptTools(
             error: `脚本太大（${codeBytes} 字节，上限 ${options.maxCodeBytes}）；请精简或拆成多个脚本`,
           })
         }
-        const existing = await store.get(name)
+        const box = pick(exec)
+        const existing = await box.get(name)
         if (existing !== null && args.replace !== true) {
           return JSON.stringify({
             ok: false,
@@ -191,7 +205,7 @@ export function registerScriptTools(
           })
         }
         const tags = Array.isArray(args.tags)
-          ? args.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 12)
+          ? args.tags.filter((tag: unknown): tag is string => typeof tag === 'string').slice(0, 12)
           : []
         const input: ScriptInput = {
           name,
@@ -204,13 +218,13 @@ export function registerScriptTools(
           sourceTaskId: clip(text(args.source_task_id), 64),
         }
         try {
-          const saved = await store.upsert(input, new Date().toISOString())
+          const saved = await box.upsert(input, new Date().toISOString())
           return JSON.stringify({
             ok: true,
             created: existing === null,
             script: meta(saved),
-            store: store.kind,
-            note: store.kind === 'memory'
+            store: box.kind,
+            note: box.kind === 'memory'
               ? '当前是内存脚本库（PG 未配置），进程重启后会丢；请让运维检查 pgUrl。'
               : '已入库，下次同类场景用 find_analysis_scripts 检索。',
           })

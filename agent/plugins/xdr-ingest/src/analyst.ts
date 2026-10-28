@@ -106,6 +106,11 @@ export interface AnalystOptions {
   readonly taskReuseTtlMs?: number
   /** 新线索强度比上次高多少就必须重查（现象变强）。 */
   readonly taskReuseStrengthDelta?: number
+  /**
+   * 会话生命周期回调（多项目）：脚本工具靠 sessionId 找「这次分析属于哪个项目」。
+   * 起会话前 `start`，会话收尾后 `end`。
+   */
+  readonly onSession?: (sessionId: string, phase: 'start' | 'end') => void
 }
 
 export interface AnalystOutcome {
@@ -186,6 +191,7 @@ export class Analyst {
       model: [provider, model].filter(v => (v ?? '') !== '').join('/'),
       startedAt: new Date(startedAt).toISOString(),
     })
+    this.options.onSession?.(sessionId, 'start')
     const handle = await this.options.agents.create({
       sessionId,
       agentOptions: {
@@ -213,6 +219,7 @@ export class Analyst {
       error = exc instanceof Error ? exc.message : String(exc)
     } finally {
       await Promise.resolve(handle.dispose()).catch(() => undefined)
+      this.options.onSession?.(sessionId, 'end')
     }
 
     // 会话结束不等于任务完成：必须回查 NDR 侧状态

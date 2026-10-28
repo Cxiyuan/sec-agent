@@ -62,6 +62,23 @@ function conclusion(id: string): Record<string, unknown> {
   }
 }
 
+/** 一个项目组织（P2 形状）。 */
+function projectRow(projectId: string) {
+  return {
+    projectId,
+    name: '南充职业技术学院',
+    mcpUrl: 'http://ndr-mcp:8090/mcp',
+    mcpToken: 'stmcp_1',
+    pushToken: 'push-1',
+    enabled: true,
+    status: 'ok',
+    statusDetail: '',
+    lastCheckedAt: '2026-10-28T12:00:00.000Z',
+    createdAt: '2026-10-28T10:00:00.000Z',
+    updatedAt: '2026-10-28T12:00:00.000Z',
+  }
+}
+
 /** 一条分析脚本（P4 脚本库形状）。 */
 function script(name: string) {
   return {
@@ -408,6 +425,112 @@ test('脚本库：列表/详情/新建/启停/删除（控制台不执行脚本�
     const html = await page.text()
     assert.ok(html.includes('/api/scripts'))
     assert.ok(html.includes('view-scripts'))
+  } finally {
+    server.close()
+  }
+})
+
+test('项目组织：列表/新增/复核/删除（授权ID = NDR 8 位身份串）', async () => {
+  const ingest = makeIngest()
+  let saved: Record<string, unknown> | null = null
+  let verified = ''
+  let removed = ''
+  ingest.projects = async () => [projectRow('ZPL6QQLG')]
+  ingest.saveProject = async body => {
+    saved = body as Record<string, unknown>
+    const id = String(saved['projectId'] ?? '')
+    return /^[A-Z0-9]{8}$/u.test(id)
+      ? { ok: true, project: projectRow(id) }
+      : { ok: false, error: '授权ID 必须是 8 位大写字母或数字' }
+  }
+  ingest.verifyProject = async id => {
+    verified = id
+    return projectRow(id)
+  }
+  ingest.removeProject = async id => {
+    removed = id
+    return true
+  }
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const anon = await fetch(`${base}${BASE}/api/projects`)
+    assert.equal(anon.status, 401)
+
+    const list = await fetch(`${base}${BASE}/api/projects`, { headers: { cookie } })
+    assert.equal(list.status, 200)
+    const data = await list.json() as { projects: Array<Record<string, unknown>> }
+    assert.equal(data.projects[0]?.['projectId'], 'ZPL6QQLG')
+
+    // 合法：落库 + 返回项目
+    const ok = await fetch(`${base}${BASE}/api/projects`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'ZPL6QQLG', name: '南充职业技术学院', mcpUrl: 'http://ndr-mcp:8090/mcp', mcpToken: 't', pushToken: 'p' }),
+    })
+    assert.equal(ok.status, 200)
+    assert.equal(saved?.['projectId'], 'ZPL6QQLG')
+
+    // 非法授权ID → 400（数据面给原因）
+    const bad = await fetch(`${base}${BASE}/api/projects`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'abc' }),
+    })
+    assert.equal(bad.status, 400)
+    const badBody = await bad.json() as { error?: string }
+    assert.match(badBody.error ?? '', /8 位/u)
+
+    // 复核
+    const verify = await fetch(`${base}${BASE}/api/projects/ZPL6QQLG/verify`, { method: 'POST', headers: { cookie } })
+    assert.equal(verify.status, 200)
+    assert.equal(verified, 'ZPL6QQLG')
+
+    // 删除 + 非法 ID 400
+    const del = await fetch(`${base}${BASE}/api/projects/ZPL6QQLG`, { method: 'DELETE', headers: { cookie } })
+    assert.equal(del.status, 200)
+    assert.equal(removed, 'ZPL6QQLG')
+    const invalid = await fetch(`${base}${BASE}/api/projects/not-an-id`, { method: 'DELETE', headers: { cookie } })
+    assert.equal(invalid.status, 400)
+  } finally {
+    server.close()
+  }
+})
+
+test('分析过程：列表带 outcome/project 透传；详情附时间线；events 支持 after 增量', async () => {
+  const ingest = makeIngest()
+  let listQuery = ''
+  let afterSeen = -1
+  ingest.listProcesses = async query => {
+    listQuery = JSON.stringify(query)
+    return { total: 1, items: [{ taskId: 't-1', sessionId: 'xdr-analysis-t-1', outcome: 'running' }] }
+  }
+  ingest.getProcess = async id => (id === 't-1' ? { taskId: 't-1', sessionId: 'xdr-analysis-t-1' } : null)
+  ingest.processEvents = async (taskId, _project, after) => {
+    afterSeen = after ?? 0
+    return { ok: true, sessionId: 'xdr-analysis-t-1', running: true, events: [{ seq: 5, kind: 'tool' }], nextSeq: 5 }
+  }
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const list = await fetch(`${base}${BASE}/api/processes?limit=9999&outcome=running&project=zpl6qqlg`, { headers: { cookie } })
+    assert.equal(list.status, 200)
+    assert.deepEqual(JSON.parse(listQuery), { limit: 200, offset: 0, search: '', outcome: 'running', project: 'ZPL6QQLG' })
+
+    const detail = await fetch(`${base}${BASE}/api/processes/t-1`, { headers: { cookie } })
+    assert.equal(detail.status, 200)
+    const detailBody = await detail.json() as { entry: Record<string, unknown>, timeline: Record<string, unknown> }
+    assert.equal(detailBody.entry['sessionId'], 'xdr-analysis-t-1')
+    assert.equal(detailBody.timeline['ok'], true)
+
+    const events = await fetch(`${base}${BASE}/api/processes/t-1/events?after=4`, { headers: { cookie } })
+    assert.equal(events.status, 200)
+    assert.equal(afterSeen, 4)
+
+    const missing = await fetch(`${base}${BASE}/api/processes/none`, { headers: { cookie } })
+    assert.equal(missing.status, 404)
   } finally {
     server.close()
   }

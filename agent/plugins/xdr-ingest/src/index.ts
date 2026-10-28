@@ -31,17 +31,11 @@ import type { RuntimeSettings } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 import { identityOfMatch } from './task-results.ts'
 import { MemoryStateStore } from './state-store.ts'
-import type {
-  ConclusionStore,
-  ProcessStore,
-  ProjectRecord,
-  ProjectStatus,
-  ScriptStore,
-  SettingsStore,
-  TaskSeenStore,
-} from './state-store.ts'
+import type { DataStore, ProjectInput } from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
+import { ProjectManager, SessionProjects } from './projects.ts'
+import type { ProjectRuntime } from './projects.ts'
 
 export type * from './types.ts'
 export { analysisIdOf, identityKey, normalizeDigest, ANALYSIS_ID_PREFIX } from './identity.ts'
@@ -64,7 +58,10 @@ export type { RuntimeSettings, SettingsStore } from './settings.ts'
 export { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 export { MemoryStateStore } from './state-store.ts'
 export { PostgresStateStore } from './pg-state-store.ts'
-export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore } from './state-store.ts'
+export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore, DataStore, ProjectRecord, ProjectStatus } from './state-store.ts'
+export { ProjectManager, ProjectRuntime, SessionProjects } from './projects.ts'
+export { readSessionTimeline } from './session-timeline.ts'
+export type { SessionTimeline, TimelineEvent } from './session-timeline.ts'
 export { taskResultKey, reuseDecision, REUSABLE_VERDICTS } from './task-results.ts'
 export type { TaskResultRecord, TaskResultStore } from './task-results.ts'
 export type { ConclusionPage, ConclusionQuery, ConclusionRecord } from './conclusions.ts'
@@ -147,6 +144,8 @@ export interface Config {
   readonly scriptMaxCodeBytes: number
   /** 脚本检索默认返回条数。 */
   readonly scriptMaxResults: number
+  /** DSH 会话日志根目录（分析过程时间线；容器里默认 /data/dsh/sessions）。 */
+  readonly sessionDir: string
 }
 
 export const Config: z<Config> = z.object({
@@ -178,6 +177,7 @@ export const Config: z<Config> = z.object({
   taskReuseStrengthDelta: z.number().min(0).max(1).default(0.15),
   scriptMaxCodeBytes: z.number().step(1).min(1024).max(262_144).default(65_536),
   scriptMaxResults: z.number().step(1).min(1).max(20).default(5),
+  sessionDir: z.string().default('/data/dsh/sessions'),
 })
 
 /** Schemastery 表达不了的约束在这里校验，加载期即失败。 */
@@ -244,20 +244,6 @@ class StateStoreRegistry {
 }
 
 /** 当前项目的数据面（随项目解析结果切换；未解析前是内存兜底，方法返回空）。 */
-type DataStore = TaskResultStore & ScriptStore & TaskSeenStore & ConclusionStore & SettingsStore & ProcessStore
-
-/** 把"随时可能换实例"的 getter 包成稳定对象：脚本工具/服务拿到的引用不变。 */
-function liveStore<T extends object>(get: () => T): T {
-  return new Proxy({} as T, {
-    get: (_target, prop) => {
-      const target = get()
-      const value = Reflect.get(target, prop)
-      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
-    },
-    has: (_target, prop) => prop in get(),
-  })
-}
-
 /** 注册 NDR 路由、智能体脚本工具与持久化存储的生命周期。 */
 export function apply(ctx: Context, config: Config): void {
   assertConfig(config)
@@ -276,28 +262,52 @@ export function apply(ctx: Context, config: Config): void {
   const registry = config.pgUrl.trim() === ''
     ? null
     : new StateStoreRegistry(config.pgUrl.trim(), 3)
-  /** 项目数据面：解析前用内存兜底（方法返回空，不会串项目）。 */
-  let projectStore: DataStore = memoryStore
-  const data = liveStore<DataStore>(() => projectStore)
-
-  let project: ProjectRecord | null = null
-  let resolving = true
-  let resolveError = ''
-  let loop: ClaimLoop | null = null
-  let analyst: Analyst | null = null
-  let syncSuppressions: (() => Promise<void>) | null = null
-  let mcpClient: McpHttpClient | null = null
-  let ndrPort: NdrTaskPortAdapter | null = null
+  const admin = registry?.get('') ?? null
+  const sessions = new SessionProjects()
   const agents = agentsOf(ctx)
+
+  /** 项目数据面：一个项目一个实例（构造时绑定 project_id，调用方漏不掉）。 */
+  const storeOf = (projectId: string): DataStore => registry?.get(projectId) ?? memoryStore
+
+  const manager = new ProjectManager({
+    config: {
+      pollSeconds: config.pollSeconds,
+      maxConcurrent: config.maxConcurrent,
+      claimLimit: config.claimLimit,
+      analysisTimeoutSeconds: config.analysisTimeoutSeconds,
+      doorbellDebounceMs: config.doorbellDebounceMs,
+      backoffMaxMs: config.backoffMaxMs,
+      provider: config.provider,
+      model: config.model,
+      taskReuseTtlHours: config.taskReuseTtlHours,
+      taskReuseStrengthDelta: config.taskReuseStrengthDelta,
+      sessionDir: config.sessionDir,
+    },
+    agents,
+    admin,
+    sessions,
+    storeOf,
+  })
 
   console.log(
     `[xdr-ingest] apply(): routes at ${config.basePath}/*, `
     + `cold store: ${coldStore.kind}, state store: ${registry === null ? 'memory' : 'postgres'}`,
   )
 
-  /** 当前生效的运行参数：有领取循环读循环（可能被工作台改过），没有就取配置默认。 */
-  function currentSettings(): RuntimeSettings {
-    return loop?.settingsSnapshot() ?? {
+  /** 控制台传了 project 就用它，否则用默认项目（单项目部署等价于原来）。 */
+  function runtimeOf(projectId?: string): ProjectRuntime | null {
+    const id = (projectId ?? '').trim().toUpperCase()
+    if (id !== '') return manager.get(id)
+    return manager.get(manager.defaultProjectId())
+  }
+
+  function storeFor(projectId?: string): DataStore {
+    return runtimeOf(projectId)?.store ?? memoryStore
+  }
+
+  /** 当前生效的运行参数（默认项目；没有运行时取配置默认）。 */
+  function currentSettings(projectId?: string): RuntimeSettings {
+    return runtimeOf(projectId)?.settings() ?? {
       pollSeconds: config.pollSeconds,
       maxConcurrent: config.maxConcurrent,
       claimLimit: config.claimLimit,
@@ -306,175 +316,68 @@ export function apply(ctx: Context, config: Config): void {
 
   /** 运行观测快照：`/xdr/ingest/status` 与 xdrIngest 服务共用同一份。 */
   function statusSnapshot(): Record<string, unknown> {
+    const runtime = runtimeOf()
+    const project = runtime?.project ?? null
     return {
-      analysis: resolving ? 'resolving' : loop === null ? 'disabled' : 'enabled',
+      analysis: runtime === null ? 'disabled' : 'enabled',
       ...settingsView(currentSettings()),
       store_kind: coldStore.kind,
       state_store_kind: registry === null ? 'memory' : 'postgres',
       project: {
         id: project?.projectId ?? config.projectId.trim(),
         name: project?.name ?? config.projectName.trim(),
-        status: project?.status ?? (resolving ? 'unchecked' : 'unreachable'),
-        detail: project?.statusDetail ?? resolveError,
+        status: project?.status ?? 'unchecked',
+        detail: project?.statusDetail ?? '',
       },
+      // 多项目：控制台「项目组织」页读它
+      projects: manager.status(),
       // 控制台「分析记录」的数据源（智能体自己的结论留档，按项目隔离）
       conclusion_source: 'agent:xdr_ingest_conclusion',
       script_tool_names: ANALYSIS_SCRIPT_TOOL_NAMES.filter(name =>
-        ctx.tools.schemas().some(schema => schema.name === name),
+        ctx.tools.schemas().some((schema: { name: string }) => schema.name === name),
       ),
-      ...(analyst === null ? {} : { task_reuse: analyst.reuseStats }),
-      ...(loop === null ? {} : { loop: loop.stats }),
+      ...(runtime === null ? {} : {
+        task_reuse: (runtime.status() as Record<string, unknown>)['task_reuse'],
+        loop: (runtime.status() as Record<string, unknown>)['loop'],
+      }),
     }
   }
 
   /**
-   * 解析并校验项目绑定：
-   * 1. 授权ID 从配置取，或调 NDR 的 `server_info` 自动取；
-   * 2. 用 `server_info`（以及响应头 `x-ndr-auth-id`）核对，不一致 → 停分析并报警；
-   * 3. 绑不上就不启动领取循环（宁可显式失败，也不写到归属不明的库里）。
+   * 启动时把配置里的项目登记进项目表（老部署零配置升级），再逐个起循环。
+   *
+   * 配置里没写授权ID 时，先调 NDR 的 `server_info` 问出来（老行为）；
+   * 问不到就**不建**项目（宁可让控制台提示"去新增项目"，也不写归属不明的数据）。
    */
-  async function resolveProject(): Promise<void> {
-    if (config.mcpToken.trim() === '' || agents === null) {
-      resolving = false
-      return
+  void (async (): Promise<void> => {
+    let projectId = config.projectId.trim().toUpperCase()
+    if (!/^[A-Z0-9]{8}$/u.test(projectId) && config.mcpToken.trim() !== '' && /^https?:\/\//u.test(config.mcpUrl.trim())) {
+      try {
+        const probe = new McpHttpClient({
+          url: config.mcpUrl.trim(),
+          token: config.mcpToken.trim(),
+          clientName: 'xdr-ingest',
+          clientVersion: '0.2.0',
+        })
+        projectId = (await new NdrTaskPortAdapter(probe).serverInfo()).authId
+        console.log(`[xdr-ingest] 未配置 projectId：从 NDR server_info 取到授权ID ${projectId || '(空)'}`)
+      } catch (error) {
+        console.warn(
+          '[xdr-ingest] 取授权ID 失败，暂不启动分析：',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
     }
-    const client = new McpHttpClient({
-      url: config.mcpUrl.trim(),
-      token: config.mcpToken.trim(),
-      clientName: 'xdr-ingest',
-      clientVersion: '0.2.0',
-    })
-    mcpClient = client
-    const ndr = new NdrTaskPortAdapter(client)
-    ndrPort = ndr
-    let info: { authId: string, source: string, stable: boolean }
-    try {
-      info = await ndr.serverInfo()
-    } catch (error) {
-      resolveError = `绑定校验失败：${error instanceof Error ? error.message : String(error)}`
-      resolving = false
-      console.error(`[xdr-ingest] ${resolveError}（不启动分析循环）`)
-      return
-    }
-    const declared = config.projectId.trim()
-    const bound = (declared !== '' ? declared : info.authId).toUpperCase()
-    if (bound === '') {
-      resolveError = 'NDR 未返回授权ID（server_info 为空）'
-      resolving = false
-      console.error(`[xdr-ingest] ${resolveError}（不启动分析循环）`)
-      return
-    }
-    const admin = registry?.get('')
-    if (declared !== '' && info.authId !== '' && declared.toUpperCase() !== info.authId.toUpperCase()) {
-      resolveError = `授权ID 不一致：配置 ${declared} / NDR ${info.authId}`
-      project = (await admin?.upsertProject({
-        projectId: bound,
-        name: config.projectName.trim() || config.projectName.trim() || '默认项目',
-        mcpUrl: config.mcpUrl.trim(),
-        mcpToken: config.mcpToken.trim(),
-        pushToken: config.token.trim(),
-        enabled: true,
-      }).catch(() => null)) ?? null
-      await admin?.setProjectStatus(bound, 'auth_mismatch', resolveError)
-      resolving = false
-      console.error(`[xdr-ingest] ${resolveError}：已停用该项目（到控制台改绑定ID后可恢复）`)
-      return
-    }
-    // 绑定成立：落项目行（名字沿用已有，其次配置，最后"默认项目"）
-    const existing = await admin?.getProject(bound).catch(() => null)
-    const name = (existing?.name ?? '').trim() || config.projectName.trim() || '默认项目'
-    project = (await admin?.upsertProject({
-      projectId: bound,
-      name,
+    await manager.init({
+      projectId,
+      name: config.projectName.trim() || '默认项目',
       mcpUrl: config.mcpUrl.trim(),
       mcpToken: config.mcpToken.trim(),
       pushToken: config.token.trim(),
       enabled: true,
-    }).catch(() => null)) ?? null
-    await admin?.setProjectStatus(bound, 'ok', '')
-    projectStore = registry?.get(bound) ?? memoryStore
-    resolving = false
-    if (project === null) project = { ...(project ?? {}), ...({
-      projectId: bound, name, mcpUrl: config.mcpUrl.trim(), mcpToken: config.mcpToken.trim(),
-      pushToken: config.token.trim(), enabled: true, status: 'ok' as ProjectStatus,
-      statusDetail: '', lastCheckedAt: '', createdAt: '', updatedAt: '',
-    }) } as ProjectRecord
-    console.log(
-      `[xdr-ingest] 项目绑定：${name}（授权ID ${bound}，来源 ${info.source}${info.stable ? '' : '，不稳定'}）`,
-    )
-
-    analyst = new Analyst({
-      agents,
-      ndr,
-      timeoutMs: config.analysisTimeoutSeconds * 1000,
-      source: 'xdr-ingest',
-      modelSelection: () => {
-        const selected = ctx.get('agentDefaultModel')?.currentSelection()
-        return selected === undefined
-          ? undefined
-          : { provider: selected.provider, model: selected.model }
-      },
-      ...(config.provider.trim() !== '' ? { provider: config.provider.trim() } : {}),
-      ...(config.model.trim() !== '' ? { model: config.model.trim() } : {}),
-      taskResults: projectStore,
-      taskReuseTtlMs: config.taskReuseTtlHours * 3_600_000,
-      taskReuseStrengthDelta: config.taskReuseStrengthDelta,
-      taskSeen: projectStore,
-      process: projectStore,
-      conclusions: projectStore,
-      projectId: bound,
     })
-    syncSuppressions = async (): Promise<void> => {
-      const items = await ndr.listSuppressions()
-      let marked = 0
-      for (const item of items) {
-        if (!item.enabled) continue
-        if (item.sourceTaskId !== '') {
-          if (await projectStore.markSuppressed(item.sourceTaskId, item.name)) marked += 1
-        }
-        const identity = identityOfMatch(item.match)
-        if (identity === null) continue
-        marked += await projectStore.markSuppressedByIdentity(identity, item.name)
-      }
-      if (marked > 0) {
-        console.log(`[xdr-ingest] 抑制记忆已同步：${marked} 条现象被标记为「不再分析」`)
-      }
-    }
-    const activeAnalyst = analyst
-    loop = new ClaimLoop({
-      pollSeconds: currentSettings().pollSeconds,
-      maxConcurrent: currentSettings().maxConcurrent,
-      claimLimit: currentSettings().claimLimit,
-      doorbellDebounceMs: config.doorbellDebounceMs,
-      backoffMaxMs: config.backoffMaxMs,
-      claimTasks: limit => ndr.claimTasks(limit),
-      runTask: async task => {
-        const outcome = await activeAnalyst.run(task)
-        if (!outcome.completed) {
-          console.warn(
-            `[xdr-ingest] 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
-            + `${outcome.deferred ? '已延后' : '延后失败'}）`,
-          )
-        }
-      },
-    })
-    // 工作台保存过的运行参数优先于配置默认值
-    const saved = await projectStore.loadSettings().catch(() => null)
-    if (saved !== null) {
-      const merged = mergeSettings(currentSettings(), saved)
-      if ('error' in merged) {
-        console.warn('[xdr-ingest] 已保存的运行参数不合法，忽略：', merged.error)
-      } else {
-        loop.configure(merged.settings)
-      }
-    }
-    loop.start()
-    void syncSuppressions().catch(() => undefined)
-  }
-  void resolveProject().catch((error: unknown) => {
-    resolving = false
-    resolveError = error instanceof Error ? error.message : String(error)
-    console.error('[xdr-ingest] 项目解析失败：', resolveError)
+  })().catch((error: unknown) => {
+    console.error('[xdr-ingest] 项目加载失败：', error instanceof Error ? error.message : String(error))
   })
 
   // 旧摘要冷库的两级缓存（回滚专用；主数据在 state store）
@@ -492,9 +395,10 @@ export function apply(ctx: Context, config: Config): void {
       maxBodyBytes: config.maxBodyBytes,
       cache,
       status: statusSnapshot,
-      onDoorbell: () => {
-        if (loop === null) return
-        loop.wake()
+      // 多项目：门铃按推送令牌找项目（单项目部署 = 令牌仍只有一个）
+      resolveProject: token => manager.resolvePushToken(token),
+      onDoorbell: (bell, _receivedAt, projectId) => {
+        void manager.onDoorbell(projectId ?? manager.defaultProjectId(), bell.project ?? '')
       },
     }),
   }
@@ -502,39 +406,60 @@ export function apply(ctx: Context, config: Config): void {
   const service = {
     status: statusSnapshot,
     cacheStats: () => cache.stats(),
-    taskReuseStats: () => analyst?.reuseStats ?? { reused: 0, stored: 0 },
-    scriptStats: async () => ({ store: projectStore.kind, count: await projectStore.countScripts() }),
-    conclusionStats: async () => ({ available: true, total: await projectStore.countConclusions() }),
-    processStats: async () => ({ available: true }),
-    wake: () => {
-      if (loop === null) return false
-      loop.wake()
+    /** 项目组织（控制台新增/编辑/校验/删除）。 */
+    projects: () => manager.list(),
+    saveProject: (body: unknown) => manager.save(projectInputOf(body)),
+    removeProject: (projectId: string) => manager.remove(projectId),
+    verifyProject: (projectId: string) => manager.verify(projectId),
+    projectStatus: () => manager.status(),
+    taskReuseStats: (projectId?: string) =>
+      (runtimeOf(projectId)?.status()['task_reuse'] as { reused: number, stored: number } | undefined)
+      ?? { reused: 0, stored: 0 },
+    scriptStats: async (projectId?: string) => ({ store: storeFor(projectId).kind, count: await storeFor(projectId).countScripts() }),
+    conclusionStats: async (projectId?: string) => ({ available: true, total: await storeFor(projectId).countConclusions() }),
+    processStats: async (projectId?: string) => ({ available: true, total: (await storeFor(projectId).listProcesses({ limit: 1, offset: 0, search: '', outcome: '' })).total }),
+    wake: (projectId?: string) => {
+      const runtime = runtimeOf(projectId)
+      if (runtime === null) return false
+      runtime.wake()
       return true
     },
     listAnalyses: (query: { limit: number, offset: number, search: string }) => coldStore.listRecent(query),
     getAnalysis: (analysisId: string) => coldStore.load(analysisId),
-    listConclusions: (query: { limit: number, offset: number, search: string }) =>
-      projectStore.listConclusions(query),
-    getConclusion: (id: string) => projectStore.getConclusion(id),
-    listProcesses: (query: { limit: number, offset: number, search: string, outcome: string }) =>
-      projectStore.listProcesses(query),
-    getProcess: (taskId: string) => projectStore.getProcess(taskId),
-    listScripts: (query: { search: string, limit: number, offset: number }) =>
-      projectStore.list(query),
-    getScript: (nameOrId: string) => projectStore.getAny(nameOrId),
-    saveScript: (body: unknown) => projectStore.upsert(scriptInputOf(body), new Date().toISOString()),
-    setScriptEnabled: (nameOrId: string, enabled: boolean) => projectStore.setEnabled(nameOrId, enabled),
-    removeScript: (nameOrId: string) => projectStore.remove(nameOrId),
-    settings: async () => ({ ...settingsView(currentSettings()), store: projectStore.kind }),
-    updateSettings: async (patch: unknown) => {
-      const merged = mergeSettings(currentSettings(), patch)
-      if ('error' in merged) return { ok: false, error: merged.error }
-      loop?.configure(merged.settings)
-      const persisted = await projectStore.saveSettings(merged.settings)
-      if (!persisted) {
-        console.warn('[xdr-ingest] 运行参数只在内存生效：state store 写入失败，重启后会回到上次成功保存的值。')
-      }
-      return { ok: true, persisted, settings: settingsView(merged.settings) }
+    listConclusions: (query: { limit: number, offset: number, search: string, project?: string }) =>
+      storeFor(query.project).listConclusions(query),
+    getConclusion: (id: string, projectId?: string) => storeFor(projectId).getConclusion(id),
+    listProcesses: (query: { limit: number, offset: number, search: string, outcome: string, project?: string }) =>
+      storeFor(query.project).listProcesses(query),
+    getProcess: (taskId: string, projectId?: string) => storeFor(projectId).getProcess(taskId),
+    listScripts: (query: { search: string, limit: number, offset: number, project?: string }) =>
+      storeFor(query.project).list(query),
+    getScript: (nameOrId: string, projectId?: string) => storeFor(projectId).getAny(nameOrId),
+    saveScript: (body: unknown, projectId?: string) =>
+      storeFor(projectId).upsert(scriptInputOf(body), new Date().toISOString()),
+    setScriptEnabled: (nameOrId: string, enabled: boolean, projectId?: string) =>
+      storeFor(projectId).setEnabled(nameOrId, enabled),
+    removeScript: (nameOrId: string, projectId?: string) => storeFor(projectId).remove(nameOrId),
+    settings: async (projectId?: string) => ({
+      ...settingsView(currentSettings(projectId)),
+      store: storeFor(projectId).kind,
+    }),
+    updateSettings: async (patch: unknown, projectId?: string) => {
+      const runtime = runtimeOf(projectId)
+      if (runtime === null) return { ok: false, error: '没有启用中的项目，无法修改运行参数' }
+      return runtime.configure(patch)
+    },
+    /** 分析过程：某个任务对应的会话时间线（DSH 会话日志只读）。 */
+    processEvents: async (taskId: string, projectId?: string, after?: number) => {
+      const runtime = runtimeOf(projectId)
+      const process = await storeFor(projectId).getProcess(taskId)
+      if (process === null) return { ok: false, error: '没有这条分析过程' }
+      if (process.sessionId === '') return { ok: false, error: '这条过程没有起会话（复用/抑制跳过）' }
+      if (runtime === null) return { ok: false, error: '项目未启用' }
+      return runtime.sessionTimeline(process.sessionId, {
+        running: process.outcome === 'running',
+        ...(after === undefined ? {} : { after }),
+      })
     },
   }
   void ctx.reflect.provide('xdrIngest', service)
@@ -543,43 +468,68 @@ export function apply(ctx: Context, config: Config): void {
       const disposeRoute = ctx.webServer.register(route)
       let disposeScriptTools = (): void => undefined
       try {
-        disposeScriptTools = registerScriptTools(ctx, projectStore, {
+        disposeScriptTools = registerScriptTools(ctx, storeOf(manager.defaultProjectId()), {
           maxCodeBytes: config.scriptMaxCodeBytes,
           maxResults: config.scriptMaxResults,
+          // 多项目：按会话找项目，别把 A 项目的脚本写进 B 项目
+          storeOf: sessionId => storeOf(sessions.get(sessionId) ?? manager.defaultProjectId()),
         })
       } catch (error) {
         disposeRoute()
         throw error
       }
       const syncTimer = setInterval(() => {
-        if (syncSuppressions === null) return
-        void syncSuppressions().catch(error => {
-          console.warn(
-            '[xdr-ingest] suppression sync failed:',
-            error instanceof Error ? error.message : String(error),
-          )
-        })
+        for (const runtime of manager.all()) {
+          void runtime.syncNow().catch((error: unknown) => {
+            console.warn(
+              `[xdr-ingest] ${runtime.projectId} suppression sync failed:`,
+              error instanceof Error ? error.message : String(error),
+            )
+          })
+        }
       }, SUPPRESSION_SYNC_MS)
       syncTimer.unref()
+      // 绑定复核：授权ID 变了/NDR 不可达 → 停该项目并报警（别的项目不受影响）
+      const verifyTimer = setInterval(() => {
+        void manager.verifyAll().catch(() => undefined)
+      }, 300_000)
+      verifyTimer.unref()
       const timer = setInterval(() => {
         void cache.pruneExpired().catch(error => {
           console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
         })
-        void projectStore.prune(new Date().toISOString()).catch(() => undefined)
+        for (const projectId of manager.projectIds()) {
+          void storeOf(projectId).prune(new Date().toISOString()).catch(() => undefined)
+        }
       }, config.pruneIntervalMinutes * 60_000)
       timer.unref()
       return () => {
-        loop?.stop()
         clearInterval(timer)
         clearInterval(syncTimer)
+        clearInterval(verifyTimer)
         disposeScriptTools()
         disposeRoute()
+        void manager.stopAll()
         void coldStore.close().catch(() => undefined)
         void registry?.closeAll()
       }
     },
     `xdr-ingest: ${config.basePath}/*`,
   )
+}
+
+/** 控制台「项目组织」页的入参归一（按 NDR 授权ID / MCP 地址 / 两个令牌）。 */
+function projectInputOf(body: unknown): ProjectInput & { previousId?: string } {
+  const row = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  return {
+    projectId: String(row['projectId'] ?? row['project_id'] ?? '').trim(),
+    name: String(row['name'] ?? '').trim(),
+    mcpUrl: String(row['mcpUrl'] ?? row['mcp_url'] ?? '').trim(),
+    mcpToken: String(row['mcpToken'] ?? row['mcp_token'] ?? '').trim(),
+    pushToken: String(row['pushToken'] ?? row['push_token'] ?? '').trim(),
+    enabled: row['enabled'] !== false,
+    ...(typeof row['previousId'] === 'string' ? { previousId: row['previousId'] } : {}),
+  }
 }
 
 /** 控制台新建/编辑脚本的入参归一（字段少、校验在 store 里做）。 */

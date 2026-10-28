@@ -2,6 +2,7 @@
 
 > 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **124 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
+> 智能体控制台（xdr-ui）自己的接口另见 [`agent-console.md`](./agent-console.md)（项目组织 / 分析过程 / 脚本 / 参数）。
 
 ## 一、通用约定
 
@@ -393,6 +394,8 @@ MCP 令牌与工具清单
 
 | 接口 | 新增字段 | 说明 |
 | --- | --- | --- |
+| `GET /api/system/license` | **新端点**（2026-10，项目组织身份） | 本机**授权ID**（8 位大写字母+数字，由硬件 UUID 派生）。响应：`{auth_id, source, source_label, stable, note}`；`source ∈ hardware / machine-id / hostname`，`stable=false` 表示只能靠主机名兜底（换名就变，界面要提示）。**是身份不是密钥**：可展示、可抄写，鉴权仍靠 MCP 令牌与推送令牌；换机后 ID 会变，需到智能体控制台改绑定。同一身份也出现在 MCP 响应的 `x-ndr-auth-id` 头与 `server_info` 工具里 |
+| MCP `/mcp` | `x-ndr-auth-id` 响应头 + `server_info` 工具 + 门铃 `project` 字段 | 多项目 agent 靠这三处核对绑定：每个 MCP 响应都带本 NDR 授权ID；`server_info` 返回 `{auth_id, source, stable}`（analyst 档共 23 个工具）；门铃载荷 `{project, queue_len, top_kind, max_strength, watermark, ts}`，`project` 即本机授权ID（**不含任何事件数据**）。绑定不一致时 agent 停掉该项目并报警 |
 | `GET /api/detector/hits`、`/hits/{id}` | `agent_status / agent_severity / agent_summary / agent_updated_at`（详情另有 `agent_detail / agent_thread_id`） | **智能体分析结论（判定权威来源）**：status 值域 true_positive/false_positive/benign/suspicious/inconclusive/pending/done；severity 为 info/low/medium/high/critical。无记录时字段为 null（表示智能体尚未返回结论，此时界面回退显示 NDR 初判）。结论由 `complete_task` 自动镜像到 `conclusion_records`（命中线索用 hint 里的 `事件ID` 关联），也兼容 MCP `record_conclusion` 显式写回；同一事件只留一份、重复覆盖 |
 | `GET /api/detector/hits` | **新参数** `agent_status`、`agent_task_state` | `agent_status`：结论态（true_positive/false_positive/benign/suspicious/inconclusive/pending/done）+ 特殊值 `unanalyzed`（结论表无记录 = 智能体尚未返回）。`agent_task_state`：`none`（未派工）/ `queued`（排队中）/ `claimed`（分析中）/ `done` / `failed`（stuck/expired）。留空 = 不筛；未识别的值不筛（与 `source_kind` 同策略）。任务态靠 `analysis_tasks.hint→事件ID` 关联，一次 EXISTS 子查询 |
 | `GET /api/detector/hits`、`/hits/{id}` | `agent_task_state` / `agent_task_id`（详情另有 `agent_task`） | 派工任务态与任务 ID；详情 `agent_task = {task_id, state, bucket, claimed_by, verdict, claimed_at}`。用于把「未派工」与「分析中」分开，积压可视化 |

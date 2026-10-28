@@ -49,7 +49,12 @@ export interface IngestHandlerConfig {
    * 收到门铃时调用（去抖由领取循环负责，这里只负责"收到并回执"）。
    * 不传 = 只回执不叫醒（调试/回滚场景）。
    */
-  readonly onDoorbell?: (bell: Doorbell, receivedAt: number) => void
+  readonly onDoorbell?: (bell: Doorbell, receivedAt: number, projectId?: string) => void
+  /**
+   * 多项目：按**推送令牌**解析项目（返回项目ID；`null` = 令牌不认识 → 401）。
+   * 不传 = 单项目，沿用 `token` 定长比较。
+   */
+  readonly resolveProject?: (token: string) => string | null
   /** `GET {basePath}/status` 的返回体（运维观测：门铃数、领取数、在跑数）。 */
   readonly status?: () => Record<string, unknown>
 }
@@ -84,6 +89,19 @@ function requireAuth(request: IncomingMessage, token: string): void {
     if (token === '') throw new WebhookHttpError(401, 'ingest token is not configured on the agent side')
     throw new WebhookHttpError(401, 'invalid or missing bearer token')
   }
+}
+
+/** 鉴权并返回项目（多项目按令牌解析；单项目返回 null）。 */
+function authorize(request: IncomingMessage, config: IngestHandlerConfig): string | null {
+  if (config.resolveProject === undefined) {
+    requireAuth(request, config.token)
+    return null
+  }
+  const projectId = config.resolveProject(bearerToken(request))
+  if (projectId === null || projectId === '') {
+    throw new WebhookHttpError(401, 'invalid or missing bearer token')
+  }
+  return projectId
 }
 
 async function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
@@ -167,17 +185,18 @@ export function createIngestHandler(
     const pathname = (request.url ?? '/').split('?')[0] ?? '/'
     try {
       if (pathname === pingPath && request.method === 'GET') {
-        requireAuth(request, config.token)
+        // /ping 是推送地址连通性自检：多项目下每个项目的令牌都该能过
+        authorize(request, config)
         respondText(response, 200, 'ok')
         return
       }
       if (pathname === statusPath && request.method === 'GET') {
-        requireAuth(request, config.token)
+        authorize(request, config)
         respondJson(response, 200, config.status?.() ?? { status: 'unsupported' })
         return
       }
       if (pathname === statsPath && request.method === 'GET') {
-        requireAuth(request, config.token)
+        authorize(request, config)
         respondJson(response, 200, await config.cache.stats())
         return
       }
@@ -185,7 +204,7 @@ export function createIngestHandler(
         if (request.method !== 'POST') {
           throw new WebhookHttpError(405, 'digests accepts POST only')
         }
-        requireAuth(request, config.token)
+        const projectId = authorize(request, config)
         const body = await readBody(request, config.maxBodyBytes)
         let parsed: unknown
         try {
@@ -205,7 +224,7 @@ export function createIngestHandler(
           throw error
         }
         if (bell !== null) {
-          config.onDoorbell?.(bell, now())
+          config.onDoorbell?.(bell, now(), projectId ?? undefined)
           respondJson(response, 200, {
             ok: true,
             accepted: 'doorbell',
