@@ -10,8 +10,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
-import type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore } from './state-store.ts'
-import type { TaskResultRecord, TaskResultStore } from './task-results.ts'
+import type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore, TaskSeenStore } from './state-store.ts'
+import { seenKey } from './state-store.ts'
+import type { SuppressedTask, TaskIdentity, TaskResultRecord, TaskResultStore, TaskSeenRecord } from './task-results.ts'
 
 const LOG_PREFIX = '[xdr-ingest:state]'
 
@@ -53,6 +54,20 @@ CREATE TABLE IF NOT EXISTS xdr_ingest_script (
 );
 CREATE INDEX IF NOT EXISTS xdr_ingest_script_usage_idx
   ON xdr_ingest_script (usage_count DESC, updated_at DESC);
+CREATE TABLE IF NOT EXISTS xdr_ingest_task_seen (
+  identity_key   TEXT PRIMARY KEY,
+  task_id        TEXT NOT NULL DEFAULT '',
+  kind           TEXT NOT NULL DEFAULT '',
+  subject_kind   TEXT NOT NULL DEFAULT '',
+  subject        TEXT NOT NULL DEFAULT '',
+  feature        TEXT NOT NULL DEFAULT '',
+  verdict        TEXT NOT NULL DEFAULT '',
+  suppressed_by  TEXT NOT NULL DEFAULT '',
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS xdr_ingest_task_seen_task_idx
+  ON xdr_ingest_task_seen (task_id);
 `
 
 /** PG 时间列统一成 ISO 字符串。 */
@@ -146,7 +161,7 @@ export interface PostgresStateStoreOptions {
   readonly poolSize?: number
 }
 
-export class PostgresStateStore implements TaskResultStore, ScriptStore {
+export class PostgresStateStore implements TaskResultStore, ScriptStore, TaskSeenStore {
   readonly kind = 'postgres' as const
   private readonly pool: Pool
   private readonly ready: Promise<boolean>
@@ -385,6 +400,92 @@ export class PostgresStateStore implements TaskResultStore, ScriptStore {
 
   async close(): Promise<void> {
     await this.pool.end().catch(() => undefined)
+  }
+
+  /* ---------- 抑制记忆 ---------- */
+
+  async recordTaskSeen(record: TaskSeenRecord): Promise<void> {
+    if (!await this.usable()) return
+    try {
+      await this.pool.query(
+        `INSERT INTO xdr_ingest_task_seen
+           (identity_key, task_id, kind, subject_kind, subject, feature, verdict, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
+         ON CONFLICT (identity_key) DO UPDATE SET
+           task_id = EXCLUDED.task_id,
+           verdict = EXCLUDED.verdict,
+           updated_at = now()`,
+        [
+          seenKey(record), record.taskId, record.kind, record.subjectKind,
+          record.subject, record.feature, record.verdict,
+        ],
+      )
+    } catch (error) {
+      console.error(`${LOG_PREFIX} task seen record failed:`, this.message(error))
+    }
+  }
+
+  async markSuppressed(taskId: string, name: string): Promise<boolean> {
+    if (!await this.usable()) return false
+    const key = taskId.trim()
+    if (key === '') return false
+    try {
+      const { rowCount } = await this.pool.query(
+        `UPDATE xdr_ingest_task_seen SET suppressed_by = $1, updated_at = now() WHERE task_id = $2`,
+        [name, key],
+      )
+      return (rowCount ?? 0) > 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} suppression mark failed for task ${key}:`, this.message(error))
+      return false
+    }
+  }
+
+  async markSuppressedByIdentity(identity: TaskIdentity, name: string): Promise<number> {
+    if (!await this.usable()) return 0
+    try {
+      const { rowCount } = await this.pool.query(
+        `UPDATE xdr_ingest_task_seen SET suppressed_by = $1, updated_at = now() WHERE identity_key = $2`,
+        [name, seenKey(identity)],
+      )
+      return rowCount ?? 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} suppression mark failed by identity:`, this.message(error))
+      return 0
+    }
+  }
+
+  async findSuppressed(identity: TaskIdentity): Promise<SuppressedTask | null> {
+    if (!await this.usable()) return null
+    try {
+      const { rows } = await this.pool.query<{
+        task_id: string
+        kind: string
+        subject_kind: string
+        subject: string
+        feature: string
+        verdict: string
+        suppressed_by: string
+      }>(
+        `SELECT task_id, kind, subject_kind, subject, feature, verdict, suppressed_by
+         FROM xdr_ingest_task_seen WHERE identity_key = $1`,
+        [seenKey(identity)],
+      )
+      const row = rows[0]
+      if (row === undefined || row.suppressed_by === '') return null
+      return {
+        taskId: row.task_id,
+        kind: row.kind,
+        subjectKind: row.subject_kind,
+        subject: row.subject,
+        feature: row.feature,
+        verdict: row.verdict,
+        suppressedBy: row.suppressed_by,
+      }
+    } catch (error) {
+      console.error(`${LOG_PREFIX} suppression lookup failed:`, this.message(error))
+      return null
+    }
   }
 
   private message(error: unknown): string {

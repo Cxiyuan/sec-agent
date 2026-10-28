@@ -855,6 +855,11 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
             "（服务端六道机械门槛：结构化匹配、≥2 维度、引用真实性、≥2 种工具、"
             "置信度、新现象保护期；影响面过大自动降级为只不派工）"
         )
+        sup.append(
+            "**抑制闭环不需要人放行**：被降级时返回里写明哪个维度超限与怎么收窄，"
+            "按建议改窄条件后用同一个 name 重提（同名覆盖）就会真正生效；"
+            "生效后这类现象不再派工、不再按门铃"
+        )
     if has("revoke_suppression"):
         sup.append("判错了用 revoke_suppression 收回（必须写原因）")
     if sup:

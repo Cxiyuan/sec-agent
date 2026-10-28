@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { TaskResultRecord, TaskResultStore } from './task-results.ts'
+import type { SuppressedTask, TaskIdentity, TaskSeenRecord } from './task-results.ts'
 
 
 /** 脚本库里的一条脚本。 */
@@ -56,6 +57,24 @@ export interface ScriptQuery {
   readonly limit: number
 }
 
+/**
+ * 抑制记忆面：把「这类现象已被精准抑制」这件事记在智能体自己这边。
+ *
+ * 为什么 NDR 拦了还要再记一层：NDR 侧拦的是**规则命中**这条路径，
+ * 而同一个现象还可能从别的线索类型（首见 / 基线偏离）再冒出来；本地记忆
+ * 可以在起会话之前就把它挡掉 —— 省一次模型会话，也省一次取数。
+ */
+export interface TaskSeenStore {
+  /** 记一次"这个任务的现象身份是什么、判成了什么"。 */
+  recordTaskSeen(record: TaskSeenRecord): Promise<void>
+  /** 按任务 id 标记"已被抑制"（抑制条目带 source_task_id 时用）。 */
+  markSuppressed(taskId: string, name: string): Promise<boolean>
+  /** 按现象身份标记"已被抑制"（抑制条目没有任务 id 时用）。 */
+  markSuppressedByIdentity(identity: TaskIdentity, name: string): Promise<number>
+  /** 查这个现象是不是已被抑制。 */
+  findSuppressed(identity: TaskIdentity): Promise<SuppressedTask | null>
+}
+
 export interface ScriptStore {
   readonly kind: 'memory' | 'postgres'
   /** 同名覆盖；返回写后的完整记录。 */
@@ -74,10 +93,11 @@ export interface ScriptStore {
 /* 内存实现（PG 未配置/不可用时的兜底）                                  */
 /* ------------------------------------------------------------------ */
 
-export class MemoryStateStore implements TaskResultStore, ScriptStore {
+export class MemoryStateStore implements TaskResultStore, ScriptStore, TaskSeenStore {
   readonly kind = 'memory' as const
   private readonly results = new Map<string, TaskResultRecord>()
   private readonly scripts = new Map<string, AnalysisScript>()
+  private readonly seen = new Map<string, TaskSeenRecord & { readonly suppressedBy: string }>()
 
   async load(key: string): Promise<TaskResultRecord | null> {
     return this.results.get(key) ?? null
@@ -168,5 +188,63 @@ export class MemoryStateStore implements TaskResultStore, ScriptStore {
   async close(): Promise<void> {
     this.results.clear()
     this.scripts.clear()
+    this.seen.clear()
   }
+
+  /* ---------- 抑制记忆 ---------- */
+
+  async recordTaskSeen(record: TaskSeenRecord): Promise<void> {
+    const key = seenKey(record)
+    const previous = this.seen.get(key)
+    this.seen.set(key, {
+      ...record,
+      // 已经标了"被抑制"就别被后来的普通记录抹掉
+      suppressedBy: previous?.suppressedBy ?? '',
+    })
+  }
+
+  async markSuppressed(taskId: string, name: string): Promise<boolean> {
+    const key = taskId.trim()
+    if (key === '') return false
+    let hit = false
+    for (const row of this.seen.values()) {
+      if (row.taskId === key) {
+        this.seen.set(seenKey(row), { ...row, suppressedBy: name })
+        hit = true
+      }
+    }
+    return hit
+  }
+
+  async markSuppressedByIdentity(identity: TaskIdentity, name: string): Promise<number> {
+    const key = seenKey(identity)
+    const row = this.seen.get(key)
+    if (row === undefined) return 0
+    this.seen.set(key, { ...row, suppressedBy: name })
+    return 1
+  }
+
+  async findSuppressed(identity: TaskIdentity): Promise<SuppressedTask | null> {
+    const row = this.seen.get(seenKey(identity))
+    if (row === undefined || row.suppressedBy === '') return null
+    return {
+      taskId: row.taskId,
+      kind: row.kind,
+      subjectKind: row.subjectKind,
+      subject: row.subject,
+      feature: row.feature,
+      verdict: row.verdict,
+      suppressedBy: row.suppressedBy,
+    }
+  }
+}
+
+/** 现象身份的记忆键（与复用键同一套四元组，字段顺序固定）。 */
+export function seenKey(identity: TaskIdentity): string {
+  return JSON.stringify([
+    identity.kind ?? '',
+    identity.subjectKind ?? '',
+    identity.subject ?? '',
+    identity.feature ?? '',
+  ])
 }

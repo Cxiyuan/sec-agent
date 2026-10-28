@@ -7,7 +7,7 @@
  */
 
 import type { ClaimedTask, ClaimReply } from './claim-loop.ts'
-import type { CompleteReply, NdrTaskPort, TaskStateReply } from './analyst.ts'
+import type { CompleteReply, NdrTaskPort, SuppressionView, TaskStateReply } from './analyst.ts'
 import type { McpHttpClient } from './mcp-http.ts'
 
 /** 只依赖 `callTool` 这一件事，便于测试注入。 */
@@ -141,5 +141,41 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
 
   async deferTask(taskId: string, reason: string): Promise<unknown> {
     return this.caller.callTool('defer_task', { task_id: taskId, reason })
+  }
+
+  /**
+   * 生效中的精准抑制清单（抑制记忆的来源）。
+   *
+   * 为什么智能体要自己拉一遍：NDR 侧拦的是"规则命中"这条路径，同一个现象
+   * 还会从别的线索类型冒出来；智能体自己记一份，才能在起会话之前就跳过。
+   */
+  async listSuppressions(): Promise<readonly SuppressionView[]> {
+    try {
+      const reply = await this.caller.callTool('list_suppressions', { enabled_only: true, limit: 200 })
+      const items = reply['items']
+      if (!Array.isArray(items)) return []
+      const out: SuppressionView[] = []
+      for (const item of items) {
+        if (typeof item !== 'object' || item === null) continue
+        const row = item as Record<string, unknown>
+        const id = String(row['id'] ?? '').trim()
+        if (id === '') continue
+        out.push({
+          id,
+          name: String(row['name'] ?? ''),
+          mode: String(row['mode'] ?? ''),
+          enabled: row['enabled'] === true,
+          sourceTaskId: String(row['source_task_id'] ?? ''),
+          match: row['match'] ?? null,
+        })
+      }
+      return out
+    } catch (error) {
+      console.warn(
+        '[xdr-ingest] list_suppressions 失败：',
+        error instanceof Error ? error.message : String(error),
+      )
+      return []
+    }
   }
 }

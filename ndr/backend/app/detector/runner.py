@@ -305,13 +305,15 @@ def run() -> None:
             hit_id = hits.save_from_digest(digest)
             if hit_id:
                 digest["event_id"] = hit_id
-                if analysis_params.enabled():
-                    # 规则命中作为线索进队列（kind=hit）：强度只用规模与首见，不读严重度
-                    stats["candidate_hit"] += (
-                        1
-                        if candidates.enqueue_hit(digest, hit_id, client) in ("new", "merged")
-                        else 0
-                    )
+            # 被精准抑制 / 被排除规则挡下的命中**不再派工**：不排队，也就不会按门铃。
+            # 这是"自动抑制闭环"的下半段：智能体已经为这类现象交过结论并提交了抑制，
+            # 再排一遍工只是让它重复分析同一件事（人工只做复核，不做放行）。
+            if analysis_params.enabled() and not digest.get("excluded"):
+                stats["candidate_hit"] += (
+                    1
+                    if candidates.enqueue_hit(digest, hit_id, client) in ("new", "merged")
+                    else 0
+                )
             # 基线打标（第 8 期）：2σ 偏离 + 账号/会话画像异常随摘要一起推给智能体；
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):

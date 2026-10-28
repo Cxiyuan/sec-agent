@@ -259,11 +259,25 @@ class _Row:
         self.updated_at = datetime.now(UTC)
 
 
+class _FakeResult:
+    """假查询结果：支持 `.all()` 与 `.first()`。"""
+
+    def __init__(self, rows: list[_Row]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[_Row]:
+        return list(self._rows)
+
+    def first(self) -> _Row | None:
+        return self._rows[0] if self._rows else None
+
+
 class _FakeSession:
     """假会话：`create_item` 只需要 add/commit/refresh 与一次 count 查询。"""
 
     def __init__(self, **kw: Any) -> None:
         self.added: list[_Row] = []
+        self.existing: list[_Row] = list(kw.get("existing") or [])
 
     def __enter__(self) -> Self:
         return self
@@ -284,7 +298,7 @@ class _FakeSession:
         return None
 
     def scalars(self, stmt: Any) -> Any:
-        return SimpleNamespace(all=list)
+        return _FakeResult(list(self.existing))
 
 
 # ===== ④ 影响面降级 =====
@@ -505,3 +519,59 @@ def test_mcp_checks_forged_refs_and_tool_diversity() -> None:
     assert "没真取回" in out["field_errors"][0]["msg"]
     src = inspect.getsource(tools._apply_suppression)
     assert "tool_hits" in src and "min_tools" in src or "create_item" in src
+
+
+# ===== ⑦ 自动生效闭环：降级要说清怎么收窄 + 同名覆盖 =====
+
+
+def test_downgrade_explains_how_to_narrow(sup: ModuleType) -> None:
+    """降级不是死胡同：必须告诉智能体**哪个维度超了、怎么收窄**。
+
+    没有这条，智能体只能把一条"只不派工"的半成品留在那儿等人 —— 闭环就断了。
+    """
+    down = sup.mode_downgrade({"days": 7, "events": 151, "srcs": 28, "segments": 10,
+                                "max_events": 5000, "max_srcs": 200, "max_segments": 8})
+    assert down["dimension"] == "segments"
+    assert down["actual"] == 10
+    assert down["limit"] == 8
+    assert "网段" in down["reason"]
+    assert down["advice"], "必须给可执行的收窄建议"
+    # 影响面在护栏内 → 不降级，也不给建议
+    assert sup.mode_downgrade({"days": 7, "events": 3, "srcs": 1, "segments": 1,
+                                "max_events": 5000, "max_srcs": 200, "max_segments": 8}) == {}
+
+
+def test_same_name_replaces_previous_item(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同名重提 = 覆盖上一条（收窄后重提要能真正替换掉半成品，而不是堆一串）。"""
+    monkeypatch.setattr(sup, "phenomenon_age_hours", lambda match: 200.0)
+    monkeypatch.setattr(sup, "estimate_trial", lambda match: {"events": 3, "srcs": 1, "segments": 1})
+    existing = _Row(name="心跳噪声", mode=sup.MODE_RECORD_ONLY)
+    monkeypatch.setattr(sup, "SessionLocal", lambda: _FakeSession(existing=[existing]))
+    out = sup.create_item(_body(name="心跳噪声"), created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
+    assert out["replaced"] is True
+    assert out["id"] == existing.id
+    assert out["mode"] == sup.MODE_SUPPRESS
+    assert existing.mode == sup.MODE_SUPPRESS, "旧条目的档位要跟着改"
+
+
+def test_new_item_is_not_marked_replaced(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sup, "phenomenon_age_hours", lambda match: 200.0)
+    monkeypatch.setattr(sup, "estimate_trial", lambda match: {"events": 3, "srcs": 1, "segments": 1})
+    monkeypatch.setattr(sup, "SessionLocal", _FakeSession)
+    out = sup.create_item(_body(), created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
+    assert out["replaced"] is False
+    assert out["downgrade"] == {}
+
+
+def test_suppressed_hit_is_not_dispatched() -> None:
+    """被精准抑制/被排除的命中**不再派工** —— 也就不会按门铃。
+
+    闭环的下半段：智能体已经为这类现象交过结论并提交了抑制，再排一遍工
+    只是让它重复分析同一件事。
+    """
+    runner = _mod("app.detector.runner")
+    src = inspect.getsource(runner)
+    assert 'not digest.get("excluded")' in src, "excluded 的摘要不能进派工队列"
+    enqueue_at = src.index("candidates.enqueue_hit")
+    guard_at = src.index('not digest.get("excluded")')
+    assert guard_at < enqueue_at, "护栏必须写在 enqueue_hit 之前"

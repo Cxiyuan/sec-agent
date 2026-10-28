@@ -34,7 +34,7 @@ import { PostgresConclusionReader } from './pg-conclusions.ts'
 import type { ConclusionReader } from './conclusions.ts'
 import { MemoryStateStore } from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
-import type { ScriptStore } from './state-store.ts'
+import type { ScriptStore, TaskSeenStore } from './state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
 
 export type * from './types.ts'
@@ -71,8 +71,38 @@ export type {
 } from './conclusions.ts'
 export type { XdrIngestService } from './workbench.ts'
 
+/** 抑制记忆同步的节拍（毫秒）：抑制是低频事件，1.5 分钟一次足够。 */
+const SUPPRESSION_SYNC_MS = 90_000
+
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
 export const name = 'xdr-ingest'
+
+/**
+ * 从抑制条件树里取一个对象（`src_ip` / `dst_ip`）。
+ *
+ * 用途：抑制条目若没有 `source_task_id`（人建的那些），就按对象粗匹配一次，
+ * 让"这类对象的现象"也能被本地抑制记忆挡住。
+ */
+function subjectOfMatch(match: unknown): string {
+  const found: string[] = []
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    const row = node as Record<string, unknown>
+    if (Array.isArray(row['rules'])) {
+      for (const item of row['rules']) walk(item)
+      return
+    }
+    const field = String(row['field'] ?? '')
+    const value = String(row['value'] ?? '').trim()
+    if (value !== '' && (field === 'src_ip' || field === 'dst_ip')) found.push(value)
+  }
+  walk(match)
+  return found[0] ?? ''
+}
 
 // 生命周期可见性：模块被 Loader import、apply() 真正激活，各留一条日志。
 // 路由 404 排查时，docker logs 里这两行在不在直接区分「行没插进去」
@@ -206,7 +236,7 @@ export function apply(ctx: Context, config: Config): void {
   console.log(`[xdr-ingest] apply(): routes at ${config.basePath}/*, cold store: ${store.kind}`)
   // 智能体侧记忆：结论复用（task-results）与脚本库（scripts）共用同一份 PG。
   // 内存兜底只保证进程内可用；重启丢失会在启动日志和 /status 里显示。
-  const stateStore: TaskResultStore & ScriptStore = config.pgUrl.trim() === ''
+  const stateStore: TaskResultStore & ScriptStore & TaskSeenStore = config.pgUrl.trim() === ''
     ? new MemoryStateStore()
     : new PostgresStateStore({ connectionString: config.pgUrl.trim() })
   if (stateStore.kind === 'memory') {
@@ -236,6 +266,8 @@ export function apply(ctx: Context, config: Config): void {
   const agents = agentsOf(ctx)
   let loop: ClaimLoop | null = null
   let analyst: Analyst | null = null
+  /** 抑制记忆的同步器（要 MCP 通道；没有 MCP 就只能靠 agent 自己提交的抑制） */
+  let syncSuppressions: (() => Promise<void>) | null = null
   if (config.mcpToken.trim() !== '' && agents !== null) {
     const client = new McpHttpClient({
       url: config.mcpUrl.trim(),
@@ -262,7 +294,30 @@ export function apply(ctx: Context, config: Config): void {
       taskResults: stateStore,
       taskReuseTtlMs: config.taskReuseTtlHours * 3_600_000,
       taskReuseStrengthDelta: config.taskReuseStrengthDelta,
+      // 抑制记忆：被精准抑制的现象不起会话（省模型，也省取数）
+      taskSeen: stateStore,
     })
+    syncSuppressions = async (): Promise<void> => {
+      const items = await ndr.listSuppressions()
+      let marked = 0
+      for (const item of items) {
+        if (!item.enabled) continue
+        if (item.sourceTaskId !== '') {
+          if (await stateStore.markSuppressed(item.sourceTaskId, item.name)) marked += 1
+        }
+        // 没有任务 id 的抑制（人建的）：按条件树里的对象粗匹配一次
+        const subject = subjectOfMatch(item.match)
+        if (subject === '') continue
+        const count = await stateStore.markSuppressedByIdentity(
+          { kind: 'hit', subjectKind: 'ip', subject, feature: '' },
+          item.name,
+        )
+        marked += count
+      }
+      if (marked > 0) {
+        console.log(`[xdr-ingest] 抑制记忆已同步：${marked} 条现象被标记为「不再分析」`)
+      }
+    }
     const activeAnalyst = analyst
     loop = new ClaimLoop({
       pollSeconds: config.pollSeconds,
@@ -390,6 +445,21 @@ export function apply(ctx: Context, config: Config): void {
       void cache.warmup(config.warmupLimit).catch(error => {
         console.warn('[xdr-ingest] warmup failed:', error instanceof Error ? error.message : String(error))
       })
+      // 抑制记忆同步：把 NDR 侧生效中的精准抑制搬进本地记忆，
+      // 之后同类现象**不起会话**（NDR 拦派工，这里拦分析）。
+      const syncTimer = setInterval(() => {
+        if (syncSuppressions === null) return
+        void syncSuppressions().catch(error => {
+          console.warn(
+            '[xdr-ingest] suppression sync failed:',
+            error instanceof Error ? error.message : String(error),
+          )
+        })
+      }, SUPPRESSION_SYNC_MS)
+      syncTimer.unref()
+      if (syncSuppressions !== null) {
+        void syncSuppressions().catch(() => undefined)
+      }
       const timer = setInterval(() => {
         void cache.pruneExpired().catch(error => {
           console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
@@ -402,6 +472,7 @@ export function apply(ctx: Context, config: Config): void {
       return () => {
         loop?.stop()
         clearInterval(timer)
+        clearInterval(syncTimer)
         disposeScriptTools()
         disposeRoute()
         void store.close().catch(() => undefined)

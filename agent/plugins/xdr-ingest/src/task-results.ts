@@ -69,6 +69,43 @@ export interface TaskResultStore {
 }
 
 /**
+ * 现象身份（任务级）：`kind | 对象类型 | 对象 | 特征`。
+ *
+ * 复用键是它的哈希（不给人看）；抑制记忆要用可读的元组 —— 抑制是
+ * **现象级**的事（"这类现象不用再看"），不是某个任务 id 的事。
+ */
+export interface TaskIdentity {
+  readonly kind: string
+  readonly subjectKind: string
+  readonly subject: string
+  readonly feature: string
+}
+
+/** 见过的一个任务（身份 + 判定）。 */
+export interface TaskSeenRecord extends TaskIdentity {
+  readonly taskId: string
+  readonly verdict: string
+}
+
+/** 命中抑制记忆的一行。 */
+export interface SuppressedTask extends TaskIdentity {
+  readonly taskId: string
+  readonly verdict: string
+  /** 抑制条目名（人能在界面上对上号）。 */
+  readonly suppressedBy: string
+}
+
+/** 任务 → 现象身份（抑制记忆与复用共用同一套口径）。 */
+export function taskIdentity(task: ClaimedTask): TaskIdentity {
+  return {
+    kind: String(task.kind ?? ''),
+    subjectKind: String(task.subject_kind ?? ''),
+    subject: String(task.subject ?? ''),
+    feature: String(task.feature ?? '').trim(),
+  }
+}
+
+/**
  * 现象身份。`feature` 缺失时返回 null：宁可多分析一次，也不能把不同规则
  * 命中的同一台机器混成一条结论（老版本 NDR 不下发 feature 时就是这种情况）。
  */

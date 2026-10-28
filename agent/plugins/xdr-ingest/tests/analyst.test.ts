@@ -349,3 +349,54 @@ test('a completed analysis is stored for the next occurrence', async () => {
   assert.equal(saved?.occurrences, 1)
   assert.equal(analyst.reuseStats.stored, 1)
 })
+
+/**
+ * 抑制记忆：被精准抑制的现象**不起会话**。
+ *
+ * 闭环的另一半：NDR 侧拦派工（不按门铃），智能体侧记一份"这类现象不用再看"，
+ * 同一现象从别的线索类型再冒出来时直接跳过 —— 省一次模型会话与一轮取数。
+ */
+test('命中抑制记忆：不起会话、不取数，直接交回', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1' }
+  await store.recordTaskSeen({ ...identity, taskId: 'task-old', verdict: 'false_positive' })
+  await store.markSuppressed('task-old', '已知扫描器噪声')
+
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskSeen: store,
+  })
+  const outcome = await analyst.run({
+    ...task,
+    kind: 'hit',
+    feature: 'sid:1',
+  })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.prompts.length, 0, '不该起分析会话')
+  assert.equal(rec.completed.length, 1)
+  assert.equal(rec.completed[0]?.verdict, 'false_positive')
+  assert.match(String(rec.completed[0]?.summary), /已知扫描器噪声/)
+})
+
+test('没有被抑制的现象照常分析（抑制记忆不误伤）', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  await store.recordTaskSeen({
+    kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1',
+    taskId: 'task-old', verdict: 'false_positive',
+  })
+  await store.markSuppressed('task-old', '别的现象')
+
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done', results: [{ verdict: 'benign', summary: '正常' }] })),
+    timeoutMs: 1000,
+    taskSeen: store,
+  })
+  const outcome = await analyst.run({ ...task, kind: 'hit', feature: 'sid:2' })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.prompts.length, 1, '不同现象照常起会话')
+})

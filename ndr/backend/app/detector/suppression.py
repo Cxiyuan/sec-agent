@@ -566,6 +566,70 @@ def choose_mode(trial: dict[str, Any]) -> str:
     return MODE_SUPPRESS
 
 
+#: 降级档的四个维度 → (试算字段, 上限旋钮, 人话解释, 收窄建议)
+_DOWNGRADE_DIMENSIONS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "events",
+        "suppression.trial_max_hits",
+        "近 {days} 天同类命中 {actual} 条，超过上限 {limit}",
+        (
+            "把条件收窄到更具体的一类现象（例如加 dst_port、user_agent 或 src_ip），"
+            "或改用更短的 TTL 反复确认"
+        ),
+    ),
+    (
+        "srcs",
+        "suppression.trial_max_srcs",
+        "近 {days} 天同类命中涉及 {actual} 个源，超过上限 {limit}",
+        "把条件收窄到更具体的一类现象（例如加 dst_port、user_agent 或 src_ip）",
+    ),
+    (
+        "segments",
+        "suppression.trial_max_segments",
+        "近 {days} 天同类命中跨 {actual} 个网段，超过上限 {limit}",
+        (
+            "在条件里补 src_ip（精确到具体来源）把网段数压下来；"
+            "或把匹配面改成「某个目的主机 + 某个端口」这种定点形态"
+        ),
+    ),
+)
+
+
+def mode_downgrade(trial: dict[str, Any]) -> dict[str, Any]:
+    """为什么没按"彻底静默"生效 —— 给出**可执行**的收窄建议。
+
+    为什么要说清楚：智能体提交抑制后不需要人来拍板，它自己按这里的建议收窄条件、
+    用同名重新提交就能自动生效（同名覆盖旧条目）。降级不是死胡同，是给它指路。
+    """
+    if int(trial.get("events") or 0) < 0:
+        return {
+            "dimension": "trial",
+            "actual": -1,
+            "limit": 0,
+            "reason": "试算失败（影响面未知），按保守档处理",
+            "advice": "换更窄的条件（字段与取值都要更具体）后用同名重提",
+        }
+    days = int(trial.get("days") or 0)
+    for field, knob, template, advice in _DOWNGRADE_DIMENSIONS:
+        limit = int(
+            trial.get(
+                {"events": "max_events", "srcs": "max_srcs", "segments": "max_segments"}[field]
+            )
+            or {"events": trial_max_hits, "srcs": trial_max_srcs, "segments": trial_max_segments}[field]()
+        )
+        actual = int(trial.get(field) or 0)
+        if limit and actual > limit:
+            return {
+                "dimension": field,
+                "actual": actual,
+                "limit": limit,
+                "knob": knob,
+                "reason": template.format(days=days, actual=actual, limit=limit),
+                "advice": advice,
+            }
+    return {}
+
+
 def phenomenon_age_hours(match: dict[str, Any]) -> float | None:
     """该现象首次出现距今多少小时（新现象保护期用）；查不到返回 None。"""
     field, value = _phenomenon(match)
@@ -903,10 +967,51 @@ def create_item(
             )
     trial = estimate_trial(match)
     mode = choose_mode(trial)
+    downgrade = mode_downgrade(trial)
     now = datetime.now(UTC)
     ttl = int(body.get("ttl_days") or default_ttl_days())
     ttl = max(1, min(30, ttl))
+    name = str(body.get("name") or "").strip()[:128]
     with SessionLocal() as db:
+        # **同名覆盖**：智能体收窄条件后用同名重提，就是把上一条改窄（而不是再堆一条半成品）。
+        # 这是"自动生效闭环"的关键一环：降级 → 按建议收窄 → 同名重提 → 彻底生效。
+        existing = db.scalars(
+            select(AnalysisSuppression).where(AnalysisSuppression.name == name)
+        ).first() if name else None
+        if existing is not None:
+            existing.match = match
+            existing.mode = mode
+            existing.trial = trial
+            existing.reason_code = str(body.get("reason_code") or "").strip()[:32]
+            existing.note = str(body.get("note") or "").strip()[:500]
+            existing.evidence_refs = refs
+            existing.evidence_tools = tools_used
+            existing.confidence = confidence
+            existing.source_task_id = str(body.get("source_task_id") or "")[:64]
+            existing.created_by = str(created_by or "")[:64]
+            existing.origin = origin if origin in (ORIGIN_AGENT, ORIGIN_UI) else ORIGIN_UI
+            existing.enabled = True
+            existing.revoked_at = None
+            existing.revoke_reason = ""
+            existing.expires_at = now + timedelta(days=ttl)
+            existing.updated_at = now
+            db.commit()
+            db.refresh(existing)
+            out = _item(existing)
+            out["replaced"] = True
+            out["downgrade"] = downgrade
+            invalidate_cache()
+            log.info(
+                "更新精准抑制（同名覆盖）：%s（%s 维 mode=%s 试算 %s 条/%s 源/%s 网段，到期 %s）",
+                out["name"],
+                out["dims"],
+                out["mode"],
+                trial.get("events"),
+                trial.get("srcs"),
+                trial.get("segments"),
+                out["expires_at"],
+            )
+            return out
         active = int(
             db.scalar(
                 select(func.count())
@@ -947,6 +1052,8 @@ def create_item(
         db.commit()
         db.refresh(row)
         out = _item(row)
+        out["replaced"] = False
+        out["downgrade"] = downgrade
     invalidate_cache()
     log.info(
         "新增精准抑制：%s（%s 维 mode=%s 试算 %s 条/%s 源/%s 网段，到期 %s）",

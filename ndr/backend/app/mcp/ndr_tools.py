@@ -1085,6 +1085,10 @@ def _apply_suppression(
         "dims": created["dims"],
         "trial": created["trial"],
         "expires_at": created["expires_at"],
+        # 同名覆盖：收窄后重提会替换旧条目（不再堆半成品）
+        "replaced": bool(created.get("replaced")),
+        # 降级原因 + 收窄建议：让智能体自己把闭环走完，不需要人放行
+        "downgrade": created.get("downgrade") or {},
     }
 
 
@@ -1634,6 +1638,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "申请**自动抑制**：证据够硬就对该类现象不再派工、不再生成事件。"
             "六道机械门槛（结构化匹配、≥2 个维度、引用必须本会话真取回、≥2 种取数工具、"
             "置信度达标、新现象保护期）；影响面过大会自动降级成「只不派工、事件仍生成」。"
+            "**闭环不需要人放行**：被降级时返回里会写清哪个维度超了上限与怎么收窄，"
+            "按建议改窄条件后用**同一个 name** 重新提交即可覆盖生效（同名覆盖旧条目）。"
             "只该在确认是误报时提交 —— 抑制会挡住后续同类事件"
         ),
         "params": {
@@ -1644,7 +1650,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                            "business_normal / duplicate_of_task / repeated_after_analysis",
             "evidence_refs": "证据引用数组（必须是本会话真取回过的 es:/ev: 引用，至少 3 条）",
             "confidence": "你的置信度 0~1（低于门槛不会自动生效）",
-            "name": "条目名（可省）",
+            "name": "条目名（可省）；**收窄后重提要用同一个 name**（同名覆盖，才会真正生效）",
             "note": "依据说明（审计与界面可见）",
             "ttl_days": "有效期天数（可省，默认 14、上限 30）",
             "task_id": "关联的任务 ID（可省）",

@@ -78,3 +78,33 @@ test('scripts: upsert by name keeps id/usage, find by scenario and tag', async (
   const noMatch = await store.find({ query: 'dns tunnel', tag: '', limit: 5 })
   assert.equal(noMatch.length, 0)
 })
+
+/**
+ * 抑制记忆（现象身份 + 抑制标记）。
+ *
+ * 为什么要单独记一层：抑制是**现象级**的事 —— NDR 拦的是规则命中那条路径，
+ * 同一个现象还会从别的线索类型冒出来；本地记住就能在起会话前挡住。
+ */
+test('抑制记忆：记身份 → 标记被抑制 → 按身份查到', async () => {
+  const store = new MemoryStateStore()
+  const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1' }
+  assert.equal(await store.findSuppressed(identity), null)
+
+  await store.recordTaskSeen({ ...identity, taskId: 'task-1', verdict: 'false_positive' })
+  assert.equal(await store.findSuppressed(identity), null, '还没标抑制前不该命中')
+
+  assert.equal(await store.markSuppressed('task-1', '厂商心跳'), true)
+  const hit = await store.findSuppressed(identity)
+  assert.equal(hit?.suppressedBy, '厂商心跳')
+  assert.equal(hit?.taskId, 'task-1')
+  assert.equal(hit?.verdict, 'false_positive')
+})
+
+test('抑制记忆：没见过的任务 id 标不上；按身份可以补标', async () => {
+  const store = new MemoryStateStore()
+  const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.9', feature: 'sid:2' }
+  assert.equal(await store.markSuppressed('不存在的任务', 'x'), false)
+  await store.recordTaskSeen({ ...identity, taskId: 'task-2', verdict: 'benign' })
+  assert.equal(await store.markSuppressedByIdentity(identity, '人建的抑制'), 1)
+  assert.equal((await store.findSuppressed(identity))?.suppressedBy, '人建的抑制')
+})

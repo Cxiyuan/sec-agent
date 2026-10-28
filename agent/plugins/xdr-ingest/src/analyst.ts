@@ -10,8 +10,9 @@
 import type { AgentsServiceLike } from './agent-port.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
-import { reuseDecision, taskResultKey } from './task-results.ts'
-import type { TaskResultRecord, TaskResultStore } from './task-results.ts'
+import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
+import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
+import type { TaskSeenStore } from './state-store.ts'
 
 /** `task_state` 里的一条历史结论（最新在前）。 */
 export interface TaskResultView {
@@ -56,6 +57,21 @@ export interface NdrTaskPort extends NdrPort {
   /** 复用命中时直接交回；正常分析由模型自己调 `complete_task`。 */
   completeTask(taskId: string, payload: ReusePayload): Promise<CompleteReply>
   deferTask(taskId: string, reason: string): Promise<unknown>
+  /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
+  listSuppressions?(): Promise<readonly SuppressionView[]>
+}
+
+/** NDR 侧一条精准抑制（只要抑制记忆用得到的几个字段）。 */
+export interface SuppressionView {
+  readonly id: string
+  readonly name: string
+  /** suppress = 事件都不生成；record_only = 事件保留但不派工。 */
+  readonly mode: string
+  readonly enabled: boolean
+  /** 提交这条抑制的那个任务（智能体自己提交时才有）。 */
+  readonly sourceTaskId: string
+  /** 条件树（用来按对象粗匹配没有任务 id 的抑制）。 */
+  readonly match: unknown
 }
 
 export interface AnalystOptions {
@@ -71,6 +87,8 @@ export interface AnalystOptions {
   readonly source?: string
   /** 同类现象结论库；不传 = 不复用（测试/回滚）。 */
   readonly taskResults?: TaskResultStore
+  /** 抑制记忆（"这类现象已被精准抑制"）；不传 = 不跳过。 */
+  readonly taskSeen?: TaskSeenStore
   /** 复用有效期（毫秒，从上次真实分析起算；0 = 关闭复用）。 */
   readonly taskReuseTtlMs?: number
   /** 新线索强度比上次高多少就必须重查（现象变强）。 */
@@ -133,6 +151,10 @@ export class Analyst {
       )
       return reused
     }
+
+    // 抑制记忆：这类现象已经被精准抑制过 → 不起会话、不取数，直接交回。
+    const suppressed = await this.trySuppressed(task, startedAt)
+    if (suppressed !== null) return suppressed
 
     const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
     const selected = this.options.modelSelection?.()
@@ -259,16 +281,77 @@ export class Analyst {
     }
   }
 
+  /**
+   * 抑制记忆命中：这类现象已被精准抑制，**不起会话**直接交回。
+   *
+   * 为什么 NDR 已经拦了还要在智能体这边再拦一层：NDR 拦的是"规则命中"这条
+   * 路径，而同一个现象还会从别的线索类型（首见 / 基线偏离）再冒出来；
+   * 这里再挡一次，省掉一整轮模型会话与取数，也省掉一次重复的结论。
+   *
+   * 交回的判定用 `false_positive`：这类现象此前已被判为误报并提交了抑制，
+   * 这次的"确认"不产生新信息，但会喂给反馈学习（强度衰减），让派工更准。
+   */
+  private async trySuppressed(task: ClaimedTask, startedAt: number): Promise<AnalystOutcome | null> {
+    const store = this.options.taskSeen
+    if (store === undefined) return null
+    let hit: SuppressedTask | null = null
+    try {
+      hit = await store.findSuppressed(taskIdentity(task))
+    } catch {
+      return null
+    }
+    if (hit === null) return null
+    try {
+      const reply = await this.options.ndr.completeTask(task.id, {
+        verdict: 'false_positive',
+        summary: `该现象已被精准抑制（${hit.suppressedBy}），按记忆不再分析`,
+        confidence: 0.9,
+        findings: {
+          suppressed_by: hit.suppressedBy,
+          suppressed_task: hit.taskId,
+          skipped_reason: '已被精准抑制覆盖',
+        },
+        terminal_reason: 'concluded',
+        // 没有真的取证：成本如实记 0
+        tools_used: 0,
+        duration_ms: 0,
+      })
+      const state = String(reply.task_state ?? reply.state ?? '')
+      if (reply.ok !== true && state !== 'done') return null
+      if (state !== '' && state !== 'done') return null
+      console.log(
+        `[xdr-ingest] 任务 ${task.id} 命中抑制记忆（${hit.suppressedBy}），未起分析会话`,
+      )
+      return {
+        taskId: task.id,
+        completed: true,
+        state: 'done',
+        deferred: false,
+        durationMs: Date.now() - startedAt,
+        reused: true,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(
+        `[xdr-ingest] 抑制记忆交回异常（任务 ${task.id}）：${message.slice(0, 240)}；改为正常分析`,
+      )
+      return null
+    }
+  }
+
   /** 把刚交回的结论写进复用库（只存最新一条）。 */
   private async remember(task: ClaimedTask, reply: TaskStateReply): Promise<void> {
+    const latest = reply.results?.[0]
+    const verdict = String(latest?.verdict ?? '').trim().toLowerCase()
+    // 现象身份先记下来（不管结论能不能复用）：抑制记忆要靠它把
+    // 「这条任务 → 这类现象」对上号，抑制一生效就能跳过同现象的后续任务。
+    await this.rememberIdentity(task, verdict)
     const store = this.options.taskResults
     const ttlMs = this.options.taskReuseTtlMs ?? 0
     if (store === undefined || ttlMs <= 0) return
     const key = taskResultKey(task)
     if (key === null) return
-    const latest = reply.results?.[0]
     if (latest === undefined) return
-    const verdict = String(latest.verdict ?? '').trim().toLowerCase()
     if (verdict === '') return
     let previous: TaskResultRecord | null = null
     try {
@@ -303,6 +386,20 @@ export class Analyst {
     } catch (error) {
       console.warn(
         `[xdr-ingest] 结论入库异常（任务 ${task.id}）：`,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+  }
+
+  /** 记下"这个任务的现象身份"（抑制记忆的底座）。 */
+  private async rememberIdentity(task: ClaimedTask, verdict: string): Promise<void> {
+    const store = this.options.taskSeen
+    if (store === undefined) return
+    try {
+      await store.recordTaskSeen({ ...taskIdentity(task), taskId: task.id, verdict })
+    } catch (error) {
+      console.warn(
+        `[xdr-ingest] 现象身份记录失败（任务 ${task.id}）：`,
         error instanceof Error ? error.message : String(error),
       )
     }
