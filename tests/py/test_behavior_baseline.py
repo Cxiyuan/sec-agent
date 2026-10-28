@@ -54,7 +54,7 @@ def test_sampler_collects_only_active_egress_and_404(request: pytest.FixtureRequ
     sampler = sampler_mod.WindowSampler(window_seconds=300)
     # 内网服务器 → 公网：算主动外连（dst/域名/端口）
     sampler.observe(SimpleNamespace(
-        src_ip="10.1.2.3", dst_ip="104.16.0.1", dst_port=8443, hostname="c2.example",
+        src_ip="10.1.2.3", dst_ip="8.8.8.8", dst_port=8443, hostname="c2.example",
         event_type="conn_established", status_code=None,
     ), now=1000.0)
     # 内网 HTTP 404：算路径探测的原料
@@ -74,7 +74,7 @@ def test_sampler_collects_only_active_egress_and_404(request: pytest.FixtureRequ
     assert by_ip["1.1.1.1"]["skip_baseline"] is True
     assert by_ip["1.1.1.1"]["requests"] == 1 and by_ip["1.1.1.1"]["egress_dsts"] == []
     row = by_ip["10.1.2.3"]
-    assert row["egress_dsts"] == ["104.16.0.1"]
+    assert row["egress_dsts"] == ["8.8.8.8"]
     assert row["egress_domains"] == ["c2.example"]
     assert row["egress_ports"] == ["8443"]
     assert row["requests"] == 1 and row["errors_404"] == 1
@@ -85,7 +85,7 @@ def test_ftp_login_is_normalized(request: pytest.FixtureRequest) -> None:
     base = {
         "ts": 1793173082.0,
         "uid": "C1",
-        "id.orig_h": "104.16.0.1",
+        "id.orig_h": "8.8.8.8",
         "id.orig_p": 40000,
         "id.resp_h": "10.1.2.3",
         "id.resp_p": 21,

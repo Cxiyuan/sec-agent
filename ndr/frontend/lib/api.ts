@@ -922,6 +922,86 @@ export interface AlertDisposition {
   created_at: string | null;
 }
 
+// ---------- 行为基线事实（observations）与外连白名单（egress-allow） ----------
+// 口径（2026-10 行为基线改造）：基线只产出**客观事实**，没有 severity、没有 verdict，
+// 判断权在智能体；strength 是排序用的客观强度（0~1），不是危险等级。
+
+export type ObservationKind =
+  | "egress_new"
+  | "egress_rare"
+  | "geo_jump"
+  | "login_bruteforce"
+  | "path_probe"
+  | "conn_shift";
+
+/** `GET /api/baseline/observations` 的单条事实 */
+export interface ObservationItem {
+  id: string;
+  kind: ObservationKind | string;
+  kind_label: string;
+  subject_kind: string;
+  subject: string;
+  /** 事实明细：各 kind 字段不同（如 egress_new 的 dst_ip/port、geo_jump 的国家变化），键值对渲染 */
+  facts: Record<string, unknown>;
+  /** 客观强度 0~1（排序与预算用，不是严重度） */
+  strength: number;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface ObservationsPayload {
+  available: boolean;
+  error?: string;
+  total: number;
+  items: ObservationItem[];
+}
+
+/** `GET /api/baseline/observations/stats`：按事实类型汇总 */
+export interface ObservationStatsPayload {
+  available: boolean;
+  error?: string;
+  kinds: { kind: string; label: string; count: number; last_seen: string }[];
+}
+
+/** `GET /api/baseline/egress`：某台资产已学到的外连目的地 */
+export interface EgressBaselineItem {
+  src_ip: string;
+  kind: "dst_ip" | "domain" | "port" | string;
+  value: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+/** `GET /api/baseline/egress-allow`：外连白名单条目 */
+export interface EgressAllowItem {
+  id: string;
+  kind: "dst_ip" | "domain" | "port" | string;
+  value: string;
+  /** global = 全局；asset = 仅该资产（asset 字段是资产 IP） */
+  scope: "global" | "asset" | string;
+  asset: string;
+  /** manual = 手工；learned = 自学习（稳定 N 天 + N 次自动入表） */
+  source: string;
+  enabled: boolean;
+  /** true = 已删除留墓碑：这条目标以后不会再自动学回来；restore 可撤销 */
+  tombstone: boolean;
+  hit_count: number;
+  note: string;
+  updated_at: string;
+}
+
+/** `POST /api/baseline/egress-allow` 请求体 */
+export interface EgressAllowBody {
+  kind: string;
+  value: string;
+  scope?: string;
+  asset?: string;
+  enabled?: boolean;
+  note?: string;
+}
+
 /** `GET /api/baseline/alerts/dispositions`：最近的处置记录 */
 export interface DispositionListPayload {
   items: AlertDisposition[];

@@ -649,6 +649,15 @@ def hit_stats(minutes: int = 0) -> str:
     return _run("hit_stats", _clean(minutes=minutes), native=True)
 
 
+def egress_baseline(src_ip: str = "", kind: str = "", value: str = "", limit: int = 100) -> str:
+    """某台资产已学到的主动外连目的地 + 白名单状态（判断"新目标"是否真的新）。"""
+    return _run(
+        "egress_baseline",
+        _clean(src_ip=src_ip, kind=kind, value=value, limit=limit),
+        native=True,
+    )
+
+
 def list_observations(
     kind: str = "", subject: str = "", minutes: int = 1440, limit: int = 50, offset: int = 0
 ) -> str:
@@ -725,6 +734,7 @@ _NDR_TOOL_FUNCS = (
     hit_clusters,
     hit_stats,
     list_rules,
+    egress_baseline,
     list_observations,
     relay_nodes,
     record_disposition,
@@ -739,7 +749,7 @@ _NDR_TOOL_FUNCS = (
 #: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
 #: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
 #:
-#: `analyst` 是智能体分析闭环够用的最小集（24 个）；排查/运维/复现用 `/mcp/full`（全部）。
+#: `analyst` 是智能体分析闭环够用的最小集（25 个）；排查/运维/复现用 `/mcp/full`（全部）。
 _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "analyst": (
         # 取数（最小必要集：先看数据地图，再按需检索与聚合）
@@ -777,6 +787,7 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "entity_profile",
         # 行为基线事实（外连新目标/异地登录/爆破/404）：事实在前，判断在后
         "list_observations",
+        "egress_baseline",
     ),
 }
 
@@ -871,6 +882,8 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
             "list_observations 查行为基线事实（外连新目标/异地登录/爆破/404/连接数偏离）——"
             "这里只有事实与强度，没有结论与严重度，判不判由你自己定"
         )
+    if has("egress_baseline"):
+        ctx.append("egress_baseline 查某台资产已学到的外连目的地与白名单（核实「新目标」是否真的新）")
     if has("asset_map"):
         ctx.append("asset_map 看对象清单（资产/服务端口/外部对端/协议/签名）")
     if has("coverage_report"):

@@ -1116,6 +1116,24 @@ def _task_stats(args: dict[str, Any]) -> dict[str, Any]:
 
 
 
+
+def _egress_baseline(args: dict[str, Any]) -> dict[str, Any]:
+    """某台资产已学到的外连目的地 + 白名单状态。"""
+    from app.mcpapi import egress_baseline as query
+
+    src_ip = str(args.get("src_ip") or "").strip()
+    if src_ip == "":
+        return {"error": "src_ip 必填（要查哪台资产的外连基线）"}
+    kind = str(args.get("kind") or "").strip()
+    if kind not in ("", "dst_ip", "domain", "port"):
+        return {"error": "kind 只能是 dst_ip / domain / port（留空=全部）"}
+    return query(
+        src_ip,
+        kind=kind,
+        value=str(args.get("value") or "").strip(),
+        limit=max(1, min(int(args.get("limit") or 100), 500)),
+    )
+
 def _list_observations(args: dict[str, Any]) -> dict[str, Any]:
     """行为基线事实（外连新目标 / 异地登录 / 爆破 / 404 / 计数偏离）。
 
@@ -1743,6 +1761,19 @@ TOOLS: dict[str, dict[str, Any]] = {
             "task_id": "任务 ID",
             "reason": "为什么延后（界面可见）",
             "retry_after_seconds": "多久后可以再领（默认 3600）",
+        },
+    },
+    "egress_baseline": {
+        "run": _egress_baseline,
+        "desc": (
+            "查某台资产的**主动外连目的地基线**（已学到的目的 IP/域名/端口 + 白名单状态）。"
+            "拿到 egress_new 事实后用它判断：这是「第 201 个普通目标」还是「这台机器平时只连 3 个目标」"
+        ),
+        "params": {
+            "src_ip": "资产 IP（必填）",
+            "kind": "dst_ip / domain / port（可省=全部）",
+            "value": "只想确认某个目标是否见过/已放行时填（可省）",
+            "limit": "最多返回几条目的地（默认 100）",
         },
     },
     "list_observations": {

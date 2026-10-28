@@ -38,7 +38,12 @@ from app.api.routes.files import (
     resolve_extract_path as _resolve_extract_path,
 )
 from app.api.routes.rules import all_rules as _all_rules
-from app.baseline import observations as _observations, profile as _profile, stats as _stats
+from app.baseline import (
+    egress as _egress,
+    observations as _observations,
+    profile as _profile,
+    stats as _stats,
+)
 from app.db.base import SessionLocal as session_factory
 from app.db.models import (
     ConclusionRecord,
@@ -173,6 +178,33 @@ def list_observations(
     return _observations.list_observations(
         kind=kind, subject=subject, minutes=minutes, limit=limit, offset=offset
     )
+
+
+
+def egress_baseline(src_ip: str, *, kind: str = "", value: str = "", limit: int = 100) -> dict[str, Any]:
+    """某台资产已经学到的主动外连目的地 + 白名单状态（判断"新目标"是否真的新）。"""
+    rows = _egress.list_baseline(src_ip, kind=kind, limit=limit)
+    allowed: dict[str, Any] = {"allowed": False, "scope": "", "source": "", "note": ""}
+    if value:
+        allowed = _egress.check_allow(src_ip, kind or "dst_ip", value)
+    allowlist = [
+        entry
+        for entry in _egress.list_allow(limit=200)
+        if entry["kind"] == (kind or entry["kind"])
+        and entry["scope"] in ("global", "asset")
+        and (entry["scope"] == "global" or entry["asset"] == src_ip)
+    ]
+    return {
+        "src_ip": src_ip,
+        "known_destinations": rows,
+        "total": len(rows),
+        "checked": {"kind": kind or "dst_ip", "value": value, **allowed} if value else None,
+        "allowlist": allowlist,
+        "note": (
+            "数量很少（几~几十）说明这台机器平时外连很少，新目标更值得看；"
+            "上百说明它是代理/更新服务器，单看「新目标」意义有限"
+        ),
+    }
 
 
 def stats_lookup(ip: str = "", key: str = "", limit: int = 50) -> dict[str, Any]:

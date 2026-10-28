@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { Trash2 } from "lucide-react";
 import {
   Badge,
   Button,
@@ -9,6 +10,7 @@ import {
   Dialog,
   Drawer,
   EmptyState,
+  Field,
   Input,
   Pagination,
   Section,
@@ -39,8 +41,13 @@ import type {
   BaselineProfile,
   BaselineProfilesPayload,
   DispositionListPayload,
+  EgressAllowBody,
+  EgressAllowItem,
+  EgressBaselineItem,
   NumericGroupedPayload,
   NumericStat,
+  ObservationStatsPayload,
+  ObservationsPayload,
 } from "@/lib/api";
 
 /**
@@ -65,7 +72,26 @@ const SRC = {
   profiles: "画像列表",
   numeric: "数值基线",
   assets: "被访问方基线",
+  observations: "基线事实",
+  egress: "外连白名单",
 } as const;
+
+/** 事实类型词表（与后端 `app/baseline/observations.py::KIND_LABELS` 同源，界面下拉用） */
+const OBSERVATION_KINDS: [string, string][] = [
+  ["egress_new", "外连目的地首次出现"],
+  ["egress_rare", "外连目的地罕见"],
+  ["geo_jump", "账号登录地点变化"],
+  ["login_bruteforce", "账号被多来源尝试登录"],
+  ["path_probe", "客户端大量 404"],
+  ["conn_shift", "连接数高于自身基线"],
+];
+
+/** 外连白名单的目标类型（与后端 `egress.py` 的 KIND_* 同源） */
+const EGRESS_KINDS: [string, string][] = [
+  ["dst_ip", "目的 IP"],
+  ["domain", "域名"],
+  ["port", "端口"],
+];
 
 const PAGE_SIZE = 20;
 const REFRESH_SECONDS = 30;
@@ -303,6 +329,34 @@ export function BehaviorPanel() {
   const [dispListOpen, setDispListOpen] = React.useState(false);
   const [dispListBusy, setDispListBusy] = React.useState(false);
 
+  // 基线事实（observations）：客观观察，没有 severity/verdict，判断权在智能体
+  const [obsStats, setObsStats] = React.useState<ObservationStatsPayload | null>(null);
+  const [obs, setObs] = React.useState<ObservationsPayload | null>(null);
+  const [obsKind, setObsKind] = React.useState("");
+  const [obsSubject, setObsSubject] = React.useState("");
+  const [obsMinutes, setObsMinutes] = React.useState(1440);
+  const [obsPage, setObsPage] = React.useState(0);
+  const [obsBusy, setObsBusy] = React.useState(false);
+
+  // 外连目的地与白名单
+  const [egressItems, setEgressItems] = React.useState<EgressBaselineItem[] | null>(null);
+  const [egressSrcIp, setEgressSrcIp] = React.useState("");
+  const [egressKind, setEgressKind] = React.useState("");
+  const [allowItems, setAllowItems] = React.useState<EgressAllowItem[] | null>(null);
+  const [allowTombstone, setAllowTombstone] = React.useState(false);
+  const [allowBusy, setAllowBusy] = React.useState(false);
+  const [allowOpen, setAllowOpen] = React.useState(false);
+  /** '' = 新增；否则是被编辑条目的 id（编辑时改 kind/value 会覆盖同键） */
+  const [allowEditId, setAllowEditId] = React.useState("");
+  const [allowForm, setAllowForm] = React.useState<EgressAllowBody>({
+    kind: "dst_ip",
+    value: "",
+    scope: "global",
+    asset: "",
+    enabled: true,
+    note: "",
+  });
+
   const profilesUrl =
     `/api/baseline/profiles?kind=${encodeURIComponent(kind)}` +
     `&q=${encodeURIComponent(pq)}&min_risk=${Number(minRisk) || 0}` +
@@ -319,6 +373,96 @@ export function BehaviorPanel() {
     `&scope=${ascope}` +
     `&sort=visits` +
     `&limit=${PAGE_SIZE}&offset=${apage * PAGE_SIZE}`;
+  // 事实列表：独立时间窗（默认 24h）与筛选，不跟页面顶部 timeRange 走——事实是排查入口，
+  // 用户常在这里看更长窗口；分页 50/页（后端 cap 200）。
+  const OBS_PAGE = 50;
+  const obsUrl =
+    `/api/baseline/observations?kind=${encodeURIComponent(obsKind)}` +
+    `&subject=${encodeURIComponent(obsSubject.trim())}` +
+    `&minutes=${obsMinutes}&limit=${OBS_PAGE}&offset=${obsPage * OBS_PAGE}`;
+
+  // 白名单/资产外连在 useEffect 里独立加载（不需要每次整页刷新都拉）
+  React.useEffect(() => {
+    void loadInto(errs, SRC.observations, "/api/baseline/observations/stats?minutes=1440", setObsStats);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  React.useEffect(() => {
+    void loadInto(errs, SRC.observations, obsUrl, setObs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obsUrl]);
+
+  async function loadEgress() {
+    setEgressItems(null);
+    const data = await apiFetch<{ items: EgressBaselineItem[] }>(
+      `/api/baseline/egress?src_ip=${encodeURIComponent(egressSrcIp.trim())}&kind=${encodeURIComponent(egressKind)}&limit=200`,
+    );
+    setEgressItems(data.items || []);
+  }
+
+  async function loadAllow() {
+    setAllowBusy(true);
+    try {
+      const data = await apiFetch<{ items: EgressAllowItem[] }>(
+        `/api/baseline/egress-allow?include_tombstone=${allowTombstone}`,
+      );
+      setAllowItems(data.items || []);
+    } finally {
+      setAllowBusy(false);
+    }
+  }
+
+  React.useEffect(() => {
+    void loadAllow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowTombstone]);
+
+  async function saveAllow() {
+    setAllowBusy(true);
+    try {
+      const body: EgressAllowBody = { ...allowForm, value: allowForm.value.trim() };
+      if (body.scope === "asset" && !body.asset?.trim()) {
+        setMsg("scope=资产 时必须填资产 IP");
+        return;
+      }
+      const data = await apiFetch<{ ok: boolean; error?: string }>("/api/baseline/egress-allow", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (data.ok === false) {
+        setMsg(data.error || "保存失败");
+        return;
+      }
+      setMsg("白名单已保存（手工条目，会覆盖同键的自学习条目）");
+      setAllowOpen(false);
+      void loadAllow();
+    } finally {
+      setAllowBusy(false);
+    }
+  }
+
+  async function deleteAllow(item: EgressAllowItem) {
+    if (!window.confirm(`删除白名单「${item.value}」？\n删除会留墓碑：这个目标以后不会再被自动学回来（可用「恢复」撤销）。`)) return;
+    setAllowBusy(true);
+    try {
+      await apiFetch(`/api/baseline/egress-allow/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      setMsg("已删除并留墓碑（勾选「含已删除」可看到，可恢复）");
+      void loadAllow();
+    } finally {
+      setAllowBusy(false);
+    }
+  }
+
+  async function restoreAllow(item: EgressAllowItem) {
+    setAllowBusy(true);
+    try {
+      await apiFetch(`/api/baseline/egress-allow/${encodeURIComponent(item.id)}/restore`, { method: "POST" });
+      setMsg("已撤销墓碑：该目标重新允许自学习");
+      void loadAllow();
+    } finally {
+      setAllowBusy(false);
+    }
+  }
 
   async function load() {
     errs.reset();
@@ -1098,6 +1242,376 @@ export function BehaviorPanel() {
         </Card>
       </Section>
 
+      {/* ---------- 5. 基线事实（observations）：客观观察，没有 severity/verdict ---------- */}
+      <Section
+        title="基线事实"
+        description="行为基线只描述「和平时不一样」的客观事实（外连新目标 / 异地登录 / 爆破 / 大量 404 / 连接数偏离）。没有严重度、没有判定 —— 判断权在智能体。"
+        extra={
+          <Button size="sm" variant="outline" onClick={() => void loadInto(errs, SRC.observations, obsUrl, setObs)}>
+            刷新
+          </Button>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-3 pt-4">
+            {/* 分类型计数 chips：点一下即筛选该类事实（available=false 时显示读取失败而不是 0） */}
+            {obsStats?.available === false ? (
+              <p className="text-xs text-sev-critical-fg">事实统计读取失败：{obsStats.error || "后端异常"}</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {(obsStats?.kinds ?? []).length ? (
+                  obsStats!.kinds.map((k) => (
+                    <button
+                      key={k.kind}
+                      type="button"
+                      title={k.last_seen ? `最近一次：${formatDateTime(k.last_seen)}` : undefined}
+                      onClick={() => {
+                        setObsKind(obsKind === k.kind ? "" : k.kind);
+                        setObsPage(0);
+                      }}
+                      className={
+                        "rounded-sm border px-2 py-0.5 text-xs transition-colors " +
+                        (obsKind === k.kind
+                          ? "border-brand-500 bg-brand-50 text-primary"
+                          : "border-border bg-surface-1 text-muted-foreground hover:bg-surface-2")
+                      }
+                    >
+                      {k.label} · <span className="tabular-nums">{k.count}</span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="text-xs text-muted-foreground">窗口内没有事实记录。</span>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="事实类型"
+                value={obsKind}
+                onChange={(e) => {
+                  setObsKind(e.target.value);
+                  setObsPage(0);
+                }}
+                className="h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+              >
+                <option value="">全部类型</option>
+                {OBSERVATION_KINDS.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <Input
+                className="h-8 w-56"
+                aria-label="按对象精确过滤（IP / 账号）"
+                placeholder="对象：IP / 账号"
+                value={obsSubject}
+                onChange={(e) => setObsSubject(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setObsPage(0);
+                    void loadInto(errs, SRC.observations, obsUrl, setObs);
+                  }
+                }}
+              />
+              <select
+                aria-label="时间窗"
+                value={obsMinutes}
+                onChange={(e) => {
+                  setObsMinutes(Number(e.target.value));
+                  setObsPage(0);
+                }}
+                className="h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+              >
+                <option value={60}>近1小时</option>
+                <option value={360}>近6小时</option>
+                <option value={1440}>近24小时</option>
+                <option value={10080}>近7天</option>
+                <option value={43200}>近30天</option>
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setObsPage(0);
+                  void loadInto(errs, SRC.observations, obsUrl, setObs);
+                }}
+              >
+                查询
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {obs?.available === false ? "读取失败" : `共 ${obs?.total ?? 0} 条`}
+              </span>
+            </div>
+
+            {!obs && !errs.has ? (
+              <TableSkeleton rows={6} cols={6} />
+            ) : obs?.items?.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-44">事实类型</TableHead>
+                    <TableHead className="w-48">对象</TableHead>
+                    <TableHead>事实明细</TableHead>
+                    <TableHead className="w-16">强度</TableHead>
+                    <TableHead className="w-16">次数</TableHead>
+                    <TableHead className="w-40">最近出现</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {obs.items.map((it) => (
+                    <TableRow key={it.id}>
+                      <TableCell>
+                        <Badge variant="outline" title={`客观强度 ${it.strength}，仅用于排序，不是严重度`}>
+                          {it.kind_label || it.kind}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="min-w-0">
+                        <span className="block truncate font-mono text-xs" title={it.subject}>
+                          {it.subject_kind === "account" ? "账号 " : ""}
+                          {it.subject}
+                        </span>
+                      </TableCell>
+                      <TableCell className="min-w-0">
+                        <span
+                          className="block truncate font-mono text-xs text-muted-foreground"
+                          title={Object.entries(it.facts || {})
+                            .map(([k, v]) => `${k}: ${String(v)}`)
+                            .join(" · ")}
+                        >
+                          {Object.entries(it.facts || {})
+                            .map(([k, v]) => `${k}: ${String(v)}`)
+                            .join(" · ") || "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="tabular-nums text-xs text-muted-foreground">
+                        {it.strength.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="tabular-nums text-xs">{it.count}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {it.last_seen ? formatDateTime(it.last_seen) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                tone={obs?.available === false ? "danger" : "muted"}
+                title={obs?.available === false ? "事实读取失败" : "窗口内没有基线事实"}
+                hint={
+                  obs?.available === false
+                    ? obs.error || "后端异常或网络不通，不能当成「没有异常」"
+                    : "观测期未满或行为都在基线内； facts 是「和平时不一样」的记录，不代表攻击"
+                }
+              />
+            )}
+            <Pagination total={obs?.total ?? 0} page={obsPage} pages={Math.max(1, Math.ceil((obs?.total ?? 0) / OBS_PAGE))} onPage={setObsPage} />
+          </CardContent>
+        </Card>
+      </Section>
+
+      {/* ---------- 6. 外连目的地与白名单 ---------- */}
+      <Section
+        title="外连目的地与白名单"
+        description="上表是资产已学到的主动外连（排查「这台机器平时连谁」）；白名单条目命中后不再产出 egress_new / egress_rare 事实。删除留墓碑 —— 该目标以后不会再被自动学回来。"
+        extra={
+          <Button size="sm" onClick={() => {
+            setAllowEditId("");
+            setAllowForm({ kind: "dst_ip", value: "", scope: "global", asset: "", enabled: true, note: "" });
+            setAllowOpen(true);
+          }}>
+            新增白名单
+          </Button>
+        }
+      >
+        <Card>
+          <CardContent className="space-y-4 pt-4">
+            {/* 资产外连查询：默认全部资产，输入 IP 后只看这台机器 */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-8 w-56"
+                aria-label="资产 IP（留空看全部）"
+                placeholder="资产 IP（留空看全部）"
+                value={egressSrcIp}
+                onChange={(e) => setEgressSrcIp(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void loadEgress();
+                }}
+              />
+              <select
+                aria-label="外连类型"
+                value={egressKind}
+                onChange={(e) => setEgressKind(e.target.value)}
+                className="h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+              >
+                <option value="">全部类型</option>
+                {EGRESS_KINDS.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <Button size="sm" variant="outline" onClick={() => void loadEgress()}>
+                查询外连
+              </Button>
+            </div>
+            {egressItems === null ? null : egressItems.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-40">资产</TableHead>
+                    <TableHead className="w-20">类型</TableHead>
+                    <TableHead>目标</TableHead>
+                    <TableHead className="w-20">次数</TableHead>
+                    <TableHead className="w-40">首次 / 最近</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {egressItems.map((it, i) => (
+                    <TableRow key={`${it.src_ip}-${it.kind}-${it.value}-${i}`}>
+                      <TableCell className="font-mono text-xs">{it.src_ip}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {EGRESS_KINDS.find(([k]) => k === it.kind)?.[1] || it.kind}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{it.value}</TableCell>
+                      <TableCell className="tabular-nums text-xs">{it.count}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {it.first_seen ? formatDateTime(it.first_seen) : "—"}
+                        {" / "}
+                        {it.last_seen ? formatDateTime(it.last_seen) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-xs text-muted-foreground">还没有学到的外连记录（观测期未满或没有主动外连）。</p>
+            )}
+
+            {/* 白名单表 */}
+            <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={allowTombstone}
+                  onChange={(e) => setAllowTombstone(e.target.checked)}
+                />
+                含已删除（墓碑）
+              </label>
+              <span className="text-xs text-muted-foreground">
+                {allowItems?.length ?? 0} 条
+              </span>
+            </div>
+            {allowItems === null ? (
+              <TableSkeleton rows={3} cols={7} />
+            ) : allowItems.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-20">类型</TableHead>
+                    <TableHead>目标</TableHead>
+                    <TableHead className="w-36">范围</TableHead>
+                    <TableHead className="w-20">来源</TableHead>
+                    <TableHead className="w-16">命中</TableHead>
+                    <TableHead>备注</TableHead>
+                    <TableHead className="w-36">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {allowItems.map((it) => (
+                    <TableRow key={it.id} className={it.tombstone ? "opacity-60" : undefined}>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {EGRESS_KINDS.find(([k]) => k === it.kind)?.[1] || it.kind}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {it.value}
+                        {it.tombstone ? (
+                          <Badge variant="medium" className="ml-1">
+                            墓碑
+                          </Badge>
+                        ) : null}
+                        {!it.enabled && !it.tombstone ? (
+                          <Badge variant="outline" className="ml-1">
+                            停用
+                          </Badge>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {it.scope === "asset" ? `仅资产 ${it.asset || "—"}` : "全局"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {it.source === "manual" ? "手工" : "自学习"}
+                      </TableCell>
+                      <TableCell className="tabular-nums text-xs">{it.hit_count}</TableCell>
+                      <TableCell className="min-w-0">
+                        <span className="block truncate text-xs text-muted-foreground" title={it.note}>
+                          {it.note || "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            disabled={allowBusy}
+                            onClick={() => {
+                              setAllowEditId(it.id);
+                              setAllowForm({
+                                kind: it.kind,
+                                value: it.value,
+                                scope: it.scope,
+                                asset: it.asset || "",
+                                enabled: it.enabled,
+                                note: it.note || "",
+                              });
+                              setAllowOpen(true);
+                            }}
+                          >
+                            编辑
+                          </Button>
+                          {it.tombstone ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={allowBusy}
+                              onClick={() => void restoreAllow(it)}
+                            >
+                              恢复
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-sev-critical-fg hover:bg-sev-critical-bg"
+                              aria-label={`删除白名单 ${it.value}`}
+                              title="删除（留墓碑：以后不再自动学回来）"
+                              disabled={allowBusy}
+                              onClick={() => void deleteAllow(it)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState
+                tone="muted"
+                title="白名单为空"
+                hint="自学习条目（稳定 N 天 + N 次出现）会自动入表；也可以手工新增。"
+              />
+            )}
+          </CardContent>
+        </Card>
+      </Section>
+
       {/* ---------- 分析配置（右侧抽屉） ---------- */}
       <Drawer
         open={configOpen}
@@ -1314,6 +1828,93 @@ export function BehaviorPanel() {
           ) : (
             <p className="text-muted-foreground">还没有处置记录。</p>
           )}
+        </div>
+      </Dialog>
+
+      {/* ---------- 外连白名单 新增/编辑 ---------- */}
+      <Dialog
+        open={allowOpen}
+        title={allowEditId ? "编辑白名单条目" : "新增外连白名单"}
+        onClose={() => setAllowOpen(false)}
+        footer={
+          <>
+            <Button size="sm" variant="outline" onClick={() => setAllowOpen(false)}>
+              取消
+            </Button>
+            <Button size="sm" disabled={allowBusy} onClick={() => void saveAllow()}>
+              {allowBusy ? "保存中…" : "保存"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Field label="类型">
+              <select
+                aria-label="白名单类型"
+                value={allowForm.kind}
+                onChange={(e) => setAllowForm({ ...allowForm, kind: e.target.value })}
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+              >
+                {EGRESS_KINDS.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="目标值" className="flex-1">
+              <Input
+                aria-label="白名单目标值"
+                placeholder={allowForm.kind === "port" ? "如 8443" : allowForm.kind === "domain" ? "如 cdn.example.com" : "如 203.0.113.7"}
+                value={allowForm.value}
+                onChange={(e) => setAllowForm({ ...allowForm, value: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Field label="范围">
+              <select
+                aria-label="白名单范围"
+                value={allowForm.scope}
+                onChange={(e) => setAllowForm({ ...allowForm, scope: e.target.value })}
+                className="h-9 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+              >
+                <option value="global">全局（所有资产）</option>
+                <option value="asset">仅某台资产</option>
+              </select>
+            </Field>
+            {allowForm.scope === "asset" ? (
+              <Field label="资产 IP">
+                <Input
+                  aria-label="白名单资产 IP"
+                  placeholder="该资产的源 IP"
+                  value={allowForm.asset || ""}
+                  onChange={(e) => setAllowForm({ ...allowForm, asset: e.target.value })}
+                />
+              </Field>
+            ) : null}
+            <label className="flex items-center gap-1.5 text-13 text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={allowForm.enabled !== false}
+                onChange={(e) => setAllowForm({ ...allowForm, enabled: e.target.checked })}
+              />
+              启用
+            </label>
+          </div>
+          <Field label="备注（可选）">
+            <Input
+              aria-label="白名单备注"
+              placeholder="为什么加白（审计看这里）"
+              value={allowForm.note || ""}
+              onChange={(e) => setAllowForm({ ...allowForm, note: e.target.value })}
+            />
+          </Field>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            白名单命中后不再产出「外连目的地首次出现 / 罕见」事实。手工条目会覆盖同键的自学习条目；
+            删除条目会留墓碑（以后不再自动学回来），需要恢复时勾选「含已删除（墓碑）」。
+          </p>
         </div>
       </Dialog>
     </div>

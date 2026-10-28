@@ -348,6 +348,15 @@ def remove_tombstone(entry_id: str) -> bool:
     return True
 
 
+
+def check_allow(src_ip: str, kind: str, value: str) -> dict[str, Any]:
+    """某个目标对某台资产是否已放行（只读；给 MCP 工具判断用）。"""
+    entries = _allowed_entries()
+    for entry in entries:
+        if entry.kind == kind and entry.value == value and (entry.scope == "global" or entry.asset == src_ip):
+            return {"allowed": True, "scope": entry.scope, "source": entry.source, "note": entry.note}
+    return {"allowed": False, "scope": "", "source": "", "note": ""}
+
 def list_baseline(src_ip: str = "", *, kind: str = "", limit: int = 100) -> list[dict[str, Any]]:
     """某台资产（或全部）已学到的外连目的地。"""
     with SessionLocal() as db:
