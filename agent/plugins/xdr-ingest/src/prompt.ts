@@ -90,6 +90,8 @@ export function buildAnalysisPrompt(task: PromptTask): string {
     '- `strength` 是**统计强度**（多罕见、多少对象），**不是严重度**，不要拿它当严重程度。',
     '- 想提交抑制（`submit_suppression`）只在这些同时成立时：判了 false_positive、',
     '  证据 ≥3 条且来自 ≥2 种取数工具、置信度够、而且这个现象不是刚出现的。',
+    '  提交时把**当前任务 ID 带上**（`task_id`，就在上面的任务 JSON 里）——',
+    '  抑制和这个现象才对得上，插件会记住它，以后同类现象直接跳过、连会话都不起。',
     '- **抑制闭环不需要人放行**：抑制生效后 NDR 不再为这类现象派工、也不再按门铃，',
     '  插件也会记住它、以后同类现象直接跳过（你根本不会收到）。',
     '  若返回 `mode=record_only`（影响面过大被降级），按返回里的 `downgrade.advice`',

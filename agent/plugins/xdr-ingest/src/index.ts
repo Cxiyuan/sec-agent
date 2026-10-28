@@ -29,6 +29,7 @@ import type { ColdStore } from './store.ts'
 import { mergeSettings, settingsView } from './settings.ts'
 import type { RuntimeSettings, SettingsStore } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
+import { identityOfMatch } from './task-results.ts'
 import { MemoryConclusionReader } from './conclusions.ts'
 import { PostgresConclusionReader } from './pg-conclusions.ts'
 import type { ConclusionReader } from './conclusions.ts'
@@ -76,33 +77,6 @@ const SUPPRESSION_SYNC_MS = 90_000
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
 export const name = 'xdr-ingest'
-
-/**
- * 从抑制条件树里取一个对象（`src_ip` / `dst_ip`）。
- *
- * 用途：抑制条目若没有 `source_task_id`（人建的那些），就按对象粗匹配一次，
- * 让"这类对象的现象"也能被本地抑制记忆挡住。
- */
-function subjectOfMatch(match: unknown): string {
-  const found: string[] = []
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item)
-      return
-    }
-    if (typeof node !== 'object' || node === null) return
-    const row = node as Record<string, unknown>
-    if (Array.isArray(row['rules'])) {
-      for (const item of row['rules']) walk(item)
-      return
-    }
-    const field = String(row['field'] ?? '')
-    const value = String(row['value'] ?? '').trim()
-    if (value !== '' && (field === 'src_ip' || field === 'dst_ip')) found.push(value)
-  }
-  walk(match)
-  return found[0] ?? ''
-}
 
 // 生命周期可见性：模块被 Loader import、apply() 真正激活，各留一条日志。
 // 路由 404 排查时，docker logs 里这两行在不在直接区分「行没插进去」
@@ -305,13 +279,11 @@ export function apply(ctx: Context, config: Config): void {
         if (item.sourceTaskId !== '') {
           if (await stateStore.markSuppressed(item.sourceTaskId, item.name)) marked += 1
         }
-        // 没有任务 id 的抑制（人建的）：按条件树里的对象粗匹配一次
-        const subject = subjectOfMatch(item.match)
-        if (subject === '') continue
-        const count = await stateStore.markSuppressedByIdentity(
-          { kind: 'hit', subjectKind: 'ip', subject, feature: '' },
-          item.name,
-        )
+        // 没有任务 id 的抑制（人建的、或者提交时没带 task_id）：
+        // 从条件树反推它针对的现象（源 IP + 规则名）再标一次。
+        const identity = identityOfMatch(item.match)
+        if (identity === null) continue
+        const count = await stateStore.markSuppressedByIdentity(identity, item.name)
         marked += count
       }
       if (marked > 0) {

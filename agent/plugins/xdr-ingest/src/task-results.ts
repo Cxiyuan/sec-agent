@@ -106,6 +106,43 @@ export function taskIdentity(task: ClaimedTask): TaskIdentity {
 }
 
 /**
+ * 抑制条件树 → 现象身份（能推出才推）。
+ *
+ * 为什么需要：抑制条目里若没带 `source_task_id`（人工建的、或者智能体没传），
+ * 就没法按任务 id 对上号；这时只能从条件树反推它针对的是哪类现象：
+ * 命中线索的身份是 `kind=hit | 对象=源 IP | 特征=规则名`，
+ * 而条件树里的 `src_ip`/`dst_ip` + `rule` 正好能拼出这个四元组。
+ *
+ * 推不出来就返回 null —— **宁可不同步，也不乱标**（标错了会让不相干的线索被跳过）。
+ */
+export function identityOfMatch(match: unknown): TaskIdentity | null {
+  const subjects: string[] = []
+  const features: string[] = []
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    const row = node as Record<string, unknown>
+    if (Array.isArray(row['rules'])) {
+      for (const item of row['rules']) walk(item)
+      return
+    }
+    const field = String(row['field'] ?? '')
+    const value = String(row['value'] ?? '').trim()
+    if (value === '') return
+    if (field === 'src_ip' || field === 'dst_ip') subjects.push(value)
+    if (field === 'rule') features.push(value)
+  }
+  walk(match)
+  const subject = subjects[0] ?? ''
+  const feature = features[0] ?? ''
+  if (subject === '' || feature === '') return null
+  return { kind: 'hit', subjectKind: 'ip', subject, feature }
+}
+
+/**
  * 现象身份。`feature` 缺失时返回 null：宁可多分析一次，也不能把不同规则
  * 命中的同一台机器混成一条结论（老版本 NDR 不下发 feature 时就是这种情况）。
  */

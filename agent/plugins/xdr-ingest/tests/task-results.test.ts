@@ -95,3 +95,40 @@ test('a stronger signal forces re-analysis, a small drift does not', () => {
   assert.equal(reuseDecision(record({ strength: 0.3 }), task, NOW, 86_400_000, 0.15).reuse, false)
   assert.equal(reuseDecision(record(), { ...task, strength: Number.NaN }, NOW, 86_400_000, 0.15).reuse, false)
 })
+
+/**
+ * 抑制条件树 → 现象身份。
+ *
+ * 抑制条目若没带 source_task_id（人建的、或提交时没传），就只能从条件树反推
+ * 它针对哪类现象：命中线索的身份是 `hit | 源 IP | 规则名`，条件树里的
+ * src_ip + rule 正好拼得出来。推不出来就不推 —— 宁可不同步，也别乱标。
+ */
+test('identityOfMatch：从条件树反推命中线索的身份', async () => {
+  const { identityOfMatch } = await import('../src/task-results.ts')
+  const match = {
+    logic: 'and',
+    rules: [
+      { field: 'src_ip', op: 'eq', value: '10.1.2.3' },
+      { field: 'rule', op: 'eq', value: 'TLS握手失败风暴' },
+    ],
+  }
+  assert.deepEqual(identityOfMatch(match), {
+    kind: 'hit',
+    subjectKind: 'ip',
+    subject: '10.1.2.3',
+    feature: 'TLS握手失败风暴',
+  })
+})
+
+test('identityOfMatch：推不出完整身份就返回 null', async () => {
+  const { identityOfMatch } = await import('../src/task-results.ts')
+  // 只有端口与 UA：既不知道源 IP，也不知道规则名 → 不同步
+  assert.equal(identityOfMatch({
+    logic: 'and',
+    rules: [
+      { field: 'dst_port', op: 'eq', value: 22346 },
+      { field: 'user_agent', op: 'eq', value: '00_linux_client' },
+    ],
+  }), null)
+  assert.equal(identityOfMatch(null), null)
+})
