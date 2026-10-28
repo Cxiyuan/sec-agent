@@ -35,7 +35,7 @@ export interface XdrIngestService {
   getAnalysis(analysisId: string): Promise<ColdEntry | null>
 
   /**
-   * 智能体交回的结论（NDR 写的 `analysis_results`），按时间倒序分页 + 关键词搜索。
+   * 智能体交回的结论（**智能体自己的留档**，按项目隔离），按时间倒序 + 关键词搜索。
    *
    * 与 `listAnalyses` 的区别：后者是**旧摘要契约**的缓存表（新架构下 NDR 不再推摘要，
    * 那张表永远是空的）；结论才是现在真正产出的东西，控制台「分析记录」看它。
@@ -50,6 +50,33 @@ export interface XdrIngestService {
 
   /** 结论总数与数据面是否可用（控制台总览用）。 */
   conclusionStats(): Promise<{ available: boolean, total: number }>
+
+  /** 分析过程索引：任务 → 会话（模型/工具数/耗时/状态），按开始时间倒序。 */
+  listProcesses(query: { limit: number, offset: number, search: string, outcome: string }): Promise<{
+    total: number
+    items: readonly unknown[]
+  }>
+
+  /** 按任务 ID 取过程索引（控制台「分析过程」详情用）。 */
+  getProcess(taskId: string): Promise<unknown>
+
+  /** 分析脚本列表（含停用；控制台管理用）。 */
+  listScripts(query: { search: string, limit: number, offset: number }): Promise<{
+    total: number
+    items: readonly unknown[]
+  }>
+
+  /** 按名字或 ID 取脚本（含停用）。 */
+  getScript(nameOrId: string): Promise<unknown>
+
+  /** 控制台新建/编辑脚本（同名覆盖；origin 记为 console）。 */
+  saveScript(body: unknown): Promise<unknown>
+
+  /** 控制台启用/停用脚本。 */
+  setScriptEnabled(nameOrId: string, enabled: boolean): Promise<boolean>
+
+  /** 控制台删除脚本。 */
+  removeScript(nameOrId: string): Promise<boolean>
 
   /**
    * 当前生效的运行参数：`{poll_seconds, max_concurrent, claim_limit, store}`。

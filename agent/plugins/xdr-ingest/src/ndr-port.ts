@@ -144,6 +144,31 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
   }
 
   /**
+   * 本 NDR 的身份（授权ID）。同时看两处：
+   * - 工具返回体（`server_info`）；
+   * - 响应头 `x-ndr-auth-id`（每个响应都带）。
+   * 两者都有且不一致 → 说明中间有代理/错配，宁可报错也不要把数据写到别的项目。
+   */
+  async serverInfo(): Promise<{ authId: string, source: string, stable: boolean }> {
+    const reply = await this.caller.callTool('server_info', {})
+    if (typeof reply['error'] === 'string' && reply['error'] !== '') {
+      throw new Error(`server_info: ${reply['error']}`)
+    }
+    const authId = String(reply['auth_id'] ?? '').trim()
+    const header = typeof (this.caller as { lastAuthId?: string }).lastAuthId === 'string'
+      ? String((this.caller as { lastAuthId?: string }).lastAuthId ?? '').trim()
+      : ''
+    if (header !== '' && authId !== '' && header !== authId) {
+      throw new Error(`授权ID 不一致：server_info=${authId} 响应头=${header}（中间可能有代理或指错了 NDR）`)
+    }
+    return {
+      authId: authId || header,
+      source: String(reply['source'] ?? ''),
+      stable: reply['stable'] === true,
+    }
+  }
+
+  /**
    * 生效中的精准抑制清单（抑制记忆的来源）。
    *
    * 为什么智能体要自己拉一遍：NDR 侧拦的是"规则命中"这条路径，同一个现象

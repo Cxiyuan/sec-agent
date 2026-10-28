@@ -12,7 +12,8 @@ import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
-import type { TaskSeenStore } from './state-store.ts'
+import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
+import type { ConclusionRecord } from './conclusions.ts'
 
 /** `task_state` 里的一条历史结论（最新在前）。 */
 export interface TaskResultView {
@@ -20,6 +21,10 @@ export interface TaskResultView {
   readonly terminal_reason?: string
   readonly confidence?: number
   readonly summary?: string
+  readonly findings?: unknown
+  readonly evidence_refs?: readonly string[]
+  readonly tools_used?: number
+  readonly duration_ms?: number
   readonly created_at?: string
 }
 
@@ -59,6 +64,8 @@ export interface NdrTaskPort extends NdrPort {
   deferTask(taskId: string, reason: string): Promise<unknown>
   /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
   listSuppressions?(): Promise<readonly SuppressionView[]>
+  /** 本 NDR 的授权ID（`server_info`）：项目组织绑定校验用；不实现 = 跳过校验。 */
+  serverInfo?(): Promise<{ readonly authId: string, readonly source: string, readonly stable: boolean }>
 }
 
 /** NDR 侧一条精准抑制（只要抑制记忆用得到的几个字段）。 */
@@ -89,6 +96,12 @@ export interface AnalystOptions {
   readonly taskResults?: TaskResultStore
   /** 抑制记忆（"这类现象已被精准抑制"）；不传 = 不跳过。 */
   readonly taskSeen?: TaskSeenStore
+  /** 分析过程索引（任务 → 会话）；不传 = 不记录。 */
+  readonly process?: ProcessStore
+  /** 结论留档（控制台「分析记录」的数据源）；不传 = 不留档。 */
+  readonly conclusions?: ConclusionStore
+  /** 当前项目（NDR 授权ID），写进结论留档；空串 = 未知项目。 */
+  readonly projectId?: string
   /** 复用有效期（毫秒，从上次真实分析起算；0 = 关闭复用）。 */
   readonly taskReuseTtlMs?: number
   /** 新线索强度比上次高多少就必须重查（现象变强）。 */
@@ -149,17 +162,30 @@ export class Analyst {
         `[xdr-ingest] 任务 ${task.id} 命中同类现象结论复用（${task.kind}/${task.subject}），`
         + '未起分析会话',
       )
+      await this.finishProcess(task, 'reused', startedAt, { note: '同类现象结论复用（未起会话）' })
       return reused
     }
 
     // 抑制记忆：这类现象已经被精准抑制过 → 不起会话、不取数，直接交回。
     const suppressed = await this.trySuppressed(task, startedAt)
-    if (suppressed !== null) return suppressed
+    if (suppressed !== null) {
+      await this.finishProcess(task, 'suppressed', startedAt, { note: '已被精准抑制（未起会话）' })
+      return suppressed
+    }
 
     const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
     const selected = this.options.modelSelection?.()
     const provider = this.options.provider?.trim() || selected?.provider.trim()
     const model = this.options.model?.trim() || selected?.model.trim()
+    // 过程索引：控制台据此列出「任务 → 会话 → 耗时/工具数/状态」，并读会话时间线
+    await this.options.process?.startProcess({
+      taskId: task.id,
+      sessionId,
+      kind: task.kind,
+      subject: task.subject,
+      model: [provider, model].filter(v => (v ?? '') !== '').join('/'),
+      startedAt: new Date(startedAt).toISOString(),
+    })
     const handle = await this.options.agents.create({
       sessionId,
       agentOptions: {
@@ -196,6 +222,7 @@ export class Analyst {
     if (completed) {
       // 结论入库供下次复用；失败只告警，不要让一条已交回的任务看起来失败
       await this.remember(task, reply)
+      await this.archiveFromReply(task, reply)
     }
     let deferred = false
     if (!completed) {
@@ -208,6 +235,15 @@ export class Analyst {
         error = error ?? (exc instanceof Error ? exc.message : String(exc))
       }
     }
+    await this.finishProcess(
+      task,
+      completed ? 'done' : error !== undefined ? 'failed' : 'deferred',
+      startedAt,
+      {
+        verdict: String(reply.results?.[0]?.verdict ?? ''),
+        note: completed ? '' : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
+      },
+    )
     return {
       taskId: task.id,
       completed,
@@ -266,6 +302,18 @@ export class Analyst {
       if (reply.ok !== true && state !== 'done') return null
       if (state !== '' && state !== 'done') return null
       await store.bump(key, new Date().toISOString(), task.id).catch(() => false)
+      await this.archiveConclusion(task, {
+        verdict: record.verdict,
+        confidence: record.confidence,
+        summary: reuseSummary(record),
+        findings: { reused_from: record.taskId, reuse_key: key, reused: true },
+        evidenceRefs: [],
+        toolsUsed: 0,
+        durationMs: 0,
+        terminalReason: 'concluded',
+        reused: true,
+        reusedFrom: record.taskId,
+      })
       return {
         taskId: task.id,
         completed: true,
@@ -322,6 +370,18 @@ export class Analyst {
       console.log(
         `[xdr-ingest] 任务 ${task.id} 命中抑制记忆（${hit.suppressedBy}），未起分析会话`,
       )
+      await this.archiveConclusion(task, {
+        verdict: 'false_positive',
+        confidence: 0.9,
+        summary: `该现象已被精准抑制（${hit.suppressedBy}），按记忆不再分析`,
+        findings: { suppressed_by: hit.suppressedBy, suppressed_task: hit.taskId },
+        evidenceRefs: [],
+        toolsUsed: 0,
+        durationMs: 0,
+        terminalReason: 'concluded',
+        reused: true,
+        reusedFrom: hit.taskId,
+      })
       return {
         taskId: task.id,
         completed: true,
@@ -337,6 +397,110 @@ export class Analyst {
       )
       return null
     }
+  }
+
+  /** 过程索引收尾（控制台「分析过程」页的数据来源）。 */
+  private async finishProcess(
+    task: ClaimedTask,
+    outcome: 'running' | 'done' | 'reused' | 'suppressed' | 'deferred' | 'failed',
+    startedAt: number,
+    extra: { toolsUsed?: number; verdict?: string; note?: string } = {},
+  ): Promise<void> {
+    const store = this.options.process
+    if (store === undefined) return
+    try {
+      await store.finishProcess({
+        taskId: task.id,
+        endedAt: new Date().toISOString(),
+        outcome,
+        durationMs: Date.now() - startedAt,
+        ...(extra.toolsUsed === undefined ? {} : { toolsUsed: extra.toolsUsed }),
+        ...(extra.verdict === undefined ? {} : { verdict: extra.verdict }),
+        ...(extra.note === undefined ? {} : { note: extra.note }),
+      })
+    } catch (error) {
+      console.warn(
+        `[xdr-ingest] 过程索引收尾失败（任务 ${task.id}）：`,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+  }
+
+  /**
+   * 结论留档：控制台「分析记录」读的是**智能体自己这份**。
+   *
+   * 为什么不再直连 NDR 的 `analysis_results`：多项目下每个项目一套 NDR 库，
+   * 控制台要跨库读既慢又依赖每条隧道。交回时顺手留一份，读自己库就够。
+   */
+  private async archiveConclusion(
+    task: ClaimedTask,
+    data: {
+      id?: string
+      verdict: string
+      confidence: number
+      summary: string
+      findings: unknown
+      evidenceRefs: readonly string[]
+      toolsUsed: number
+      durationMs: number
+      terminalReason: string
+      reused: boolean
+      reusedFrom: string
+      createdAt?: string
+    },
+  ): Promise<void> {
+    const store = this.options.conclusions
+    if (store === undefined) return
+    const record: ConclusionRecord = {
+      id: (data.id ?? '') !== ''
+        ? String(data.id)
+        : `${this.options.projectId ?? 'project'}:${task.id}`,
+      taskId: task.id,
+      kind: task.kind,
+      subjectKind: task.subject_kind,
+      subject: task.subject,
+      verdict: data.verdict,
+      confidence: data.confidence,
+      summary: data.summary,
+      findings: data.findings ?? {},
+      evidenceRefs: data.evidenceRefs,
+      toolsUsed: data.toolsUsed,
+      durationMs: data.durationMs,
+      reused: data.reused,
+      reusedFrom: data.reusedFrom,
+      terminalReason: data.terminalReason,
+      createdAt: (data.createdAt ?? '') !== '' ? String(data.createdAt) : new Date().toISOString(),
+    }
+    try {
+      await store.saveConclusion(record)
+    } catch (error) {
+      console.warn(
+        `[xdr-ingest] 结论留档失败（任务 ${task.id}）：`,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+  }
+
+  /** 从 `task_state` 的回执留档（正常分析路径）。 */
+  private async archiveFromReply(task: ClaimedTask, reply: TaskStateReply): Promise<void> {
+    const latest = reply.results?.[0]
+    if (latest === undefined) return
+    await this.archiveConclusion(task, {
+      ...(typeof reply.result_id === 'string' && reply.result_id !== '' ? { id: reply.result_id } : {}),
+      verdict: String(latest.verdict ?? ''),
+      confidence: Number.isFinite(latest.confidence) ? Number(latest.confidence) : 0,
+      summary: String(latest.summary ?? ''),
+      findings: latest.findings ?? {},
+      evidenceRefs: Array.isArray(latest.evidence_refs) ? latest.evidence_refs : [],
+      toolsUsed: Number(latest.tools_used ?? 0),
+      durationMs: Number(latest.duration_ms ?? 0),
+      terminalReason: String(latest.terminal_reason ?? ''),
+      reused: false,
+      reusedFrom: '',
+      ...(typeof latest.created_at === 'string' && latest.created_at !== ''
+        ? { createdAt: latest.created_at }
+        : {}),
+    })
   }
 
   /** 把刚交回的结论写进复用库（只存最新一条）。 */

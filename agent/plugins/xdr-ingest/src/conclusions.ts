@@ -13,7 +13,6 @@
  * 表不存在（NDR 版本旧/未初始化）时一律降级成"没有结论"，不报错——
  * 控制台必须能打开，只是数据区显示不可用。
  *
- * PostgreSQL 实现在 `pg-conclusions.ts`（单独成文件是为了让本地测试不必装 `pg`）。
  */
 
 /** 一条交回的结论（字段与 NDR 的 `analysis_results` 对齐，只取展示需要的）。 */
@@ -57,42 +56,4 @@ export interface ConclusionQuery {
 export interface ConclusionPage {
   readonly total: number
   readonly entries: readonly ConclusionRecord[]
-}
-
-/** 结论只读面。 */
-export interface ConclusionReader {
-  /** 表在不在（PG 没配 / NDR 还没建表 = false）。 */
-  available(): boolean
-  /** 等初始化（探表）结束；返回是否可用。 */
-  ready(): Promise<boolean>
-  listRecent(query: ConclusionQuery): Promise<ConclusionPage>
-  get(id: string): Promise<ConclusionRecord | null>
-  count(): Promise<number>
-  close(): Promise<void>
-}
-/* 内存实现（没有 PG 时的兜底：永远"没有结论"）                          */
-export class MemoryConclusionReader implements ConclusionReader {
-  available(): boolean {
-    return false
-  }
-
-  async ready(): Promise<boolean> {
-    return false
-  }
-
-  async listRecent(_query: ConclusionQuery): Promise<ConclusionPage> {
-    return { total: 0, entries: [] }
-  }
-
-  async get(_id: string): Promise<ConclusionRecord | null> {
-    return null
-  }
-
-  async count(): Promise<number> {
-    return 0
-  }
-
-  async close(): Promise<void> {
-    // 没有连接可关
-  }
 }

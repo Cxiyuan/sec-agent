@@ -27,15 +27,20 @@ import { PostgresColdStore } from './pg-store.ts'
 import { MemoryColdStore } from './store.ts'
 import type { ColdStore } from './store.ts'
 import { mergeSettings, settingsView } from './settings.ts'
-import type { RuntimeSettings, SettingsStore } from './settings.ts'
+import type { RuntimeSettings } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 import { identityOfMatch } from './task-results.ts'
-import { MemoryConclusionReader } from './conclusions.ts'
-import { PostgresConclusionReader } from './pg-conclusions.ts'
-import type { ConclusionReader } from './conclusions.ts'
 import { MemoryStateStore } from './state-store.ts'
+import type {
+  ConclusionStore,
+  ProcessStore,
+  ProjectRecord,
+  ProjectStatus,
+  ScriptStore,
+  SettingsStore,
+  TaskSeenStore,
+} from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
-import type { ScriptStore, TaskSeenStore } from './state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
 
 export type * from './types.ts'
@@ -62,14 +67,7 @@ export { PostgresStateStore } from './pg-state-store.ts'
 export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore } from './state-store.ts'
 export { taskResultKey, reuseDecision, REUSABLE_VERDICTS } from './task-results.ts'
 export type { TaskResultRecord, TaskResultStore } from './task-results.ts'
-export { MemoryConclusionReader } from './conclusions.ts'
-export { PostgresConclusionReader } from './pg-conclusions.ts'
-export type {
-  ConclusionPage,
-  ConclusionQuery,
-  ConclusionReader,
-  ConclusionRecord,
-} from './conclusions.ts'
+export type { ConclusionPage, ConclusionQuery, ConclusionRecord } from './conclusions.ts'
 export type { XdrIngestService } from './workbench.ts'
 
 /** 抑制记忆同步的节拍（毫秒）：抑制是低频事件，1.5 分钟一次足够。 */
@@ -131,6 +129,15 @@ export interface Config {
   readonly provider: string
   readonly model: string
 
+  // ---------- 项目组织（= 一台 NDR；多项目见 projects 表） ----------
+  /**
+   * 绑定的项目组织 ID（= NDR 授权ID，8 位）。留空 = 启动时调 NDR 的 `server_info`
+   * 自动取；取不到就**不启动分析**（宁可显式失败，也不写到归属不明的库里）。
+   */
+  readonly projectId: string
+  /** 项目显示名（控制台展示；留空 = 沿用库里已有名字，再不行用"默认项目"）。 */
+  readonly projectName: string
+
   // ---------- 智能体侧记忆（结论复用 + 脚本库） ----------
   /** 同类现象结论复用有效期（小时，从上次真实分析起算）；0 = 关闭复用。 */
   readonly taskReuseTtlHours: number
@@ -164,6 +171,9 @@ export const Config: z<Config> = z.object({
   provider: z.string().default(''),
   model: z.string().default(''),
 
+  projectId: z.string().default(''),
+  projectName: z.string().default(''),
+
   taskReuseTtlHours: z.number().min(0).max(24 * 90).default(24),
   taskReuseStrengthDelta: z.number().min(0).max(1).default(0.15),
   scriptMaxCodeBytes: z.number().step(1).min(1024).max(262_144).default(65_536),
@@ -195,125 +205,95 @@ function assertConfig(config: Config): void {
   }
 }
 
+/**
+ * 项目注册表：每个项目（NDR 授权ID）一个项目绑定的 store 实例。
+ *
+ * 为什么按项目建实例而不是所有方法都传 projectId：调用方（分析循环、脚本工具、
+ * 控制台）漏传一次就会串项目；把项目钉在实例上，漏不掉。
+ * 池很小（项目数不会多，连接按需建立），一个实例一个池。
+ */
+class StateStoreRegistry {
+  private readonly cache = new Map<string, PostgresStateStore>()
+  private readonly connectionString: string
+  private readonly poolSize: number
+
+  constructor(connectionString: string, poolSize: number) {
+    this.connectionString = connectionString
+    this.poolSize = poolSize
+  }
+
+  get(projectId: string): PostgresStateStore {
+    const key = projectId.trim()
+    let store = this.cache.get(key)
+    if (store === undefined) {
+      store = new PostgresStateStore({
+        connectionString: this.connectionString,
+        projectId: key,
+        poolSize: this.poolSize,
+      })
+      this.cache.set(key, store)
+    }
+    return store
+  }
+
+  async closeAll(): Promise<void> {
+    const stores = [...this.cache.values()]
+    this.cache.clear()
+    await Promise.all(stores.map(store => store.close().catch(() => undefined)))
+  }
+}
+
+/** 当前项目的数据面（随项目解析结果切换；未解析前是内存兜底，方法返回空）。 */
+type DataStore = TaskResultStore & ScriptStore & TaskSeenStore & ConclusionStore & SettingsStore & ProcessStore
+
+/** 把"随时可能换实例"的 getter 包成稳定对象：脚本工具/服务拿到的引用不变。 */
+function liveStore<T extends object>(get: () => T): T {
+  return new Proxy({} as T, {
+    get: (_target, prop) => {
+      const target = get()
+      const value = Reflect.get(target, prop)
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+    },
+    has: (_target, prop) => prop in get(),
+  })
+}
+
 /** 注册 NDR 路由、智能体脚本工具与持久化存储的生命周期。 */
 export function apply(ctx: Context, config: Config): void {
   assertConfig(config)
-  const store: ColdStore & SettingsStore = config.pgUrl.trim() === ''
+  // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃，冷库只用于回滚与
+  // 旧缓存统计；主数据（结论复用/脚本/结论留档/过程/项目/参数）都在 state store 里。
+  const coldStore: ColdStore = config.pgUrl.trim() === ''
     ? new MemoryColdStore()
     : new PostgresColdStore({ connectionString: config.pgUrl.trim() })
-  if (store.kind === 'memory') {
+  if (coldStore.kind === 'memory') {
     console.warn(
       '[xdr-ingest] pgUrl is empty: falling back to the in-memory cold store. '
       + 'Dedup results are lost on restart; set pgUrl (or XDR_INGEST_PG_URL) in production.',
     )
   }
-  console.log(`[xdr-ingest] apply(): routes at ${config.basePath}/*, cold store: ${store.kind}`)
-  // 智能体侧记忆：结论复用（task-results）与脚本库（scripts）共用同一份 PG。
-  // 内存兜底只保证进程内可用；重启丢失会在启动日志和 /status 里显示。
-  const stateStore: TaskResultStore & ScriptStore & TaskSeenStore = config.pgUrl.trim() === ''
-    ? new MemoryStateStore()
-    : new PostgresStateStore({ connectionString: config.pgUrl.trim() })
-  if (stateStore.kind === 'memory') {
-    console.warn(
-      '[xdr-ingest] 结论复用与脚本库使用内存存储（pgUrl 为空）：重启后丢失。'
-      + '生产请配置 pgUrl / XDR_INGEST_PG_URL。',
-    )
-  }
-  // 结论只读面：控制台「分析记录」读 NDR 写进同一份 PG 的 `analysis_results`。
-  // 没有 PG 就退化成"没有结论"（页面照常打开，只是数据区空）。
-  const conclusions: ConclusionReader = config.pgUrl.trim() === ''
-    ? new MemoryConclusionReader()
-    : new PostgresConclusionReader({ connectionString: config.pgUrl.trim() })
-  // 探表是异步的：先等它落定，status 里的「结论数据源」才不会一启动就报不可用。
-  void conclusions.ready().catch(() => undefined)
-  // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃（analysis.enabled=true
-  // 时不推摘要）。端点保留以便一键回滚到推送契约，日常流量不会走到它。
-  const cache = new TieredCache({
-    ttlMs: config.resultTtlHours * 3_600_000,
-    hotMaxEntries: config.hotMaxEntries,
-    hotThreshold: config.hotThreshold,
-    store,
-  })
-  // ---------- 派工闭环（新架构）----------
-  // agents 服务由 dsh 的 `dsh-agent` 提供；没装时降级成"只收门铃"，并明确告警
-  // （宁可显式不分析，也不要假装在分析）。
-  const agents = agentsOf(ctx)
+  const memoryStore = new MemoryStateStore()
+  const registry = config.pgUrl.trim() === ''
+    ? null
+    : new StateStoreRegistry(config.pgUrl.trim(), 3)
+  /** 项目数据面：解析前用内存兜底（方法返回空，不会串项目）。 */
+  let projectStore: DataStore = memoryStore
+  const data = liveStore<DataStore>(() => projectStore)
+
+  let project: ProjectRecord | null = null
+  let resolving = true
+  let resolveError = ''
   let loop: ClaimLoop | null = null
   let analyst: Analyst | null = null
-  /** 抑制记忆的同步器（要 MCP 通道；没有 MCP 就只能靠 agent 自己提交的抑制） */
   let syncSuppressions: (() => Promise<void>) | null = null
-  if (config.mcpToken.trim() !== '' && agents !== null) {
-    const client = new McpHttpClient({
-      url: config.mcpUrl.trim(),
-      token: config.mcpToken.trim(),
-      clientName: 'xdr-ingest',
-      clientVersion: '0.2.0',
-    })
-    const ndr = new NdrTaskPortAdapter(client)
-    analyst = new Analyst({
-      agents,
-      ndr,
-      timeoutMs: config.analysisTimeoutSeconds * 1000,
-      source: 'xdr-ingest',
-      // Read the current DSH selection for every task. The model prompt's
-      // {{model}} variable is assembled from agentOptions.model.
-      modelSelection: () => {
-        const selected = ctx.get('agentDefaultModel')?.currentSelection()
-        return selected === undefined
-          ? undefined
-          : { provider: selected.provider, model: selected.model }
-      },
-      ...(config.provider.trim() !== '' ? { provider: config.provider.trim() } : {}),
-      ...(config.model.trim() !== '' ? { model: config.model.trim() } : {}),
-      taskResults: stateStore,
-      taskReuseTtlMs: config.taskReuseTtlHours * 3_600_000,
-      taskReuseStrengthDelta: config.taskReuseStrengthDelta,
-      // 抑制记忆：被精准抑制的现象不起会话（省模型，也省取数）
-      taskSeen: stateStore,
-    })
-    syncSuppressions = async (): Promise<void> => {
-      const items = await ndr.listSuppressions()
-      let marked = 0
-      for (const item of items) {
-        if (!item.enabled) continue
-        if (item.sourceTaskId !== '') {
-          if (await stateStore.markSuppressed(item.sourceTaskId, item.name)) marked += 1
-        }
-        // 没有任务 id 的抑制（人建的、或者提交时没带 task_id）：
-        // 从条件树反推它针对的现象（源 IP + 规则名）再标一次。
-        const identity = identityOfMatch(item.match)
-        if (identity === null) continue
-        const count = await stateStore.markSuppressedByIdentity(identity, item.name)
-        marked += count
-      }
-      if (marked > 0) {
-        console.log(`[xdr-ingest] 抑制记忆已同步：${marked} 条现象被标记为「不再分析」`)
-      }
-    }
-    const activeAnalyst = analyst
-    loop = new ClaimLoop({
-      pollSeconds: config.pollSeconds,
-      maxConcurrent: config.maxConcurrent,
-      claimLimit: config.claimLimit,
-      doorbellDebounceMs: config.doorbellDebounceMs,
-      backoffMaxMs: config.backoffMaxMs,
-      claimTasks: limit => ndr.claimTasks(limit),
-      runTask: async task => {
-        const outcome = await activeAnalyst.run(task)
-        if (!outcome.completed) {
-          console.warn(
-            `[xdr-ingest] 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
-            + `${outcome.deferred ? '已延后' : '延后失败'}）`,
-          )
-        }
-      },
-    })
-  } else if (config.mcpToken.trim() !== '' && agents === null) {
-    console.error(
-      '[xdr-ingest] this dsh build has no `agents` service: analysis loop disabled. '
-      + 'Load @deepseek-ai/dsh-agent (or your profile equivalent) to enable it.',
-    )
-  }
+  let mcpClient: McpHttpClient | null = null
+  let ndrPort: NdrTaskPortAdapter | null = null
+  const agents = agentsOf(ctx)
+
+  console.log(
+    `[xdr-ingest] apply(): routes at ${config.basePath}/*, `
+    + `cold store: ${coldStore.kind}, state store: ${registry === null ? 'memory' : 'postgres'}`,
+  )
 
   /** 当前生效的运行参数：有领取循环读循环（可能被工作台改过），没有就取配置默认。 */
   function currentSettings(): RuntimeSettings {
@@ -327,12 +307,18 @@ export function apply(ctx: Context, config: Config): void {
   /** 运行观测快照：`/xdr/ingest/status` 与 xdrIngest 服务共用同一份。 */
   function statusSnapshot(): Record<string, unknown> {
     return {
-      analysis: loop === null ? 'disabled' : 'enabled',
+      analysis: resolving ? 'resolving' : loop === null ? 'disabled' : 'enabled',
       ...settingsView(currentSettings()),
-      store_kind: store.kind,
-      state_store_kind: stateStore.kind,
-      // 控制台「分析记录」的数据源（NDR 写的结论表）；不可用时界面显示"数据面不可用"
-      conclusion_source: conclusions.available() ? 'ndr:analysis_results' : 'unavailable',
+      store_kind: coldStore.kind,
+      state_store_kind: registry === null ? 'memory' : 'postgres',
+      project: {
+        id: project?.projectId ?? config.projectId.trim(),
+        name: project?.name ?? config.projectName.trim(),
+        status: project?.status ?? (resolving ? 'unchecked' : 'unreachable'),
+        detail: project?.statusDetail ?? resolveError,
+      },
+      // 控制台「分析记录」的数据源（智能体自己的结论留档，按项目隔离）
+      conclusion_source: 'agent:xdr_ingest_conclusion',
       script_tool_names: ANALYSIS_SCRIPT_TOOL_NAMES.filter(name =>
         ctx.tools.schemas().some(schema => schema.name === name),
       ),
@@ -340,6 +326,164 @@ export function apply(ctx: Context, config: Config): void {
       ...(loop === null ? {} : { loop: loop.stats }),
     }
   }
+
+  /**
+   * 解析并校验项目绑定：
+   * 1. 授权ID 从配置取，或调 NDR 的 `server_info` 自动取；
+   * 2. 用 `server_info`（以及响应头 `x-ndr-auth-id`）核对，不一致 → 停分析并报警；
+   * 3. 绑不上就不启动领取循环（宁可显式失败，也不写到归属不明的库里）。
+   */
+  async function resolveProject(): Promise<void> {
+    if (config.mcpToken.trim() === '' || agents === null) {
+      resolving = false
+      return
+    }
+    const client = new McpHttpClient({
+      url: config.mcpUrl.trim(),
+      token: config.mcpToken.trim(),
+      clientName: 'xdr-ingest',
+      clientVersion: '0.2.0',
+    })
+    mcpClient = client
+    const ndr = new NdrTaskPortAdapter(client)
+    ndrPort = ndr
+    let info: { authId: string, source: string, stable: boolean }
+    try {
+      info = await ndr.serverInfo()
+    } catch (error) {
+      resolveError = `绑定校验失败：${error instanceof Error ? error.message : String(error)}`
+      resolving = false
+      console.error(`[xdr-ingest] ${resolveError}（不启动分析循环）`)
+      return
+    }
+    const declared = config.projectId.trim()
+    const bound = (declared !== '' ? declared : info.authId).toUpperCase()
+    if (bound === '') {
+      resolveError = 'NDR 未返回授权ID（server_info 为空）'
+      resolving = false
+      console.error(`[xdr-ingest] ${resolveError}（不启动分析循环）`)
+      return
+    }
+    const admin = registry?.get('')
+    if (declared !== '' && info.authId !== '' && declared.toUpperCase() !== info.authId.toUpperCase()) {
+      resolveError = `授权ID 不一致：配置 ${declared} / NDR ${info.authId}`
+      project = (await admin?.upsertProject({
+        projectId: bound,
+        name: config.projectName.trim() || config.projectName.trim() || '默认项目',
+        mcpUrl: config.mcpUrl.trim(),
+        mcpToken: config.mcpToken.trim(),
+        pushToken: config.token.trim(),
+        enabled: true,
+      }).catch(() => null)) ?? null
+      await admin?.setProjectStatus(bound, 'auth_mismatch', resolveError)
+      resolving = false
+      console.error(`[xdr-ingest] ${resolveError}：已停用该项目（到控制台改绑定ID后可恢复）`)
+      return
+    }
+    // 绑定成立：落项目行（名字沿用已有，其次配置，最后"默认项目"）
+    const existing = await admin?.getProject(bound).catch(() => null)
+    const name = (existing?.name ?? '').trim() || config.projectName.trim() || '默认项目'
+    project = (await admin?.upsertProject({
+      projectId: bound,
+      name,
+      mcpUrl: config.mcpUrl.trim(),
+      mcpToken: config.mcpToken.trim(),
+      pushToken: config.token.trim(),
+      enabled: true,
+    }).catch(() => null)) ?? null
+    await admin?.setProjectStatus(bound, 'ok', '')
+    projectStore = registry?.get(bound) ?? memoryStore
+    resolving = false
+    if (project === null) project = { ...(project ?? {}), ...({
+      projectId: bound, name, mcpUrl: config.mcpUrl.trim(), mcpToken: config.mcpToken.trim(),
+      pushToken: config.token.trim(), enabled: true, status: 'ok' as ProjectStatus,
+      statusDetail: '', lastCheckedAt: '', createdAt: '', updatedAt: '',
+    }) } as ProjectRecord
+    console.log(
+      `[xdr-ingest] 项目绑定：${name}（授权ID ${bound}，来源 ${info.source}${info.stable ? '' : '，不稳定'}）`,
+    )
+
+    analyst = new Analyst({
+      agents,
+      ndr,
+      timeoutMs: config.analysisTimeoutSeconds * 1000,
+      source: 'xdr-ingest',
+      modelSelection: () => {
+        const selected = ctx.get('agentDefaultModel')?.currentSelection()
+        return selected === undefined
+          ? undefined
+          : { provider: selected.provider, model: selected.model }
+      },
+      ...(config.provider.trim() !== '' ? { provider: config.provider.trim() } : {}),
+      ...(config.model.trim() !== '' ? { model: config.model.trim() } : {}),
+      taskResults: projectStore,
+      taskReuseTtlMs: config.taskReuseTtlHours * 3_600_000,
+      taskReuseStrengthDelta: config.taskReuseStrengthDelta,
+      taskSeen: projectStore,
+      process: projectStore,
+      conclusions: projectStore,
+      projectId: bound,
+    })
+    syncSuppressions = async (): Promise<void> => {
+      const items = await ndr.listSuppressions()
+      let marked = 0
+      for (const item of items) {
+        if (!item.enabled) continue
+        if (item.sourceTaskId !== '') {
+          if (await projectStore.markSuppressed(item.sourceTaskId, item.name)) marked += 1
+        }
+        const identity = identityOfMatch(item.match)
+        if (identity === null) continue
+        marked += await projectStore.markSuppressedByIdentity(identity, item.name)
+      }
+      if (marked > 0) {
+        console.log(`[xdr-ingest] 抑制记忆已同步：${marked} 条现象被标记为「不再分析」`)
+      }
+    }
+    const activeAnalyst = analyst
+    loop = new ClaimLoop({
+      pollSeconds: currentSettings().pollSeconds,
+      maxConcurrent: currentSettings().maxConcurrent,
+      claimLimit: currentSettings().claimLimit,
+      doorbellDebounceMs: config.doorbellDebounceMs,
+      backoffMaxMs: config.backoffMaxMs,
+      claimTasks: limit => ndr.claimTasks(limit),
+      runTask: async task => {
+        const outcome = await activeAnalyst.run(task)
+        if (!outcome.completed) {
+          console.warn(
+            `[xdr-ingest] 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
+            + `${outcome.deferred ? '已延后' : '延后失败'}）`,
+          )
+        }
+      },
+    })
+    // 工作台保存过的运行参数优先于配置默认值
+    const saved = await projectStore.loadSettings().catch(() => null)
+    if (saved !== null) {
+      const merged = mergeSettings(currentSettings(), saved)
+      if ('error' in merged) {
+        console.warn('[xdr-ingest] 已保存的运行参数不合法，忽略：', merged.error)
+      } else {
+        loop.configure(merged.settings)
+      }
+    }
+    loop.start()
+    void syncSuppressions().catch(() => undefined)
+  }
+  void resolveProject().catch((error: unknown) => {
+    resolving = false
+    resolveError = error instanceof Error ? error.message : String(error)
+    console.error('[xdr-ingest] 项目解析失败：', resolveError)
+  })
+
+  // 旧摘要冷库的两级缓存（回滚专用；主数据在 state store）
+  const cache = new TieredCache({
+    ttlMs: config.resultTtlHours * 3_600_000,
+    hotMaxEntries: config.hotMaxEntries,
+    hotThreshold: config.hotThreshold,
+    store: coldStore,
+  })
   const route: WebRoute = {
     kind: 'prefix',
     path: config.basePath,
@@ -348,40 +492,47 @@ export function apply(ctx: Context, config: Config): void {
       maxBodyBytes: config.maxBodyBytes,
       cache,
       status: statusSnapshot,
-      ...(loop === null ? {} : { onDoorbell: () => loop.wake() }),
+      onDoorbell: () => {
+        if (loop === null) return
+        loop.wake()
+      },
     }),
   }
-  /**
-   * 工作台数据面：xdr-ui（同进程）经 ctx.reflect.get('xdrIngest', false) 读取。
-   * 本插件未在场时工作台返回 undefined——它在 API 里报「数据不可用」而不是拒绝打开。
-   * provide 自带 fiber 生命周期，插件停用时自动注销。
-   */
+
   const service = {
     status: statusSnapshot,
     cacheStats: () => cache.stats(),
     taskReuseStats: () => analyst?.reuseStats ?? { reused: 0, stored: 0 },
-    scriptStats: async () => ({ store: stateStore.kind, count: await stateStore.countScripts() }),
-    conclusionStats: async () => ({ available: await conclusions.ready(), total: await conclusions.count() }),
+    scriptStats: async () => ({ store: projectStore.kind, count: await projectStore.countScripts() }),
+    conclusionStats: async () => ({ available: true, total: await projectStore.countConclusions() }),
+    processStats: async () => ({ available: true }),
     wake: () => {
       if (loop === null) return false
       loop.wake()
       return true
     },
-    listAnalyses: (query: { limit: number, offset: number, search: string }) => store.listRecent(query),
-    getAnalysis: (analysisId: string) => store.load(analysisId),
+    listAnalyses: (query: { limit: number, offset: number, search: string }) => coldStore.listRecent(query),
+    getAnalysis: (analysisId: string) => coldStore.load(analysisId),
     listConclusions: (query: { limit: number, offset: number, search: string }) =>
-      conclusions.listRecent(query),
-    getConclusion: (id: string) => conclusions.get(id),
-    settings: async () => ({ ...settingsView(currentSettings()), store: store.kind }),
+      projectStore.listConclusions(query),
+    getConclusion: (id: string) => projectStore.getConclusion(id),
+    listProcesses: (query: { limit: number, offset: number, search: string, outcome: string }) =>
+      projectStore.listProcesses(query),
+    getProcess: (taskId: string) => projectStore.getProcess(taskId),
+    listScripts: (query: { search: string, limit: number, offset: number }) =>
+      projectStore.list(query),
+    getScript: (nameOrId: string) => projectStore.getAny(nameOrId),
+    saveScript: (body: unknown) => projectStore.upsert(scriptInputOf(body), new Date().toISOString()),
+    setScriptEnabled: (nameOrId: string, enabled: boolean) => projectStore.setEnabled(nameOrId, enabled),
+    removeScript: (nameOrId: string) => projectStore.remove(nameOrId),
+    settings: async () => ({ ...settingsView(currentSettings()), store: projectStore.kind }),
     updateSettings: async (patch: unknown) => {
       const merged = mergeSettings(currentSettings(), patch)
       if ('error' in merged) return { ok: false, error: merged.error }
       loop?.configure(merged.settings)
-      const persisted = await store.saveSettings(merged.settings)
+      const persisted = await projectStore.saveSettings(merged.settings)
       if (!persisted) {
-        console.warn(
-          '[xdr-ingest] 运行参数只在内存生效：冷库写入失败，重启后会回到上次成功保存的值。',
-        )
+        console.warn('[xdr-ingest] 运行参数只在内存生效：state store 写入失败，重启后会回到上次成功保存的值。')
       }
       return { ok: true, persisted, settings: settingsView(merged.settings) }
     },
@@ -392,7 +543,7 @@ export function apply(ctx: Context, config: Config): void {
       const disposeRoute = ctx.webServer.register(route)
       let disposeScriptTools = (): void => undefined
       try {
-        disposeScriptTools = registerScriptTools(ctx, stateStore, {
+        disposeScriptTools = registerScriptTools(ctx, projectStore, {
           maxCodeBytes: config.scriptMaxCodeBytes,
           maxResults: config.scriptMaxResults,
         })
@@ -400,25 +551,6 @@ export function apply(ctx: Context, config: Config): void {
         disposeRoute()
         throw error
       }
-      // 工作台保存过的运行参数优先于 cordis 配置默认值；读失败就用默认值继续跑。
-      void store.loadSettings().then(saved => {
-        if (saved === null) return
-        const merged = mergeSettings(currentSettings(), saved)
-        if ('error' in merged) {
-          console.warn('[xdr-ingest] 已保存的运行参数不合法，忽略：', merged.error)
-          return
-        }
-        loop?.configure(merged.settings)
-      }).catch((error: unknown) => {
-        console.warn('[xdr-ingest] 运行参数读取失败，使用配置默认值：', error instanceof Error ? error.message : String(error))
-      })
-      loop?.start()
-      // 预热失败不影响路由（冷库不可用时退化为纯内存判重）
-      void cache.warmup(config.warmupLimit).catch(error => {
-        console.warn('[xdr-ingest] warmup failed:', error instanceof Error ? error.message : String(error))
-      })
-      // 抑制记忆同步：把 NDR 侧生效中的精准抑制搬进本地记忆，
-      // 之后同类现象**不起会话**（NDR 拦派工，这里拦分析）。
       const syncTimer = setInterval(() => {
         if (syncSuppressions === null) return
         void syncSuppressions().catch(error => {
@@ -429,16 +561,11 @@ export function apply(ctx: Context, config: Config): void {
         })
       }, SUPPRESSION_SYNC_MS)
       syncTimer.unref()
-      if (syncSuppressions !== null) {
-        void syncSuppressions().catch(() => undefined)
-      }
       const timer = setInterval(() => {
         void cache.pruneExpired().catch(error => {
           console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
         })
-        void stateStore.prune(new Date().toISOString()).catch(error => {
-          console.warn('[xdr-ingest] task result prune failed:', error instanceof Error ? error.message : String(error))
-        })
+        void projectStore.prune(new Date().toISOString()).catch(() => undefined)
       }, config.pruneIntervalMinutes * 60_000)
       timer.unref()
       return () => {
@@ -447,11 +574,38 @@ export function apply(ctx: Context, config: Config): void {
         clearInterval(syncTimer)
         disposeScriptTools()
         disposeRoute()
-        void store.close().catch(() => undefined)
-        void stateStore.close().catch(() => undefined)
-        void conclusions.close().catch(() => undefined)
+        void coldStore.close().catch(() => undefined)
+        void registry?.closeAll()
       }
     },
     `xdr-ingest: ${config.basePath}/*`,
   )
+}
+
+/** 控制台新建/编辑脚本的入参归一（字段少、校验在 store 里做）。 */
+function scriptInputOf(body: unknown): {
+  name: string
+  scenario: string
+  code: string
+  language?: string
+  variables?: unknown
+  tags?: readonly string[]
+  notes?: string
+  enabled?: boolean
+  origin: string
+  updatedBy: string
+} {
+  const row = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  return {
+    name: String(row['name'] ?? '').trim(),
+    scenario: String(row['scenario'] ?? '').trim(),
+    code: String(row['code'] ?? ''),
+    ...(typeof row['language'] === 'string' ? { language: row['language'] } : {}),
+    variables: row['variables'],
+    ...(Array.isArray(row['tags']) ? { tags: row['tags'].map(String) } : {}),
+    ...(typeof row['notes'] === 'string' ? { notes: row['notes'] } : {}),
+    ...(typeof row['enabled'] === 'boolean' ? { enabled: row['enabled'] } : {}),
+    origin: 'console',
+    updatedBy: 'console',
+  }
 }

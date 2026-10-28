@@ -663,6 +663,10 @@ def task_detail(task_id: str) -> dict[str, Any]:
                 "terminal_reason": r.terminal_reason,
                 "confidence": r.confidence,
                 "summary": r.summary,
+                # 智能体侧要留档一份结论（控制台不再直连各 NDR 的 PG），
+                # 所以把 findings / 证据引用一并回给它；都是它自己交回来的内容。
+                "findings": dict(r.findings or {}),
+                "evidence_refs": list(r.evidence_refs or []),
                 "tools_used": r.tools_used,
                 "duration_ms": r.duration_ms,
                 "claimed_by": r.claimed_by,

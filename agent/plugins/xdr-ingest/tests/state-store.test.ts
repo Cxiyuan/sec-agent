@@ -108,3 +108,55 @@ test('抑制记忆：没见过的任务 id 标不上；按身份可以补标', a
   assert.equal(await store.markSuppressedByIdentity(identity, '人建的抑制'), 1)
   assert.equal((await store.findSuppressed(identity))?.suppressedBy, '人建的抑制')
 })
+
+/**
+ * 结论留档 + 过程索引（控制台「分析记录 / 分析过程」的数据源）。
+ *
+ * 这两块以前分别读 NDR 的 PG 和 DSH 的会话目录；多项目后统一落在智能体自己的库里，
+ * 按 project_id 隔离。
+ */
+test('结论留档：保存/搜索/详情/计数', async () => {
+  const store = new MemoryStateStore('PROJ1')
+  await store.saveConclusion({
+    id: 'r1', taskId: 'task-1', kind: 'hit', subjectKind: 'ip', subject: '10.1.2.3',
+    verdict: 'false_positive', confidence: 0.8, summary: '厂商心跳', findings: { k: 'v' },
+    evidenceRefs: ['es:idx/1'], toolsUsed: 3, durationMs: 1200, reused: false,
+    reusedFrom: '', terminalReason: 'concluded', createdAt: '2026-10-28T02:00:00Z',
+  })
+  assert.equal((await store.getConclusion('r1'))?.verdict, 'false_positive')
+  const page = await store.listConclusions({ limit: 10, offset: 0, search: '心跳' })
+  assert.equal(page.total, 1)
+  assert.equal(page.entries[0]?.subject, '10.1.2.3')
+  assert.equal(await store.countConclusions(), 1)
+  assert.equal((await store.listConclusions({ limit: 10, offset: 0, search: '查无' })).total, 0)
+})
+
+test('过程索引：running → done + 列表/详情', async () => {
+  const store = new MemoryStateStore('PROJ1')
+  await store.startProcess({
+    taskId: 'task-1', sessionId: 'xdr-analysis-task-1', kind: 'hit', subject: '10.1.2.3',
+    model: 'minimax/MiniMax-M2.5', startedAt: '2026-10-28T02:00:00Z',
+  })
+  assert.equal((await store.getProcess('task-1'))?.outcome, 'running')
+  await store.finishProcess({
+    taskId: 'task-1', endedAt: '2026-10-28T02:06:00Z', outcome: 'done',
+    toolsUsed: 12, durationMs: 360000, verdict: 'benign',
+  })
+  const proc = await store.getProcess('task-1')
+  assert.equal(proc?.outcome, 'done')
+  assert.equal(proc?.sessionId, 'xdr-analysis-task-1', '收尾不能把会话 ID 丢了')
+  const page = await store.listProcesses({ limit: 10, offset: 0, search: '', outcome: 'done' })
+  assert.equal(page.total, 1)
+  assert.equal((await store.listProcesses({ limit: 10, offset: 0, search: '', outcome: 'failed' })).total, 0)
+})
+
+test('脚本库：停用后 get/getAny 的差别（模型看不到、控制台能看）', async () => {
+  const store = new MemoryStateStore('PROJ1')
+  const saved = await store.upsert({ name: 's1', scenario: '场景', code: 'echo 1' })
+  assert.ok(await store.get('s1'))
+  assert.equal(await store.setEnabled(saved.id, false), true)
+  assert.equal(await store.get('s1'), null, '停用后模型工具不应再取到')
+  assert.equal((await store.getAny('s1'))?.enabled, false, '控制台还要能看')
+  assert.equal(await store.remove('s1'), true)
+  assert.equal(await store.getAny('s1'), null)
+})

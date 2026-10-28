@@ -37,6 +37,8 @@ const VERSION_HEADER = 'mcp-protocol-version'
 //: 服务端会拿它和 JSON-RPC body 比对，不一致直接 400。
 const METHOD_HEADER = 'mcp-method'
 const NAME_HEADER = 'mcp-name'
+/** NDR 在**每个**响应里声明自己的授权ID（项目组织身份）；不是鉴权，只用于核对绑定 */
+const AUTH_ID_HEADER = 'x-ndr-auth-id'
 //: `params._meta` 里的两个协商键（键名由 MCP 规范固定，不能改）
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion'
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities'
@@ -114,11 +116,15 @@ function toolNameOf(params: Record<string, unknown>): string {
 }
 
 
+export const MCP_AUTH_ID_HEADER = AUTH_ID_HEADER
+
 export class McpHttpClient {
   private readonly options: McpClientOptions
   private readonly fetchImpl: typeof fetch
   private sessionId = ''
   private nextId = 1
+  /** 最近一次响应里声明的 NDR 授权ID（空串 = 老版本 NDR 没带）。 */
+  lastAuthId = ''
 
   constructor(options: McpClientOptions) {
     this.options = options
@@ -244,6 +250,11 @@ export class McpHttpClient {
       const session = response.headers.get(SESSION_HEADER)
       if (session !== null && session !== '') {
         this.sessionId = session
+      }
+      // NDR 每个响应都声明授权ID（项目组织身份）；这里记下来，供绑定校验用
+      const authId = response.headers.get(AUTH_ID_HEADER)
+      if (authId !== null && authId !== '') {
+        this.lastAuthId = authId.trim().slice(0, 16)
       }
       const text = await response.text()
       if (!response.ok) {

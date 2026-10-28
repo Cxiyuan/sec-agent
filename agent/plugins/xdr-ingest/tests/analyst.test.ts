@@ -400,3 +400,75 @@ test('没有被抑制的现象照常分析（抑制记忆不误伤）', async ()
   assert.equal(outcome.completed, true)
   assert.equal(rec.prompts.length, 1, '不同现象照常起会话')
 })
+
+/**
+ * 过程索引 + 结论留档：控制台「分析过程 / 分析记录」的数据来源。
+ *
+ * 正常分析：过程 running → done，结论留档一条；
+ * 复用命中：过程 reused（没有会话），结论留档标 reused + 来源任务。
+ */
+test('正常分析：过程索引 running→done，结论留档', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore('PROJ1')
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({
+      state: 'done',
+      result_id: 'res-1',
+      results: [{
+        verdict: 'benign', confidence: 0.9, summary: '正常业务', tools_used: 7,
+        duration_ms: 1234, terminal_reason: 'concluded', findings: { a: 1 },
+        evidence_refs: ['es:idx/1'],
+      }],
+    })),
+    timeoutMs: 1000,
+    process: store,
+    conclusions: store,
+    projectId: 'PROJ1',
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-9' })
+  assert.equal(outcome.completed, true)
+  const proc = await store.getProcess('task-9')
+  assert.equal(proc?.outcome, 'done')
+  assert.ok(proc?.sessionId.startsWith('xdr-analysis-task-9-'), '要记下会话 ID（过程页靠它读时间线）')
+  const conclusion = await store.getConclusion('res-1')
+  assert.equal(conclusion?.verdict, 'benign')
+  assert.deepEqual(conclusion?.evidenceRefs, ['es:idx/1'])
+  assert.equal(conclusion?.reused, false)
+})
+
+test('复用命中：过程 reused、结论留档标 reused 与来源任务', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore('PROJ1')
+  const identity = { kind: task.kind, subjectKind: task.subject_kind, subject: task.subject, feature: 'f1' }
+  await store.save({
+    key: taskResultKey({ ...task, feature: 'f1' }) ?? '',
+    kind: identity.kind, subjectKind: identity.subjectKind, subject: identity.subject,
+    feature: 'f1', taskId: 'task-old', verdict: 'benign', terminalReason: 'concluded',
+    confidence: 0.8, summary: '旧结论', strength: 1, occurrences: 1,
+    analyzedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  })
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 3_600_000,
+    taskReuseStrengthDelta: 0.15,
+    process: store,
+    conclusions: store,
+    projectId: 'PROJ1',
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-reuse', feature: 'f1' })
+  assert.equal(outcome.reused, true)
+  assert.equal(rec.prompts.length, 0, '复用不该起会话')
+  const proc = await store.getProcess('task-reuse')
+  assert.equal(proc?.outcome, 'reused')
+  const page = await store.listConclusions({ limit: 10, offset: 0, search: 'task-reuse' })
+  // 结论 ID 是合成键（复用没有 NDR result_id）：projectId:taskId
+  const conclusion = await store.getConclusion('PROJ1:task-reuse')
+  assert.equal(conclusion?.reused, true)
+  assert.equal(conclusion?.reusedFrom, 'task-old')
+  assert.ok(page.total >= 0)
+})

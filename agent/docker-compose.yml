@@ -20,8 +20,13 @@ services:
       TZ: Asia/Shanghai
       # 与 NDR 侧 agent_push.token 一致（ndr 的 ST_AGENT_PUSH_TOKEN）
       XDR_INGEST_TOKEN: ${AGENT_PUSH_TOKEN:?请在 .env 设置 AGENT_PUSH_TOKEN（与 NDR 侧 agent_push.token 一致）}
-      # 统一 PG：默认宿主机 ndr 栈发布口；Node pg 连接串不带 +psycopg 后缀
-      XDR_INGEST_PG_URL: ${XDR_INGEST_PG_URL:-postgresql://shentong:shentong@host.docker.internal:5432/shentong}
+      # 智能体**自己的** PG：结论复用/脚本库/结论留档/过程索引/项目组织/运行参数都在这里，
+      # 按 project_id 隔离。不再借用 NDR 的库（多项目下每个 NDR 一套库，跨库读不可持续）。
+      # Node pg 连接串不带 +psycopg 后缀。
+      XDR_INGEST_PG_URL: ${XDR_INGEST_PG_URL:-postgresql://shentong:shentong@postgres:5432/shentong}
+      # 项目组织：授权ID（= 对应 NDR 的 8 位 ID；留空 = 启动时调 server_info 自动取）
+      XDR_PROJECT_ID: ${XDR_PROJECT_ID:-}
+      XDR_PROJECT_NAME: ${XDR_PROJECT_NAME:-}
       # NDR 的 MCP（analyst 档 16 个工具）。令牌是 NDR 控制台签发的 stmcp_ 串；
       # 留空时门铃照收但不起分析会话（启动日志会明确告警）。
       XDR_NDR_MCP_URL: ${XDR_NDR_MCP_URL:-}
@@ -42,8 +47,11 @@ services:
       # 控制台左侧菜单里的 NDR 管理台入口（部署时填实际地址）；留空隐藏
       DSH_WEB_NDR_CONSOLE_URL: ${DSH_WEB_NDR_CONSOLE_URL:-}
     extra_hosts:
-      # 让容器能解析宿主机地址（连宿主机上 ndr 栈发布的 PG）
+      # 让容器能解析宿主机地址（迁移脚本要读旧 NDR 的 PG）
       - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${AGENT_PORT:-3080}:3080"
     volumes:
@@ -59,21 +67,23 @@ services:
       start_period: 60s
       retries: 3
 
-# 独立部署（不接 ndr 栈）时的本地 PG：取消下面注释，并把
-# XDR_INGEST_PG_URL 改成 postgresql://shentong:shentong@postgres:5432/shentong。
-# 账号与库名对齐 NDR 侧默认配置，将来若并入统一栈数据可直接迁移。
-# postgres:
-#   image: postgres:16
-#   environment:
-#     POSTGRES_USER: shentong
-#     POSTGRES_PASSWORD: shentong
-#     POSTGRES_DB: shentong
-#   ports:
-#     - "5432:5432"
-#   volumes:
-#     - pg-data:/var/lib/postgresql/data
-#   restart: unless-stopped
+# 智能体自己的 PG（多项目隔离的底座）。不发布端口：只有同网络的 agent 用。
+# 备份：docker exec shentong-agent-postgres-1 pg_dump -U shentong shentong > agent-pg.sql
+postgres:
+  image: postgres:16
+  environment:
+    POSTGRES_USER: shentong
+    POSTGRES_PASSWORD: shentong
+    POSTGRES_DB: shentong
+  volumes:
+    - pg-data:/var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD", "pg_isready", "-U", "shentong"]
+    interval: 10s
+    timeout: 3s
+    retries: 10
+  restart: unless-stopped
 
 volumes:
   dsh-home:
-# pg-data:
+  pg-data:

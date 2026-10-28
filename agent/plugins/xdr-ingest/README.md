@@ -20,7 +20,19 @@ NDR 只用客观统计挑线索，派发任务元数据；智能体自行决定�
 
 分析脚本保存在 `xdr_ingest_script`，模型可以按场景检索、读取完整脚本、保存新版本并记录变量说明。同名覆盖必须显式确认；每个脚本正文默认最多 64 KiB。脚本库不会自动执行代码，智能体复用前仍须检查脚本并自行决定是否运行。
 
-两类记忆共用 `pgUrl`（默认读取 `XDR_INGEST_PG_URL`）。Node `pg` 连接串不能带 SQLAlchemy 的 `+psycopg` 后缀；格式为 `postgresql://user:password@host:5432/database`。未配置 PG 时退化为进程内存，重启后结论与脚本都会丢失。
+**存储属于智能体自己**：结论复用、脚本库、抑制记忆、结论留档、分析过程索引、项目组织与运行参数都写在
+智能体自己的 PostgreSQL（`pgUrl`，默认读取 `XDR_INGEST_PG_URL`），**按 `project_id` 隔离**。
+`project_id` 就是对应 NDR 的授权ID（8 位）——一台 agent 接多台 NDR 时，各项目的数据互不可见。
+Node `pg` 连接串不能带 SQLAlchemy 的 `+psycopg` 后缀；格式为 `postgresql://user:password@host:5432/database`。
+未配置 PG 时退化为进程内存，重启后结论与脚本都会丢失。
+
+**项目绑定**：启动时先用配置的 `XDR_PROJECT_ID`（或调 NDR 的 `server_info` 自动取授权ID），
+再用 `server_info` 与响应头 `x-ndr-auth-id` 双向核对；不一致或连不上就**不启动分析循环**并在
+控制台报警（宁可显式失败，也不把数据写到归属不明的库里）。换机后到控制台把绑定ID 改成新的即可恢复。
+
+**结论留档**：每次交回（含复用/抑制跳过）都写一行 `xdr_ingest_conclusion`，控制台「分析记录」
+读它（不再直连各 NDR 的 PG）。**过程索引** `xdr_ingest_process` 记「任务 → 会话 → 模型/工具数/
+耗时/状态」，控制台「分析过程」页据此列时间线（会话正文从 DSH 的 `ctx.sessionQuery` 读）。
 
 **结论只读面**（`conclusions.ts` / `pg-conclusions.ts`）：控制台「分析记录」要看见智能体交回
 的结论，而结论是 NDR 的 `complete_task` 写进 `analysis_results` 的。项目统一用一份 PG，
