@@ -59,6 +59,8 @@ export interface ConclusionPage {
 export interface ConclusionReader {
   /** 表在不在（PG 没配 / NDR 还没建表 = false）。 */
   available(): boolean
+  /** 等初始化（探表）结束；返回是否可用。 */
+  ready(): Promise<boolean>
   listRecent(query: ConclusionQuery): Promise<ConclusionPage>
   get(id: string): Promise<ConclusionRecord | null>
   count(): Promise<number>
@@ -67,6 +69,10 @@ export interface ConclusionReader {
 /* 内存实现（没有 PG 时的兜底：永远"没有结论"）                          */
 export class MemoryConclusionReader implements ConclusionReader {
   available(): boolean {
+    return false
+  }
+
+  async ready(): Promise<boolean> {
     return false
   }
 

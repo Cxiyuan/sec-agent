@@ -220,6 +220,8 @@ export function apply(ctx: Context, config: Config): void {
   const conclusions: ConclusionReader = config.pgUrl.trim() === ''
     ? new MemoryConclusionReader()
     : new PostgresConclusionReader({ connectionString: config.pgUrl.trim() })
+  // 探表是异步的：先等它落定，status 里的「结论数据源」才不会一启动就报不可用。
+  void conclusions.ready().catch(() => undefined)
   // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃（analysis.enabled=true
   // 时不推摘要）。端点保留以便一键回滚到推送契约，日常流量不会走到它。
   const cache = new TieredCache({
@@ -332,7 +334,7 @@ export function apply(ctx: Context, config: Config): void {
     cacheStats: () => cache.stats(),
     taskReuseStats: () => analyst?.reuseStats ?? { reused: 0, stored: 0 },
     scriptStats: async () => ({ store: stateStore.kind, count: await stateStore.countScripts() }),
-    conclusionStats: async () => ({ available: conclusions.available(), total: await conclusions.count() }),
+    conclusionStats: async () => ({ available: await conclusions.ready(), total: await conclusions.count() }),
     wake: () => {
       if (loop === null) return false
       loop.wake()

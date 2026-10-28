@@ -19,6 +19,7 @@ test('内存结论面：永远空、永远不可用（页面照常打开，只�
   const { MemoryConclusionReader } = await import('../src/conclusions.ts')
   const reader = new MemoryConclusionReader()
   assert.equal(reader.available(), false)
+  assert.equal(await reader.ready(), false)
   const page = await reader.listRecent({ limit: 10, offset: 0, search: '' })
   assert.equal(page.total, 0)
   assert.deepEqual(page.entries, [])
@@ -59,6 +60,8 @@ test('postgres 结论面：列表 / 详情 / 搜索 / 计数', { skip: !withPg }
   )
   const reader = new PostgresConclusionReader({ connectionString: PG_URL })
   try {
+    // 探表是异步的：先等它落定，再看可用性
+    assert.equal(await reader.ready(), true)
     assert.equal(reader.available(), true)
     const all = await reader.listRecent({ limit: 50, offset: 0, search: '' })
     assert.ok(all.total >= 1, '表里刚插的结论应该能被列出来')

@@ -75,7 +75,7 @@ const UNDEFINED_TABLE = '42P01'
 
 export class PostgresConclusionReader implements ConclusionReader {
   private readonly pool: Pool
-  private readonly ready: Promise<boolean>
+  private readonly readyPromise: Promise<boolean>
   private usable = false
 
   constructor(options: PostgresConclusionReaderOptions) {
@@ -90,7 +90,7 @@ export class PostgresConclusionReader implements ConclusionReader {
     this.pool.on('error', error => {
       console.error(`${LOG_PREFIX} idle client error:`, error.message)
     })
-    this.ready = this.init()
+    this.readyPromise = this.init()
   }
 
   /** 探一次表在不在：不在就整页降级成"没有结论"。 */
@@ -114,8 +114,13 @@ export class PostgresConclusionReader implements ConclusionReader {
     return this.usable
   }
 
+  /** 等探表结束（构造后立刻问一次会拿到 false —— 探表是异步的）。 */
+  async ready(): Promise<boolean> {
+    return this.readyPromise
+  }
+
   async listRecent(query: ConclusionQuery): Promise<ConclusionPage> {
-    if (!await this.ready) return { total: 0, entries: [] }
+    if (!await this.readyPromise) return { total: 0, entries: [] }
     const limit = Math.max(1, Math.min(200, Math.trunc(query.limit) || 50))
     const offset = Math.max(0, Math.trunc(query.offset) || 0)
     const needle = query.search.trim()
@@ -147,7 +152,7 @@ export class PostgresConclusionReader implements ConclusionReader {
   }
 
   async get(id: string): Promise<ConclusionRecord | null> {
-    if (!await this.ready) return null
+    if (!await this.readyPromise) return null
     const key = id.trim()
     if (key === '') return null
     try {
@@ -164,7 +169,7 @@ export class PostgresConclusionReader implements ConclusionReader {
   }
 
   async count(): Promise<number> {
-    if (!await this.ready) return 0
+    if (!await this.readyPromise) return 0
     try {
       const { rows } = await this.pool.query<{ n: string }>(
         'SELECT count(*)::text AS n FROM analysis_results',
