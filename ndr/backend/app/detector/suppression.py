@@ -567,7 +567,10 @@ def _hit_event_matches(row: HitEvent, match: dict[str, Any]) -> bool:
             ja3=str(sample.get("ja3") or ""),
             fuid=str(sample.get("fuid") or ""),
         )
-        if evaluate_conditions(match, pseudo, extra):
+        # 与热路径 `decide` 同一套口径：先把白名单字段映射成"分析口径"再交给匹配器
+        # （直接传原始 entry 的话，rule/segment/http.uri 这些维度取不到值，永远不匹配）。
+        values = field_values(pseudo, extra)
+        if evaluate_conditions(match, pseudo, extra=values):
             return True
     return False
 
