@@ -6,7 +6,6 @@ import { PageShell } from "@/components/page-shell";
 import {
   Badge,
   Button,
-  Card,
   Dialog,
   Drawer,
   EmptyState,
@@ -14,7 +13,8 @@ import {
   FieldGrid,
   Input,
   PanelToolbar,
-  Section,
+  SettingsBlock,
+  SettingsBoard,
   Switch,
   TreeSkeleton,
   ApiError,
@@ -798,14 +798,15 @@ export default function RulesPage() {
         <PanelError errors={errs} />
 
         {/* 树型结构：顶层是「检测规则」，子节点按事件来源三类（特征匹配 / 行为分析 / 基线偏离）。
-            整棵树装在一张 Card 里：树的行要 hover 高亮（bg-brand-50），行必须落在
-            surface-2（白）上才看得见；落在 canvas 上时 bg-brand-50 比它更亮，
-            「高亮」会变成「变白」，层级倒挂。 */}
-        <Section
-          title="规则来源"
-          description="按来源分组：特征匹配 / 行为分析 / 基线偏离。默认只列生效中的规则，停用的收在开关里。"
-        >
-          <Card>
+            与全站配置页同一容器（SettingsBoard 底板）：树的行要 hover 高亮（bg-brand-50），
+            行必须落在 surface-2（白）上才看得见；Block 内容区就是 bg-card，直接放树，
+            不再套 Card —— 板内套卡会破坏「内嵌」的层级感。 */}
+        <SettingsBoard>
+          <SettingsBlock
+            title="规则来源"
+            description="按来源分组：特征匹配 / 行为分析 / 基线偏离。默认只列生效中的规则，停用的收在开关里。"
+            bodyClassName="p-0"
+          >
             <PanelToolbar
               search={
                 <div className="relative w-full">
@@ -1001,8 +1002,8 @@ export default function RulesPage() {
                 </li>
               </ul>
             )}
-          </Card>
-        </Section>
+          </SettingsBlock>
+        </SettingsBoard>
 
         {/* 删除确认：标题带对象名，正文只写后果（「不可撤销」在按钮上体现为 destructive） */}
         <Dialog
