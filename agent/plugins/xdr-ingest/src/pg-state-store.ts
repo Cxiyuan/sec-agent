@@ -603,10 +603,12 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     }
   }
 
-  async upsert(input: ScriptInput, nowIso: string): Promise<AnalysisScript> {
+  async upsert(input: ScriptInput, nowIso?: string): Promise<AnalysisScript> {
     if (!await this.usable()) {
       throw new Error('脚本库不可用：PostgreSQL 未连接，保存失败（不要当作已保存）')
     }
+    // created_at/updated_at 是 NOT NULL：调用方没给时间就用当前时间（测试/手工脚本会省）
+    const stamp = (nowIso ?? '').trim() || new Date().toISOString()
     const name = input.name.trim()
     try {
       const { rows } = await this.pool.query<ScriptRow>(
