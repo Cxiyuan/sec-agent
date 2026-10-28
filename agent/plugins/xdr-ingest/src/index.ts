@@ -441,8 +441,16 @@ export function apply(ctx: Context, config: Config): void {
       maxBodyBytes: config.maxBodyBytes,
       cache,
       status: statusSnapshot,
-      // 多项目：门铃按推送令牌找项目（单项目部署 = 令牌仍只有一个）
-      resolveProject: token => manager.resolvePushToken(token),
+      // 多项目：门铃按推送令牌找项目。
+      // 老部署/启动早期（项目还没登记）仍认配置里的推送令牌，否则门铃会被 401 掉。
+      resolveProject: token => {
+        const matched = manager.resolvePushToken(token)
+        if (matched !== null) return matched
+        if (config.token.trim() !== '' && token === config.token.trim()) {
+          return manager.defaultProjectId() || config.projectId.trim().toUpperCase()
+        }
+        return null
+      },
       onDoorbell: (bell, _receivedAt, projectId) => {
         void manager.onDoorbell(projectId ?? manager.defaultProjectId(), bell.project ?? '')
       },

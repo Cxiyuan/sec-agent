@@ -98,7 +98,8 @@ function authorize(request: IncomingMessage, config: IngestHandlerConfig): strin
     return null
   }
   const projectId = config.resolveProject(bearerToken(request))
-  if (projectId === null || projectId === '') {
+  // `null` = 令牌不认识；空串 = 认令牌但还没登记项目（默认项目），照常放行
+  if (projectId === null) {
     throw new WebhookHttpError(401, 'invalid or missing bearer token')
   }
   return projectId

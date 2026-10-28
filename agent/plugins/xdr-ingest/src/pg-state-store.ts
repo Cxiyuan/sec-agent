@@ -633,7 +633,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
           JSON.stringify(input.variables ?? {}), JSON.stringify(input.tags ?? []),
           (input.notes ?? '').trim(), (input.sourceTaskId ?? '').trim(),
           input.enabled ?? true, (input.origin ?? 'agent').trim() || 'agent',
-          (input.updatedBy ?? '').trim(), nowIso,
+          (input.updatedBy ?? '').trim(), stamp,
         ],
       )
       const row = rows[0]
