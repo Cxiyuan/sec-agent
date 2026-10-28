@@ -1314,6 +1314,10 @@ export interface AnalysisResultItem {
   evidence_refs: string[];
   tools_used: number;
   duration_ms: number;
+  /** 同类现象复用交回（0 token，没起会话）：成本统计不算它，界面标「复用」 */
+  reused: boolean;
+  /** 复用的原任务 ID（非复用为空串） */
+  reused_from: string;
   claimed_by: string;
   created_at: string | null;
 }
@@ -1379,6 +1383,8 @@ export interface AnalysisStats {
   by_kind: AnalysisKindCount[];
   by_verdict: AnalysisVerdictCount[];
   results_total: number;
+  /** 同类现象复用交回的次数（0 token，成本口径单列，不算进 results_total/平均值） */
+  reused_total: number;
   avg_tools_used: number;
   avg_duration_ms: number;
   counters: Record<string, number>;

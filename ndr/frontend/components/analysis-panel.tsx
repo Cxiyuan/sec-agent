@@ -679,7 +679,12 @@ export function AnalysisPanel() {
               label="累计结论"
               value={stats ? numText(stats.results_total) : "—"}
               size="md"
-              hint={stats ? `平均 ${stats.avg_tools_used} 次工具 · ${durationText(stats.avg_duration_ms)}` : undefined}
+              hint={
+                stats
+                  ? `平均 ${stats.avg_tools_used} 次工具 · ${durationText(stats.avg_duration_ms)}`
+                    + (stats.reused_total ? `（另有同现象复用 ${stats.reused_total} 次，0 token）` : "")
+                  : undefined
+              }
             />
             <Stat
               label="覆盖率"
@@ -1023,10 +1028,16 @@ export function AnalysisPanel() {
                         </span>
                       </TableCell>
                       <TableCell className="tabular-nums text-muted-foreground">
-                        {row.evidence_refs.length} 条 · {row.tools_used} 次
+                        {row.reused ? (
+                          <Badge variant="outline" title={`同类现象复用（原任务 ${row.reused_from || "—"}），没有起分析会话`}>
+                            复用
+                          </Badge>
+                        ) : (
+                          <>{row.evidence_refs.length} 条 · {row.tools_used} 次</>
+                        )}
                       </TableCell>
                       <TableCell className="tabular-nums text-muted-foreground">
-                        {durationText(row.duration_ms)}
+                        {row.reused ? "—" : durationText(row.duration_ms)}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
                         {row.claimed_by || "—"}

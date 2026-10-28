@@ -145,6 +145,9 @@ def inventory_results(
                 "evidence_refs": list(r.evidence_refs or []),
                 "tools_used": r.tools_used,
                 "duration_ms": r.duration_ms,
+                # 同类现象复用交回（0 token）：界面把它标成「复用」，别当成一次真分析
+                "reused": bool(tasks.reused_from(r)),
+                "reused_from": tasks.reused_from(r),
                 "claimed_by": r.claimed_by,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }

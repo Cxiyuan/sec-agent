@@ -526,7 +526,11 @@ ${THEME}
       '<td class="sev ' + esc(verdict) + '">' + esc(verdict) + '</td>' +
       (full ? '<td>' + esc(Math.round(Number(e.confidence || 0) * 100) + '%') + '</td>' : '') +
       '<td>' + esc(e.summary) + '</td>' +
-      (full ? '<td>' + esc(String(e.toolsUsed ?? 0) + ' 次 / ' + Math.round(Number(e.durationMs || 0) / 1000) + 's') + '</td>' : '') +
+      (full
+        ? '<td>' + (e.reused
+          ? '<span class="tag" title="同类现象复用：没有起分析会话（0 token）">复用</span>'
+          : esc(String(e.toolsUsed ?? 0) + ' 次 / ' + Math.round(Number(e.durationMs || 0) / 1000) + 's')) + '</td>'
+        : '') +
       '<td>' + esc(fmt(e.createdAt)) + '</td></tr>'
   }
 
@@ -565,7 +569,10 @@ ${THEME}
       '<div class="kv"><span class="k">类型</span>' + esc(e.kind) + ' / ' + esc(e.subjectKind) + '</div>' +
       '<div class="kv"><span class="k">任务</span>' + esc(e.taskId) + '</div>' +
       '<div class="kv"><span class="k">终态原因</span>' + esc(e.terminalReason || '—') + '</div>' +
-      '<div class="kv"><span class="k">成本</span>' + esc(String(e.toolsUsed ?? 0) + ' 次工具 / ' + Math.round(Number(e.durationMs || 0) / 1000) + ' 秒') + '</div>' +
+      '<div class="kv"><span class="k">成本</span>' + (e.reused
+        ? '<span class="tag">复用（未起会话，0 token）</span> '
+          + '原任务 <span class="mono">' + esc(e.reusedFrom || '—') + '</span>'
+        : esc(String(e.toolsUsed ?? 0) + ' 次工具 / ' + Math.round(Number(e.durationMs || 0) / 1000) + ' 秒')) + '</div>' +
       '<div class="kv"><span class="k">时间</span>' + esc(fmt(e.createdAt)) + '</div>' +
       '<div class="kv"><span class="k">结论</span>' + esc(e.summary) + '</div>' +
       '<pre>' + esc(JSON.stringify(e.findings ?? {}, null, 2)) + '</pre>'

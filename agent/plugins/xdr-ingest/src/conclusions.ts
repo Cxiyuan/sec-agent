@@ -36,6 +36,10 @@ export interface ConclusionRecord {
   readonly toolsUsed: number
   /** 本次分析耗时（毫秒）。 */
   readonly durationMs: number
+  /** 同类现象复用交回（0 token，没起会话）：成本不算它，界面标「复用」。 */
+  readonly reused: boolean
+  /** 复用的原任务 ID（非复用为空串）。 */
+  readonly reusedFrom: string
   /** 终态原因：concluded / timeout / tool_error / budget_exhausted / aborted。 */
   readonly terminalReason: string
   readonly createdAt: string

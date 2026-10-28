@@ -539,8 +539,17 @@ def _mark_analyzed(db: Any, subject_kind: str, subject: str, now: datetime) -> N
 
 
 def stats(client: Any) -> dict[str, Any]:
-    """队列总览（界面与智能体读同一份队列状况）。"""
+    """队列总览（界面与智能体读同一份队列状况）。
+
+    **成本口径只算真分析**：同类现象复用交回的行会写 `findings.reused_from`，
+    它的 `tools_used/duration_ms` 是 0（根本没起会话）。把它算进平均会把成本
+    拉低，看起来像"智能体变便宜了"，其实是同一件事被重复交回。
+    所以：`results_total`（累计结论）与结论分布都只算真分析，复用次数单列
+    `reused_total`。
+    """
     now = datetime.now(UTC)
+    # 复用行：findings 里带 reused_from（JSONB 判键，走 ? 操作符）
+    real = ~AnalysisResult.findings.has_key("reused_from")  # noqa: W601 — JSONB，不是 dict
     with SessionLocal() as db:
         by_state = {
             str(state or ""): int(count)
@@ -563,13 +572,17 @@ def stats(client: Any) -> dict[str, Any]:
             {"verdict": str(v or ""), "count": int(c)}
             for v, c in db.execute(
                 select(AnalysisResult.verdict, func.count())
+                .where(real)
                 .group_by(AnalysisResult.verdict)
                 .order_by(func.count().desc())
             ).all()
         ]
-        avg_tools = db.scalar(select(func.avg(AnalysisResult.tools_used))) or 0
-        avg_ms = db.scalar(select(func.avg(AnalysisResult.duration_ms))) or 0
-        done_total = db.scalar(select(func.count()).select_from(AnalysisResult)) or 0
+        avg_tools = db.scalar(select(func.avg(AnalysisResult.tools_used)).where(real)) or 0
+        avg_ms = db.scalar(select(func.avg(AnalysisResult.duration_ms)).where(real)) or 0
+        done_total = db.scalar(select(func.count()).select_from(AnalysisResult).where(real)) or 0
+        reused_total = (
+            db.scalar(select(func.count()).select_from(AnalysisResult).where(~real)) or 0
+        )
     return {
         "enabled": params.enabled(),
         "by_state": by_state,
@@ -580,6 +593,8 @@ def stats(client: Any) -> dict[str, Any]:
         "by_kind": by_kind,
         "by_verdict": by_verdict,
         "results_total": int(done_total),
+        # 同类现象复用交回的次数（0 token 的那部分，成本口径里单列）
+        "reused_total": int(reused_total),
         "avg_tools_used": round(float(avg_tools or 0), 2),
         "avg_duration_ms": int(avg_ms or 0),
         "counters": read_stats(client),
@@ -911,6 +926,18 @@ def _anchor_pairs_for(subject_text: str, rows: Sequence[AnalysisResult]) -> list
                 if pair[0] and pair[1] and pair not in pairs:
                     pairs.append(pair)
     return pairs[:20]
+
+
+def reused_from(row: AnalysisResult) -> str:
+    """这条结论是不是「同类现象复用」交回的？是则返回原任务的 ID。
+
+    复用交回不烧 token（没起会话），所以成本统计要把它剔出去、界面要标成
+    「复用」—— 否则"累计结论"会把同一件事重复计数，平均工具数也被 0 值拉低。
+    """
+    findings = row.findings or {}
+    if not isinstance(findings, dict):
+        return ""
+    return str(findings.get("reused_from") or "").strip()
 
 
 def _result_dict(row: AnalysisResult, *, with_detail: bool = False) -> dict[str, Any]:

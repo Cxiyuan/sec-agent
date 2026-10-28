@@ -44,6 +44,10 @@ function asStringList(value: unknown): string[] {
 }
 
 function toRecord(row: ConclusionRow): ConclusionRecord {
+  const findings = row.findings
+  const reusedFrom = typeof findings === 'object' && findings !== null && !Array.isArray(findings)
+    ? String((findings as Record<string, unknown>)['reused_from'] ?? '').trim()
+    : ''
   return {
     id: String(row.id),
     taskId: String(row.task_id ?? ''),
@@ -57,6 +61,9 @@ function toRecord(row: ConclusionRow): ConclusionRecord {
     evidenceRefs: asStringList(row.evidence_refs),
     toolsUsed: Number(row.tools_used ?? 0),
     durationMs: Number(row.duration_ms ?? 0),
+    // 复用交回的行标出来：成本不算它（没起会话），界面也不该显示成"又分析了一遍"
+    reused: reusedFrom !== '',
+    reusedFrom,
     terminalReason: String(row.terminal_reason ?? ''),
     createdAt: isoTime(row.created_at),
   }

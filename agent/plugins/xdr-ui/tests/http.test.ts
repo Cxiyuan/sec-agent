@@ -55,6 +55,8 @@ function conclusion(id: string): Record<string, unknown> {
     evidenceRefs: ['es:/ev:1'],
     toolsUsed: 12,
     durationMs: 4200,
+    reused: false,
+    reusedFrom: '',
     terminalReason: 'concluded',
     createdAt: '2026-10-28T02:00:00Z',
   }

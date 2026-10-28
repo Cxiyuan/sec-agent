@@ -91,7 +91,50 @@ test('postgres 结论面：列表 / 详情 / 搜索 / 计数', { skip: !withPg }
     assert.equal(await reader.get(randomUUID()), null)
     assert.ok(await reader.count() >= 1)
   } finally {
-    await pool.query('DELETE FROM analysis_results WHERE id = $1', [id])
+    await pool.query('DELETE FROM analysis_results WHERE id = ANY($1::uuid[])', [[id, plainId]])
+    await reader.close()
+    await pool.end()
+  }
+})
+
+test('复用交回的结论要能被识别出来（界面标「复用」、成本不算它）', { skip: !withPg }, async () => {
+  const { Pool } = await import('pg')
+  const { PostgresConclusionReader } = await import('../src/pg-conclusions.ts')
+  const pool = new Pool({ connectionString: PG_URL })
+  await pool.query(`CREATE TABLE IF NOT EXISTS analysis_results (
+    id UUID PRIMARY KEY, task_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '',
+    subject_kind TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+    verdict TEXT NOT NULL DEFAULT '', confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '', findings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb, tools_used INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0, terminal_reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`)
+  const id = randomUUID()
+  const plainId = randomUUID()
+  const subject = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+  await pool.query(
+    `INSERT INTO analysis_results (id, task_id, kind, subject_kind, subject, verdict, summary, findings, terminal_reason, created_at)
+     VALUES ($1, 'task-reuse', 'hit', 'ip', $2, 'benign', '复用交回', $3::jsonb, 'concluded', now())`,
+    [id, subject, JSON.stringify({ reused_from: 'task-old', reuse_key: 'TR-xxx' })],
+  )
+  await pool.query(
+    `INSERT INTO analysis_results (id, task_id, kind, subject_kind, subject, verdict, summary, findings, terminal_reason, created_at)
+     VALUES ($1, 'task-plain', 'hit', 'ip', $2, 'benign', '真分析', '{}'::jsonb, 'concluded', now())`,
+    [plainId, subject],
+  )
+  const reader = new PostgresConclusionReader({ connectionString: PG_URL })
+  try {
+    await reader.ready()
+    const one = await reader.get(id)
+    assert.equal(one?.reused, true)
+    assert.equal(one?.reusedFrom, 'task-old')
+    // 普通分析行不能被误标
+    const plain = await reader.get(plainId)
+    assert.equal(plain?.reused, false)
+    assert.equal(plain?.reusedFrom, '')
+  } finally {
+    await pool.query('DELETE FROM analysis_results WHERE id = ANY($1::uuid[])', [[id, plainId]])
     await reader.close()
     await pool.end()
   }

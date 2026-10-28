@@ -965,3 +965,26 @@ def test_operational_todo_can_bypass_candidate_kinds(queue_mod: Any) -> None:
     assert "not force and kind not in params.candidate_kinds()" in src
     follow = inspect.getsource(_mod("app.analysis.candidates").enqueue_suppression_followup)
     assert "force=True" in follow
+
+
+# ===== ⑯ 复用交回不算"又分析了一遍"（0 token 的那部分单列）=====
+
+
+def test_reuse_rows_are_excluded_from_cost_stats(queue_mod: Any) -> None:
+    """成本口径只算真分析：复用交回的行（0 工具 / 0 毫秒）要剔出去。
+
+    线上症状：复用交回也往 analysis_results 写一行，把"累计结论"算成又分析了一次，
+    平均工具数还被这些 0 值拉低 —— 看起来像智能体变便宜了，其实是同一件事被重复交回。
+    """
+    src = inspect.getsource(queue_mod.stats)
+    assert 'has_key("reused_from")' in src, "成本统计要按 findings.reused_from 区分复用行"
+    assert "reused_total" in src, "复用次数要单列"
+    assert "where(real)" in src, "平均值只算真分析"
+
+
+def test_result_payload_marks_reuse(queue_mod: Any) -> None:
+    """结论列表要能标出复用行（界面标「复用」，不显示成本）。"""
+    assert "reused_from" in inspect.getsource(queue_mod.reused_from)
+    view = _mod("app.api.routes.analysis")
+    src = inspect.getsource(view.inventory_results)
+    assert '"reused": bool(tasks.reused_from(r))' in src
