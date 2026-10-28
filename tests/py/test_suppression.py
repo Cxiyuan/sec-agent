@@ -575,3 +575,28 @@ def test_suppressed_hit_is_not_dispatched() -> None:
     enqueue_at = src.index("candidates.enqueue_hit")
     guard_at = src.index('not digest.get("excluded")')
     assert guard_at < enqueue_at, "护栏必须写在 enqueue_hit 之前"
+
+
+def test_trial_counts_every_src_ip_in_the_match(sup: ModuleType) -> None:
+    """条件树里写了多个 src_ip，试算要按**全部**算。
+
+    否则"往匹配里加一个 src_ip"就能把网段护栏绕过去：试算只量第一个源，
+    真实覆盖面却还是那么大。护栏要量的是真实覆盖面。
+    """
+    match = {
+        "logic": "and",
+        "rules": [
+            {"field": "dst_port", "op": "eq", "value": 162},
+            {
+                "logic": "or",
+                "rules": [
+                    {"field": "src_ip", "op": "eq", "value": "10.0.0.1"},
+                    {"field": "src_ip", "op": "eq", "value": "10.0.1.2"},
+                ],
+            },
+        ],
+    }
+    assert sup._src_ips_of(match) == ["10.0.0.1", "10.0.1.2"]
+    src = inspect.getsource(sup.estimate_trial)
+    assert "_src_ips_of(match)" in src, "试算必须用条件树里的全部 src_ip"
+    assert "HitEvent.src_ip.in_(src_ips)" in src

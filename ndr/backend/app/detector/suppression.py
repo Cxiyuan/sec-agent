@@ -510,17 +510,51 @@ def _phenomenon(match: dict[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+def _src_ips_of(match: dict[str, Any]) -> list[str]:
+    """条件树里写明的**全部** src_ip 取值（OR 组里的多个源也要算上）。
+
+    为什么不能只看第一个：试算要的是"这条抑制真实覆盖多大面"。
+    只按第一个源试算，等于让"加一个 src_ip"就能绕过网段护栏。
+    """
+    values: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if isinstance(node.get("rules"), list):
+            for item in node["rules"]:
+                walk(item)
+            return
+        if str(node.get("field") or "") == "src_ip":
+            value = str(node.get("value") or "").strip()
+            if value and value not in values:
+                values.append(value)
+
+    walk(match)
+    return values
+
+
 def estimate_trial(match: dict[str, Any]) -> dict[str, Any]:
     """回看近 N 天同类命中的规模：命中条数 / 不同源 / 跨网段数。
 
     只看**已落库的命中事件**（PG），不回 ES 扫原始日志 —— 这是申请时的一次性成本，
     目的是估计"这条抑制会不会把一大片东西静默掉"，不是精确取证。
+
+    口径：条件树里写了 src_ip 就按**那些源**试算（全部，不只是第一个），
+    否则"加一个 src_ip"就能把网段护栏绕过去 —— 护栏要量的是真实覆盖面。
     """
     days = trial_days()
     since = datetime.now(UTC) - timedelta(days=days)
     field, value = _phenomenon(match)
+    src_ips = _src_ips_of(match)
     base: list[Any] = [func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since]
-    if field == "rule":
+    if src_ips:
+        base.append(HitEvent.src_ip.in_(src_ips))
+    elif field == "rule":
         base.append(HitEvent.rule == value)
     elif field == "signature_id":
         base.append(func.cast(HitEvent.evidence, HitEvent.evidence.type).astext.like(f"%{value}%"))
@@ -588,8 +622,9 @@ _DOWNGRADE_DIMENSIONS: tuple[tuple[str, str, str, str], ...] = (
         "suppression.trial_max_segments",
         "近 {days} 天同类命中跨 {actual} 个网段，超过上限 {limit}",
         (
-            "在条件里补 src_ip（精确到具体来源）把网段数压下来；"
-            "或把匹配面改成「某个目的主机 + 某个端口」这种定点形态"
+            "把匹配面收窄到**单个来源**（src_ip 精确匹配一个源）+ 具体行为特征；"
+            "同一类现象有多个来源就**每个来源各提一条**（名字里带上来源），"
+            "别用 or 把它们并成一条 —— 并了仍然算一个大面"
         ),
     ),
 )
