@@ -35,6 +35,23 @@ export interface XdrIngestService {
   getAnalysis(analysisId: string): Promise<ColdEntry | null>
 
   /**
+   * 智能体交回的结论（NDR 写的 `analysis_results`），按时间倒序分页 + 关键词搜索。
+   *
+   * 与 `listAnalyses` 的区别：后者是**旧摘要契约**的缓存表（新架构下 NDR 不再推摘要，
+   * 那张表永远是空的）；结论才是现在真正产出的东西，控制台「分析记录」看它。
+   */
+  listConclusions(query: { limit: number, offset: number, search: string }): Promise<{
+    total: number
+    entries: readonly unknown[]
+  }>
+
+  /** 按结论 ID 取一条（含 findings / 证据引用 / 成本口径）。 */
+  getConclusion(id: string): Promise<unknown>
+
+  /** 结论总数与数据面是否可用（控制台总览用）。 */
+  conclusionStats(): Promise<{ available: boolean, total: number }>
+
+  /**
    * 当前生效的运行参数：`{poll_seconds, max_concurrent, claim_limit, store}`。
    * 工作台配置页与 status 读同一份（可能已被工作台改过）。
    */

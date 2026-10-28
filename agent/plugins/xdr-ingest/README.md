@@ -22,6 +22,11 @@ NDR 只用客观统计挑线索，派发任务元数据；智能体自行决定�
 
 两类记忆共用 `pgUrl`（默认读取 `XDR_INGEST_PG_URL`）。Node `pg` 连接串不能带 SQLAlchemy 的 `+psycopg` 后缀；格式为 `postgresql://user:password@host:5432/database`。未配置 PG 时退化为进程内存，重启后结论与脚本都会丢失。
 
+**结论只读面**（`conclusions.ts` / `pg-conclusions.ts`）：控制台「分析记录」要看见智能体交回
+的结论，而结论是 NDR 的 `complete_task` 写进 `analysis_results` 的。项目统一用一份 PG，
+所以插件**只读**那张表（列表 / 详情 / 搜索 / 计数），不复制第二份数据，也就不存在两边对不上。
+表不存在时整页降级成"没有结论"，控制台照常打开。
+
 旧摘要推送及 `EA-` 两级缓存只用于回滚，不属于门铃派工的主路径。
 
 ## HTTP 契约（对齐 ndr/backend/app/detector/push.py）

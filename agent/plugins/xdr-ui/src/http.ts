@@ -23,6 +23,16 @@ export interface IngestServiceView {
     entries: readonly unknown[]
   }>
   getAnalysis(analysisId: string): Promise<unknown>
+  /**
+   * 智能体交回的结论（NDR 的 `analysis_results`）——控制台「分析记录」页真正的数据源。
+   * 可选：老版本 xdr-ingest 没有这一面，界面回落到旧的摘要缓存（那份表在新架构下是空的）。
+   */
+  listConclusions?(query: { limit: number, offset: number, search: string }): Promise<{
+    total: number
+    entries: readonly unknown[]
+  }>
+  getConclusion?(id: string): Promise<unknown>
+  conclusionStats?(): Promise<{ available: boolean, total: number }>
   /** 运行参数快照（可选：老版本 xdr-ingest 没有，控制台显示"不可改"）。 */
   settings?(): Promise<Record<string, unknown>>
   /** 保存运行参数（可选；校验在数据面做，控制台只透传）。 */
@@ -311,7 +321,15 @@ export function createUiHandler(
         } catch {
           cache = null
         }
-        respondJson(res, 200, { available: true, status, cache })
+        let conclusions: { available: boolean, total: number } = { available: false, total: 0 }
+        if (typeof ingest.conclusionStats === 'function') {
+          try {
+            conclusions = await ingest.conclusionStats()
+          } catch {
+            conclusions = { available: false, total: 0 }
+          }
+        }
+        respondJson(res, 200, { available: true, status, cache, conclusions })
         return
       }
       if (tail === '/api/analyses') {
@@ -351,6 +369,50 @@ export function createUiHandler(
         }
         const entry = await ingest.getAnalysis(analysisId)
         if (entry === null) {
+          respondJson(res, 404, { error: 'not found' })
+          return
+        }
+        respondJson(res, 200, { entry })
+        return
+      }
+      // ---------- 结论（智能体交回的判定；NDR 写、同库只读） ----------
+      if (tail === '/api/conclusions') {
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.listConclusions !== 'function') {
+          respondJson(res, 200, { available: false, total: 0, entries: [] })
+          return
+        }
+        const query = queryOf(req)
+        const limit = clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT)
+        const offset = clampInt(query.get('offset'), 0, 0, MAX_OFFSET)
+        const search = (query.get('q') ?? '').slice(0, 128)
+        const page = await ingest.listConclusions({ limit, offset, search })
+        respondJson(res, 200, { available: true, total: page.total, entries: page.entries })
+        return
+      }
+      if (tail.startsWith('/api/conclusions/')) {
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const id = decodeURIComponent(tail.slice('/api/conclusions/'.length)).trim()
+        if (id === '' || id.length > MAX_ANALYSIS_ID || /[\u0000-\u001f]/u.test(id)) {
+          respondJson(res, 400, { error: 'invalid conclusion id' })
+          return
+        }
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.getConclusion !== 'function') {
+          respondJson(res, 404, { error: 'data plane unavailable' })
+          return
+        }
+        const entry = await ingest.getConclusion(id)
+        if (entry === null || entry === undefined) {
           respondJson(res, 404, { error: 'not found' })
           return
         }

@@ -154,11 +154,30 @@ class Collector:
 # ---------- 落库与入队 ----------
 
 
-def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tuple[str, str]]:
-    """批量登记"见过"，返回其中**首次出现**的 (kind, value)。
+def is_recurring(seen_count: int) -> bool:
+    """跨窗口再现才算"值得派工的对象"（纯函数，便于测）。
+
+    `seen_count` 每个采集窗口出现一次 +1：首次登记是 1，第二个窗口再出现就是 2。
+    只有 1 的是**一次性对象**（代理/NAT 的临时套接字、扫描器的单次探测），
+    它们不是"新服务"，派工过去只会白烧模型调用。
+    """
+    try:
+        return int(seen_count or 0) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
+def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tuple[str, str, datetime]]:
+    """批量登记"见过"，返回其中**跨窗口反复出现**的 (kind, value, 首次出现时间)。
 
     只用 ORM 会话接口（`scalars` / `add`），不手写任何 SQL 拼接；一次读 + 一次刷，
     新对象靠唯一索引 `(kind, value)` 兜并发重复。
+
+    **为什么不是"第一次见到就派工"**：镜像口上的一次性连接也会造出一个"新对象"——
+    代理/NAT 的临时套接字、扫描器的单次探测，端口每次都不同。实测一个采集窗口
+    能刷出 25 万个一次性 `dst_ip:dst_port`，队列直接被这类垃圾线索灌满
+    （实测丢弃 1.5 万条、队列常年满），真正值得看的新服务反而被挤掉。
+    值得分析的服务端口是**反复出现**的那些，所以这里只把「跨窗口再现」的对象交出去。
     """
     if not rows:
         return []
@@ -173,9 +192,13 @@ def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tu
         ).all():
             found[(str(row.kind), str(row.value))] = row
     # 已见过的：只刷新"最近见到时间"与计数（覆盖率与 rarity 的数据源）
+    recurring: list[tuple[str, str, datetime]] = []
     for row in found.values():
         row.last_seen_at = now
         row.seen_count = int(row.seen_count or 0) + 1
+        # seen_count ≥ 2 = 本次之前已经在别的窗口出现过（本次是第二次及以后）
+        if is_recurring(row.seen_count):
+            recurring.append((str(row.kind), str(row.value), row.first_seen_at or now))
     fresh = [kv for kv in keys if kv not in found]
     for kind, value in fresh:
         db.add(
@@ -188,13 +211,15 @@ def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tu
                 analyzed_count=0,
             )
         )
-    return fresh
+    return recurring
 
 
-def _novelty_tasks(db: Any, fresh: list[tuple[str, str]], now: datetime, client: Any) -> int:
-    """首见对象 → novelty 线索（强度按"多久没分析过"加成，冷门口对象更容易排上）。"""
+def _novelty_tasks(
+    db: Any, recurring: list[tuple[str, str, datetime]], now: datetime, client: Any
+) -> int:
+    """反复出现的对象 → novelty 线索（强度按"多久没分析过"加成，冷门口对象更容易排上）。"""
     made = 0
-    for kind, value in fresh[:_MAX_ENQUEUE_PER_FLUSH]:
+    for kind, value, first_seen in recurring[:_MAX_ENQUEUE_PER_FLUSH]:
         stale = subjects.staleness("asset", value, now) if kind == subjects.KIND_ASSET else 0.6
         # 套反馈系数：这个对象上同类现象被连判过误报就捐低优先级（只衰减不否决）
         strength = feedback.apply(
@@ -209,7 +234,9 @@ def _novelty_tasks(db: Any, fresh: list[tuple[str, str]], now: datetime, client:
             strength=strength,
             feature=f"first:{kind}",
             hint={
-                "事实": f"第一次见到该{kind}",
+                # 事实要跟口径一致：不是"第一次见到"，而是"这个对象反复出现"，
+                # 第一次见到的时间一并给出，智能体自己判断是新服务还是老熟人。
+                "事实": f"该{kind}在多个采集窗口反复出现（首次出现：{first_seen.isoformat()}）",
                 "对象类型": kind,
                 "距上次分析": "从未分析" if stale >= 0.9 else "近期未分析",
                 "客观强度": strength,
@@ -231,21 +258,26 @@ def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, 
         for value in values:
             rows.append((kind, value))
     out = {"seen": len(rows), "novelty": 0, "structure": 0}
+    # 结构特征的计数要在清空前留一份快照：`reset()` 会把 fail_events/total_events
+    # 清空，之后 _structure_tasks 看到的永远是空字典（这条线索其实一直没产出过）。
+    fail_events = dict(collector.fail_events)
+    total_events = dict(collector.total_events)
+    window_start = collector.window_start
     # 无论后面成功与否都要清空：这是常驻进程，累积器不清空就会无界增长
     collector.reset()
     if not rows:
         return out
     try:
         with SessionLocal() as db:
-            fresh = _record_seen(db, rows, now)
+            recurring = _record_seen(db, rows, now)
             db.commit()
-            out["novelty"] = _novelty_tasks(db, fresh, now, client)
+            out["novelty"] = _novelty_tasks(db, recurring, now, client)
     except Exception as exc:  # noqa: BLE001 — 生成线索失败绝不能影响检测
         log.warning("线索生成（首见登记）失败：%s", exc)
         queue.bump(client, "candidate_error")
         return out
     if "structure" in params.candidate_kinds():
-        out["structure"] = _structure_tasks(collector, now, client)
+        out["structure"] = _structure_tasks(fail_events, total_events, window_start, now, client)
     if stats is not None:
         try:
             stats["candidate_novelty"] = int(stats.get("candidate_novelty", 0)) + out["novelty"]
@@ -254,11 +286,17 @@ def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, 
     return out
 
 
-def _structure_tasks(collector: Collector, now: datetime, client: Any) -> int:
+def _structure_tasks(
+    fail_events: dict[str, int],
+    total_events: dict[str, int],
+    window_start: float,
+    now: datetime,
+    client: Any,
+) -> int:
     """轻量结构特征：失败响应占比异常高（只给事实，不说是攻击）。"""
     made = 0
-    for src, fails in collector.fail_events.items():
-        total = collector.total_events.get(src, 0) or 1
+    for src, fails in fail_events.items():
+        total = total_events.get(src, 0) or 1
         if fails < _MIN_FAIL_EVENTS or (fails / total) < _FAIL_RATIO:
             continue
         strength = feedback.apply(combined_strength(scale_strength(fails), 0.5), "structure", src)
@@ -272,7 +310,7 @@ def _structure_tasks(collector: Collector, now: datetime, client: Any) -> int:
             feature="fail_ratio",
             hint={
                 "事实": f"本窗口失败响应 {fails}/{total}（占比 {fails / total:.0%}）",
-                "窗口": f"{collector.window_start or ''}",
+                "窗口": f"{window_start or ''}",
                 "客观强度": strength,
             },
             window_start=now - timedelta(minutes=30),

@@ -234,22 +234,22 @@ ${THEME}
 
     <section id="view-overview">
       <div id="overview"></div>
-      <h2>最近分析</h2>
+      <h2>最近结论</h2>
       <table>
-        <thead><tr><th>规则</th><th>源 IP</th><th>严重度</th><th>结论摘要</th><th>最近出现</th></tr></thead>
+        <thead><tr><th>对象</th><th>判定</th><th>结论摘要</th><th>时间</th></tr></thead>
         <tbody id="recent"></tbody>
       </table>
     </section>
 
     <section id="view-records" hidden>
       <div class="toolbar">
-        <input id="q" type="search" placeholder="搜索：规则 / 源 IP / 结论…" maxlength="128">
+        <input id="q" type="search" placeholder="搜索：对象 / 判定 / 结论摘要…" maxlength="128">
         <button id="search">搜索 / 刷新</button>
         <span class="count" id="count"></span>
       </div>
       <table>
         <thead>
-          <tr><th>规则</th><th>源 IP</th><th>严重度</th><th>结论摘要</th><th>出现</th><th>最近出现</th></tr>
+          <tr><th>对象</th><th>类型</th><th>判定</th><th>置信度</th><th>结论摘要</th><th>工具/耗时</th><th>时间</th></tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
@@ -445,7 +445,7 @@ ${THEME}
   const PAGE = 20
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
-    records: { title: '分析记录', sub: '冷库里的历史结论，可搜索与翻页' },
+    records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
     settings: { title: '配置', sub: '运行参数、连接状态与入口' },
     system: { title: '系统', sub: '模型与密钥、插件清单、原生设置入口' },
   }
@@ -484,7 +484,7 @@ ${THEME}
       document.getElementById('state').className = 'chip off'
       return
     }
-    const s = data.status || {}, c = data.cache || {}, loop = s.loop || {}
+    const s = data.status || {}, c = data.cache || {}, loop = s.loop || {}, cc = data.conclusions || {}
     const analysisOn = s.analysis === 'enabled'
     const groups = [
       ['运行状态', [
@@ -498,13 +498,11 @@ ${THEME}
         ['领取失败', esc(loop.failedClaims ?? 0), ''],
         ['连续错误', esc(loop.consecutiveErrors ?? 0), Number(loop.consecutiveErrors) > 0 ? 'bad' : 'ok'],
       ]],
-      ['分析缓存', [
-        ['热层条数', esc(c.hot ?? '—'), ''],
-        ['冷库条数', esc(c.cold ?? '—'), ''],
-        ['存储', esc(s.store_kind || c.storeKind || '—'), ''],
-        ['判定分析', esc(c.analyzed ?? '—'), ''],
-        ['命中复用', esc(c.reused ?? '—'), ''],
-        ['过期重析', esc(c.reanalyzed ?? '—'), ''],
+      ['结论', [
+        ['结论总数', esc(cc.total ?? '—'), ''],
+        ['结论数据源', esc(s.conclusion_source || '—'), cc.available === false ? 'bad' : 'ok'],
+        ['同类结论复用', esc((s.task_reuse || {}).reused ?? 0), ''],
+        ['已存结论（复用库）', esc((s.task_reuse || {}).stored ?? 0), ''],
       ]],
     ]
     let html = ''
@@ -519,30 +517,32 @@ ${THEME}
     chip.className = 'chip ' + (analysisOn ? 'ok' : 'off')
   }
 
-  function rowHtml(e, withOccurrences) {
-    const sev = e.result && e.result.severity ? e.result.severity : ''
-    return '<tr data-id="' + esc(e.analysisId) + '">' +
-      '<td>' + esc(e.identity && e.identity.rule) + '</td>' +
-      '<td class="mono">' + esc(e.identity && e.identity.srcIp) + '</td>' +
-      '<td class="sev ' + esc(sev) + '">' + esc(sev) + '</td>' +
-      '<td>' + esc(e.result && e.result.summary) + '</td>' +
-      (withOccurrences ? '<td>' + esc(e.occurrences) + '</td>' : '') +
-      '<td>' + esc(fmt(e.lastSeenAt)) + '</td></tr>'
+  /** 结论行：对象 / 类型 / 判定 / 置信度 / 摘要 / 工具·耗时 / 时间。 */
+  function rowHtml(e, full) {
+    const verdict = e.verdict || ''
+    return '<tr data-id="' + esc(e.id) + '">' +
+      '<td class="mono">' + esc(e.subject) + '</td>' +
+      '<td>' + esc(e.subjectKind || e.kind) + '</td>' +
+      '<td class="sev ' + esc(verdict) + '">' + esc(verdict) + '</td>' +
+      (full ? '<td>' + esc(Math.round(Number(e.confidence || 0) * 100) + '%') + '</td>' : '') +
+      '<td>' + esc(e.summary) + '</td>' +
+      (full ? '<td>' + esc(String(e.toolsUsed ?? 0) + ' 次 / ' + Math.round(Number(e.durationMs || 0) / 1000) + 's') + '</td>' : '') +
+      '<td>' + esc(fmt(e.createdAt)) + '</td></tr>'
   }
 
   async function loadRecent() {
-    const data = await json(BASE + '/api/analyses?limit=5&offset=0&q=')
+    const data = await json(BASE + '/api/conclusions?limit=5&offset=0&q=')
     const rows = document.getElementById('recent')
     rows.innerHTML = (data.entries || []).map(e => rowHtml(e, false)).join('') ||
-      '<tr><td colspan="5" class="empty">暂无分析记录</td></tr>'
+      '<tr><td colspan="4" class="empty">暂无结论</td></tr>'
   }
 
   async function loadList() {
     const q = document.getElementById('q').value.trim()
-    const data = await json(BASE + '/api/analyses?limit=' + PAGE + '&offset=' + offset + '&q=' + encodeURIComponent(q))
+    const data = await json(BASE + '/api/conclusions?limit=' + PAGE + '&offset=' + offset + '&q=' + encodeURIComponent(q))
     total = data.total || 0
     document.getElementById('rows').innerHTML = (data.entries || []).map(e => rowHtml(e, true)).join('') ||
-      '<tr><td colspan="6" class="empty">暂无分析记录</td></tr>'
+      '<tr><td colspan="7" class="empty">暂无结论</td></tr>'
     const last = Math.max(0, Math.ceil(total / PAGE) - 1) * PAGE
     offset = Math.min(offset, last)
     document.getElementById('count').textContent = '共 ' + total + ' 条'
@@ -552,25 +552,23 @@ ${THEME}
   }
 
   async function openDetail(id) {
-    const r = await fetch(BASE + '/api/analyses/' + encodeURIComponent(id))
+    const r = await fetch(BASE + '/api/conclusions/' + encodeURIComponent(id))
     if (r.status === 401) { location.href = BASE + '/login'; return }
     if (r.status === 404) { toast('记录不存在'); return }
     const data = await r.json()
     const e = data.entry || {}
-    const idn = e.identity || {}, res = e.result || {}
+    const verdict = e.verdict || ''
     document.getElementById('detail-body').innerHTML =
-      '<h3 class="mono">' + esc(e.analysisId) + '</h3>' +
-      '<div class="kv"><span class="k">规则</span>' + esc(idn.rule) + '</div>' +
-      '<div class="kv"><span class="k">源 IP</span>' + esc(idn.srcIp) + '</div>' +
-      '<div class="kv"><span class="k">目标</span>' + esc((idn.dstIps || []).join('、')) + '</div>' +
-      '<div class="kv"><span class="k">端口</span>' + esc((idn.dstPorts || []).join('、')) + '</div>' +
-      '<div class="kv"><span class="k">事件类型</span>' + esc((idn.eventTypes || []).join('、')) + '</div>' +
-      '<div class="kv"><span class="k">出现次数</span>' + esc(e.occurrences) + '（首次 ' + esc(fmt(e.firstSeenAt)) + '）</div>' +
-      '<div class="kv"><span class="k">分析时间</span>' + esc(fmt(e.analyzedAt)) + '　<span class="k">分析器</span>' + esc(res.analyzer) + '</div>' +
-      '<div class="kv"><span class="k">定级</span><span class="sev ' + esc(res.severity) + '">' + esc(res.severity) + '</span>　<span class="k">归组</span>' + esc(res.category) + '</div>' +
-      '<div class="kv"><span class="k">结论</span>' + esc(res.summary) + '</div>' +
-      '<div class="kv"><span class="k">处置建议</span>' + esc(res.recommendation) + '</div>' +
-      '<pre>' + esc(JSON.stringify(e, null, 2)) + '</pre>'
+      '<h3 class="mono">' + esc(e.subject) + '</h3>' +
+      '<div class="kv"><span class="k">判定</span><span class="sev ' + esc(verdict) + '">' + esc(verdict) + '</span>'
+      + '　<span class="k">置信度</span>' + esc(Math.round(Number(e.confidence || 0) * 100) + '%') + '</div>' +
+      '<div class="kv"><span class="k">类型</span>' + esc(e.kind) + ' / ' + esc(e.subjectKind) + '</div>' +
+      '<div class="kv"><span class="k">任务</span>' + esc(e.taskId) + '</div>' +
+      '<div class="kv"><span class="k">终态原因</span>' + esc(e.terminalReason || '—') + '</div>' +
+      '<div class="kv"><span class="k">成本</span>' + esc(String(e.toolsUsed ?? 0) + ' 次工具 / ' + Math.round(Number(e.durationMs || 0) / 1000) + ' 秒') + '</div>' +
+      '<div class="kv"><span class="k">时间</span>' + esc(fmt(e.createdAt)) + '</div>' +
+      '<div class="kv"><span class="k">结论</span>' + esc(e.summary) + '</div>' +
+      '<pre>' + esc(JSON.stringify(e.findings ?? {}, null, 2)) + '</pre>'
     document.getElementById('detail').showModal()
   }
 

@@ -29,6 +29,9 @@ import type { ColdStore } from './store.ts'
 import { mergeSettings, settingsView } from './settings.ts'
 import type { RuntimeSettings, SettingsStore } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
+import { MemoryConclusionReader } from './conclusions.ts'
+import { PostgresConclusionReader } from './pg-conclusions.ts'
+import type { ConclusionReader } from './conclusions.ts'
 import { MemoryStateStore } from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
 import type { ScriptStore } from './state-store.ts'
@@ -58,6 +61,14 @@ export { PostgresStateStore } from './pg-state-store.ts'
 export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore } from './state-store.ts'
 export { taskResultKey, reuseDecision, REUSABLE_VERDICTS } from './task-results.ts'
 export type { TaskResultRecord, TaskResultStore } from './task-results.ts'
+export { MemoryConclusionReader } from './conclusions.ts'
+export { PostgresConclusionReader } from './pg-conclusions.ts'
+export type {
+  ConclusionPage,
+  ConclusionQuery,
+  ConclusionReader,
+  ConclusionRecord,
+} from './conclusions.ts'
 export type { XdrIngestService } from './workbench.ts'
 
 /** Cordis function-plugin name（bundle patch 行的 id 与之对应）。 */
@@ -204,6 +215,11 @@ export function apply(ctx: Context, config: Config): void {
       + '生产请配置 pgUrl / XDR_INGEST_PG_URL。',
     )
   }
+  // 结论只读面：控制台「分析记录」读 NDR 写进同一份 PG 的 `analysis_results`。
+  // 没有 PG 就退化成"没有结论"（页面照常打开，只是数据区空）。
+  const conclusions: ConclusionReader = config.pgUrl.trim() === ''
+    ? new MemoryConclusionReader()
+    : new PostgresConclusionReader({ connectionString: config.pgUrl.trim() })
   // 旧摘要契约（/digests）是**回滚专用**：新架构下 NDR 只安门铃（analysis.enabled=true
   // 时不推摘要）。端点保留以便一键回滚到推送契约，日常流量不会走到它。
   const cache = new TieredCache({
@@ -286,6 +302,8 @@ export function apply(ctx: Context, config: Config): void {
       ...settingsView(currentSettings()),
       store_kind: store.kind,
       state_store_kind: stateStore.kind,
+      // 控制台「分析记录」的数据源（NDR 写的结论表）；不可用时界面显示"数据面不可用"
+      conclusion_source: conclusions.available() ? 'ndr:analysis_results' : 'unavailable',
       script_tool_names: ANALYSIS_SCRIPT_TOOL_NAMES.filter(name =>
         ctx.tools.schemas().some(schema => schema.name === name),
       ),
@@ -314,6 +332,7 @@ export function apply(ctx: Context, config: Config): void {
     cacheStats: () => cache.stats(),
     taskReuseStats: () => analyst?.reuseStats ?? { reused: 0, stored: 0 },
     scriptStats: async () => ({ store: stateStore.kind, count: await stateStore.countScripts() }),
+    conclusionStats: async () => ({ available: conclusions.available(), total: await conclusions.count() }),
     wake: () => {
       if (loop === null) return false
       loop.wake()
@@ -321,6 +340,9 @@ export function apply(ctx: Context, config: Config): void {
     },
     listAnalyses: (query: { limit: number, offset: number, search: string }) => store.listRecent(query),
     getAnalysis: (analysisId: string) => store.load(analysisId),
+    listConclusions: (query: { limit: number, offset: number, search: string }) =>
+      conclusions.listRecent(query),
+    getConclusion: (id: string) => conclusions.get(id),
     settings: async () => ({ ...settingsView(currentSettings()), store: store.kind }),
     updateSettings: async (patch: unknown) => {
       const merged = mergeSettings(currentSettings(), patch)
@@ -382,6 +404,7 @@ export function apply(ctx: Context, config: Config): void {
         disposeRoute()
         void store.close().catch(() => undefined)
         void stateStore.close().catch(() => undefined)
+        void conclusions.close().catch(() => undefined)
       }
     },
     `xdr-ingest: ${config.basePath}/*`,

@@ -118,7 +118,12 @@ NDR（只做廉价统计与派工，不替智能体下威胁判断）           
 
 - 每窗口对**全量事件**（非仅命中规则的）统计三个计数特征 —— 这条采样通道已存在
   （`baseline/sampler.py`），`shift` 直接复用它的判定结果；
-- `novelty`：新资产 / 新服务端口 / 新外部对端 / 新协议 / 新签名（查 `observed_subjects`）；
+- `novelty`：**跨窗口反复出现**的对象 —— 新资产 / 新服务端口 / 新外部对端 / 新协议 / 新签名
+  （查 `observed_subjects`）。
+  **为什么不是"第一次见到就派工"**：镜像口上的一次性连接（代理/NAT 的临时套接字、扫描器的
+  单次探测）每次端口都不同，一个采集窗口能刷出 25 万个"新服务端口"，队列直接被垃圾线索
+  灌满（实测丢弃 1.5 万条、真正的新服务被挤掉）。所以只把「第二个窗口仍出现」的对象交出去
+  （`seen_count ≥ 2`），首次出现时间一并写进 `hint`，由智能体自己判断是新服务还是老熟人；
 - `structure`：失败率、端口熵、周期性初筛（只给事实，如「404 占比 0.62」）；
 - `coverage`：`observed_subjects` 里"从未 / 久未分析"的对象（低强度，保证不抢占）；
 - `hit`：新落库的 `hit_events`（D4）。
@@ -164,9 +169,14 @@ strength = max(rarity, significance, scale, staleness, coalescing)
 
 ### 6.2 领取语义
 
-`claim_tasks` 必须**原子**：`SELECT ... WHERE state IN ('pending','deferred')
-AND (lease_until IS NULL OR lease_until < now) ORDER BY priority DESC, created_at
+`claim_tasks` 必须**原子**：`SELECT ... WHERE (state = 'pending'
+OR (state = 'deferred' AND (lease_until IS NULL OR lease_until <= now))
+OR (state = 'claimed' AND lease_until < now)) ORDER BY priority DESC, created_at
 FOR UPDATE SKIP LOCKED LIMIT n`，然后同事务把状态改成 `claimed` 并写租约。
+
+**`deferred` 必须等租约到期才可再领**：`defer_task` 写的「下次可领时间」是给智能体的承诺，
+领取查询若把 `pending` 与 `deferred` 一视同仁，这条承诺就是空的 —— 实测同 3 个任务被反复
+领走、反复没交回、反复延后，日志刷了 40 多次，纯烧模型调用。
 
 **NDR 不限制领取额度或并发**：没有每令牌/每小时的配额、没有保留名额、没有按令牌的在跑数上限。
 一次领取多少、多久领一次由智能体自己决定；服务端只负责原子领取和任务生命周期。

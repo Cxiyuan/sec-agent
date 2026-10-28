@@ -203,10 +203,18 @@ def _pick(
     """按优先级取一批可领取任务（`SKIP LOCKED` 保证并发下不重复领取）。"""
     if want <= 0:
         return []
+    now = datetime.now(UTC)
     conds: list[Any] = [
         or_(
-            AnalysisTask.state.in_(("pending", "deferred")),
-            (AnalysisTask.state == "claimed") & (AnalysisTask.lease_until < datetime.now(UTC)),
+            # 待派工的随时可领。
+            AnalysisTask.state == "pending",
+            # **延后到期才可领**：`defer_task` 写的「下次可领时间」必须真的算数。
+            # 以前这里把 deferred 与 pending 一视同仁，延后形同虚设：同一条线索
+            # 被领走→没交回→延后→立刻又被领走，反复重跑，白烧模型调用。
+            (AnalysisTask.state == "deferred")
+            & or_(AnalysisTask.lease_until.is_(None), AnalysisTask.lease_until <= now),
+            # 领了没交回的：租约过期才回收（次数超限判 stuck 在 sweep 里）。
+            (AnalysisTask.state == "claimed") & (AnalysisTask.lease_until < now),
         ),
         AnalysisTask.strength >= min_strength,
         AnalysisTask.strength < cap,

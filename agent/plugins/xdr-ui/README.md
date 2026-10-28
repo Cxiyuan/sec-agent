@@ -12,8 +12,8 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 
 | 面板 | 内容 | 数据源 |
 |---|---|---|
-| 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、剩余预算快照、热层/冷库条数、最近 5 条分析 | `xdrIngest.status()/cacheStats()/listAnalyses()` |
-| 分析记录 | PG 冷库的历史结论：规则、源 IP、严重度、结论摘要、出现次数、最近出现；分页 + 搜索 + 详情（身份、结论、处置建议、原始 JSON） | `xdrIngest.listAnalyses()/getAnalysis()` |
+| 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、结论总数与结论数据源、同类结论复用计数、最近 5 条结论 | `xdrIngest.status()/conclusionStats()/listConclusions()` |
+| 分析记录 | **智能体交回的结论**（NDR 的 `analysis_results`，同库只读）：对象、类型、判定、置信度、结论摘要、工具次数/耗时、时间；分页 + 搜索 + 详情（判定、终态原因、成本、findings 原文） | `xdrIngest.listConclusions()/getConclusion()` |
 | 配置 | 运行参数（轮询间隔 / 本机并发 / 单次领取条数）热更新并持久化；连接与凭据状态（NDR MCP 地址与令牌是否配置、门铃令牌、冷库类型、登录账号与密码来源、会话时长）；NDR 控制台与原始会话界面入口 | `xdrIngest.settings()/updateSettings()` + 部署环境缝 |
 | 系统 | 默认模型（provider / model / reasoningEffort）、DeepSeek 官方通道的接口地址与 Key；**自定义服务商**（任意 OpenAI/Anthropic 兼容网关：Kimi/GLM/MiniMax/自建反代，填 route + 协议 + BaseURL + 模型 + Key，保存即设为默认）；插件清单（只读）；原生设置入口 | 宿主机服务 `ctx.settings` / `ctx.credentials` / `ctx.loader` |
 
@@ -38,9 +38,11 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 | `{basePath}` | GET | 工作台页（未登录 303 → `{basePath}/login`） |
 | `{basePath}/login` | GET/POST | 登录页；POST 表单或 JSON `{user,password}`；成功 303 + Set-Cookie |
 | `{basePath}/logout` | POST | 清 Cookie，303 回登录页 |
-| `{basePath}/api/overview` | GET | `{available, status, cache}`（数据面不在场时 `available:false`） |
-| `{basePath}/api/analyses?limit&offset&q` | GET | `{available, total, entries[]}`，last_seen 降序，limit 钳制 1..200 |
+| `{basePath}/api/overview` | GET | `{available, status, cache, conclusions{available,total}}`（数据面不在场时 `available:false`） |
+| `{basePath}/api/analyses?limit&offset&q` | GET | 旧摘要契约的历史记录（回滚用；新架构下 NDR 不推摘要，这张表是空的）`{available, total, entries[]}` |
 | `{basePath}/api/analyses/{id}` | GET | `{entry}`（完整记录）；404 = 无此 ID |
+| `{basePath}/api/conclusions?limit&offset&q` | GET | 智能体交回的结论：`{available, total, entries[]}`，created_at 降序，limit 钳制 1..200 |
+| `{basePath}/api/conclusions/{id}` | GET | `{entry}`（含 findings / 证据引用 / 成本）；404 = 无此 ID |
 | `{basePath}/api/wake` | POST | `{accepted}`；分析循环未启用时 accepted=false |
 | `{basePath}/api/settings` | GET | `{available, settings{poll_seconds,max_concurrent,claim_limit,store}, meta{...}}`；数据面不在场 `available:false` |
 | `{basePath}/api/settings` | POST | JSON 补丁（三个整数字段）；越界/非整数 400，成功 `{ok,persisted,settings}`；数据面不在场 503 |

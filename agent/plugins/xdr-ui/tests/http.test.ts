@@ -11,6 +11,7 @@ const BASE = '/xdr/ui'
 
 function makeIngest(overrides: Partial<IngestServiceView> = {}): IngestServiceView {
   const views: Array<Record<string, unknown>> = []
+  const conclusions: Array<Record<string, unknown>> = []
   return {
     status: () => ({ analysis: 'enabled', poll_seconds: 900, max_concurrent: 2, loop: { polls: 3, claimed: 4, started: 4, running: 1, failedClaims: 0, doorbells: 5, droppedByConcurrency: 0, consecutiveErrors: 0, lastError: '' } }),
     cacheStats: async () => ({ hot: 10, cold: 20, analyzed: 5, reused: 9, reanalyzed: 2 }),
@@ -25,6 +26,37 @@ function makeIngest(overrides: Partial<IngestServiceView> = {}): IngestServiceVi
       }
     },
     getAnalysis: async id => views.find(view => view['analysisId'] === id) ?? null,
+    listConclusions: async query => {
+      const needles = conclusions.filter(
+        view => query.search === '' || JSON.stringify(view).toLowerCase().includes(query.search.toLowerCase()),
+      )
+      return {
+        total: needles.length,
+        entries: needles.slice(query.offset, query.offset + query.limit),
+      }
+    },
+    getConclusion: async id => conclusions.find(view => view['id'] === id) ?? null,
+    conclusionStats: async () => ({ available: true, total: conclusions.length }),
+  }
+}
+
+/** 一条结论（NDR 的 `analysis_results` 形状）。 */
+function conclusion(id: string): Record<string, unknown> {
+  return {
+    id,
+    taskId: 'task-1',
+    kind: 'hit',
+    subjectKind: 'ip',
+    subject: '203.0.113.7',
+    verdict: 'false_positive',
+    confidence: 0.86,
+    summary: '业务正常流量',
+    findings: { residual: '无' },
+    evidenceRefs: ['es:/ev:1'],
+    toolsUsed: 12,
+    durationMs: 4200,
+    terminalReason: 'concluded',
+    createdAt: '2026-10-28T02:00:00Z',
   }
 }
 
@@ -230,6 +262,48 @@ test('详情：命中返回完整记录；非法 ID 400', async () => {
 
     const missing = await fetch(`${base}${BASE}/api/analyses/EA-none`, { headers: { cookie } })
     assert.equal(missing.status, 404)
+  } finally {
+    server.close()
+  }
+})
+
+test('结论列表/详情：分析记录页读的是智能体交回的结论（NDR 写、同库只读）', async () => {
+  const ingest = makeIngest()
+  let called = 'none'
+  ingest.listConclusions = async query => {
+    called = JSON.stringify(query)
+    return { total: 1, entries: [conclusion('c-1')] }
+  }
+  ingest.getConclusion = async id => (id === 'c-1' ? conclusion('c-1') : null)
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    // 未登录一律 401
+    const anon = await fetch(`${base}${BASE}/api/conclusions`)
+    assert.equal(anon.status, 401)
+
+    // 钳制：limit>200 → 200；offset<0 → 0；搜索词透传
+    const list = await fetch(`${base}${BASE}/api/conclusions?limit=9999&offset=-5&q=203.0.113.7`, { headers: { cookie } })
+    assert.equal(list.status, 200)
+    assert.deepEqual(JSON.parse(called), { limit: 200, offset: 0, search: '203.0.113.7' })
+    const data = await list.json() as { total: number, entries: Array<Record<string, unknown>> }
+    assert.equal(data.total, 1)
+    assert.equal(data.entries[0]?.['verdict'], 'false_positive')
+    assert.equal(data.entries[0]?.['subject'], '203.0.113.7')
+
+    const detail = await fetch(`${base}${BASE}/api/conclusions/c-1`, { headers: { cookie } })
+    assert.equal(detail.status, 200)
+    const detailData = await detail.json() as { entry: Record<string, unknown> }
+    assert.equal(detailData.entry['subject'], '203.0.113.7')
+
+    const missing = await fetch(`${base}${BASE}/api/conclusions/c-none`, { headers: { cookie } })
+    assert.equal(missing.status, 404)
+
+    // 工作台页面确实读这个接口（分析记录页的数据源）
+    const page = await fetch(`${base}${BASE}/`, { headers: { cookie } })
+    const html = await page.text()
+    assert.ok(html.includes('/api/conclusions'))
   } finally {
     server.close()
   }

@@ -827,3 +827,74 @@ def test_claim_ordering_includes_fairness(queue_mod: Any) -> None:
     assert "func.least" in src, "缺少等待加成封顶"
     assert "20.0" in src, "加成上限应为 20 分"
     assert "created_at" in src
+
+
+# ===== ⑬ 延后必须真的挡住下一次领取（2026-10-28 线上事故）=====
+
+
+def test_deferred_task_is_not_reclaimable_before_its_lease(queue_mod: Any) -> None:
+    """`defer_task` 写的「下次可领时间」必须被领取查询尊重。
+
+    线上症状：同 3 个任务 ID 在日志里刷了 40 多次「未交回（state=claimed，已延后）」——
+    领取查询把 pending 与 deferred 一视同仁，延后形同虚设：领走 → 没交回 → 延后 →
+    立刻又被领走，反复重跑，白烧模型调用。
+    """
+    import re
+
+    src = inspect.getsource(queue_mod._pick)
+    assert 'AnalysisTask.state == "pending"' in src, "pending 必须单独判（随时可领）"
+    assert 'AnalysisTask.state == "deferred"' in src, "deferred 必须单独判（到期才可领）"
+    # deferred 分支里必须带租约判断
+    clause = re.search(
+        r'\(AnalysisTask\.state == "deferred"\)(.{0,240}?)\)\s*,', src, re.DOTALL
+    )
+    assert clause is not None, "找不到 deferred 的领取条件"
+    assert "lease_until" in clause.group(1), "deferred 必须等租约到期才能再领"
+    # 旧的「pending 与 deferred 一视同仁」写法不能再出现
+    assert 'state.in_(("pending", "deferred"))' not in src
+    # defer_task 必须写下次可领时间
+    assert "lease_until" in inspect.getsource(queue_mod.defer_task)
+
+
+def test_defer_writes_next_due_time(queue_mod: Any) -> None:
+    """延后要给出「下次可领时间」，否则界面与智能体都看不懂这条线索还要等多久。"""
+    src = inspect.getsource(queue_mod.defer_task)
+    assert "retry_after_seconds" in src
+    assert "next_due_at" in src
+
+
+# ===== ⑭ novelty 只派"反复出现"的对象（2026-10-28 队列洪水）=====
+
+
+def test_only_recurring_subjects_become_novelty_tasks(cand: Any) -> None:
+    """一次性对象不派 novelty。
+
+    线上症状：镜像口上的一次性连接（代理/NAT 的临时套接字）会造出海量
+    「第一次见到的服务端口」——实测一个采集窗口 25 万个，队列常年满、
+    真正值得看的新服务被挤掉（累计丢弃 1.5 万条线索）。
+    """
+    assert cand.is_recurring(1) is False, "只出现一次的对象不是新服务"
+    assert cand.is_recurring(2) is True, "跨窗口再现才算值得派工"
+    assert cand.is_recurring(37) is True
+    assert cand.is_recurring(0) is False
+    assert cand.is_recurring("坏数据") is False
+
+
+def test_novelty_hint_matches_the_recurring_rule(cand: Any) -> None:
+    """派工理由必须跟口径一致：不是「第一次见到」，而是「反复出现」。"""
+    src = inspect.getsource(cand._novelty_tasks)
+    assert "反复出现" in src, "hint 应说明对象是反复出现的"
+    assert "第一次见到该" not in src, "旧口径（第一次见到）已不成立"
+    assert "首次出现" in src, "首次出现时间要一并给出"
+
+
+def test_structure_clue_uses_a_snapshot_before_reset(cand: Any) -> None:
+    """结构线索的计数要在清空累积器之前留快照。
+
+    以前 `flush()` 先 `collector.reset()` 再算结构线索，计数已经被清空，
+    这条线索其实一直没产出过（开关默认关，问题被盖住了）。
+    """
+    src = inspect.getsource(cand.flush)
+    reset_at = src.index("collector.reset()")
+    snapshot_at = src.index("fail_events = dict(collector.fail_events)")
+    assert snapshot_at < reset_at, "快照必须早于 reset"
