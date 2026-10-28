@@ -186,6 +186,17 @@ INSERT INTO xdr_ingest_schema (version) VALUES (2) ON CONFLICT (version) DO NOTH
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_stages JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- 老部署的 settings 是单租户表（singleton），与现在的 project_id 结构不兼容：
+-- CREATE IF NOT EXISTS 不会改已有表，直接改名留档，再建新表（运行参数丢了会用默认值）。
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'xdr_ingest_settings' AND column_name = 'singleton'
+  ) THEN
+    ALTER TABLE xdr_ingest_settings RENAME TO xdr_ingest_settings_legacy;
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS xdr_ingest_settings (
   project_id TEXT PRIMARY KEY,
   value      JSONB NOT NULL,

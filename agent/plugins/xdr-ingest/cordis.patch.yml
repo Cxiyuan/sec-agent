@@ -25,6 +25,11 @@
         maxBodyBytes: 4194304
         resultTtlHours: 24
         pgUrl: !!js process.env.XDR_INGEST_PG_URL ?? ''
+        # 项目组织：授权ID（= NDR 的 8 位 ID）。留空 = 启动时调 server_info 自动取。
+        projectId: !!js process.env.XDR_PROJECT_ID ?? ''
+        projectName: !!js process.env.XDR_PROJECT_NAME ?? ''
+        # 告警 webhook（项目不可达/授权ID不一致/熔断时 POST JSON；留空 = 只写日志）
+        alertWebhookUrl: !!js process.env.XDR_ALERT_WEBHOOK_URL ?? ''
         hotMaxEntries: 5000
         hotThreshold: 2
         warmupLimit: 1000
