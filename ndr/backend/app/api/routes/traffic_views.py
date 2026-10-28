@@ -663,6 +663,9 @@ def traffic_ips(
                     "truncated": False,
                     "warning": "",
                     "note": "窗口内没有公网来源的访问",
+                    # 字段形状与正常返回一致：前端不用做"空结果是另一套结构"的兼容
+                    "geo_available": _geo_available(),
+                    "monitored_nets": [str(n) for n in _nets()],
                 }
             resp = _es().search(
                 index=settings.es_events_index,
