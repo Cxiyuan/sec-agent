@@ -323,6 +323,8 @@ export function apply(ctx: Context, config: Config): void {
     admin,
     sessions,
     storeOf,
+    // 全局并发上限（跨项目合计）：项目内还有各自的 maxConcurrent
+    maxConcurrentTotal: () => config.maxConcurrentTotal,
   })
 
   console.log(
