@@ -368,10 +368,11 @@ def _outbound_body(
     24 小时 1.8 万个 (源,目的) 对只取到 5000 个，资产数从 40 台掉到 1 台（2026-10 实测）。
     """
     should: list[dict[str, Any]] = []
+    # terms 过滤器一次塞太多值会拖慢查询；5 千个公网源已经覆盖超长窗口
     if peers:
-        should.append({"terms": {"src_ip.keyword": peers}})
+        should.append({"terms": {"src_ip.keyword": peers[:5000]}})
     if real_peers:
-        should.append({"terms": {"real_client_ip.keyword": real_peers}})
+        should.append({"terms": {"real_client_ip.keyword": real_peers[:5000]}})
     return {
         "size": 0,
         "query": {
@@ -652,6 +653,12 @@ def traffic_ips(
                 for b in ((aggs.get("real") or {}).get("buckets") or [])
                 if b.get("key") and is_public_ip(str(b.get("key")))
             ]
+            # terms 聚合只返回出现最多的 2 万个源 IP；更长窗口里"只出现一次"的公网源
+            # 可能被截断（sum_other_doc_count > 0）——这时如实标 truncated，不假装完整
+            peers_truncated = bool(
+                (aggs.get("src") or {}).get("sum_other_doc_count")
+                or (aggs.get("real") or {}).get("sum_other_doc_count")
+            )
             if not peers and not real_peers:
                 return {
                     "items": [],
@@ -681,6 +688,9 @@ def traffic_ips(
             log.warning("对外流量聚合失败: %s", exc)
             return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
         out = _outbound_rows(resp, limit=limit, minutes=minutes)
+        out["truncated"] = bool(out.get("truncated")) or peers_truncated
+        if peers_truncated and not out.get("note"):
+            out["note"] = "窗口内有大量只出现一次的来源地址，统计可能不完整（缩小时间范围可看全）"
         out.update({"view": view, "warning": shard_problem(resp)})
         return out
 

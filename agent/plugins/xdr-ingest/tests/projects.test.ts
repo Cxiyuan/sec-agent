@@ -197,7 +197,7 @@ test('时间线：工具调用/返回/思考/token/报错都投影出来，轮�
   const out = parseSessionLog(lines.map(line => JSON.stringify(line)).join('\n'), 's-1', { running: true })
   assert.equal(out.ok, true)
   assert.equal(out.running, true)
-  assert.deepEqual(out.tokens, { input: 100, output: 20, total: 120 })
+  assert.deepEqual(out.tokens, { input: 100, output: 20, total: 120, reported: true })
   assert.equal(out.tools[0]?.name, 'mcp__ndr__search_events')
   assert.equal(out.tools[0]?.count, 1)
   assert.equal(out.tools[0]?.totalMs, 500)
@@ -206,6 +206,23 @@ test('时间线：工具调用/返回/思考/token/报错都投影出来，轮�
   assert.equal(out.events[0]?.detail, '分析这条线索', '运行时上下文不该占时间线')
   assert.equal(out.events.find(event => event.kind === 'error')?.isError, true)
   assert.equal(out.nextSeq, 6)
+})
+
+test('时间线：会话日志没记 token 时 reported=false（界面显示"未上报"而不是 0）', () => {
+  const lines = [
+    { type: 'user/message', seq: 1, time: 1000, data: { content: [{ type: 'text', text: '任务' }] } },
+    { type: 'assistant/message', seq: 2, time: 1100, data: { message: { role: 'assistant', content: [{ type: 'text', text: '好' }] } } },
+  ]
+  const out = parseSessionLog(lines.map(line => JSON.stringify(line)).join('\n'), 's-9')
+  assert.equal(out.tokens.reported, false)
+  assert.deepEqual(out.events.map(e => e.kind), ['task', 'assistant'])
+
+  // 有些版本把 usage 挂在 message 上（snake_case 也要认）
+  const withUsage = [
+    { type: 'assistant/message', seq: 1, time: 1000, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, usage: { input_tokens: 30, output_tokens: 7 } } },
+  ]
+  const out2 = parseSessionLog(withUsage.map(line => JSON.stringify(line)).join('\n'), 's-9')
+  assert.deepEqual(out2.tokens, { input: 30, output: 7, total: 37, reported: true })
 })
 
 test('时间线：after 只回增量（实时轮询靠它，不重复渲染整段）', () => {

@@ -87,8 +87,10 @@ export function registerScriptTools(
   /** 每次调用都按会话解析一次（同一进程里可能同时有多个项目的会话在跑）。 */
   const pick = (exec: unknown): ScriptStore => {
     if (options.storeOf === undefined) return store
-    const sessionId = (exec as { agent?: { sessionId?: string } } | null | undefined)?.agent?.sessionId
-    return options.storeOf(sessionId)
+    // dsh 的 Agent 把会话标识暴露为 `agent.id`（ReactLoopAgent.id = SessionId）；
+    // 兼容其它实现里的 `sessionId`，两者都取不到才回落到默认项目。
+    const agent = (exec as { agent?: { id?: string, sessionId?: string } } | null | undefined)?.agent
+    return options.storeOf(agent?.id ?? agent?.sessionId)
   }
   try {
     disposers.push(ctx.tools.register(defineTool({

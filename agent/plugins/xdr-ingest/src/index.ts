@@ -35,6 +35,7 @@ import type { DataStore, ProjectInput } from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
 import { ProjectManager, SessionProjects } from './projects.ts'
+import { readSessionTimeline } from './session-timeline.ts'
 import type { ProjectRuntime } from './projects.ts'
 
 export type * from './types.ts'
@@ -302,7 +303,15 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   function storeFor(projectId?: string): DataStore {
-    return runtimeOf(projectId)?.store ?? memoryStore
+    const id = (projectId ?? '').trim().toUpperCase()
+    if (id !== '') {
+      const runtime = manager.get(id)
+      if (runtime !== null) return runtime.store
+      // 项目被停用/绑定不一致时也要能看历史数据：不能回落到内存（那会显示成"空的"）
+      if (registry !== null) return registry.get(id)
+      return memoryStore
+    }
+    return runtimeOf()?.store ?? memoryStore
   }
 
   /** 当前生效的运行参数（默认项目；没有运行时取配置默认）。 */
@@ -319,7 +328,7 @@ export function apply(ctx: Context, config: Config): void {
     const runtime = runtimeOf()
     const project = runtime?.project ?? null
     return {
-      analysis: runtime === null ? 'disabled' : 'enabled',
+      analysis: runtime !== null && runtime.running ? 'enabled' : 'disabled',
       ...settingsView(currentSettings()),
       store_kind: coldStore.kind,
       state_store_kind: registry === null ? 'memory' : 'postgres',
@@ -451,12 +460,11 @@ export function apply(ctx: Context, config: Config): void {
     },
     /** 分析过程：某个任务对应的会话时间线（DSH 会话日志只读）。 */
     processEvents: async (taskId: string, projectId?: string, after?: number) => {
-      const runtime = runtimeOf(projectId)
       const process = await storeFor(projectId).getProcess(taskId)
       if (process === null) return { ok: false, error: '没有这条分析过程' }
       if (process.sessionId === '') return { ok: false, error: '这条过程没有起会话（复用/抑制跳过）' }
-      if (runtime === null) return { ok: false, error: '项目未启用' }
-      return runtime.sessionTimeline(process.sessionId, {
+      // 直接读会话日志（不依赖该项目当前是否在跑）：停用/换绑后历史过程也要能回看
+      return readSessionTimeline(config.sessionDir, process.sessionId, {
         running: process.outcome === 'running',
         ...(after === undefined ? {} : { after }),
       })

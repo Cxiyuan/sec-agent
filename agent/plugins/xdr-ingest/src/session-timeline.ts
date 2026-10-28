@@ -35,7 +35,7 @@ export interface SessionTimeline {
   readonly updatedAt: string
   readonly events: readonly TimelineEvent[]
   readonly tools: readonly { readonly name: string; readonly count: number; readonly errors: number; readonly totalMs: number }[]
-  readonly tokens: { readonly input: number; readonly output: number; readonly total: number }
+  readonly tokens: { readonly input: number; readonly output: number; readonly total: number, readonly reported: boolean }
   readonly nextSeq: number
   readonly truncated: boolean
 }
@@ -95,6 +95,24 @@ function textOfContent(content: unknown): string {
   return parts.join('\n')
 }
 
+/** 一条 usage 对象 → 三个数（兼容 camelCase 与 Anthropic 的 snake_case）。 */
+function usageCounts(raw: unknown): { input: number, output: number, total: number } | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const row = raw as Record<string, unknown>
+  const pick = (...keys: string[]): number => {
+    for (const key of keys) {
+      const value = row[key]
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+    }
+    return 0
+  }
+  const input = pick('inputTokens', 'input_tokens', 'input')
+  const output = pick('outputTokens', 'output_tokens', 'output')
+  const total = pick('totalTokens', 'total_tokens', 'total') || input + output
+  if (input === 0 && output === 0 && total === 0) return null
+  return { input, output, total }
+}
+
 function reasoningOfContent(content: unknown): string {
   if (!Array.isArray(content)) return ''
   const parts: string[] = []
@@ -128,7 +146,7 @@ export async function readSessionTimeline(
     updatedAt: '',
     events: [],
     tools: [],
-    tokens: { input: 0, output: 0, total: 0 },
+    tokens: { input: 0, output: 0, total: 0, reported: false },
     nextSeq: options.after ?? 0,
     truncated: false,
   })
@@ -156,7 +174,7 @@ export function parseSessionLog(
   const after = Math.max(0, Number(options.after ?? 0))
   const events: TimelineEvent[] = []
   const tools = new Map<string, { name: string, count: number, errors: number, totalMs: number, openAt: number }>()
-  const tokens = { input: 0, output: 0, total: 0 }
+  const tokens = { input: 0, output: 0, total: 0, reported: false }
   let firstTime = 0
   let lastTime = 0
   let nextSeq = after
@@ -199,6 +217,15 @@ export function parseSessionLog(
     }
     if (type === 'assistant/message') {
       const message = (data['message'] ?? {}) as Record<string, unknown>
+      // 有些版本把 usage 直接挂在 message 上（不单独发 attempt 事件）
+      const fromMessage = usageCounts(data['usage']) ?? usageCounts(message['usage'])
+      if (fromMessage !== null) {
+        tokens.input += fromMessage.input
+        tokens.output += fromMessage.output
+        tokens.total += fromMessage.total
+        tokens.reported = true
+        push({ ...base, kind: 'usage', label: 'token 用量', detail: `输入 ${fromMessage.input} / 输出 ${fromMessage.output}`, tokens: fromMessage.total })
+      }
       const thinking = reasoningOfContent(message['content'])
       if (thinking !== '') push({ ...base, kind: 'thinking', label: '思考', detail: clip(thinking) })
       const text = textOfContent(message['content'])
@@ -240,14 +267,14 @@ export function parseSessionLog(
         const chunk = (item as { chunk?: Record<string, unknown> }).chunk
         if (chunk === undefined) continue
         if (chunk['type'] === 'usage') {
-          const usage = (chunk['usage'] ?? {}) as Record<string, unknown>
-          const input = Number(usage['inputTokens'] ?? 0) || 0
-          const output = Number(usage['outputTokens'] ?? 0) || 0
-          const total = Number(usage['totalTokens'] ?? 0) || input + output
-          tokens.input += input
-          tokens.output += output
-          tokens.total += total
-          push({ ...base, kind: 'usage', label: 'token 用量', detail: `输入 ${input} / 输出 ${output}`, tokens: total })
+          const counts = usageCounts(chunk['usage'])
+          if (counts !== null) {
+            tokens.input += counts.input
+            tokens.output += counts.output
+            tokens.total += counts.total
+            tokens.reported = true
+            push({ ...base, kind: 'usage', label: 'token 用量', detail: `输入 ${counts.input} / 输出 ${counts.output}`, tokens: counts.total })
+          }
         }
         if (chunk['type'] === 'finish') {
           const reason = (chunk['reason'] ?? {}) as Record<string, unknown>

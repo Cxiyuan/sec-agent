@@ -410,15 +410,6 @@ export class ProjectManager {
       return { ok: false, error: 'MCP 地址必须是 http(s) URL' }
     }
     const previous = (input.previousId ?? projectId).trim().toUpperCase()
-    if (previous !== projectId) {
-      // 改授权ID = 换项目：旧运行时先停掉（数据留在旧项目下，不迁）
-      const old = this.runtimes.get(previous)
-      if (old !== undefined) {
-        old.stop()
-        this.runtimes.delete(previous)
-      }
-      await this.admin.removeProject(previous).catch(() => false)
-    }
     const existing = await this.admin.getProject(projectId).catch(() => null)
     const project = await this.admin.upsertProject({
       projectId,
@@ -429,6 +420,15 @@ export class ProjectManager {
       enabled: input.enabled ?? existing?.enabled ?? true,
     })
     if (project === null) return { ok: false, error: '保存项目失败（数据库不可用）' }
+    if (previous !== projectId) {
+      // 改授权ID = 换项目：新行落库成功后再停旧的（数据留在旧项目下，不迁）
+      const old = this.runtimes.get(previous)
+      if (old !== undefined) {
+        old.stop()
+        this.runtimes.delete(previous)
+      }
+      await this.admin.removeProject(previous).catch(() => false)
+    }
     // 旧令牌解绑（换令牌后旧令牌不能再路由）
     for (const [token, id] of this.tokenIndex) {
       if (id === projectId && token !== project.pushToken) this.tokenIndex.delete(token)
