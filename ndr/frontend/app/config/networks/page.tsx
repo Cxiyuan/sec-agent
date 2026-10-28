@@ -13,7 +13,7 @@ export default function NetworksPage() {
     <PageShell
       title="监控网段"
       width="wide"
-      desc="网络采集器只抓这些网段内的流量，检测也只分析它们。改动会同时更新抓包过滤器与本地网段定义。注意：这份清单只约束网络采集器抓包，不影响主机监控采到的主机日志。"
+      desc="网络采集器只抓这些网段内的流量，检测也只分析它们。改动会同时更新抓包过滤器与本地网段定义。"
     >
       <ZeekPanel section="networks" />
       <RelayNodesPanel />

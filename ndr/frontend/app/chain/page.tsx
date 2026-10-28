@@ -165,7 +165,7 @@ function ChainInner() {
               checked={suspiciousOnly}
               onChange={(e) => setSuspiciousOnly(e.target.checked)}
             />
-            只看可疑（签名命中 / 可疑事件类型 / 4xx-5xx / 带上传）
+            只看可疑（特征匹配(签名) / 可疑事件类型 / 4xx-5xx / 带上传）
           </label>
           <Input
             aria-label="真实请求IP / 中继 / 源站"

@@ -297,7 +297,7 @@ export interface RuleItem {
   source_label: string;
   enabled: boolean;
   priority: number;
-  /** 适用范围：network = 网络侧（网络采集器）、host = 主机侧（主机监控）；内置规则由后端按条件自动判定 */
+  /** 适用范围：network = 网络侧（网络采集器）、host = 主机侧；内置主机规则已全部下线，host 仅为历史自定义规则保留 */
   scope: string;
 }
 
@@ -700,9 +700,8 @@ export interface DetectorCoverage {
 }
 
 /**
- * `GET /api/detector/recent` 里的一条命中摘要。
+ * `GET /api/detector/hits`（列表）/ `GET /api/detector/hits/{id}`（详情）里的一条命中。
  *
- * 由检测器写进 Redis（不依赖推送地址），是「哪条规则、打了谁、多少次」的唯一现场出口。
  * 时间字段是北京时间展示，后端存的是 UTC ISO。
  */
 export interface HitEventItem {
