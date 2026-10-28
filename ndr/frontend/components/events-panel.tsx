@@ -168,8 +168,8 @@ const IP_COLUMNS: Array<{
   {
     key: "agent",
     label: "智能体结论",
-    headCls: "w-[8rem]",
-    cellCls: "",
+    headCls: "w-[14rem]",
+    cellCls: "min-w-0",
   },
   { key: "severity", label: "严重度", headCls: "w-[5rem]", cellCls: "" },
   { key: "hits", label: "命中次数", headCls: "w-[5rem] text-right", cellCls: "text-right tabular-nums" },
@@ -295,24 +295,42 @@ function renderIpCell(key: string, row: IpAggRow): React.ReactNode {
       ) : (
         <span className="text-muted-foreground">—</span>
       );
-    case "agent":
-      // 智能体结论是判定权威来源（NDR 规则判定只是初判）：有结论亮结论徽章，
-      // 整个 IP 都还没结论显示「—」，不要给红色或灰色误导性空徽章
-      return row.agentStatuses.length ? (
-        <span
-          className="flex flex-wrap items-center gap-1"
-          title={row.agentStatuses.map((s) => agentVerdictText(s)).join(" / ")}
-        >
-          {row.agentStatuses.slice(0, 3).map((s) => (
-            <React.Fragment key={s}>{agentVerdictBadge(s)}</React.Fragment>
-          ))}
-          {row.agentStatuses.length > 3 ? (
-            <span className="text-xs text-muted-foreground">等 {row.agentStatuses.length} 种</span>
+    case "agent": {
+      // 智能体结论是判定权威来源（NDR 规则判定只是初判）：徽章给结论态，
+      // 摘要正文给智能体的分析内容本身——这一列读的是「智能体说了什么」，
+      // 而不只是规则命中描述。整个 IP 都没结论时显示「—」，不给误导性空徽章。
+      if (!row.agentStatuses.length && !row.latestAgentSummary) {
+        return (
+          <span className="text-muted-foreground" title="智能体尚未返回结论">
+            —
+          </span>
+        );
+      }
+      return (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          {row.agentStatuses.length ? (
+            <span
+              className="flex flex-wrap items-center gap-1"
+              title={row.agentStatuses.map((s) => agentVerdictText(s)).join(" / ")}
+            >
+              {row.agentStatuses.slice(0, 3).map((s) => (
+                <React.Fragment key={s}>{agentVerdictBadge(s)}</React.Fragment>
+              ))}
+              {row.agentStatuses.length > 3 ? (
+                <span className="text-xs text-muted-foreground">
+                  等 {row.agentStatuses.length} 种
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+          {row.latestAgentSummary ? (
+            <span className="block truncate text-13" title={row.latestAgentSummary}>
+              {row.latestAgentSummary}
+            </span>
           ) : null}
         </span>
-      ) : (
-        <span className="text-muted-foreground">—</span>
       );
+    }
     case "severity":
       // 判定权威在智能体：有 agent_severity 显示智能体严重度，否则回退检测器 severity，
       // 悬停注明是「NDR 初判」还是「智能体结论」，两种口径在界面上分得开
@@ -1120,6 +1138,24 @@ export function EventsPanel() {
                         </span>
                       </p>
                     </div>
+                    {/* 智能体结论概览（判定权威来源）：该 IP 最近一条智能体分析正文 */}
+                    {ipSummary.latestAgentSummary ? (
+                      <div className="mt-2 rounded-xs bg-surface-2 px-3 py-2">
+                        <p className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-medium">智能体结论（最新）</span>
+                          {ipSummary.agentStatuses.map((s) => (
+                            <React.Fragment key={s}>{agentVerdictBadge(s)}</React.Fragment>
+                          ))}
+                        </p>
+                        <p className="whitespace-pre-wrap break-words text-xs">
+                          {ipSummary.latestAgentSummary}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        智能体尚未返回结论；以上严重度为 NDR 初判。
+                      </p>
+                    )}
                   </div>
                 ) : null}
 

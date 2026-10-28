@@ -317,6 +317,10 @@ export interface IpAggRow {
   maxSeverity: string;
   /** 该 IP 下出现过的智能体结论（去重、首现顺序；空 = 都还没有结论） */
   agentStatuses: string[];
+  /** 最近更新的智能体结论摘要正文（判定权威的分析内容，列表直接展示；"" = 无） */
+  latestAgentSummary: string;
+  /** 上条摘要的结论更新时间（ISO 字符串，用于挑「最新」一条；"" = 无） */
+  latestAgentUpdatedAt: string;
   /** 展示口径的严重度：每条事件取 agent_severity ?? severity 后的最高档 */
   effectiveMaxSeverity: string;
   /** 最高档严重度是否来自智能体结论（false = 回退 NDR 初判，界面 title 注明） */
@@ -339,6 +343,8 @@ interface IpAggBuilder {
   severities: string[];
   maxSeverity: string;
   agentStatuses: string[];
+  latestAgentSummary: string;
+  latestAgentUpdatedAt: string;
   effectiveMaxSeverity: string;
   maxAgentSeverity: string;
   totalHits: number;
@@ -381,6 +387,8 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
         severities: [],
         maxSeverity: it.severity || "",
         agentStatuses: [],
+        latestAgentSummary: "",
+        latestAgentUpdatedAt: "",
         effectiveMaxSeverity: it.agent_severity || it.severity || "",
         maxAgentSeverity: it.agent_severity || "",
         totalHits: 0,
@@ -404,6 +412,16 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
     // 并记住最高档是不是智能体给的（决定界面 title 写「NDR 初判」还是「智能体结论」）
     if (it.agent_status && !b.agentStatuses.includes(it.agent_status)) {
       b.agentStatuses.push(it.agent_status);
+    }
+    // 智能体结论的正文（判定权威的分析内容）：保留更新时间最新的那条，
+    // 列表「智能体结论」列直接展示它——主体读的是智能体说了什么，不是规则命中描述
+    if (
+      it.agent_summary &&
+      it.agent_updated_at &&
+      it.agent_updated_at >= b.latestAgentUpdatedAt
+    ) {
+      b.latestAgentSummary = it.agent_summary;
+      b.latestAgentUpdatedAt = it.agent_updated_at;
     }
     const effSev = it.agent_severity || it.severity || "";
     if (SEV_RANK[effSev] > SEV_RANK[b.effectiveMaxSeverity]) {
@@ -429,6 +447,8 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
       severities: b.severities,
       maxSeverity: b.maxSeverity,
       agentStatuses: b.agentStatuses,
+      latestAgentSummary: b.latestAgentSummary,
+      latestAgentUpdatedAt: b.latestAgentUpdatedAt,
       effectiveMaxSeverity: b.effectiveMaxSeverity,
       sevFromAgent: !!b.maxAgentSeverity && SEV_RANK[b.maxAgentSeverity] >= SEV_RANK[b.effectiveMaxSeverity],
       totalHits: b.totalHits,
