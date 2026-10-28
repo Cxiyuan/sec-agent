@@ -741,6 +741,21 @@ export interface HitEventItem {
   ignored_at?: string;
   ignored_reason?: string;
   whitelist_id?: string;
+  /**
+   * 智能体分析结论（判定权威来源，NDR 规则判定只是初判）。null/缺失 = 智能体尚未返回结论，
+   * 界面回退显示 NDR 初判。status 词表见后端 `analysis/verdicts.py`：
+   * true_positive/false_positive/benign/suspicious/inconclusive/pending/done；
+   * severity 词表 info/low/medium/high/critical。
+   */
+  agent_status?: string | null;
+  agent_severity?: string | null;
+  /** 列表场景后端截断到 200 字符；全文看详情接口 */
+  agent_summary?: string | null;
+  agent_updated_at?: string | null;
+  /** 详情才有：结论结构化明细（dict，key-value 渲染） */
+  agent_detail?: Record<string, unknown> | null;
+  /** 详情才有：本次调查的智能体会话 ID */
+  agent_thread_id?: string | null;
   /** 详情才有：样例事件的关键字段（时间/类型/URI/UA/状态码/账号…） */
   evidence?: Array<Record<string, unknown>>;
   error?: string;

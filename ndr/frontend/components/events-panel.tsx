@@ -28,6 +28,7 @@ import {
   TableSkeleton,
   apiFetch,
   ApiError,
+  agentVerdictText,
   cn,
   errorText,
   formatClock,
@@ -46,6 +47,7 @@ import {
   SRC,
   actionErrorText,
   aggregateByIp,
+  agentVerdictBadge,
   bodyErrorText,
   buildHitsQuery,
   buildIpEventsQuery,
@@ -163,6 +165,12 @@ const IP_COLUMNS: Array<{
     cellCls: "min-w-0 max-w-[22rem]",
   },
   { key: "sources", label: "来源", headCls: "w-[8rem]", cellCls: "" },
+  {
+    key: "agent",
+    label: "智能体结论",
+    headCls: "w-[8rem]",
+    cellCls: "",
+  },
   { key: "severity", label: "严重度", headCls: "w-[5rem]", cellCls: "" },
   { key: "hits", label: "命中次数", headCls: "w-[5rem] text-right", cellCls: "text-right tabular-nums" },
   {
@@ -287,8 +295,31 @@ function renderIpCell(key: string, row: IpAggRow): React.ReactNode {
       ) : (
         <span className="text-muted-foreground">—</span>
       );
+    case "agent":
+      // 智能体结论是判定权威来源（NDR 规则判定只是初判）：有结论亮结论徽章，
+      // 整个 IP 都还没结论显示「—」，不要给红色或灰色误导性空徽章
+      return row.agentStatuses.length ? (
+        <span
+          className="flex flex-wrap items-center gap-1"
+          title={row.agentStatuses.map((s) => agentVerdictText(s)).join(" / ")}
+        >
+          {row.agentStatuses.slice(0, 3).map((s) => (
+            <React.Fragment key={s}>{agentVerdictBadge(s)}</React.Fragment>
+          ))}
+          {row.agentStatuses.length > 3 ? (
+            <span className="text-xs text-muted-foreground">等 {row.agentStatuses.length} 种</span>
+          ) : null}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      );
     case "severity":
-      return severityBadge(row.maxSeverity);
+      // 判定权威在智能体：有 agent_severity 显示智能体严重度，否则回退检测器 severity，
+      // 悬停注明是「NDR 初判」还是「智能体结论」，两种口径在界面上分得开
+      return severityBadge(
+        row.effectiveMaxSeverity,
+        row.sevFromAgent ? "智能体结论严重度" : "NDR 初判（智能体尚未给出严重度）",
+      );
     case "hits":
       return row.totalHits;
     case "events":
@@ -876,7 +907,7 @@ export function EventsPanel() {
           <Card>
             <CardContent className="p-0" aria-busy={loading || undefined}>
               {firstLoad ? (
-                <TableSkeleton rows={10} cols={7} />
+                <TableSkeleton rows={10} cols={8} />
               ) : aggRows.length ? (
                 <Table>
                   <TableHeader>
@@ -902,7 +933,7 @@ export function EventsPanel() {
                             void openIp(row);
                           }
                         }}
-                        aria-label={`主机 ${row.ip}，${severityText(row.maxSeverity)}，共 ${row.totalHits} 次命中、${row.eventCount} 个事件，点开看该 IP 的全部命中`}
+                        aria-label={`主机 ${row.ip}，${severityText(row.effectiveMaxSeverity)}，共 ${row.totalHits} 次命中、${row.eventCount} 个事件，点开看该 IP 的全部命中`}
                       >
                         <TableCell className="w-10 select-none text-center tabular-nums text-muted-foreground">
                           {offset + i + 1}
@@ -1033,7 +1064,12 @@ export function EventsPanel() {
                       </p>
                       <p className="flex gap-1">
                         <span className="shrink-0 text-muted-foreground">最高严重度：</span>
-                        {severityBadge(ipSummary.maxSeverity)}
+                        {severityBadge(
+                          ipSummary.effectiveMaxSeverity,
+                          ipSummary.sevFromAgent
+                            ? "智能体结论严重度"
+                            : "NDR 初判（智能体尚未给出严重度）",
+                        )}
                       </p>
                       <p className="flex gap-1">
                         <span className="shrink-0 text-muted-foreground">总命中次数：</span>
@@ -1125,7 +1161,14 @@ export function EventsPanel() {
                             <span className="min-w-0 flex-1 truncate text-13" title={ruleText(ev.rule)}>
                               {ruleText(ev.rule) || "—"}
                             </span>
-                            {severityBadge(ev.severity)}
+                            {/* 智能体结论是判定权威来源：有结论先亮结论徽章，紧跟严重度 */}
+                            {agentVerdictBadge(ev.agent_status)}
+                            {severityBadge(
+                              ev.agent_severity || ev.severity,
+                              ev.agent_severity
+                                ? "智能体结论严重度"
+                                : "NDR 初判（智能体尚未给出严重度）",
+                            )}
                             <span className="shrink-0 text-13 tabular-nums text-muted-foreground">
                               {fmt(ev.count)}
                             </span>
@@ -1169,6 +1212,61 @@ export function EventsPanel() {
                                         </span>
                                       </p>
                                     ))}
+                                  </div>
+                                  {/* 智能体分析结论（判定权威来源）：无结论给轻量空态，不用错误样式 */}
+                                  <div>
+                                    <p className="mb-2 text-13 font-medium">智能体分析结论</p>
+                                    {expanded.agent_status || expanded.agent_summary ? (
+                                      <div className="space-y-2 rounded-xs bg-surface-2 px-3 py-2">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {agentVerdictBadge(expanded.agent_status) ?? (
+                                            <span className="text-xs text-muted-foreground">
+                                              未给出结论状态
+                                            </span>
+                                          )}
+                                          {expanded.agent_severity
+                                            ? severityBadge(
+                                                expanded.agent_severity,
+                                                "智能体结论严重度",
+                                              )
+                                            : null}
+                                          {expanded.agent_updated_at ? (
+                                            <span className="text-xs text-muted-foreground">
+                                              分析时间 {formatDateTime(expanded.agent_updated_at)}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        {expanded.agent_summary ? (
+                                          <p className="whitespace-pre-wrap break-words text-xs">
+                                            {expanded.agent_summary}
+                                          </p>
+                                        ) : null}
+                                        {expanded.agent_detail &&
+                                        Object.keys(expanded.agent_detail).length ? (
+                                          <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+                                            {Object.entries(expanded.agent_detail).map(
+                                              ([k, v]) => (
+                                                <div key={k} className="flex gap-1 text-xs">
+                                                  <span className="shrink-0 text-muted-foreground">
+                                                    {k}：
+                                                  </span>
+                                                  <span className="min-w-0 break-all font-mono">
+                                                    {typeof v === "string" ? v : JSON.stringify(v)}
+                                                  </span>
+                                                </div>
+                                              ),
+                                            )}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ) : (
+                                      <EmptyState
+                                        size="compact"
+                                        tone="muted"
+                                        title="智能体尚未返回结论"
+                                        hint="结论由智能体分析后写回；当前严重度为 NDR 初判。"
+                                      />
+                                    )}
                                   </div>
                                   <div>
                                     <p className="mb-2 text-13 font-medium">事件内容</p>

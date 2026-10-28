@@ -59,6 +59,57 @@ export function severityText(severity?: string | null): string {
 }
 
 /**
+ * 智能体结论词表 → 中文（后端唯一事实来源：`ndr/backend/app/analysis/verdicts.py`）。
+ *
+ * 智能体经 MCP `record_conclusion` 写回的 `status` 是判定的**权威来源**——
+ * NDR 规则判定只是初判。`done` 是流程态（智能体没给明确判定时的默认值），不算结论，
+ * 但界面上仍要能显示（不然「只写 summary 不写 status」的回写就没法看）。
+ */
+export const AGENT_VERDICT_LABEL: Record<string, string> = {
+  true_positive: "确认攻击",
+  false_positive: "误报",
+  benign: "正常",
+  suspicious: "可疑",
+  inconclusive: "无法定性",
+  pending: "分析中",
+  done: "已完成",
+};
+
+/** 智能体结论 → 中文（未知值原样返回，空值返回空串——调用方按「不显示徽章」处理） */
+export function agentVerdictText(status?: string | null): string {
+  const key = String(status || "").toLowerCase();
+  if (!key) return "";
+  return AGENT_VERDICT_LABEL[key] ?? String(status);
+}
+
+/**
+ * 智能体结论 → 徽章配色：确认攻击=红、可疑=橙、误报=中性描边、正常=绿、
+ * 流程态（无法定性/分析中/已完成）=蓝或中性。空值/未知值返回 null，
+ * 调用方拿到 null 就不渲染徽章（不要自作主张给灰色——「没有结论」和「结论中性」是两件事）。
+ */
+export function agentVerdictVariant(
+  status?: string | null,
+): "critical" | "high" | "outline" | "success" | "info" | null {
+  switch (String(status || "").toLowerCase()) {
+    case "true_positive":
+      return "critical";
+    case "suspicious":
+      return "high";
+    case "false_positive":
+      return "outline";
+    case "benign":
+      return "success";
+    case "inconclusive":
+    case "pending":
+      return "info";
+    case "done":
+      return "outline";
+    default:
+      return null;
+  }
+}
+
+/**
  * 规则名 → 展示名。
  *
  * 早期版本的检测器会把来源写进规则名（`内置-高频扫描连接`），库里那批历史命中

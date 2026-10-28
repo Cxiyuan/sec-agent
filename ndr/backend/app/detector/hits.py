@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import String, case, cast, func, or_, select
 
 from app.db.base import SessionLocal
-from app.db.models import HitEvent
+from app.db.models import ConclusionRecord, HitEvent
 from app.detector import clustering
 from app.ingestion.log_types import EVENT_TYPE_LABELS
 from app.workers.log import get_logger
@@ -265,7 +265,79 @@ def _evidence(digest: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+#: 列表场景 `agent_summary` 截断到多少字符（全文在详情里看）
+_AGENT_SUMMARY_MAX = 200
+
+
+def _conclusion_keys_of(row: HitEvent) -> list[str]:
+    """hit 行 → 结论归属键候选（与 `mcp/ndr_tools._record_conclusion` 的 dedup_key 同规则）。
+
+    `dedup_key = (event_id or fingerprint)[:64]`：对命中事件而言 event_id 就是本表主键
+    `id`（智能体经 `search_hits` 拿到的就是它）。`HitEvent` 没有 fingerprint 列
+    （指纹只活在摘要/EventGroup 层），所以候选键就一个；智能体只按指纹记结论时
+    匹配不上，界面按「无结论」处理（字段为 null）。
+    """
+    event_id = str(row.id or "").strip()[:64]
+    return [event_id] if event_id else []
+
+
+def _agent_conclusion_map(rows: list[HitEvent]) -> dict[str, ConclusionRecord]:
+    """一次 `IN` 批量取本页命中的智能体结论，映射 ``dedup_key → 记录``。
+
+    为什么批量：每行单独查一次就是 N+1（一页 200 条 = 200 次 SQL）。
+    `dedup_key` 唯一且 hit 主键唯一，一个 hit 至多命中一条记录，不会串行。
+    读失败按「无结论」处理（返回空表），不能因为结论表挂了把整个事件列表拖垮。
+    """
+    keys: list[str] = []
+    for row in rows:
+        for key in _conclusion_keys_of(row):
+            if key and key not in keys:
+                keys.append(key)
+    if not keys:
+        return {}
+    try:
+        with SessionLocal() as db:
+            records = list(
+                db.scalars(
+                    select(ConclusionRecord).where(ConclusionRecord.dedup_key.in_(keys))
+                ).all()
+            )
+    except Exception as exc:  # noqa: BLE001 — 结论读失败只丢结论字段，不影响事件本身
+        log.warning("读智能体结论失败: %s", exc)
+        return {}
+    return {r.dedup_key: r for r in records}
+
+
+def _agent_fields(rec: ConclusionRecord | None, *, detail: bool = False) -> dict[str, Any]:
+    """一条 ConclusionRecord → 平铺的 `agent_*` 字段（无记录全 null）。"""
+    if rec is None:
+        fields: dict[str, Any] = {
+            "agent_status": None,
+            "agent_severity": None,
+            "agent_summary": None,
+            "agent_updated_at": None,
+        }
+        if detail:
+            fields["agent_detail"] = None
+            fields["agent_thread_id"] = None
+        return fields
+    summary = str(rec.summary or "")
+    if len(summary) > _AGENT_SUMMARY_MAX:
+        summary = summary[:_AGENT_SUMMARY_MAX] + "…"
+    fields = {
+        "agent_status": str(rec.status or ""),
+        "agent_severity": str(rec.severity or "") or None,
+        "agent_summary": summary or None,
+        "agent_updated_at": rec.updated_at.isoformat() if rec.updated_at else None,
+    }
+    if detail:
+        fields["agent_detail"] = dict(rec.detail or {}) if isinstance(rec.detail, dict) else {}
+        fields["agent_thread_id"] = str(rec.thread_id or "") or None
+    return fields
+
+
 def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[str, Any]]:
+    conclusions = _agent_conclusion_map(rows)
     out: list[dict[str, Any]] = []
     for row in rows:
         item: dict[str, Any] = {
@@ -304,6 +376,11 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "ignored_at": row.ignored_at.isoformat() if row.ignored_at else "",
             "ignored_reason": row.ignored_reason or "",
             "whitelist_id": row.whitelist_id or "",
+            # 智能体分析结论（判定权威来源；无记录为 null，界面回退显示 NDR 初判）
+            **_agent_fields(
+                next((conclusions.get(k) for k in _conclusion_keys_of(row) if k in conclusions), None),
+                detail=detail,
+            ),
         }
         if detail:
             # 读时再去一次重：老记录的证据是写入时定格的，可能有同事件的重复文档

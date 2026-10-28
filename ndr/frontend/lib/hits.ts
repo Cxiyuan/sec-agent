@@ -1,5 +1,14 @@
 import * as React from "react";
-import { ApiError, Badge, formatDateTime, ruleText, severityText, severityVariant } from "@shentong/ui";
+import {
+  agentVerdictText,
+  agentVerdictVariant,
+  ApiError,
+  Badge,
+  formatDateTime,
+  ruleText,
+  severityText,
+  severityVariant,
+} from "@shentong/ui";
 import type {
   HitEventItem,
   HitEventList,
@@ -216,10 +225,19 @@ export function eventTime(value: unknown): string {
  *  运营中心原来自己维护了一份 `{critical:"紧急", info:"提示"}`，和共享库的
  *  `{critical:"严重", info:"信息"}` 不一致 —— 同一条告警在总览页叫"紧急"、
  *  在规则页叫"严重"，运维对不上话。迁移时连同这条注释一起保留。
- *  （本文件是 .ts：用 createElement 而不是 JSX，避免为这一个徽章把文件改成 .tsx。） */
-export function severityBadge(sev: string): React.ReactElement {
+ *  （本文件是 .ts：用 createElement 而不是 JSX，避免为这一个徽章把文件改成 .tsx。）
+ *  `title`：悬停备注（如回退 NDR 初判时注明来源），不传不带。 */
+export function severityBadge(sev: string, title?: string): React.ReactElement {
   const key = (sev || "info").toLowerCase();
-  return React.createElement(Badge, { variant: severityVariant(key) }, severityText(key));
+  return React.createElement(Badge, { variant: severityVariant(key), title }, severityText(key));
+}
+
+/** 智能体结论徽章：中文与配色走共享库 `agentVerdictText` / `agentVerdictVariant`。
+ *  无结论（variant 为 null）返回 null —— 调用方渲染「—」或空态，不渲染空徽章。 */
+export function agentVerdictBadge(status: string | null | undefined): React.ReactElement | null {
+  const variant = agentVerdictVariant(status);
+  if (!variant) return null;
+  return React.createElement(Badge, { variant }, agentVerdictText(status));
 }
 
 // ---------- 处置消息文案（体验规范 §6.4 逐字） ----------
@@ -297,6 +315,12 @@ export interface IpAggRow {
   ruleCounts: Array<[string, number]>;
   severities: string[];
   maxSeverity: string;
+  /** 该 IP 下出现过的智能体结论（去重、首现顺序；空 = 都还没有结论） */
+  agentStatuses: string[];
+  /** 展示口径的严重度：每条事件取 agent_severity ?? severity 后的最高档 */
+  effectiveMaxSeverity: string;
+  /** 最高档严重度是否来自智能体结论（false = 回退 NDR 初判，界面 title 注明） */
+  sevFromAgent: boolean;
   totalHits: number;
   eventCount: number;
   firstSeen: string;
@@ -314,6 +338,9 @@ interface IpAggBuilder {
   rules: Map<string, number>;
   severities: string[];
   maxSeverity: string;
+  agentStatuses: string[];
+  effectiveMaxSeverity: string;
+  maxAgentSeverity: string;
   totalHits: number;
   eventCount: number;
   firstSeen: string;
@@ -353,6 +380,9 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
         rules: new Map(),
         severities: [],
         maxSeverity: it.severity || "",
+        agentStatuses: [],
+        effectiveMaxSeverity: it.agent_severity || it.severity || "",
+        maxAgentSeverity: it.agent_severity || "",
         totalHits: 0,
         eventCount: 0,
         firstSeen: it.first_seen,
@@ -370,6 +400,18 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
     bump(b.rules, [it.rule], it.count);
     if (it.severity && !b.severities.includes(it.severity)) b.severities.push(it.severity);
     if (SEV_RANK[it.severity || ""] > SEV_RANK[b.maxSeverity]) b.maxSeverity = it.severity;
+    // 智能体结论：收集去重；展示严重度取 agent_severity ?? severity 的最高档，
+    // 并记住最高档是不是智能体给的（决定界面 title 写「NDR 初判」还是「智能体结论」）
+    if (it.agent_status && !b.agentStatuses.includes(it.agent_status)) {
+      b.agentStatuses.push(it.agent_status);
+    }
+    const effSev = it.agent_severity || it.severity || "";
+    if (SEV_RANK[effSev] > SEV_RANK[b.effectiveMaxSeverity]) {
+      b.effectiveMaxSeverity = effSev;
+    }
+    if (it.agent_severity && SEV_RANK[it.agent_severity] > SEV_RANK[b.maxAgentSeverity]) {
+      b.maxAgentSeverity = it.agent_severity;
+    }
     if (it.last_seen > b.lastSeen) b.lastSeen = it.last_seen;
     if (it.first_seen < b.firstSeen) b.firstSeen = it.first_seen;
     if (it.ignored) b.ignored += 1;
@@ -386,6 +428,9 @@ export function aggregateByIp(items: HitEventItem[]): IpAggRow[] {
       ruleCounts: toRanked(b.rules),
       severities: b.severities,
       maxSeverity: b.maxSeverity,
+      agentStatuses: b.agentStatuses,
+      effectiveMaxSeverity: b.effectiveMaxSeverity,
+      sevFromAgent: !!b.maxAgentSeverity && SEV_RANK[b.maxAgentSeverity] >= SEV_RANK[b.effectiveMaxSeverity],
       totalHits: b.totalHits,
       eventCount: b.eventCount,
       firstSeen: b.firstSeen,
