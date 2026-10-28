@@ -517,6 +517,14 @@ export function apply(ctx: Context, config: Config): void {
       egressDays: config.egressRetentionDays,
       taskSeenDays: DEFAULT_RETENTION.taskSeenDays,
     }),
+    listObservations: async (query: {
+      kind: string, subject: string, minutes: number, limit: number, offset: number, project?: string,
+    }) => {
+      const runtime = runtimeOf(query.project)
+      if (runtime === null) return { available: false, total: 0, items: [] }
+      const result = await runtime.listObservations(query)
+      return { available: result['available'] !== false, total: Number(result['total'] ?? 0), items: result['items'] ?? [] }
+    },
     /** 工作流模版（全局）：列表/保存/启停/删除 + 项目引用。 */
     workflows: () => (admin ?? memoryStore).listWorkflows(),
     saveWorkflow: (body: unknown) => (admin ?? memoryStore).upsertWorkflow(

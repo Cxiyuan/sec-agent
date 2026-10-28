@@ -50,6 +50,23 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
     this.caller = caller as ToolCaller
   }
 
+  /** 行为基线事实（MCP 工具 list_observations）；失败返回空表，控制台降级展示。 */
+  async listObservations(query: {
+    kind?: string, subject?: string, minutes?: number, limit?: number, offset?: number,
+  }): Promise<Record<string, unknown>> {
+    try {
+      return await this.caller.callTool('list_observations', {
+        kind: query.kind ?? '',
+        subject: query.subject ?? '',
+        minutes: query.minutes ?? 1440,
+        limit: query.limit ?? 50,
+        offset: query.offset ?? 0,
+      })
+    } catch (error) {
+      return { available: false, total: 0, items: [], error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   async claimTasks(limit: number): Promise<ClaimReply> {
     try {
       const reply = await this.caller.callTool('claim_tasks', { limit })

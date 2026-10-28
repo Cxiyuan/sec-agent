@@ -18,7 +18,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from app.baseline import observations, params, profile as profiles
+from app.baseline import egress, observations, params, profile as profiles
 from app.baseline.asset import (
     apply_window as assets_apply_window,
     cleanup as assets_cleanup,
@@ -463,6 +463,9 @@ class BaselineEngine:
             self._flush_assets()
         if now - self._last_cleanup >= max(60, int(params.cleanup_seconds())):
             self._last_cleanup = now
+            # 事实与外连基线的保留期（NDR 自己的表；agent 侧清理不到）
+            observations.cleanup(30)
+            egress.cleanup(90)
             if params.profile_enabled():
                 result = profiles.cleanup()
                 if result.get("deleted") or result.get("pruned"):

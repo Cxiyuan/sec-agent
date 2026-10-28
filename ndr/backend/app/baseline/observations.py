@@ -119,6 +119,19 @@ def emit(
         return False
 
 
+def cleanup(days: int = 30) -> int:
+    """删除超过保留期的事实（默认 30 天；由基线的定时清理调用）。"""
+    cutoff = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    try:
+        with SessionLocal() as db:
+            rows = db.query(Observation).filter(Observation.last_seen < cutoff).delete()
+            db.commit()
+            return int(rows or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("清理观察事实失败：%s", exc)
+        return 0
+
+
 def list_observations(
     *,
     kind: str = "",

@@ -474,6 +474,14 @@ export class ProjectRuntime {
     await this.admin.setProjectWorkflow(this.projectId, workflowId).catch(() => false)
   }
 
+  /** 行为基线事实：走 MCP 读 NDR（事实在 NDR 库里，agent 不存副本）。 */
+  async listObservations(query: {
+    kind?: string, subject?: string, minutes?: number, limit?: number, offset?: number,
+  }): Promise<Record<string, unknown>> {
+    if (this.ndr === null) return { available: false, total: 0, items: [] }
+    return this.ndr.listObservations(query)
+  }
+
   /** 会话时间线（分析过程页；`after` 用于实时轮询只取新增事件）。 */
   sessionTimeline(sessionId: string, options: { after?: number, running?: boolean } = {}): Promise<SessionTimeline> {
     return readSessionTimeline(this.config.sessionDir, sessionId, options)
