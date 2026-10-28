@@ -131,9 +131,11 @@ export function Field({
       <div className={cn("flex items-start gap-4", className)}>
         <label
           htmlFor={id}
-          // pt-1.5：把标签文字基线对齐到 32px 控件的文字基线（不是容器顶端）
+          // pt-1.5：把标签文字基线对齐到 32px 控件的文字基线（不是容器顶端）。
+          // 2026-10-28 用户裁定：标签与 hint 同用 text-xs（12px）——标签不再比提示大，
+          // 层级靠「右对齐 + 左列位置」区分；leading-5 行盒不变，无布局位移。
           className={cn(
-            "shrink-0 pt-1.5 text-right text-13 leading-5 text-muted-foreground",
+            "shrink-0 pt-1.5 text-right text-xs leading-5 text-muted-foreground",
             LABEL_W[labelWidth],
           )}
         >
