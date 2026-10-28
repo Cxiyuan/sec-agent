@@ -350,6 +350,10 @@ def enqueue_suppression_followup(client: Any) -> int:
     出现在智能体面前 —— 它就没有机会发现自己那条抑制其实没生效。闭环要闭上，
     就得把这件事**重新派回给它**：它按 `downgrade.advice` 收窄条件、同名重提，
     通过护栏即真正生效。
+
+    强度给 0.75（高于"首见新资产"那类 0.7 的调查型线索）：这条待办的**证据都在
+    hint 里**（试算数字、降级原因、该怎么改），智能体补两三份取证就能改完；
+    而"某个新资产出现了"那种调查型线索单条成本高得多 —— 让便宜的待办先做完。
     """
     made = 0
     now = datetime.now(UTC)
@@ -373,7 +377,7 @@ def enqueue_suppression_followup(client: Any) -> int:
                     "加 rule 维度指出是哪条规则，或把 src_ip 精确到具体来源"
                 ),
             }
-        strength = feedback.apply(0.5, "structure", name)
+        strength = feedback.apply(0.75, "structure", name)
         result = queue.enqueue(
             kind="structure",
             subject_kind="suppression",
