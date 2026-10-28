@@ -36,6 +36,7 @@ import { PostgresStateStore } from './pg-state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
 import { ProjectManager, SessionProjects, ensureDefaultWorkflow } from './projects.ts'
 import { readSessionTimeline } from './session-timeline.ts'
+import { DEFAULT_RETENTION, pruneSessions } from './maintenance.ts'
 import type { ProjectRuntime } from './projects.ts'
 
 export type * from './types.ts'
@@ -147,6 +148,23 @@ export interface Config {
   readonly scriptMaxResults: number
   /** DSH 会话日志根目录（分析过程时间线；容器里默认 /data/dsh/sessions）。 */
   readonly sessionDir: string
+  /** **全局**并发上限（所有项目合计；每个项目自己还有 maxConcurrent）。 */
+  readonly maxConcurrentTotal: number
+  /** 熔断：连续失败阈值 / 初始冷却 / 冷却上限（分钟）。 */
+  readonly breakerThreshold: number
+  readonly breakerBaseMinutes: number
+  readonly breakerMaxMinutes: number
+  /** 单任务工具调用上限（0 = 不限）。 */
+  readonly maxToolsPerTask: number
+  /** 停滞判定（分钟；0 = 不判）。 */
+  readonly stallMinutes: number
+  /** 保留期（天）：会话日志 / 事实 / 外连基线。 */
+  readonly sessionRetentionDays: number
+  readonly observationRetentionDays: number
+  readonly egressRetentionDays: number
+  readonly conclusionRetentionDays: number
+  /** 告警 webhook（项目不可达/授权ID不一致/熔断时 POST JSON；空 = 只写日志）。 */
+  readonly alertWebhookUrl: string
 }
 
 export const Config: z<Config> = z.object({
@@ -179,6 +197,17 @@ export const Config: z<Config> = z.object({
   scriptMaxCodeBytes: z.number().step(1).min(1024).max(262_144).default(65_536),
   scriptMaxResults: z.number().step(1).min(1).max(20).default(5),
   sessionDir: z.string().default('/data/dsh/sessions'),
+  maxConcurrentTotal: z.number().step(1).min(1).max(64).default(8),
+  breakerThreshold: z.number().step(1).min(1).max(20).default(3),
+  breakerBaseMinutes: z.number().step(1).min(1).max(240).default(5),
+  breakerMaxMinutes: z.number().step(1).min(1).max(1440).default(60),
+  maxToolsPerTask: z.number().step(1).min(0).max(2000).default(200),
+  stallMinutes: z.number().step(1).min(0).max(240).default(15),
+  sessionRetentionDays: z.number().step(1).min(1).max(365).default(14),
+  observationRetentionDays: z.number().step(1).min(1).max(365).default(30),
+  egressRetentionDays: z.number().step(1).min(1).max(3650).default(90),
+  conclusionRetentionDays: z.number().step(1).min(1).max(3650).default(90),
+  alertWebhookUrl: z.string().default(''),
 })
 
 /** Schemastery 表达不了的约束在这里校验，加载期即失败。 */
@@ -283,6 +312,12 @@ export function apply(ctx: Context, config: Config): void {
       taskReuseTtlHours: config.taskReuseTtlHours,
       taskReuseStrengthDelta: config.taskReuseStrengthDelta,
       sessionDir: config.sessionDir,
+      breakerThreshold: config.breakerThreshold,
+      breakerBaseMs: config.breakerBaseMinutes * 60_000,
+      breakerMaxMs: config.breakerMaxMinutes * 60_000,
+      maxToolsPerTask: config.maxToolsPerTask,
+      stallMinutes: config.stallMinutes,
+      alertWebhookUrl: config.alertWebhookUrl,
     },
     agents,
     admin,
@@ -422,6 +457,56 @@ export function apply(ctx: Context, config: Config): void {
     saveProject: (body: unknown) => manager.save(projectInputOf(body)),
     removeProject: (projectId: string) => manager.remove(projectId),
     verifyProject: (projectId: string) => manager.verify(projectId),
+    /** 健康检查（分组件）：PG / 项目运行态 / 熔断 / 会话目录。 */
+    health: async () => {
+      const storeOk = admin === null ? true : await admin.ping().catch(() => false)
+      const projects = manager.all().map(runtime => ({
+        project_id: runtime.projectId,
+        name: runtime.project.name,
+        status: runtime.project.status,
+        running: runtime.running,
+        ...(runtime.status()['breaker'] !== undefined ? { breaker: runtime.status()['breaker'] } : {}),
+      }))
+      return {
+        ok: storeOk && projects.some(item => item.running),
+        store: registry === null ? 'memory' : 'postgres',
+        store_ok: storeOk,
+        concurrency: manager.status()['concurrency'],
+        projects,
+        sessions_dir: config.sessionDir,
+      }
+    },
+    /** Prometheus 文本指标（无依赖，直接拼）。 */
+    metrics: () => {
+      const status = manager.status()
+      const projects = (status['projects'] as Array<Record<string, unknown>>) ?? []
+      const lines = [
+        '# HELP xdr_ingest_projects_total 项目总数',
+        '# TYPE xdr_ingest_projects_total gauge',
+        `xdr_ingest_projects_total ${projects.length}`,
+        '# HELP xdr_ingest_projects_running 正在跑领取循环的项目数',
+        '# TYPE xdr_ingest_projects_running gauge',
+        `xdr_ingest_projects_running ${projects.filter(p => p['running'] === true).length}`,
+        '# HELP xdr_ingest_concurrency_in_use 全局并发占用',
+        '# TYPE xdr_ingest_concurrency_in_use gauge',
+        `xdr_ingest_concurrency_in_use ${(status['concurrency'] as Record<string, number>)?.['in_use'] ?? 0}`,
+      ]
+      for (const item of projects) {
+        const id = String(item['id'] ?? '')
+        const breaker = (item['breaker'] ?? {}) as Record<string, unknown>
+        lines.push(`xdr_ingest_project_up{project="${id}"} ${item['running'] === true ? 1 : 0}`)
+        lines.push(`xdr_ingest_project_breaker_open{project="${id}"} ${breaker['open'] === true ? 1 : 0}`)
+      }
+      return lines.join('\n') + '\n'
+    },
+    /** 手动跑一次保留期清理（控制台「维护」按钮）。 */
+    maintenance: () => manager.maintenance({
+      conclusionsDays: config.conclusionRetentionDays,
+      processesDays: config.conclusionRetentionDays,
+      observationsDays: config.observationRetentionDays,
+      egressDays: config.egressRetentionDays,
+      taskSeenDays: DEFAULT_RETENTION.taskSeenDays,
+    }),
     /** 工作流模版（全局）：列表/保存/启停/删除 + 项目引用。 */
     workflows: () => (admin ?? memoryStore).listWorkflows(),
     saveWorkflow: (body: unknown) => (admin ?? memoryStore).upsertWorkflow(
@@ -514,6 +599,28 @@ export function apply(ctx: Context, config: Config): void {
         void manager.verifyAll().catch(() => undefined)
       }, 300_000)
       verifyTimer.unref()
+      // 数据生命周期：每 6 小时清理一次（结论/过程/事实/外连/去重记忆 + 会话日志）
+      const maintenanceTimer = setInterval(() => {
+        void (async () => {
+          const counts = await manager.maintenance({
+            conclusionsDays: config.conclusionRetentionDays,
+            processesDays: config.conclusionRetentionDays,
+            observationsDays: config.observationRetentionDays,
+            egressDays: config.egressRetentionDays,
+            taskSeenDays: DEFAULT_RETENTION.taskSeenDays,
+          }).catch(() => ({}))
+          const sessions = await pruneSessions(config.sessionDir, config.sessionRetentionDays)
+            .catch(() => ({ removed: 0, bytes: 0 }))
+          const removed = Object.values(counts).reduce((sum, n) => sum + n, 0)
+          if (removed > 0 || sessions.removed > 0) {
+            console.log(
+              `[xdr-ingest] 维护完成：数据库 ${removed} 行（${JSON.stringify(counts)}），`
+              + `会话 ${sessions.removed} 个 / ${Math.round(sessions.bytes / 1024)} KB`,
+            )
+          }
+        })()
+      }, 6 * 3600_000)
+      maintenanceTimer.unref()
       const timer = setInterval(() => {
         void cache.pruneExpired().catch(error => {
           console.warn('[xdr-ingest] prune failed:', error instanceof Error ? error.message : String(error))
@@ -525,6 +632,7 @@ export function apply(ctx: Context, config: Config): void {
       timer.unref()
       return () => {
         clearInterval(timer)
+        clearInterval(maintenanceTimer)
         clearInterval(syncTimer)
         clearInterval(verifyTimer)
         disposeScriptTools()

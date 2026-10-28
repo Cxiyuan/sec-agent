@@ -307,6 +307,36 @@
 
 ---
 
+## 五·补、行为观察与外连白名单
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET {BASE}/api/observations?kind=&subject=&minutes=&limit=&offset=` | 行为基线事实（`egress_new` / `egress_rare` / `geo_jump` / `login_bruteforce` / `path_probe` / `conn_shift`），响应带 `stats`（按类汇总） |
+| `GET {BASE}/api/egress-allow?kind=&tombstone=1` | 外连白名单（`tombstone=1` 连已删除的墓碑一起返回） |
+| `POST {BASE}/api/egress-allow` | `{kind:"domain\|dst_ip\|port", value, scope:"global\|asset", asset}` |
+| `DELETE {BASE}/api/egress-allow/{id}` | 删除并留墓碑（以后不再自动学回来） |
+| `POST {BASE}/api/egress-allow/{id}/restore` | 撤销墓碑 |
+
+## 五·补二、运维
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET {BASE}/healthz` | 分组件健康：PG、各项目运行态/熔断、全局并发、会话目录；异常返回 503（给容器探针/负载均衡） |
+| `GET {BASE}/metrics` | Prometheus 文本指标（项目数/运行数/并发占用/每个项目的 up 与熔断状态） |
+| `POST {BASE}/api/maintenance` | 手动跑一次保留期清理（结论/过程 90 天、事实 30 天、外连 90 天、去重 30 天；会话日志 14 天，另有定时任务每 6 小时跑） |
+
+项目记录新增字段：`model` / `fallbackModel`（`provider/model`；空 = 全局默认/不切换），
+`POST /api/projects` 可直接带这两个字段。
+
+**告警外发**：配置 `XDR_ALERT_WEBHOOK_URL`（插件配置 `alertWebhookUrl`）后，
+项目不可达 / 授权ID 不一致 / 熔断打开会 POST：
+
+```json
+{ "event": "project_auth_mismatch", "project": "ZPL6QQLG", "message": "授权ID 不一致：…", "ts": "…" }
+```
+
+事件名：`project_auth_mismatch` / `project_unreachable` / `breaker_open`。留空 = 只写日志。
+
 ## 六、运行观测与参数
 
 | 接口 | 说明 |

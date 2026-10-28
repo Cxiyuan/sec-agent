@@ -28,7 +28,10 @@ export type { RuntimeSettings } from './settings.ts'
 /* ------------------------------------------------------------------ */
 
 /** 项目健康状态：`unchecked` 还没校验过；`auth_mismatch` 授权ID 对不上；`unreachable` 连不上。 */
-export type ProjectStatus = 'ok' | 'auth_mismatch' | 'unreachable' | 'unchecked' | 'disabled'
+export type ProjectStatus =
+  | 'ok' | 'auth_mismatch' | 'unreachable' | 'unchecked' | 'disabled'
+  /** 连续失败熔断中：服务还在，但暂时不领活（冷却后半开） */
+  | 'degraded'
 
 /** 一个项目组织（= 一台 NDR）。`projectId` 就是 NDR 的授权ID。 */
 export interface ProjectRecord {
@@ -41,6 +44,10 @@ export interface ProjectRecord {
   readonly enabled: boolean
   /** 引用的工作流模版 ID（空 = 用默认模版） */
   readonly workflowId: string
+  /** 本项目用的模型（`provider/model`；空 = 用全局配置） */
+  readonly model: string
+  /** 主模型连续失败时切备用（`provider/model`；空 = 不切） */
+  readonly fallbackModel: string
   readonly status: ProjectStatus
   readonly statusDetail: string
   readonly lastCheckedAt: string
@@ -57,6 +64,8 @@ export interface ProjectInput {
   readonly pushToken: string
   readonly enabled?: boolean
   readonly workflowId?: string
+  readonly model?: string
+  readonly fallbackModel?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -621,6 +630,17 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
 
   async getProcess(taskId: string): Promise<ProcessRecord | null> {
     return this.processes.get(taskId.trim()) ?? null
+  }
+
+  async ping(): Promise<boolean> {
+    return true
+  }
+
+  async maintenance(_policy: {
+    conclusionsDays: number, processesDays: number, observationsDays: number,
+    egressDays: number, taskSeenDays: number,
+  }): Promise<Record<string, number>> {
+    return {}
   }
 
   async close(): Promise<void> {

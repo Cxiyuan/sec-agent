@@ -176,6 +176,13 @@ CREATE TABLE IF NOT EXISTS xdr_ingest_process (
 CREATE INDEX IF NOT EXISTS xdr_ingest_process_started_idx
   ON xdr_ingest_process (project_id, started_at DESC);
 ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS fallback_model TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS xdr_ingest_schema (
+  version    INTEGER PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO xdr_ingest_schema (version) VALUES (2) ON CONFLICT (version) DO NOTHING;
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_stages JSONB NOT NULL DEFAULT '[]'::jsonb;
@@ -299,6 +306,8 @@ interface ProjectRow {
   push_token: string
   enabled: boolean
   workflow_id: string
+  model: string
+  fallback_model: string
   status: string
   status_detail: string
   last_checked_at: Date | string | null
@@ -320,6 +329,8 @@ function toProject(row: ProjectRow): ProjectRecord {
     pushToken: String(row.push_token ?? ''),
     enabled: row.enabled === true,
     workflowId: String(row.workflow_id ?? ''),
+    model: String(row.model ?? ''),
+    fallbackModel: String(row.fallback_model ?? ''),
     status: (PROJECT_STATUSES.has(status) ? status : 'unchecked') as ProjectStatus,
     statusDetail: String(row.status_detail ?? ''),
     lastCheckedAt: isoTime(row.last_checked_at),
@@ -1081,6 +1092,48 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     }
   }
 
+  /**
+   * 保留期清理（跨项目；由维护定时器调用）。
+   * 只 DELETE 有明确保留期的表，不碰脚本/设置/项目/工作流。
+   */
+  async maintenance(policy: {
+    conclusionsDays: number, processesDays: number, observationsDays: number,
+    egressDays: number, taskSeenDays: number,
+  }): Promise<Record<string, number>> {
+    if (!await this.usable()) return {}
+    const job = async (sql: string, days: number): Promise<number> => {
+      try {
+        const { rowCount } = await this.pool.query(sql, [Math.max(1, Math.floor(days))])
+        return rowCount ?? 0
+      } catch (error) {
+        console.error(`${LOG_PREFIX} maintenance failed:`, this.message(error))
+        return 0
+      }
+    }
+    return {
+      conclusions: await job(
+        "DELETE FROM xdr_ingest_conclusion WHERE created_at < now() - ($1 || ' days')::interval",
+        policy.conclusionsDays,
+      ),
+      processes: await job(
+        "DELETE FROM xdr_ingest_process WHERE started_at < now() - ($1 || ' days')::interval",
+        policy.processesDays,
+      ),
+      observations: await job(
+        "DELETE FROM xdr_ingest_observation WHERE last_seen < now() - ($1 || ' days')::interval",
+        policy.observationsDays,
+      ),
+      egress: await job(
+        "DELETE FROM xdr_ingest_egress_baseline WHERE last_seen < now() - ($1 || ' days')::interval",
+        policy.egressDays,
+      ),
+      task_seen: await job(
+        "DELETE FROM xdr_ingest_task_seen WHERE updated_at < now() - ($1 || ' days')::interval",
+        policy.taskSeenDays,
+      ),
+    }
+  }
+
   /* ---------- 工作流模版（全局，不按项目过滤） ---------- */
 
   async listWorkflows(): Promise<WorkflowRecord[]> {
@@ -1198,8 +1251,9 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     try {
       const { rows } = await this.pool.query<ProjectRow>(
         `INSERT INTO xdr_ingest_project
-           (project_id, name, mcp_url, mcp_token, push_token, enabled, workflow_id, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+           (project_id, name, mcp_url, mcp_token, push_token, enabled, workflow_id, model,
+          fallback_model, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
          ON CONFLICT (project_id) DO UPDATE SET
            name = EXCLUDED.name,
            mcp_url = EXCLUDED.mcp_url,
@@ -1208,11 +1262,14 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            enabled = EXCLUDED.enabled,
            workflow_id = CASE WHEN EXCLUDED.workflow_id = '' THEN xdr_ingest_project.workflow_id
                               ELSE EXCLUDED.workflow_id END,
+           model = EXCLUDED.model,
+           fallback_model = EXCLUDED.fallback_model,
            updated_at = now()
          RETURNING *`,
         [
           input.projectId.trim(), input.name.trim(), input.mcpUrl.trim(), input.mcpToken,
           input.pushToken, input.enabled ?? true, String(input.workflowId ?? '').trim(),
+          String(input.model ?? '').trim(), String(input.fallbackModel ?? '').trim(),
         ],
       )
       const row = rows[0]
@@ -1261,6 +1318,15 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       return (rowCount ?? 0) > 0
     } catch (error) {
       console.error(`${LOG_PREFIX} project remove failed:`, this.message(error))
+      return false
+    }
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      await this.pool.query('SELECT 1')
+      return true
+    } catch {
       return false
     }
   }

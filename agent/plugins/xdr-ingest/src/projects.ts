@@ -12,6 +12,8 @@
  */
 
 import type { AgentsServiceLike } from './agent-port.ts'
+import { ConcurrencyGate, FailureBreaker, isTransientFailure } from './breaker.ts'
+import { sendAlert } from './notify.ts'
 import { Analyst } from './analyst.ts'
 import { ClaimLoop } from './claim-loop.ts'
 import { identityOfMatch } from './task-results.ts'
@@ -45,6 +47,15 @@ export interface ProjectRuntimeConfig {
   readonly taskReuseStrengthDelta: number
   /** DSH 会话日志根目录（分析过程时间线从这里读）。 */
   readonly sessionDir: string
+  /** 熔断：连续失败阈值 / 初始冷却 / 冷却上限（毫秒） */
+  readonly breakerThreshold: number
+  readonly breakerBaseMs: number
+  readonly breakerMaxMs: number
+  /** 单任务工具调用上限（0 = 不限）与停滞判定（分钟） */
+  readonly maxToolsPerTask: number
+  readonly stallMinutes: number
+  /** 告警 webhook（空 = 只写日志）。 */
+  readonly alertWebhookUrl: string
 }
 
 /** 项目表的读写面（生产实现是 PostgresStateStore；测试可注入内存实现）。 */
@@ -61,6 +72,11 @@ export interface ProjectAdminStore {
   setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean>
   removeWorkflow(workflowId: string): Promise<boolean>
   setProjectWorkflow(projectId: string, workflowId: string): Promise<boolean>
+  maintenance(policy: {
+    conclusionsDays: number, processesDays: number, observationsDays: number,
+    egressDays: number, taskSeenDays: number,
+  }): Promise<Record<string, number>>
+  ping(): Promise<boolean>
 }
 
 /** 分析会话 → 项目：脚本工具靠它找到「这次分析属于哪个项目」。 */
@@ -80,6 +96,15 @@ export class SessionProjects {
   delete(sessionId: string): void {
     this.map.delete(sessionId)
   }
+}
+
+/** `provider/model` → 两段；没有斜杠时整串当 model（provider 留空 = DSH 默认）。 */
+export function splitModel(text: string): [string, string] {
+  const value = String(text || '').trim()
+  if (value === '') return ['', '']
+  const at = value.indexOf('/')
+  if (at <= 0) return ['', value]
+  return [value.slice(0, at).trim(), value.slice(at + 1).trim()]
 }
 
 /** 项目引用的工作流；没绑定/被停用就回落到默认模版（再没有就 null = 不注入编排）。 */
@@ -159,6 +184,8 @@ export class ProjectRuntime {
   private readonly agents: AgentsServiceLike
   private readonly admin: ProjectAdminStore
   private readonly sessions: SessionProjects
+  private readonly gate: ConcurrencyGate
+  private readonly breaker: FailureBreaker
   private client: McpHttpClient | null = null
   private ndr: NdrTaskPortAdapter | null = null
   private analyst: Analyst | null = null
@@ -174,6 +201,7 @@ export class ProjectRuntime {
     readonly agents: AgentsServiceLike
     readonly admin: ProjectAdminStore
     readonly sessions: SessionProjects
+    readonly gate: ConcurrencyGate
   }) {
     this.record = deps.project
     this.projectId = deps.project.projectId
@@ -182,6 +210,12 @@ export class ProjectRuntime {
     this.agents = deps.agents
     this.admin = deps.admin
     this.sessions = deps.sessions
+    this.gate = deps.gate
+    this.breaker = new FailureBreaker({
+      threshold: deps.config.breakerThreshold,
+      baseCooldownMs: deps.config.breakerBaseMs,
+      maxCooldownMs: deps.config.breakerMaxMs,
+    })
   }
 
   get project(): ProjectRecord {
@@ -237,13 +271,19 @@ export class ProjectRuntime {
       return this.mark('auth_mismatch', this.lastError)
     }
     this.workflowRecord = await resolveWorkflow(this.admin, this.record.workflowId)
+    // 每项目模型：`provider/model`；空则回落到全局配置（三处兜底：项目 → 配置 → DSH 默认）
+    const [modelProvider, modelName] = splitModel(this.record.model)
+    const [fallbackProvider, fallbackName] = splitModel(this.record.fallbackModel)
     const analyst = new Analyst({
       agents: this.agents,
       ndr: this.ndr,
       timeoutMs: this.config.analysisTimeoutSeconds * 1000,
       source: 'xdr-ingest',
-      ...(this.config.provider.trim() !== '' ? { provider: this.config.provider.trim() } : {}),
-      ...(this.config.model.trim() !== '' ? { model: this.config.model.trim() } : {}),
+      ...(modelProvider !== '' ? { provider: modelProvider } : {}),
+      ...(modelName !== '' ? { model: modelName } : {}),
+      ...(fallbackName !== '' ? { fallbackModel: { provider: fallbackProvider, model: fallbackName } } : {}),
+      ...(fallbackName === '' && this.config.provider.trim() !== '' ? { provider: this.config.provider.trim() } : {}),
+      ...(fallbackName === '' && this.config.model.trim() !== '' ? { model: this.config.model.trim() } : {}),
       taskResults: this.store,
       taskReuseTtlMs: this.config.taskReuseTtlHours * 3_600_000,
       taskReuseStrengthDelta: this.config.taskReuseStrengthDelta,
@@ -253,6 +293,18 @@ export class ProjectRuntime {
       projectId: this.projectId,
       // 每次起会话都取当前绑定：控制台换模版后下一个任务立刻生效（不用重启）
       workflow: () => this.workflowRecord,
+      // 单任务预算与停滞：读会话日志计数，超了取消并延后（比只看 1200s 超时准）
+      probeSession: async sessionId => {
+        const timeline = await readSessionTimeline(this.config.sessionDir, sessionId, {})
+        if (!timeline.ok) return null
+        const last = timeline.events.length > 0 ? timeline.events[timeline.events.length - 1] : null
+        return {
+          tools: timeline.tools.reduce((sum, item) => sum + item.count, 0),
+          lastEventAt: last?.time ?? 0,
+        }
+      },
+      maxTools: this.config.maxToolsPerTask,
+      stallMinutes: this.config.stallMinutes,
       onSession: (sessionId, phase) => {
         if (phase === 'start') this.sessions.set(sessionId, this.projectId)
         else this.sessions.delete(sessionId)
@@ -282,14 +334,44 @@ export class ProjectRuntime {
       claimLimit: this.settings().claimLimit,
       doorbellDebounceMs: this.config.doorbellDebounceMs,
       backoffMaxMs: this.config.backoffMaxMs,
-      claimTasks: limit => ndr.claimTasks(limit),
+      // 熔断打开时不领活（服务还在，只是暂停）；全局闸门没空位也不领，避免领了跑不动
+      claimTasks: async limit => {
+        if (this.breaker.isOpen()) return { tasks: [] }
+        const capacity = Math.min(limit, this.gate.free())
+        if (capacity <= 0) return { tasks: [] }
+        return ndr.claimTasks(capacity)
+      },
       runTask: async task => {
-        const outcome = await analyst.run(task)
-        if (!outcome.completed) {
-          console.warn(
-            `[xdr-ingest] ${this.projectId} 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
-            + `${outcome.deferred ? '已延后' : '延后失败'}）`,
-          )
+        if (!this.gate.tryAcquire()) {
+          await ndr.deferTask(task.id, 'agent_busy').catch(() => undefined)
+          return
+        }
+        try {
+          const outcome = await analyst.run(task)
+          const failure = outcome.completed ? '' : (outcome.error ?? '')
+          if (outcome.completed) {
+            this.breaker.recordSuccess()
+          } else if (isTransientFailure(failure) && this.breaker.recordFailure(failure)) {
+            const state = this.breaker.state()
+            console.error(
+              `[xdr-ingest] ${this.projectId} 连续失败，暂停领取 ${state['retry_in_seconds']} 秒`
+              + `（${state['last_error']}）`,
+            )
+            void sendAlert(this.config.alertWebhookUrl, {
+              event: 'breaker_open',
+              project: this.projectId,
+              message: `连续失败 ${String(state['failures'])} 次，暂停领取 ${String(state['retry_in_seconds'])} 秒`,
+              detail: state,
+            })
+          }
+          if (!outcome.completed) {
+            console.warn(
+              `[xdr-ingest] ${this.projectId} 任务 ${task.id} 未交回（state=${outcome.state || 'unknown'}，`
+              + `${outcome.deferred ? '已延后' : '延后失败'}）`,
+            )
+          }
+        } finally {
+          this.gate.release()
         }
       },
     })
@@ -372,6 +454,8 @@ export class ProjectRuntime {
       mcp_url: this.record.mcpUrl,
       workflow_id: this.workflowRecord?.workflowId ?? this.record.workflowId,
       workflow_name: this.workflowRecord?.name ?? '',
+      model: this.record.model,
+      breaker: this.breaker.state(),
       ...settingsView(this.settings()),
       ...(this.analyst === null ? {} : { task_reuse: this.analyst.reuseStats }),
       ...(this.loop === null ? {} : { loop: this.loop.stats }),
@@ -406,6 +490,13 @@ export class ProjectRuntime {
     await this.admin.setProjectStatus(this.projectId, status, detail).catch(() => undefined)
     this.record = { ...this.record, status, statusDetail: detail }
     if (detail !== '') console.warn(`[xdr-ingest] ${this.projectId}：${detail}`)
+    if (status === 'auth_mismatch' || status === 'unreachable') {
+      void sendAlert(this.config.alertWebhookUrl, {
+        event: status === 'auth_mismatch' ? 'project_auth_mismatch' : 'project_unreachable',
+        project: this.projectId,
+        message: detail,
+      })
+    }
     return this.record
   }
 
@@ -429,6 +520,7 @@ export class ProjectManager {
   private readonly admin: ProjectAdminStore | null
   private readonly sessions: SessionProjects
   private readonly storeOf: (projectId: string) => DataStore
+  private readonly gate: ConcurrencyGate
 
   constructor(deps: {
     readonly config: ProjectRuntimeConfig
@@ -436,12 +528,14 @@ export class ProjectManager {
     readonly admin: ProjectAdminStore | null
     readonly sessions: SessionProjects
     readonly storeOf: (projectId: string) => DataStore
+    readonly maxConcurrentTotal?: () => number
   }) {
     this.config = deps.config
     this.agents = deps.agents
     this.admin = deps.admin
     this.sessions = deps.sessions
     this.storeOf = deps.storeOf
+    this.gate = new ConcurrencyGate(deps.maxConcurrentTotal ?? (() => 16))
   }
 
   /** 启动时加载所有项目：启用的逐个校验并起循环。 */
@@ -625,8 +719,17 @@ export class ProjectManager {
     return {
       project_count: projects.length,
       enabled: projects.filter(p => (p as { running?: boolean }).running === true).length,
+      concurrency: this.gate.state(),
       projects,
     }
+  }
+
+  /** 保留期清理（管理台设置里改天数，这里只执行）。 */
+  async maintenance(policy: {
+    conclusionsDays: number, processesDays: number, observationsDays: number,
+    egressDays: number, taskSeenDays: number,
+  }): Promise<Record<string, number>> {
+    return this.admin?.maintenance(policy) ?? {}
   }
 
   async stopAll(): Promise<void> {
@@ -656,6 +759,7 @@ export class ProjectManager {
       agents: this.agents,
       admin: this.admin as ProjectAdminStore,
       sessions: this.sessions,
+      gate: this.gate,
     })
     this.runtimes.set(project.projectId, runtime)
     return runtime.start()

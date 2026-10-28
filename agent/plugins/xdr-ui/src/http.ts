@@ -47,6 +47,21 @@ export interface IngestServiceView {
   saveProject?(body: unknown): Promise<{ ok: boolean, error?: string, project?: unknown }>
   removeProject?(projectId: string): Promise<boolean>
   verifyProject?(projectId: string): Promise<unknown>
+  /** 行为基线事实（外连新目标/异地登录/爆破/404/连接数偏离）。 */
+  listObservations?(query: { kind: string, subject: string, minutes: number, limit: number, offset: number }): Promise<{
+    total: number
+    items: readonly unknown[]
+  }>
+  observationStats?(): Promise<unknown>
+  /** 外连白名单：列表 / 新增编辑 / 删除（留墓碑）/ 撤销墓碑。 */
+  listEgressAllow?(query: { kind: string, includeTombstone: boolean }): Promise<readonly unknown[]>
+  saveEgressAllow?(body: unknown): Promise<unknown>
+  removeEgressAllow?(entryId: string): Promise<boolean>
+  restoreEgressAllow?(entryId: string): Promise<boolean>
+  /** 运维：健康检查 / Prometheus 指标 / 手动清理。 */
+  health?(): Promise<Record<string, unknown>>
+  metrics?(): Promise<string>
+  maintenance?(): Promise<Record<string, number>>
   /** 工作流模版（分析编排）：列表 / 保存 / 启停 / 删除 / 项目引用。 */
   workflows?(): Promise<readonly unknown[]>
   saveWorkflow?(body: unknown): Promise<unknown>
@@ -530,6 +545,133 @@ export function createUiHandler(
         }
         const done = await ingest.removeProject(rest)
         respondJson(res, done ? 200 : 404, { ok: done })
+        return
+      }
+      // ---------- 运维：健康检查 / 指标（不需要登录，给探针用） ----------
+      if (tail === '/healthz') {
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.health !== 'function') {
+          respondJson(res, 503, { ok: false, error: 'data plane unavailable' })
+          return
+        }
+        const health = await ingest.health()
+        respondJson(res, health?.['ok'] === true ? 200 : 503, health)
+        return
+      }
+      if (tail === '/metrics') {
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.metrics !== 'function') {
+          res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('# data plane unavailable\n')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(await ingest.metrics())
+        return
+      }
+      // ---------- 行为基线与外连白名单 ----------
+      if (tail === '/api/observations') {
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const ingest = options.ingest()
+        if (ingest === null || typeof ingest.listObservations !== 'function') {
+          respondJson(res, 200, { available: false, total: 0, items: [] })
+          return
+        }
+        const query = queryOf(req)
+        const page = await ingest.listObservations({
+          kind: (query.get('kind') ?? '').slice(0, 32),
+          subject: (query.get('subject') ?? '').slice(0, 128),
+          minutes: clampInt(query.get('minutes'), 1440, 1, 60 * 24 * 30),
+          limit: clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT),
+          offset: clampInt(query.get('offset'), 0, 0, MAX_OFFSET),
+        })
+        let stats: unknown = null
+        if (typeof ingest.observationStats === 'function') {
+          stats = await ingest.observationStats().catch(() => null)
+        }
+        respondJson(res, 200, { available: true, total: page.total, items: page.items, stats })
+        return
+      }
+      if (tail === '/api/egress-allow') {
+        if (method === 'GET') {
+          if (!apiGuard()) return
+          const ingest = options.ingest()
+          if (ingest === null || typeof ingest.listEgressAllow !== 'function') {
+            respondJson(res, 200, { available: false, items: [] })
+            return
+          }
+          const query = queryOf(req)
+          const items = await ingest.listEgressAllow({
+            kind: (query.get('kind') ?? '').slice(0, 16),
+            includeTombstone: query.get('tombstone') === '1',
+          })
+          respondJson(res, 200, { available: true, items })
+          return
+        }
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        if (typeof options.ingest()?.saveEgressAllow !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用' })
+          return
+        }
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        const result = (await options.ingest()?.saveEgressAllow?.(patch)) as
+          | { ok?: boolean }
+          | undefined
+        respondJson(res, result?.ok === false ? 400 : 200, result ?? { ok: false })
+        return
+      }
+      if (tail.startsWith('/api/egress-allow/')) {
+        if (!apiGuard()) return
+        const rest = decodeURIComponent(tail.slice('/api/egress-allow/'.length)).trim()
+        if (rest === '' || rest.length > 80) {
+          respondJson(res, 400, { error: 'invalid entry id' })
+          return
+        }
+        if (rest.endsWith('/restore')) {
+          if (method !== 'POST') {
+            respondJson(res, 405, { error: 'method not allowed' })
+            return
+          }
+          const id = rest.slice(0, -'/restore'.length)
+          const done = await options.ingest()?.restoreEgressAllow?.(id)
+          respondJson(res, done === true ? 200 : 404, { ok: done === true })
+          return
+        }
+        if (method !== 'DELETE') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const done = await options.ingest()?.removeEgressAllow?.(rest)
+        respondJson(res, done === true ? 200 : 404, { ok: done === true })
+        return
+      }
+      if (tail === '/api/maintenance') {
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        const result = await options.ingest()?.maintenance?.()
+        respondJson(res, 200, { ok: true, deleted: result ?? {} })
         return
       }
       // ---------- 工作流模版（分析编排） ----------

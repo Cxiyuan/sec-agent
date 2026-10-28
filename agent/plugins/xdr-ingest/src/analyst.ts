@@ -114,6 +114,14 @@ export interface AnalystOptions {
   readonly onSession?: (sessionId: string, phase: 'start' | 'end') => void
   /** 分析工作流（项目组织引用）：可以是固定模版，也可以是每次取最新绑定的 getter。 */
   readonly workflow?: WorkflowRecord | null | (() => WorkflowRecord | null)
+  /** 主模型连续失败时切备用（下一轮生效）。 */
+  readonly fallbackModel?: { readonly provider: string, readonly model: string }
+  /** 单任务工具调用上限（0 = 不限）。 */
+  readonly maxTools?: number
+  /** 停滞判定（分钟，0 = 不判）：超过这么久没有新事件只告警，不取消（可能只是模型慢）。 */
+  readonly stallMinutes?: number
+  /** 会话进度探针（读会话日志：工具调用数 + 最后事件时间）。 */
+  readonly probeSession?: (sessionId: string) => Promise<{ tools: number, lastEventAt: number } | null>
 }
 
 export interface AnalystOutcome {
@@ -132,6 +140,8 @@ let sessionCounter = 0
 export class Analyst {
   private readonly options: AnalystOptions
   private readonly reuse = { reused: 0, stored: 0 }
+  /** 主模型刚失败过：下一轮用备用模型（成功即恢复）。 */
+  private preferFallback = false
   /** 同一现象的并发任务排队：后来的任务等前一个写入结论后再查缓存。 */
   private readonly keyLocks = new Map<string, Promise<void>>()
 
@@ -183,8 +193,14 @@ export class Analyst {
 
     const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
     const selected = this.options.modelSelection?.()
-    const provider = this.options.provider?.trim() || selected?.provider.trim()
-    const model = this.options.model?.trim() || selected?.model.trim()
+    const fallback = this.options.fallbackModel
+    const useFallback = this.preferFallback && fallback !== undefined && fallback.model !== ''
+    const provider = useFallback
+      ? (fallback.provider || selected?.provider.trim())
+      : (this.options.provider?.trim() || selected?.provider.trim())
+    const model = useFallback
+      ? fallback.model
+      : (this.options.model?.trim() || selected?.model.trim())
     // 过程索引：控制台据此列出「任务 → 会话 → 耗时/工具数/状态」，并读会话时间线
     const workflow = typeof this.options.workflow === 'function'
       ? this.options.workflow()
@@ -208,6 +224,25 @@ export class Analyst {
         ...(model ? { model } : {}),
       },
     })
+    // 每次运行独立的状态（Analyst 实例是共享的，不能用一个字段跨任务）
+    const watch = { budgetExceeded: false, stalled: false }
+    let probeTimer: ReturnType<typeof setInterval> | null = null
+    if (this.options.probeSession !== undefined && (this.options.maxTools ?? 0) > 0) {
+      probeTimer = setInterval(() => {
+        void this.options.probeSession?.(sessionId).then(info => {
+          if (info === null) return
+          const max = this.options.maxTools ?? 0
+          if (max > 0 && info.tools > max && !watch.budgetExceeded) {
+            watch.budgetExceeded = true
+            console.warn(`[xdr-ingest] 任务 ${task.id} 工具调用 ${info.tools} 次超过预算 ${max}，取消会话`)
+            void Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest tool budget' })).catch(
+              () => undefined,
+            )
+          }
+        }).catch(() => undefined)
+      }, 15_000)
+      probeTimer.unref?.()
+    }
     let timedOut = false
     let error: string | undefined
     try {
@@ -227,6 +262,7 @@ export class Analyst {
     } catch (exc) {
       error = exc instanceof Error ? exc.message : String(exc)
     } finally {
+      if (probeTimer !== null) clearInterval(probeTimer)
       await Promise.resolve(handle.dispose()).catch(() => undefined)
       this.options.onSession?.(sessionId, 'end')
     }
@@ -243,7 +279,9 @@ export class Analyst {
     let deferred = false
     if (!completed) {
       // 没交回：显式延后（不算失败），把租约让出来，同时留下"为什么"
-      const reason = timedOut ? 'timeout' : error ? `agent_error: ${error.slice(0, 120)}` : 'no_conclusion'
+      const reason = watch.budgetExceeded
+        ? 'budget_exhausted'
+        : timedOut ? 'timeout' : error ? `agent_error: ${error.slice(0, 120)}` : 'no_conclusion'
       try {
         await this.options.ndr.deferTask(task.id, reason)
         deferred = true
@@ -257,9 +295,22 @@ export class Analyst {
       startedAt,
       {
         verdict: String(reply.results?.[0]?.verdict ?? ''),
-        note: completed ? '' : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
+        note: completed
+          ? ''
+          : watch.budgetExceeded
+            ? '工具调用超过预算，已取消并延后'
+            : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
       },
     )
+    // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型
+    if (completed) {
+      this.preferFallback = false
+    } else if (
+      this.options.fallbackModel !== undefined
+      && (timedOut || /429|rate limit|quota|timeout|overloaded|context window/i.test(error ?? ''))
+    ) {
+      this.preferFallback = true
+    }
     return {
       taskId: task.id,
       completed,

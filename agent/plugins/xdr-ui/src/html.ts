@@ -216,6 +216,8 @@ ${THEME}
     <div class="brand"><span class="logo">瞳</span><div><b>深瞳</b><small>安全分析智能体</small></div></div>
     <nav>
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
+      <a href="#/projects" data-view="projects"><span class="dot"></span>项目组织</a>
+      <a href="#/observations" data-view="observations"><span class="dot"></span>行为观察</a>
       <a href="#/workflows" data-view="workflows"><span class="dot"></span>工作流</a>
       <a href="#/processes" data-view="processes"><span class="dot"></span>分析过程</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
@@ -225,6 +227,9 @@ ${THEME}
     </nav>
     <div class="rail-foot">
       <a id="ndr-link" href="#" target="_blank" rel="noreferrer" hidden>NDR 控制台 ↗</a>
+      <label style="display:flex;align-items:center;gap:.35rem;font-size:.78rem">项目
+        <select id="proj-switch" style="max-width:130px"></select>
+      </label>
       <a id="native-link" href="/index.html" target="_blank" rel="noreferrer">原始会话界面 ↗</a>
       <span>v0.2 · 后台自助分析</span>
     </div>
@@ -269,6 +274,56 @@ ${THEME}
         <button id="next">下一页 ›</button>
         <span id="page"></span>
       </div>
+    </section>
+
+    <section id="view-projects" hidden>
+      <div class="toolbar">
+        <button id="pj-new" class="primary">新增项目</button>
+        <button id="pj-refresh">刷新</button>
+        <span class="count" id="pj-count"></span>
+      </div>
+      <table>
+        <thead><tr><th>项目</th><th>授权ID</th><th>工作流</th><th>模型</th><th>状态</th><th>最近校验</th><th>操作</th></tr></thead>
+        <tbody id="pj-rows"></tbody>
+      </table>
+      <div class="notice" style="margin-top:.8rem">
+        授权ID 必须与对应 NDR「系统授权」页一致；对不上会自动停用该项目并标红。
+        工作流与模型留空 = 用默认；主模型连续失败会切备用模型。
+      </div>
+    </section>
+
+    <section id="view-observations" hidden>
+      <div class="toolbar">
+        <select id="ob-kind">
+          <option value="">全部事实</option>
+          <option value="egress_new">外连新目标</option>
+          <option value="egress_rare">外连罕见目标</option>
+          <option value="geo_jump">异地登录</option>
+          <option value="login_bruteforce">多来源爆破</option>
+          <option value="path_probe">大量 404</option>
+          <option value="conn_shift">连接数偏离</option>
+        </select>
+        <button id="ob-refresh">刷新</button>
+        <span class="count" id="ob-count"></span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>对象</th><th>事实</th><th>次数</th><th>强度</th></tr></thead>
+        <tbody id="ob-rows"></tbody>
+      </table>
+      <h3 style="margin:1rem 0 .4rem">外连白名单</h3>
+      <div class="toolbar">
+        <select id="al-kind"><option value="domain">域名</option><option value="dst_ip">目的 IP</option><option value="port">端口</option></select>
+        <input id="al-value" placeholder="要放行的目标（如 example.com / 1.2.3.4 / 8443）" style="min-width:240px">
+        <select id="al-scope"><option value="global">全局</option><option value="asset">仅某资产</option></select>
+        <input id="al-asset" placeholder="资产 IP（scope=asset 时填）" style="width:150px">
+        <button id="al-add">加入白名单</button>
+        <span class="count" id="al-count"></span>
+      </div>
+      <table>
+        <thead><tr><th>类型</th><th>目标</th><th>范围</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="al-rows"></tbody>
+      </table>
+      <div class="notice" style="margin-top:.6rem">删除会留墓碑：以后不会再自动学回来；要恢复点「撤销」。</div>
     </section>
 
     <section id="view-workflows" hidden>
@@ -524,6 +579,30 @@ ${THEME}
     <button id="close" class="btn">关闭</button>
   </div>
 </dialog>
+<dialog id="pj-dialog">
+  <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(640px,92vw)">
+    <h3 id="pj-title" style="margin:0">新增项目</h3>
+    <div class="form-grid">
+      <div class="field"><label>授权ID（8 位）</label><input id="pj-id" maxlength="8" class="mono" style="text-transform:uppercase"></div>
+      <div class="field"><label>项目名称</label><input id="pj-name" maxlength="60"></div>
+    </div>
+    <div class="field"><label>NDR MCP 地址</label><input id="pj-url" placeholder="http://ndr.example:8090/mcp"></div>
+    <div class="field"><label>MCP 令牌（留空 = 不分析，只收门铃）</label><input id="pj-token" maxlength="200"></div>
+    <div class="field"><label>门铃推送令牌</label><input id="pj-push" maxlength="200"></div>
+    <div class="form-grid">
+      <div class="field"><label>模型（provider/model，留空=默认）</label><input id="pj-model" placeholder="minimax/MiniMax-M2.5"></div>
+      <div class="field"><label>备用模型（留空=不切换）</label><input id="pj-fallback" placeholder="deepseek/deepseek-chat"></div>
+    </div>
+    <div class="field"><label>引用工作流</label><select id="pj-workflow"></select></div>
+    <label style="display:flex;align-items:center;gap:.4rem"><input id="pj-enabled" type="checkbox" checked> 启用（校验通过才会起领取循环）</label>
+    <div style="display:flex;gap:.6rem;justify-content:flex-end">
+      <button id="pj-delete" class="btn ghost">删除</button>
+      <button id="pj-verify" class="btn">立即复核</button>
+      <button id="pj-cancel" class="btn">取消</button>
+      <button id="pj-save" class="btn primary">保存</button>
+    </div>
+  </div>
+</dialog>
 <dialog id="wf-dialog">
   <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(760px,92vw);max-height:82vh">
     <h3 id="wf-title" style="margin:0">新建工作流</h3>
@@ -587,6 +666,8 @@ ${THEME}
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
+    projects: { title: '项目组织', sub: '一个项目 = 一台 NDR；授权ID、令牌、工作流、模型都在这里' },
+    observations: { title: '行为观察', sub: '行为基线只给事实不下结论；外连白名单在这里维护' },
     workflows: { title: '工作流', sub: '分析编排模版：阶段 + 要点 + 常用工具；项目组织按需引用' },
     processes: { title: '分析过程', sub: '任务 → 会话：耗时、工具数、工作流进度、时间线；运行中实时追新' },
     scripts: { title: '分析脚本', sub: '模型写过的分析工具脚本：看、改、停用' },
@@ -597,12 +678,26 @@ ${THEME}
   let sOffset = 0, sTotal = 0, editing = ''
   let pOffset = 0, pTotal = 0, procSeq = 0, procTimer = 0, procRunning = false
   let wfEditId = ''
+  let pjEditId = ''
+  let currentProject = localStorage.getItem('xdr.project') || ''
+  const withProject = url => currentProject === ''
+    ? url
+    : url + (url.includes('?') ? '&' : '?') + 'project=' + encodeURIComponent(currentProject)
 
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
   const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
   const toast = text => { const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000) }
-  const json = (url, init) => fetch(url, init).then(r => { if (r.status === 401) { location.href = BASE + '/login'; throw new Error('unauthorized') } return r.json() })
+  const json = (url, init) => {
+    // 数据类 GET 自动带当前项目（项目切换器选中的那个）；写操作各自显式带
+    const target = url.includes('/api/') && !url.includes('project=') && init === undefined
+      ? url + (url.includes('?') ? '&' : '?') + 'project=' + encodeURIComponent(currentProject)
+      : url
+    return fetch(target, init).then(r => {
+      if (r.status === 401) { location.href = BASE + '/login'; throw new Error('unauthorized') }
+      return r.json()
+    })
+  }
 
   function viewOf(hash) {
     const key = String(hash || '').replace(/^#\\/?/, '')
@@ -619,6 +714,8 @@ ${THEME}
     document.getElementById('view-title').textContent = VIEWS[view].title
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
+    if (view === 'projects') void loadProjects().catch(onError)
+    if (view === 'observations') void loadObservations().catch(onError)
     if (view === 'workflows') void loadWorkflows().catch(onError)
     if (view === 'processes') void loadProcesses().catch(onError)
     if (view === 'scripts') void loadScripts().catch(onError)
@@ -841,6 +938,146 @@ ${THEME}
     appendEvents(tl)
     renderProcWorkflow()
     if (procRunning) procTimer = setInterval(() => { void pollProc(taskId).catch(onError) }, 3000)
+  }
+
+  /* ---------------- 项目组织 ---------------- */
+
+  let projList = []
+
+  async function loadProjects() {
+    const data = await fetch(BASE + '/api/projects').then(r => r.json())
+    projList = data.projects || []
+    document.getElementById('pj-count').textContent = '共 ' + projList.length + ' 个'
+    document.getElementById('pj-rows').innerHTML = projList.map(p => {
+      const status = { ok: '<span class="tag ok">分析中</span>', auth_mismatch: '<span class="tag bad">授权ID不一致</span>',
+        unreachable: '<span class="tag warn">不可达</span>', unchecked: '<span class="tag off">待校验</span>',
+        disabled: '<span class="tag off">已停用</span>', degraded: '<span class="tag warn">熔断中</span>' }[p.status] || esc(p.status)
+      return '<tr><td><b>' + esc(p.name || p.projectId) + '</b><div class="count" style="margin:0">' + esc(p.mcpUrl || '') + '</div></td>' +
+        '<td class="mono">' + esc(p.projectId) + '</td>' +
+        '<td>' + esc(p.workflowId || '（默认）') + '</td>' +
+        '<td>' + esc(p.model || '（默认）') + (p.fallbackModel ? ' → ' + esc(p.fallbackModel) : '') + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td>' + esc(fmt(p.lastCheckedAt)) + '</td>' +
+        '<td><button class="btn" data-pj-edit="' + esc(p.projectId) + '">编辑</button></td></tr>'
+    }).join('') || '<tr><td colspan="7" class="empty">还没有项目组织：新增一个并填入 NDR 的授权ID</td></tr>'
+    const select = document.getElementById('proj-switch')
+    select.innerHTML = '<option value="">（默认）</option>' + projList.map(p =>
+      '<option value="' + esc(p.projectId) + '"' + (p.projectId === currentProject ? ' selected' : '') + '>' +
+      esc(p.name || p.projectId) + '</option>').join('')
+  }
+
+  async function openProject(id) {
+    pjEditId = id || ''
+    const p = projList.find(x => x.projectId === id)
+    let workflows = []
+    try { workflows = (await fetch(BASE + '/api/workflows').then(r => r.json())).items || [] } catch { workflows = [] }
+    document.getElementById('pj-title').textContent = p ? ('编辑项目：' + (p.name || p.projectId)) : '新增项目'
+    document.getElementById('pj-id').value = p ? p.projectId : ''
+    document.getElementById('pj-id').disabled = p !== undefined
+    document.getElementById('pj-name').value = p ? (p.name || '') : ''
+    document.getElementById('pj-url').value = p ? (p.mcpUrl || '') : ''
+    document.getElementById('pj-token').value = p ? (p.mcpToken || '') : ''
+    document.getElementById('pj-push').value = p ? (p.pushToken || '') : ''
+    document.getElementById('pj-model').value = p ? (p.model || '') : ''
+    document.getElementById('pj-fallback').value = p ? (p.fallbackModel || '') : ''
+    document.getElementById('pj-enabled').checked = p ? p.enabled !== false : true
+    document.getElementById('pj-delete').style.display = p ? '' : 'none'
+    document.getElementById('pj-verify').style.display = p ? '' : 'none'
+    document.getElementById('pj-workflow').innerHTML = '<option value="">（默认模版）</option>' +
+      workflows.map(w => '<option value="' + esc(w.workflowId) + '"' +
+        (p && p.workflowId === w.workflowId ? ' selected' : '') + '>' + esc(w.name) + '</option>').join('')
+    document.getElementById('pj-dialog').showModal()
+  }
+
+  async function saveProject() {
+    const body = {
+      projectId: document.getElementById('pj-id').value.trim().toUpperCase(),
+      name: document.getElementById('pj-name').value.trim(),
+      mcpUrl: document.getElementById('pj-url').value.trim(),
+      mcpToken: document.getElementById('pj-token').value.trim(),
+      pushToken: document.getElementById('pj-push').value.trim(),
+      model: document.getElementById('pj-model').value.trim(),
+      fallbackModel: document.getElementById('pj-fallback').value.trim(),
+      workflowId: document.getElementById('pj-workflow').value,
+      enabled: document.getElementById('pj-enabled').checked,
+    }
+    if (!/^[A-Z0-9]{8}$/.test(body.projectId)) { toast('授权ID 必须是 8 位大写字母或数字'); return }
+    if (!/^https?:\\/\\//.test(body.mcpUrl)) { toast('MCP 地址必须是 http(s)://'); return }
+    const r = await fetch(BASE + '/api/projects', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast(data.error || '保存失败'); return }
+    document.getElementById('pj-dialog').close()
+    toast('已保存')
+    await loadProjects()
+  }
+
+  async function verifyProject() {
+    if (!pjEditId) return
+    const r = await fetch(BASE + '/api/projects/' + encodeURIComponent(pjEditId) + '/verify', { method: 'POST' })
+    const data = await r.json().catch(() => ({}))
+    toast(data.ok ? '复核通过' : ('复核未通过：' + (data.project?.statusDetail || data.error || '见状态')))
+    await loadProjects()
+  }
+
+  async function deleteProject() {
+    if (!pjEditId || !confirm('删除项目「' + pjEditId + '」？历史数据保留在库里，只是不再展示。')) return
+    await fetch(BASE + '/api/projects/' + encodeURIComponent(pjEditId), { method: 'DELETE' })
+    document.getElementById('pj-dialog').close()
+    await loadProjects()
+  }
+
+  /* ---------------- 行为观察 + 外连白名单 ---------------- */
+
+  async function loadObservations() {
+    const kind = document.getElementById('ob-kind').value
+    const data = await json(BASE + '/api/observations?kind=' + encodeURIComponent(kind) + '&limit=100')
+    const items = data.items || []
+    document.getElementById('ob-count').textContent = '共 ' + (data.total || 0) + ' 条'
+    document.getElementById('ob-rows').innerHTML = items.map(o => '<tr>' +
+      '<td>' + esc(fmt(o.last_seen)) + '</td>' +
+      '<td>' + esc(o.kind_label || o.kind) + '</td>' +
+      '<td class="mono">' + esc(o.subject) + '</td>' +
+      '<td>' + esc(Object.entries(o.facts || {}).map(([k, v]) => k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v)).join('；')) + '</td>' +
+      '<td>' + esc(o.count) + '</td>' +
+      '<td>' + esc(o.strength) + '</td></tr>').join('') ||
+      '<tr><td colspan="6" class="empty">还没有事实：外连新目标/异地登录/爆破/404 会出现在这里</td></tr>'
+    await loadAllowlist()
+  }
+
+  async function loadAllowlist() {
+    const data = await fetch(BASE + '/api/egress-allow?tombstone=1').then(r => r.json())
+    const items = data.items || []
+    document.getElementById('al-count').textContent = '共 ' + items.length + ' 条'
+    document.getElementById('al-rows').innerHTML = items.map(a => '<tr>' +
+      '<td>' + esc(a.kind) + '</td>' +
+      '<td class="mono">' + esc(a.value) + '</td>' +
+      '<td>' + (a.scope === 'asset' ? ('仅 ' + esc(a.asset)) : '全局') + '</td>' +
+      '<td>' + (a.source === 'learned' ? '自学习' : '手工') + '</td>' +
+      '<td>' + (a.tombstone ? '<span class="tag off">已删除（墓碑）</span>' : '<span class="tag ok">生效</span>') + '</td>' +
+      '<td>' + (a.tombstone
+        ? '<button class="btn" data-al-restore="' + esc(a.id) + '">撤销</button>'
+        : '<button class="btn ghost" data-al-del="' + esc(a.id) + '">删除</button>') + '</td></tr>').join('') ||
+      '<tr><td colspan="6" class="empty">白名单是空的（自学习要 7 天，也可以手工加）</td></tr>'
+  }
+
+  async function addAllow() {
+    const body = {
+      kind: document.getElementById('al-kind').value,
+      value: document.getElementById('al-value').value.trim(),
+      scope: document.getElementById('al-scope').value,
+      asset: document.getElementById('al-asset').value.trim(),
+    }
+    if (!body.value) { toast('目标不能为空'); return }
+    const r = await fetch(BASE + '/api/egress-allow', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast(data.error || '保存失败'); return }
+    document.getElementById('al-value').value = ''
+    toast('已加入')
+    await loadAllowlist()
   }
 
   /* ---------------- 工作流编排 ---------------- */
@@ -1262,6 +1499,33 @@ ${THEME}
   })
   window.addEventListener('hashchange', route)
 
+  document.getElementById('proj-switch').addEventListener('change', ev => {
+    currentProject = ev.target.value
+    if (currentProject === '') localStorage.removeItem('xdr.project')
+    else localStorage.setItem('xdr.project', currentProject)
+    location.reload()
+  })
+  document.getElementById('pj-rows').addEventListener('click', ev => {
+    const edit = ev.target.closest('[data-pj-edit]')
+    if (edit) void openProject(edit.dataset.pjEdit).catch(onError)
+  })
+  document.getElementById('pj-new').addEventListener('click', () => void openProject('').catch(onError))
+  document.getElementById('pj-refresh').addEventListener('click', () => void loadProjects().catch(onError))
+  document.getElementById('pj-save').addEventListener('click', () => void saveProject().catch(onError))
+  document.getElementById('pj-cancel').addEventListener('click', () => document.getElementById('pj-dialog').close())
+  document.getElementById('pj-delete').addEventListener('click', () => void deleteProject().catch(onError))
+  document.getElementById('pj-verify').addEventListener('click', () => void verifyProject().catch(onError))
+  document.getElementById('ob-refresh').addEventListener('click', () => void loadObservations().catch(onError))
+  document.getElementById('ob-kind').addEventListener('change', () => void loadObservations().catch(onError))
+  document.getElementById('al-add').addEventListener('click', () => void addAllow().catch(onError))
+  document.getElementById('al-rows').addEventListener('click', ev => {
+    const del = ev.target.closest('[data-al-del]')
+    if (del) void fetch(BASE + '/api/egress-allow/' + encodeURIComponent(del.dataset.alDel), { method: 'DELETE' })
+      .then(() => loadAllowlist()).catch(onError)
+    const restore = ev.target.closest('[data-al-restore]')
+    if (restore) void fetch(BASE + '/api/egress-allow/' + encodeURIComponent(restore.dataset.alRestore) + '/restore', { method: 'POST' })
+      .then(() => loadAllowlist()).catch(onError)
+  })
   document.getElementById('wf-rows').addEventListener('click', ev => {
     const edit = ev.target.closest('[data-wf-edit]')
     if (edit) { openWorkflow(edit.dataset.wfEdit); return }
@@ -1432,6 +1696,8 @@ ${THEME}
     await loadOverview().catch(onError)
     if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
     if (viewOf(location.hash) === 'records') await loadList().catch(onError)
+    if (viewOf(location.hash) === 'projects') await loadProjects().catch(onError)
+    if (viewOf(location.hash) === 'observations') await loadObservations().catch(onError)
     if (viewOf(location.hash) === 'workflows') await loadWorkflows().catch(onError)
     if (viewOf(location.hash) === 'processes') await loadProcesses().catch(onError)
     if (viewOf(location.hash) === 'scripts') await loadScripts().catch(onError)
