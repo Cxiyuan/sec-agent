@@ -7,7 +7,7 @@
 
 | 地址 | 工具数 | 用途 |
 |---|---|---|
-| `http://ndr-mcp:8090/mcp` | **22**（analyst 档） | 智能体默认入口：闭环动作 + 取数底座（`baseline_lookup` / `entity_profile`）+ 方向/规则上下文（`relay_nodes` / `hit_clusters` / `get_rule` / `list_rules`），**不含**撤销抑制、取提取件正文、改结论、改规则等 |
+| `http://ndr-mcp:8090/mcp` | **23**（analyst 档） | 智能体默认入口：闭环动作 + 身份（`server_info`）+ 取数底座（`baseline_lookup` / `entity_profile`）+ 方向/规则上下文（`relay_nodes` / `hit_clusters` / `get_rule` / `list_rules`），**不含**撤销抑制、取提取件正文、改结论、改规则等 |
 | `http://ndr-mcp:8090/mcp/full` | 43（全量） | 人工排查 / 复现 / 运维 |
 
 两档共用同一层 Bearer 鉴权（`stmcp_` 令牌）。**按能力收窄工具面**的理由：既省上下文，
@@ -29,6 +29,7 @@ NDR 复用原来的推送 URL / `Authorization: Bearer <token>` / 超时 / 持�
 ```json
 {
   "doorbell": {
+    "project": "K7Q2M9XA",
     "queue_len": 137,
     "top_kind": "shift",
     "max_strength": 0.92,
@@ -42,13 +43,28 @@ NDR 复用原来的推送 URL / `Authorization: Bearer <token>` / 超时 / 持�
 
 | 项 | 说明 |
 |---|---|
-| 载荷字段 | **恰好这 5 个**。不含事件内容、严重度、结论、建议 —— 别指望从门铃里读出「发生了什么」 |
+| 载荷字段 | **恰好这 6 个**：`project`（NDR 授权ID，项目组织身份，多项目 agent 靠它路由）+ 队列状况 5 项。不含事件内容、严重度、结论、建议 —— 别指望从门铃里读出「发生了什么」 |
 | 触发 | 队列 0→非 0 **立即发一次**（不受冷却）；其余按 `suppression` 无关的 `analysis.doorbell_cooldown_seconds`（默认 180 秒）合并 |
 | 失败 | NDR 落持久重试队列；`undelivered` 只表示「这次没叫醒你」，**队列数据仍完整可拉**，不是丢数据 |
 | 不配地址 | NDR 不发门铃，也不累加 `undelivered` 噪声；此时完全靠你的定时自轮询 |
 | 你的动作 | 收到 → `claim_tasks`，领取数量由你决定（NDR 不设额度上限，门铃只管叫醒、不派工） |
 
 **兜底**：请另外每 **15 分钟**自轮询一次 `claim_tasks`（门铃会因重启/网络丢）。
+
+---
+
+## 1.1 项目组织身份（授权ID）
+
+一台 agent 可以接多台 NDR（多个项目组织）。两边靠 **授权ID** 对上号：
+
+| 项 | 说明 |
+|---|---|
+| 是什么 | 8 位大写字母+数字，由 NDR 的**硬件机器码**派生（换机才变）；不是密钥 |
+| 在哪看 | NDR 控制台 → 配置管理 → **系统授权**；也可 `GET /api/system/license` |
+| 怎么带 | MCP **所有响应**带 `x-ndr-auth-id` 头；工具 `server_info` 返回 `{auth_id, source, stable}`；门铃载荷带 `project` |
+| 怎么绑 | agent 侧「项目组织」里填这个 ID + 该 NDR 的 MCP 地址/令牌；保存时调 `server_info` 核对 |
+| 不一致 | **停掉该项目的分析并报警**（不把数据写到归属不明的库里）；换机后到 agent 侧把绑定 ID 改成新的即可恢复 |
+| 鉴权 | 授权ID 只做身份识别；真正的鉴权是每项目的 MCP 令牌与门铃推送令牌 |
 
 ---
 

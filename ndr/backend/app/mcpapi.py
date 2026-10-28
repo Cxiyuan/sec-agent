@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app import system_license
 from app.analysis import (
     anchors as analysis_anchors,
     digests as _digests,
@@ -106,6 +107,7 @@ __all__ = [
     "session_factory",
     "stats_lookup",
     "suppression",
+    "system_license",
     "top_anomalies",
 ]
 

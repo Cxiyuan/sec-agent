@@ -341,7 +341,7 @@ FOR UPDATE SKIP LOCKED LIMIT n`，然后同事务把状态改成 `claimed` 并�
 
 artex 用"系统提示尾部只列工具名、skill 加载时解锁"来省上下文。
 **dsh 没有这套机制**（MCP 工具本来就以结构化定义下发），所以按**同族能力**落地：
-按档位收窄工具面 —— `/mcp` 是 analyst 档（22 个），`/mcp/full` 是全量（43 个），共用一层鉴权。
+按档位收窄工具面 —— `/mcp` 是 analyst 档（23 个，含身份工具 `server_info`），`/mcp/full` 是全量（43 个），共用一层鉴权。
 附带修掉一个真实缺口：原来任何持令牌方都能看到并调用 `revoke_suppression`。
 
 ### 7.5.6 明确不借

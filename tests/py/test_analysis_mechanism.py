@@ -187,17 +187,20 @@ def _task_row() -> Any:
 def test_doorbell_payload_shape_is_minimal(queue_mod: Any) -> None:
     """门铃载荷的键必须是固定白名单。加了任何事件字段，就等于回到推送老路。"""
     src = inspect.getsource(queue_mod.doorbell_payload)
-    for key in ("queue_len", "top_kind", "max_strength", "watermark", "ts"):
+    # project 是项目组织身份（8 位授权ID），不是事件数据；多项目 agent 靠它路由门铃
+    for key in ("project", "queue_len", "top_kind", "max_strength", "watermark", "ts"):
         assert f'"{key}"' in src, f"门铃缺字段 {key}"
-    # 门铃只能带队列状况：出现任何"事件内容"字段就等于回到推送老路
+    # 门铃只能带队列状况与身份：出现任何"事件内容"字段就等于回到推送老路
     for forbidden in ("digest", "evidence", "severity", "src_ip", '"rule"', "samples"):
         assert forbidden not in src, f"门铃不该带 {forbidden}"
-    # 键集合必须正好是那五个（多加一个字段就是往数据方向滑）
+    # 键集合必须正好是那六个（多加一个字段就是往数据方向滑）
     body = src[src.index("return {") :]
     keys = {
-        k for k in ("queue_len", "top_kind", "max_strength", "watermark", "ts") if f'"{k}"' in body
+        k
+        for k in ("project", "queue_len", "top_kind", "max_strength", "watermark", "ts")
+        if f'"{k}"' in body
     }
-    assert keys == {"queue_len", "top_kind", "max_strength", "watermark", "ts"}
+    assert keys == {"project", "queue_len", "top_kind", "max_strength", "watermark", "ts"}
 
 
 def test_doorbell_coalesces_and_jumps_on_empty_to_nonempty(queue_mod: Any) -> None:

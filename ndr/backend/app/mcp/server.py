@@ -23,11 +23,11 @@ from typing import Any
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
 from app.mcp import auth as token_auth, calls, ndr_tools
-from app.mcpapi import es_tools, execute_es_tool, get_logger
+from app.mcpapi import es_tools, execute_es_tool, get_logger, system_license
 
 log = get_logger(__name__)
 
@@ -495,6 +495,11 @@ def task_stats(days: int = 0, kind: str = "", limit: int = 0) -> str:
     return _run("task_stats", _clean(days=days, kind=kind, limit=limit), native=True)
 
 
+def server_info() -> str:
+    """本 NDR 的身份（授权ID）：项目组织绑定校验用（必须与智能体侧配置一致）。"""
+    return _run("server_info", {}, native=True)
+
+
 def asset_map(kind: str = "", limit: int = 0) -> str:
     """数据地图：见过的资产/服务端口/外部对端/协议/签名清单（自主挑目标用）。"""
     return _run("asset_map", _clean(kind=kind, limit=limit), native=True)
@@ -696,6 +701,7 @@ _NDR_TOOL_FUNCS = (
     search_traces,
     get_trace,
     task_stats,
+    server_info,
     asset_map,
     coverage_report,
     search_hits,
@@ -749,6 +755,8 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "complete_task",
         "defer_task",
         "task_state",
+        # 身份：项目组织绑定校验（授权ID 必须与智能体侧配置一致）
+        "server_info",
         # 抑制（申请与查看；撤销留给人在界面或 full 档上做）
         "submit_suppression",
         "list_suppressions",
@@ -784,6 +792,11 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
     parts: list[str] = [
         "深瞳 NDR 是数据的看门人：采集侧日志已归一化成统一字段，只能通过这里查。"
     ]
+    if has("server_info"):
+        parts.append(
+            "server_info 给出本 NDR 的**授权ID**（项目组织身份）：智能体侧绑定的项目 ID "
+            "必须与它一致；不一致说明这台 MCP 指错了 NDR，不要继续干活。"
+        )
     if has("describe_data"):
         parts.append("先调 describe_data 拿字段清单、真实时间范围与各来源量级，再按需取证。")
     evidence = [f"{name}（{note}）" for name, note in _EVIDENCE_NOTES if has(name)]
@@ -997,6 +1010,35 @@ class BearerAuth:
             _current_token.reset(reset)
 
 
+class ServerIdentityHeader:
+    """给所有 MCP 响应加 `x-ndr-auth-id`：智能体逐次核对"这还是我绑定的那个项目吗"。
+
+    为什么放在最外层：401/404 这类错误响应也要带 —— 令牌填错时运维正是需要知道
+    "我连的是哪台 NDR"。响应头不参与鉴权（它只是身份声明）。
+    """
+
+    HEADER = b"x-ndr-auth-id"
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        value = system_license.auth_id().encode("ascii", "ignore")
+
+        async def send_with_identity(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                if not any(key.lower() == self.HEADER for key, _ in headers):
+                    headers.append((self.HEADER, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_identity)
+
+
 class TieredMCP:
     """按路径前缀把请求分给不同**工具档位**的 FastMCP 应用，并同时跑两者的生命周期。
 
@@ -1047,13 +1089,13 @@ class TieredMCP:
 
 
 def build_app() -> ASGIApp:
-    """MCP 的 ASGI 应用（外面套一层令牌校验，里面按档位分路径）。"""
+    """MCP 的 ASGI 应用（最外层声明身份，其次校验令牌，再按档位分路径）。"""
     tiers: list[tuple[str, ASGIApp]] = [
         # 完整档先注册：前缀匹配最长优先，但列表顺序也保持"更具体在前"以免依赖排序
         (settings.mcp_full_path, _tier_app("full", "/")),
         (settings.mcp_path, _tier_app("analyst", "/")),
     ]
-    return BearerAuth(TieredMCP(tiers))
+    return ServerIdentityHeader(BearerAuth(TieredMCP(tiers)))
 
 
 def _tier_app(profile: str, path: str) -> ASGIApp:

@@ -13,6 +13,7 @@ import {
   Radar,
   Radio,
   ScanSearch,
+  ShieldCheck,
   Search,
   Settings,
   Share2,
@@ -112,6 +113,7 @@ const CONFIG_ITEMS: NavItem[] = [
   },
   { href: "/config/storage", label: "数据存储", desc: "Elasticsearch 与入库管道", icon: Database, group: "存储与对接" },
   { href: "/config/agent", label: "智能体对接", desc: "MCP 取数与摘要推送", icon: BarChart3, group: "存储与对接" },
+  { href: "/config/license", label: "系统授权", desc: "本机授权ID · 项目组织绑定", icon: ShieldCheck, group: "诊断与账号" },
   { href: "/config/health", label: "配置体检", desc: "逐项核对当前生效值", icon: Settings, group: "诊断与账号" },
   { href: "/config/account", label: "账户", desc: "登录口令与会话", icon: UserRound, group: "诊断与账号" },
 ];

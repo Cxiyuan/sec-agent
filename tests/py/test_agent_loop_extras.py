@@ -132,9 +132,15 @@ def test_unknown_profile_is_rejected(mods: dict[str, Any]) -> None:
 
 
 def test_two_profiles_share_one_auth_layer(mods: dict[str, Any]) -> None:
-    """两个档位挂在同一层 Bearer 鉴权下：外层只有一把锁。"""
+    """两个档位挂在同一层 Bearer 鉴权下：外层只有一把锁。
+
+    最外层多了一层 `ServerIdentityHeader`（给所有响应加 `x-ndr-auth-id`，不参与鉴权），
+    所以这里剥掉它再看鉴权层 —— 断言的是"只有一把锁"，不是"锁在最外面"。
+    """
     server = mods["server"]
     app = server.build_app()
+    while type(app).__name__ == "ServerIdentityHeader":
+        app = app.app
     assert type(app).__name__ == "BearerAuth"
     inner = app.app
     assert type(inner).__name__ == "TieredMCP"

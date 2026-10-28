@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import User
+from app.system_license import license_info
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
 #: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
@@ -120,6 +121,20 @@ def _percent(used: int | None, total: int | None) -> float | None:
     if not used or not total or total <= 0:
         return None
     return round(min(100.0, max(0.0, used * 100.0 / total)), 1)
+
+
+@router.get("/license")
+def system_license(_: Annotated[User, Depends(get_current_user)]):
+    """本机**授权ID**：由硬件机器码派生的 8 位身份串（大写字母 + 数字）。
+
+    智能体侧在「项目组织」里填这个 ID，就把项目绑定到这台 NDR 上。
+    它是身份不是密钥：可以展示、抄写；鉴权仍靠 MCP 令牌与推送令牌。
+    只返回派生后的 ID 与来源，**不返回原始机器码**（没必要，也不该外泄硬件序列）。
+    """
+    return {
+        **license_info(),
+        "note": "在智能体控制台 → 配置 → 项目组织里新增项目并填入此授权ID；换机后 ID 会变，需同步修改绑定",
+    }
 
 
 @router.get("/metrics")

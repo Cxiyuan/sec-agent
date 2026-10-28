@@ -689,7 +689,13 @@ def next_watermark(client: Any) -> str:
 
 
 def doorbell_payload(client: Any) -> dict[str, Any]:
-    """门铃载荷：**只有队列状况，不含任何事件数据**（红线：含数据就又回到被动解释器）。"""
+    """门铃载荷：**只有队列状况 + 本 NDR 的项目身份，不含任何事件数据**。
+
+    红线：含事件数据就又回到"被动解释器"。`project` 是授权ID（8 位身份串），
+    用于多项目 agent 把门铃路由到正确的项目；它不含任何流量内容。
+    """
+    from app.system_license import auth_id
+
     with SessionLocal() as db:
         rows = db.execute(
             select(AnalysisTask.kind, func.count(), func.max(AnalysisTask.strength))
@@ -699,6 +705,8 @@ def doorbell_payload(client: Any) -> dict[str, Any]:
     queue_len = sum(int(r[1] or 0) for r in rows)
     top = max(rows, key=lambda r: float(r[2] or 0), default=None)
     return {
+        # 项目组织身份（授权ID）：多项目 agent 靠它路由；不是密钥
+        "project": auth_id(),
         "queue_len": queue_len,
         "top_kind": str(top[0]) if top else "",
         "max_strength": round(float(top[2] or 0), 3) if top else 0.0,

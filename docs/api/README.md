@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **123 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **124 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 
 ## 一、通用约定
@@ -57,6 +57,7 @@
 
 | 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
 | --- | --- | --- | --- | --- |
+| `GET` | `/api/system/license` | — | — | — |
 | `GET` | `/api/system/metrics` | — | — | — |
 
 ### 运营中心 — `/api/health`
@@ -392,7 +393,6 @@ MCP 令牌与工具清单
 
 | 接口 | 新增字段 | 说明 |
 | --- | --- | --- |
-| `GET /api/detector/hits`、`/hits/{id}` | `agent_status / agent_severity / agent_summary / agent_updated_at`（详情另有 `agent_detail / agent_thread_id`） | **智能体分析结论（判定权威来源）**：status 值域 true_positive/false_positive/benign/suspicious/inconclusive/pending/done；severity 为 info/low/medium/high/critical。无记录时字段为 null（表示智能体尚未返回结论，此时界面回退显示 NDR 初判）。结论由智能体经 MCP record_conclusion 写回，同一事件只留一份、重复写回覆盖 |
 | `GET /api/detector/hits`、`/hits/{id}` | `event_types` / `event_type_labels` | **事件类型（具体归类，中文）**：`网络扫描`／`Web 应用攻击`／`账号口令攻击`／`权限提升尝试`／`连接数异常偏离`／`大流量外传`…（2026-10 改口径：不再返回 `signature_hit`、`baseline_deviation` 这类内部码）。两个字段同源，前端直接显示即可 |
 | `GET /api/detector/hits`、`/hits/{id}` | （已有）`source_kind` / `source_label` | 三类来源：特征匹配 / 行为分析 / 基线偏离 |
 | `GET /api/baseline/profiles` | `posterior` | 似然比**后验概率**（0~1）。打分方式=llr 时列表按它排序；`risk_score` 仍返回（加和分，回滚口径） |

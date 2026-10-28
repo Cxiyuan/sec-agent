@@ -59,6 +59,7 @@ from app.mcpapi import (
     session_factory,
     stats_lookup,
     suppression,
+    system_license,
     top_anomalies,
 )
 
@@ -1114,6 +1115,22 @@ def _task_stats(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _server_info(args: dict[str, Any]) -> dict[str, Any]:
+    """这台 NDR 的身份（授权ID）：智能体用它核对「项目组织」的绑定是否一致。
+
+    为什么单独一个工具：绑定校验要在**干活之前**做，不能等第一条任务回来了才发现
+    MCP 指向的是另一台 NDR。返回里同时给出口径来源，便于换机后排障。
+    """
+    info = system_license.license_info()
+    return {
+        "auth_id": info["auth_id"],
+        "source": info["source"],
+        "source_label": info["source_label"],
+        "stable": info["stable"],
+        "note": "授权ID 是项目组织身份（不是密钥）；智能体侧配置的绑定 ID 必须与它一致",
+    }
+
+
 def _asset_map(args: dict[str, Any]) -> dict[str, Any]:
     """数据地图之对象清单：见过哪些资产/服务端口/外部对端/协议/签名，各自首次与最近时间。
 
@@ -1707,6 +1724,14 @@ TOOLS: dict[str, dict[str, Any]] = {
             "reason": "为什么延后（界面可见）",
             "retry_after_seconds": "多久后可以再领（默认 3600）",
         },
+    },
+    "server_info": {
+        "run": _server_info,
+        "desc": (
+            "本 NDR 的身份（授权ID）：智能体侧「项目组织」绑定的 ID 必须与它一致。"
+            "绑定校验在干活之前做（不能等第一条任务回来才发现 MCP 指向了另一台 NDR）"
+        ),
+        "params": {},
     },
     "task_stats": {
         "run": _task_stats,

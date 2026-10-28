@@ -588,6 +588,18 @@ export interface SystemMetrics {
   notes: string[];
 }
 
+/** `GET /api/system/license`：本机授权ID（项目组织身份） */
+export interface SystemLicense {
+  /** 8 位大写字母+数字（由硬件机器码派生；换机才变） */
+  auth_id: string;
+  /** 派生来源：hardware 硬件UUID / machine-id 系统安装标识 / hostname 主机名兜底 */
+  source: string;
+  source_label: string;
+  /** false = 走的主机名兜底，换主机名就会换 ID（界面要提示） */
+  stable: boolean;
+  note: string;
+}
+
 /** 组件灯的四个状态：ok 正常 / degraded 注意 / down 不可用 / unknown 信息不足（如未配置） */
 export type ComponentState = "ok" | "degraded" | "down" | "unknown";
 

@@ -2,13 +2,19 @@
  * 门铃载荷：NDR 只告诉你「有新线索了」，**不含任何事件数据**。
  *
  * 契约（`docs/agent-contract.md` §1 / NDR 侧 `detector/push.send_doorbell`）：
- * `{"doorbell": {queue_len, top_kind, max_strength, watermark, ts}}` —— 恰好这 5 个字段。
+ * `{"doorbell": {project, queue_len, top_kind, max_strength, watermark, ts}}`。
+ * `project` 是 NDR 的授权ID（8 位身份串，多项目 agent 靠它路由门铃）；不是事件数据。
  *
  * 为什么不带内容：带内容就退化成"规则结果解释器"，而且没有成本上限。
  * 看什么、查多深由智能体自己用 `claim_tasks` 领（服务端强制预算）。
  */
 
 export interface Doorbell {
+  /**
+   * 本门铃来自哪个项目（NDR 授权ID，8 位）。单项目部署为空串也照常工作；
+   * 多项目时用它把门铃路由到对应项目的领取循环。
+   */
+  readonly project: string
   /** 队列里当前有多少条线索（只用来决定要不要立刻领，不决定领多少） */
   readonly queue_len: number
   /** 队列里客观强度最高的那类线索（`novelty` / `shift` / `coverage` / `hit` / `retest`） */
@@ -60,7 +66,9 @@ export function parseDoorbell(body: unknown): Doorbell | null {
     throw new DoorbellFormatError('doorbell.ts must be a string')
   }
   const topKind = inner['top_kind']
+  const project = inner['project']
   return {
+    project: typeof project === 'string' ? project.slice(0, 16) : '',
     queue_len: Math.trunc(queueLen),
     top_kind: typeof topKind === 'string' ? topKind.slice(0, 32) : '',
     max_strength: maxStrength,
