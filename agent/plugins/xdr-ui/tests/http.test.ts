@@ -62,6 +62,26 @@ function conclusion(id: string): Record<string, unknown> {
   }
 }
 
+/** 一条分析脚本（P4 脚本库形状）。 */
+function script(name: string) {
+  return {
+    id: 's-1',
+    name,
+    scenario: 'ssh 超时排查：连不上时先看握手与丢包',
+    language: 'bash',
+    tags: ['ssh'],
+    notes: '',
+    variables: {},
+    code: 'echo hi',
+    origin: 'agent',
+    enabled: true,
+    usageCount: 3,
+    createdAt: '2026-10-28T10:00:00.000Z',
+    updatedAt: '2026-10-28T11:00:00.000Z',
+    updatedBy: 'agent',
+  }
+}
+
 function makeApp(options: Partial<{
   ingest: IngestServiceView | null
   password: string
@@ -311,6 +331,88 @@ test('结论列表/详情：分析记录页读的是智能体交回的结论（N
   }
 })
 
+test('脚本库：列表/详情/新建/启停/删除（控制台不执行脚本，只做管理）', async () => {
+  const ingest = makeIngest()
+  let saved: Record<string, unknown> | null = null
+  let toggled: [string, boolean] | null = null
+  ingest.listScripts = async query => {
+    assert.deepEqual(query, { search: '扫描', limit: 200, offset: 0 })
+    return { total: 1, items: [script('ssh-timeout-scan')] }
+  }
+  ingest.getScript = async key => (key === 'ssh-timeout-scan' ? script(key) : null)
+  ingest.saveScript = async body => {
+    saved = body as Record<string, unknown>
+    return script(String((body as Record<string, unknown>)['name']))
+  }
+  ingest.setScriptEnabled = async (key, enabled) => {
+    toggled = [key, enabled]
+    return true
+  }
+  let removed = ''
+  ingest.removeScript = async key => {
+    removed = key
+    return true
+  }
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const anon = await fetch(`${base}${BASE}/api/scripts`)
+    assert.equal(anon.status, 401)
+
+    // 查询参数钳制 + 搜索词透传
+    const list = await fetch(`${base}${BASE}/api/scripts?limit=9999&offset=-5&q=${encodeURIComponent('扫描')}`, { headers: { cookie } })
+    assert.equal(list.status, 200)
+    const data = await list.json() as { total: number, items: Array<Record<string, unknown>> }
+    assert.equal(data.total, 1)
+    assert.equal(data.items[0]?.['name'], 'ssh-timeout-scan')
+
+    const detail = await fetch(`${base}${BASE}/api/scripts/ssh-timeout-scan`, { headers: { cookie } })
+    assert.equal(detail.status, 200)
+    const missing = await fetch(`${base}${BASE}/api/scripts/nope`, { headers: { cookie } })
+    assert.equal(missing.status, 404)
+
+    // 新建/编辑：控制台来源（origin=console，模型也能用）
+    const created = await fetch(`${base}${BASE}/api/scripts`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'ssh-timeout-scan', scenario: 'ssh 超时排查', code: 'echo hi' }),
+    })
+    assert.equal(created.status, 200)
+    assert.equal(saved?.['name'], 'ssh-timeout-scan')
+
+    // 非法 JSON → 400（不是 500）
+    const bad = await fetch(`${base}${BASE}/api/scripts`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: '{not json',
+    })
+    assert.equal(bad.status, 400)
+
+    // 启停
+    const toggle = await fetch(`${base}${BASE}/api/scripts/ssh-timeout-scan/enabled`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    assert.equal(toggle.status, 200)
+    assert.deepEqual(toggled, ['ssh-timeout-scan', false])
+
+    // 删除
+    const del = await fetch(`${base}${BASE}/api/scripts/ssh-timeout-scan`, { method: 'DELETE', headers: { cookie } })
+    assert.equal(del.status, 200)
+    assert.equal(removed, 'ssh-timeout-scan')
+
+    // 工作台页面确实挂了脚本视图（入口存在）
+    const page = await fetch(`${base}${BASE}/`, { headers: { cookie } })
+    const html = await page.text()
+    assert.ok(html.includes('/api/scripts'))
+    assert.ok(html.includes('view-scripts'))
+  } finally {
+    server.close()
+  }
+})
+
 test('未知路径 404；登出后 Cookie 失效', async () => {
   const { server } = makeApp()
   const base = await listen(server)
@@ -534,4 +636,5 @@ test('系统设置：模型清单拉取透传给系统层', async () => {
   } finally {
     server.close()
   }
+
 })

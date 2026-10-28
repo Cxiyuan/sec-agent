@@ -209,6 +209,7 @@ ${THEME}
     <nav>
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
+      <a href="#/scripts" data-view="scripts"><span class="dot"></span>分析脚本</a>
       <a href="#/settings" data-view="settings"><span class="dot"></span>配置</a>
       <a href="#/system" data-view="system"><span class="dot"></span>系统</a>
     </nav>
@@ -257,6 +258,30 @@ ${THEME}
         <button id="prev">‹ 上一页</button>
         <button id="next">下一页 ›</button>
         <span id="page"></span>
+      </div>
+    </section>
+
+    <section id="view-scripts" hidden>
+      <div class="toolbar">
+        <input id="sq" type="search" placeholder="搜索：名字 / 场景 / 说明…" maxlength="128">
+        <button id="ssearch">搜索 / 刷新</button>
+        <button id="snew" class="primary">新建脚本</button>
+        <span class="count" id="scount"></span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>名字</th><th>场景</th><th>语言</th><th>来源</th><th>使用</th><th>状态</th><th>更新时间</th></tr>
+        </thead>
+        <tbody id="srows"></tbody>
+      </table>
+      <div class="pager">
+        <button id="sprev">‹ 上一页</button>
+        <button id="snext">下一页 ›</button>
+        <span id="spage"></span>
+      </div>
+      <div class="notice" style="margin-top:.8rem">
+        脚本由智能体分析时自动保存，也可在这里新建/编辑。停用后模型侧的 find/get 不再返回（记录保留可审计）。
+        控制台不会执行脚本；是否需要运行由模型在分析会话里自行决定。
       </div>
     </section>
 
@@ -437,6 +462,26 @@ ${THEME}
     <button id="close" class="btn">关闭</button>
   </div>
 </dialog>
+<dialog id="script-dialog">
+  <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(720px,90vw)">
+    <h3 id="script-title" style="margin:0">新建脚本</h3>
+    <div class="form-grid">
+      <div class="field"><label for="sc-name">名字（项目内唯一）</label><input id="sc-name" maxlength="120"></div>
+      <div class="field"><label for="sc-scenario">什么场景用（检索主要依据）</label><input id="sc-scenario" maxlength="400"></div>
+      <div class="field"><label for="sc-language">语言</label><input id="sc-language" maxlength="24" placeholder="bash"></div>
+      <div class="field"><label for="sc-tags">标签（逗号分隔）</label><input id="sc-tags" maxlength="200"></div>
+    </div>
+    <div class="field"><label for="sc-variables">变量表（JSON，可省）</label><textarea id="sc-variables" rows="3" spellcheck="false"></textarea></div>
+    <div class="field"><label for="sc-notes">说明（可省）</label><input id="sc-notes" maxlength="500"></div>
+    <div class="field"><label for="sc-code">脚本正文</label><textarea id="sc-code" rows="16" spellcheck="false"></textarea></div>
+    <label style="display:flex;align-items:center;gap:.4rem"><input id="sc-enabled" type="checkbox" checked> 启用（模型可用）</label>
+    <div style="display:flex;gap:.6rem;justify-content:flex-end">
+      <button id="sc-delete" class="btn ghost">删除</button>
+      <button id="sc-cancel" class="btn">取消</button>
+      <button id="sc-save" class="btn primary">保存</button>
+    </div>
+  </div>
+</dialog>
 <div id="toast"></div>
 
 <script>
@@ -446,10 +491,12 @@ ${THEME}
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
+    scripts: { title: '分析脚本', sub: '模型写过的分析工具脚本：看、改、停用' },
     settings: { title: '配置', sub: '运行参数、连接状态与入口' },
     system: { title: '系统', sub: '模型与密钥、插件清单、原生设置入口' },
   }
   let offset = 0, total = 0, settingsLoaded = false
+  let sOffset = 0, sTotal = 0, editing = ''
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
   const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
@@ -471,6 +518,7 @@ ${THEME}
     document.getElementById('view-title').textContent = VIEWS[view].title
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
+    if (view === 'scripts') void loadScripts().catch(onError)
     if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
     if (view === 'system') void loadSystem().catch(onError)
   }
@@ -577,6 +625,101 @@ ${THEME}
       '<div class="kv"><span class="k">结论</span>' + esc(e.summary) + '</div>' +
       '<pre>' + esc(JSON.stringify(e.findings ?? {}, null, 2)) + '</pre>'
     document.getElementById('detail').showModal()
+  }
+
+  /* ---------------- 分析脚本（P4） ---------------- */
+
+  async function loadScripts() {
+    const q = document.getElementById('sq').value.trim()
+    const data = await json(BASE + '/api/scripts?limit=' + PAGE + '&offset=' + sOffset + '&q=' + encodeURIComponent(q))
+    sTotal = data.total || 0
+    const rows = (data.items || []).map(s => {
+      const tags = (s.tags || []).join('、')
+      return '<tr data-script="' + esc(s.name) + '">' +
+        '<td class="mono">' + esc(s.name) + '</td>' +
+        '<td>' + esc((s.scenario || '').slice(0, 80)) + '</td>' +
+        '<td>' + esc(s.language || '') + '</td>' +
+        '<td>' + esc(s.origin === 'console' ? '控制台' : '智能体') + '</td>' +
+        '<td>' + esc(s.usageCount || 0) + '</td>' +
+        '<td>' + (s.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag bad">停用</span>') + '</td>' +
+        '<td>' + esc(fmt(s.updatedAt)) + '</td></tr>' +
+        (tags ? '' : '')
+    }).join('')
+    document.getElementById('srows').innerHTML = rows ||
+      '<tr><td colspan="7" class="empty">还没有脚本：智能体在分析中保存的脚本会出现在这里</td></tr>'
+    document.getElementById('scount').textContent = '共 ' + sTotal + ' 条'
+    document.getElementById('spage').textContent = sTotal === 0 ? '' : ('第 ' + (sOffset / PAGE + 1) + ' / ' + Math.ceil(sTotal / PAGE) + ' 页')
+    document.getElementById('sprev').disabled = sOffset === 0
+    document.getElementById('snext').disabled = sOffset + PAGE >= sTotal
+  }
+
+  function openScript(name) {
+    editing = name || ''
+    document.getElementById('script-title').textContent = name ? ('编辑脚本：' + name) : '新建脚本'
+    const set = (id, v) => { document.getElementById(id).value = v == null ? '' : String(v) }
+    document.getElementById('sc-enabled').checked = true
+    if (!name) {
+      for (const id of ['sc-name', 'sc-scenario', 'sc-notes', 'sc-code', 'sc-variables']) set(id, '')
+      set('sc-language', 'bash')
+      set('sc-tags', '')
+      document.getElementById('script-dialog').showModal()
+      return
+    }
+    void json(BASE + '/api/scripts/' + encodeURIComponent(name)).then(data => {
+      const s = data.entry || {}
+      set('sc-name', s.name)
+      set('sc-scenario', s.scenario)
+      set('sc-language', s.language)
+      set('sc-tags', (s.tags || []).join(', '))
+      set('sc-variables', s.variables && Object.keys(s.variables).length ? JSON.stringify(s.variables, null, 2) : '')
+      set('sc-notes', s.notes)
+      set('sc-code', s.code)
+      document.getElementById('sc-enabled').checked = s.enabled !== false
+      document.getElementById('script-dialog').showModal()
+    }).catch(onError)
+  }
+
+  async function saveScript() {
+    const name = document.getElementById('sc-name').value.trim()
+    if (!name) { toast('名字不能为空'); return }
+    let variables
+    const rawVars = document.getElementById('sc-variables').value.trim()
+    if (rawVars !== '') {
+      try { variables = JSON.parse(rawVars) } catch { toast('变量表不是合法 JSON'); return }
+    }
+    const body = {
+      name,
+      scenario: document.getElementById('sc-scenario').value.trim(),
+      language: document.getElementById('sc-language').value.trim() || 'bash',
+      tags: document.getElementById('sc-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      notes: document.getElementById('sc-notes').value.trim(),
+      code: document.getElementById('sc-code').value,
+      enabled: document.getElementById('sc-enabled').checked,
+      ...(variables === undefined ? {} : { variables }),
+    }
+    const r = await fetch(BASE + '/api/scripts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast(data.error || '保存失败'); return }
+    document.getElementById('script-dialog').close()
+    toast('已保存')
+    await loadScripts().catch(onError)
+  }
+
+  async function deleteScript() {
+    if (!editing) return
+    if (!confirm('删除脚本「' + editing + '」？记录不会保留（停用可保留审计）。')) return
+    const r = await fetch(BASE + '/api/scripts/' + encodeURIComponent(editing), { method: 'DELETE' })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast('删除失败'); return }
+    document.getElementById('script-dialog').close()
+    toast('已删除')
+    await loadScripts().catch(onError)
   }
 
   function tag(ok) { return '<span class="tag ' + (ok ? 'ok' : 'bad') + '">' + (ok ? '已配置' : '未配置') + '</span>' }
@@ -722,6 +865,18 @@ ${THEME}
   })
   window.addEventListener('hashchange', route)
 
+  document.getElementById('srows').addEventListener('click', ev => {
+    const tr = ev.target.closest('tr[data-script]')
+    if (tr) openScript(tr.dataset.script)
+  })
+  document.getElementById('ssearch').addEventListener('click', () => { sOffset = 0; void loadScripts().catch(onError) })
+  document.getElementById('sq').addEventListener('keydown', ev => { if (ev.key === 'Enter') { sOffset = 0; void loadScripts().catch(onError) } })
+  document.getElementById('sprev').addEventListener('click', () => { sOffset = Math.max(0, sOffset - PAGE); void loadScripts().catch(onError) })
+  document.getElementById('snext').addEventListener('click', () => { sOffset += PAGE; void loadScripts().catch(onError) })
+  document.getElementById('snew').addEventListener('click', () => openScript(''))
+  document.getElementById('sc-save').addEventListener('click', () => void saveScript().catch(onError))
+  document.getElementById('sc-cancel').addEventListener('click', () => document.getElementById('script-dialog').close())
+  document.getElementById('sc-delete').addEventListener('click', () => void deleteScript().catch(onError))
   document.getElementById('rows').addEventListener('click', ev => {
     const tr = ev.target.closest('tr[data-id]')
     if (tr) void openDetail(tr.dataset.id)
@@ -846,6 +1001,7 @@ ${THEME}
     await loadOverview().catch(onError)
     if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
     if (viewOf(location.hash) === 'records') await loadList().catch(onError)
+    if (viewOf(location.hash) === 'scripts') await loadScripts().catch(onError)
     if (viewOf(location.hash) === 'system') await loadSystem().catch(onError)
   }
 

@@ -33,6 +33,15 @@ export interface IngestServiceView {
   }>
   getConclusion?(id: string): Promise<unknown>
   conclusionStats?(): Promise<{ available: boolean, total: number }>
+  /** 分析脚本库（P4 控制台管理）：列表/详情/新建编辑/启停/删除。 */
+  listScripts?(query: { search: string, limit: number, offset: number }): Promise<{
+    total: number
+    items: readonly unknown[]
+  }>
+  getScript?(nameOrId: string): Promise<unknown>
+  saveScript?(body: unknown): Promise<unknown>
+  setScriptEnabled?(nameOrId: string, enabled: boolean): Promise<boolean>
+  removeScript?(nameOrId: string): Promise<boolean>
   /** 运行参数快照（可选：老版本 xdr-ingest 没有，控制台显示"不可改"）。 */
   settings?(): Promise<Record<string, unknown>>
   /** 保存运行参数（可选；校验在数据面做，控制台只透传）。 */
@@ -75,6 +84,8 @@ const MAX_ANALYSIS_ID = 128
 const MAX_LOGIN_BODY = 4 * 1024
 /** 运行参数体上限：三个整数，8KB 已经很宽松。 */
 const MAX_SETTINGS_BODY = 8 * 1024
+/** 脚本正文上限：与 xdr-ingest 的 scriptMaxCodeBytes（默认 64KB）对齐，留点 JSON 余量 */
+const MAX_SCRIPT_BODY = 256 * 1024
 const MAX_COOKIE_HEADER = 4096
 
 /**
@@ -412,6 +423,116 @@ export function createUiHandler(
           return
         }
         const entry = await ingest.getConclusion(id)
+        if (entry === null || entry === undefined) {
+          respondJson(res, 404, { error: 'not found' })
+          return
+        }
+        respondJson(res, 200, { entry })
+        return
+      }
+      // ---------- 分析脚本（P4：控制台管理；模型侧仍走 find/get/save 工具） ----------
+      if (tail === '/api/scripts') {
+        if (method === 'GET') {
+          if (!apiGuard()) return
+          const ingest = options.ingest()
+          if (ingest === null || typeof ingest.listScripts !== 'function') {
+            respondJson(res, 200, { available: false, total: 0, items: [] })
+            return
+          }
+          const query = queryOf(req)
+          const limit = clampInt(query.get('limit'), DEFAULT_LIMIT, 1, MAX_LIMIT)
+          const offset = clampInt(query.get('offset'), 0, 0, MAX_OFFSET)
+          const search = (query.get('q') ?? '').slice(0, 128)
+          const page = await ingest.listScripts({ search, limit, offset })
+          respondJson(res, 200, { available: true, total: page.total, items: page.items })
+          return
+        }
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        if (options.ingest() === null || typeof options.ingest()?.saveScript !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用，脚本暂不可改' })
+          return
+        }
+        const body = await readBody(req, MAX_SCRIPT_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        try {
+          const saved = await options.ingest()?.saveScript?.(patch)
+          respondJson(res, 200, { ok: true, script: saved })
+        } catch (error) {
+          respondJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
+      if (tail.startsWith('/api/scripts/')) {
+        if (!apiGuard()) return
+        const rest = decodeURIComponent(tail.slice('/api/scripts/'.length)).trim()
+        if (rest === '' || rest.length > MAX_ANALYSIS_ID || /[\u0000-\u001f]/u.test(rest)) {
+          respondJson(res, 400, { error: 'invalid script id' })
+          return
+        }
+        const ingest = options.ingest()
+        // 启停：POST /api/scripts/{nameOrId}/enabled {enabled:bool}
+        if (rest.endsWith('/enabled')) {
+          if (method !== 'POST') {
+            respondJson(res, 405, { error: 'method not allowed' })
+            return
+          }
+          if (ingest === null || typeof ingest.setScriptEnabled !== 'function') {
+            respondJson(res, 503, { ok: false, error: '数据面不可用' })
+            return
+          }
+          const body = await readBody(req, MAX_SETTINGS_BODY)
+          if (body === undefined) {
+            respondJson(res, 413, { ok: false, error: '请求体过大' })
+            return
+          }
+          let patch: { enabled?: unknown } = {}
+          try {
+            patch = JSON.parse(body.text) as { enabled?: unknown }
+          } catch {
+            respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+            return
+          }
+          if (typeof patch.enabled !== 'boolean') {
+            respondJson(res, 400, { ok: false, error: 'enabled 必须是布尔值' })
+            return
+          }
+          const key = rest.slice(0, -'/enabled'.length)
+          const done = await ingest.setScriptEnabled(key, patch.enabled)
+          respondJson(res, done ? 200 : 404, { ok: done })
+          return
+        }
+        if (method === 'DELETE') {
+          if (ingest === null || typeof ingest.removeScript !== 'function') {
+            respondJson(res, 503, { ok: false, error: '数据面不可用' })
+            return
+          }
+          const done = await ingest.removeScript(rest)
+          respondJson(res, done ? 200 : 404, { ok: done })
+          return
+        }
+        if (method !== 'GET') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (ingest === null || typeof ingest.getScript !== 'function') {
+          respondJson(res, 404, { error: 'data plane unavailable' })
+          return
+        }
+        const entry = await ingest.getScript(rest)
         if (entry === null || entry === undefined) {
           respondJson(res, 404, { error: 'not found' })
           return
