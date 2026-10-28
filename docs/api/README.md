@@ -77,7 +77,7 @@
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/detector/coverage` | `minutes` | — | — |
 | `GET` | `/api/detector/history` | `limit` | — | — |
-| `GET` | `/api/detector/hits` | `limit,offset,include_ignored,source_kind,minutes,severity,rule,ip,q,cluster_id,sort` | — | — |
+| `GET` | `/api/detector/hits` | `limit,offset,include_ignored,source_kind,minutes,severity,rule,ip,q,cluster_id,sort,agent_status,agent_task_state` | — | — |
 | `GET` | `/api/detector/hits/clusters` | `minutes,limit,include_ignored,source_kind` | — | — |
 | `GET` | `/api/detector/hits/stats` | `minutes` | — | — |
 | `GET` | `/api/detector/hits/{hit_id}` | — | `hit_id` | — |
@@ -393,6 +393,11 @@ MCP 令牌与工具清单
 
 | 接口 | 新增字段 | 说明 |
 | --- | --- | --- |
+| `GET /api/detector/hits`、`/hits/{id}` | `agent_status / agent_severity / agent_summary / agent_updated_at`（详情另有 `agent_detail / agent_thread_id`） | **智能体分析结论（判定权威来源）**：status 值域 true_positive/false_positive/benign/suspicious/inconclusive/pending/done；severity 为 info/low/medium/high/critical。无记录时字段为 null（表示智能体尚未返回结论，此时界面回退显示 NDR 初判）。结论由 `complete_task` 自动镜像到 `conclusion_records`（命中线索用 hint 里的 `事件ID` 关联），也兼容 MCP `record_conclusion` 显式写回；同一事件只留一份、重复覆盖 |
+| `GET /api/detector/hits` | **新参数** `agent_status`、`agent_task_state` | `agent_status`：结论态（true_positive/false_positive/benign/suspicious/inconclusive/pending/done）+ 特殊值 `unanalyzed`（结论表无记录 = 智能体尚未返回）。`agent_task_state`：`none`（未派工）/ `queued`（排队中）/ `claimed`（分析中）/ `done` / `failed`（stuck/expired）。留空 = 不筛；未识别的值不筛（与 `source_kind` 同策略）。任务态靠 `analysis_tasks.hint→事件ID` 关联，一次 EXISTS 子查询 |
+| `GET /api/detector/hits`、`/hits/{id}` | `agent_task_state` / `agent_task_id`（详情另有 `agent_task`） | 派工任务态与任务 ID；详情 `agent_task = {task_id, state, bucket, claimed_by, verdict, claimed_at}`。用于把「未派工」与「分析中」分开，积压可视化 |
+| `GET /api/detector/hits/stats` | **两套口径并存**：`by_agent_status[]`、`agent_pending_total` | `by_agent_status[]` 按结论态分组（含 `unanalyzed` 桶，各桶之和 = `total`）；`agent_pending_total` = 智能体尚未返回结论的事件数。原有 `by_severity` / `by_source_kind` / `top_rules` / `trend` **保持不变**（检测器口径），字段名区分、不做覆盖 |
+| `GET /api/detector/hits/clusters` | `agent_status / agent_status_label / agent_severity / agent_analyzed / agent_pending / agent_true_positive` | 簇内聚合：任一成员 `true_positive` 优先，其次 suspicious > inconclusive > false_positive/benign；`agent_severity` 取成员里最高档；`agent_analyzed/agent_pending` 是簇内已分析/未分析事件数。与列表视图同一套 `agent_*` 命名 |
 | `GET /api/detector/hits`、`/hits/{id}` | `event_types` / `event_type_labels` | **事件类型（具体归类，中文）**：`网络扫描`／`Web 应用攻击`／`账号口令攻击`／`权限提升尝试`／`连接数异常偏离`／`大流量外传`…（2026-10 改口径：不再返回 `signature_hit`、`baseline_deviation` 这类内部码）。两个字段同源，前端直接显示即可 |
 | `GET /api/detector/hits`、`/hits/{id}` | （已有）`source_kind` / `source_label` | 三类来源：特征匹配 / 行为分析 / 基线偏离 |
 | `GET /api/baseline/profiles` | `posterior` | 似然比**后验概率**（0~1）。打分方式=llr 时列表按它排序；`risk_score` 仍返回（加和分，回滚口径） |

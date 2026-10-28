@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.analysis import anchors as anchors_mod, digests as digests_mod, feedback, params
 from app.analysis.verdicts import VERDICT_VALUES, clean_terminal_reason, clean_verdict
 from app.db.base import SessionLocal
-from app.db.models import AnalysisResult, AnalysisTask
+from app.db.models import AnalysisResult, AnalysisTask, ConclusionRecord
 from app.workers.log import get_logger
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
@@ -315,6 +315,65 @@ def claim_tasks(
 # ---------- 交回 / 延后 ----------
 
 
+def _event_id_of(task: AnalysisTask) -> str:
+    """任务对应的**命中事件 ID**（hint 里带的；只有 hit 线索有）。"""
+    hint = task.hint if isinstance(task.hint, dict) else {}
+    return str(hint.get("事件ID") or hint.get("event_id") or "").strip()[:64]
+
+
+def _mirror_event_conclusion(
+    db: Any,
+    task: AnalysisTask,
+    *,
+    event_id: str,
+    verdict: str,
+    summary: str,
+    findings: dict[str, Any] | None,
+    confidence: float,
+    terminal_reason: str,
+) -> bool:
+    """任务级结论 → **事件级结论镜像**（事件列表的 `agent_*` 字段靠它）。
+
+    为什么需要：智能体只调 `complete_task`（analyst 档没有 `record_conclusion`），
+    而事件列表按事件 ID 读结论（`conclusion_records.dedup_key = hit_events.id`）。
+    没有这份镜像，界面上永远看不到"这条事件智能体已经判过了" —— 判定权转移只落在
+    任务队列里，事件列表还是空的。
+
+    失败只告警，不影响任务完成（交回是硬要求，镜像是展示）。
+    """
+    if event_id == "" or summary.strip() == "":
+        return False
+    try:
+        now = datetime.now(UTC)
+        rec = db.execute(
+            select(ConclusionRecord).where(ConclusionRecord.dedup_key == event_id)
+        ).scalar_one_or_none()
+        if rec is None:
+            rec = ConclusionRecord(dedup_key=event_id, created_at=now)
+            db.add(rec)
+        detail: dict[str, Any] = dict(findings or {}) if isinstance(findings, dict) else {}
+        detail.update(
+            {
+                "task_id": str(task.id),
+                "confidence": max(0.0, min(1.0, float(confidence or 0))),
+                "terminal_reason": str(terminal_reason or ""),
+            }
+        )
+        rec.event_id = event_id
+        rec.status = str(verdict or "")[:32]
+        # 任务级结论没有"严重度"这一维（智能体不编严重度）：留空，界面回退看结论态
+        rec.severity = ""
+        rec.summary = str(summary)[:4000]
+        rec.detail = detail
+        rec.updated_at = now
+        db.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001 — 镜像失败不能影响任务交回
+        db.rollback()
+        log.warning("写事件级结论镜像失败（任务 %s / 事件 %s）：%s", task.id, event_id, exc)
+        return False
+
+
 def complete_task(
     client: Any,
     task_id: str,
@@ -384,12 +443,24 @@ def complete_task(
                 task_id=str(row.id),
                 pairs=anchor_pairs,
             )
+        event_id = _event_id_of(row)
         row.state = "done"
         row.lease_until = None
         row.updated_at = now
         # 分析过要记账：覆盖率与 staleness 分量都靠它
         _mark_analyzed(db, row.subject_kind, row.subject, now)
         db.commit()
+        # 事件级结论镜像：命中线索关联到具体事件时同步写一份（失败不影响交回）
+        _mirror_event_conclusion(
+            db,
+            row,
+            event_id=event_id,
+            verdict=verdict,
+            summary=str(summary or ""),
+            findings=findings,
+            confidence=float(confidence or 0),
+            terminal_reason=reason,
+        )
         db.refresh(row)
         bump(client, "done")
         # 提交后 ORM 属性会过期，要在这里就把后面要用的三个值取出来

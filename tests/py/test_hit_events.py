@@ -375,3 +375,113 @@ def test_panel_renames_section_and_translates_labels() -> None:
     assert "HIDDEN_FIELDS" in src or "hidden_fields" in src or "hiddenFields" in src, "冗余字段要过滤"
     # 连接状态：suricata 告警本就没这个字段，要给可读说明而不是破折号
     assert "签名引擎告警不带连接状态" in src or "不适用" in src, "签名告警的连接状态要可读说明"
+
+
+# ===== 智能体口径（2026-10 判定权转移）：筛选 / 统计 / 派工态 / 簇聚合 =====
+
+
+def test_agent_status_filter_conditions(hits: Any) -> None:
+    """`agent_status` 筛选：结论态走 EXISTS，`unanalyzed` 走 NOT EXISTS。
+
+    判定权转到智能体后，事件列表的主筛选口径必须是结论表，而不是检测器严重度。
+    """
+    cond = hits._agent_status_condition("true_positive")
+    assert cond is not None
+    sql = str(cond.compile(compile_kwargs={"literal_binds": True}))
+    assert "conclusion_records" in sql and "true_positive" in sql
+    assert "EXISTS" in sql.upper()
+
+    unanalyzed = hits._agent_status_condition("unanalyzed")
+    assert unanalyzed is not None
+    sql_u = str(unanalyzed.compile(compile_kwargs={"literal_binds": True}))
+    assert "NOT" in sql_u.upper() and "EXISTS" in sql_u.upper()
+
+    # 留空/脏值不筛（与 source_kind 同策略）
+    assert hits._agent_status_condition("") is None
+    assert hits._agent_status_condition("no-such-status") is None
+
+
+def test_agent_task_state_filter_conditions(hits: Any) -> None:
+    """`agent_task_state` 筛选：靠 `analysis_tasks.hint->>'事件ID'` 关联，不逐行查。"""
+    cond = hits._agent_task_state_condition("claimed")
+    assert cond is not None
+    sql = str(cond.compile(compile_kwargs={"literal_binds": True}))
+    assert "analysis_tasks" in sql and "claimed" in sql
+    assert "hint" in sql
+
+    none_cond = hits._agent_task_state_condition("none")
+    assert none_cond is not None
+    assert "NOT" in str(none_cond.compile()).upper()
+    assert hits._agent_task_state_condition("nope") is None
+
+
+def test_agent_task_bucket_mapping(hits: Any) -> None:
+    """派工状态收敛成四档：queued（pending/deferred）/ claimed / done / failed。"""
+    assert hits._agent_task_bucket("pending") == "queued"
+    assert hits._agent_task_bucket("deferred") == "queued"
+    assert hits._agent_task_bucket("claimed") == "claimed"
+    assert hits._agent_task_bucket("done") == "done"
+    assert hits._agent_task_bucket("stuck") == "failed"
+    assert hits._agent_task_bucket("expired") == "failed"
+    assert hits._agent_task_bucket("") == "none"
+
+
+def test_hit_conditions_include_agent_filters(hits: Any) -> None:
+    """两个智能体口径的筛选要真的挂进 `_hit_conditions`（漏挂等于参数没生效）。"""
+    plain = hits._hit_conditions()
+    with_agent = hits._hit_conditions(agent_status="false_positive", agent_task_state="queued")
+    assert len(with_agent) == len(plain) + 2
+
+
+def test_hits_stats_expose_agent_breakdown(hits: Any) -> None:
+    """统计必须**两套口径并存**：检测器口径不动，智能体口径单列（含 unanalyzed 桶）。"""
+    import inspect
+
+    src = inspect.getsource(hits.hits_stats)
+    assert '"by_agent_status": by_agent_status' in src
+    assert '"agent_pending_total": agent_pending_total' in src
+    assert "outerjoin(" in src and "ConclusionRecord.dedup_key ==" in src
+    # hit 主键是 UUID、结论键是 VARCHAR(64)：SQL 侧必须显式转文本
+    assert "cast(HitEvent.id, String)" in src
+    assert "AGENT_STATUS_UNANALYZED" in src
+    # 原有检测器口径没有被覆盖
+    assert '"by_severity": by_severity' in src
+    assert '"by_source_kind": by_kind' in src
+
+
+def test_agent_status_labels_come_from_the_single_vocabulary(hits: Any) -> None:
+    """中文展示名必须来自 `analysis/verdicts.py`（唯一词表），不在别处另抄一份。"""
+    import importlib as _importlib
+
+    verdicts = _importlib.import_module("app.analysis.verdicts")
+    assert verdicts.label_of("true_positive") == "确认攻击"
+    assert verdicts.label_of("false_positive") == "误报"
+    assert verdicts.label_of("benign") == "正常"
+    assert verdicts.label_of("suspicious") == "可疑"
+    assert verdicts.label_of("inconclusive") == "无法定性"
+    # 未知值原样返回（不吞脏值）
+    assert verdicts.label_of("weird") == "weird"
+
+
+def test_clusters_aggregate_agent_conclusions(hits: Any) -> None:
+    """簇视图与列表口径一致：真阳性优先、严重度取最高、给出已分析/未分析计数。"""
+    import inspect
+
+    src = inspect.getsource(hits.clusters)
+    assert "_cluster_agent_stats" in src
+    assert "agent_by_cluster" in src
+    agg = inspect.getsource(hits._cluster_agent_stats)
+    # 真阳性优先 + 严重度取最高 + 未分析桶
+    assert '"true_positive"' in agg
+    assert "_AGENT_STATUS_RANK" in agg
+    assert "_SEVERITY_RANK" in agg
+    assert "agent_pending" in agg
+
+
+def test_detector_route_exposes_agent_filters(route: Any) -> None:
+    """前端要能传参：OpenAPI 里必须出现 `agent_status` / `agent_task_state`。"""
+    app = importlib.import_module("app.main").app
+    spec = app.openapi()
+    params = spec["paths"]["/api/detector/hits"]["get"].get("parameters", [])
+    names = {str(p.get("name")) for p in params}
+    assert {"agent_status", "agent_task_state"} <= names

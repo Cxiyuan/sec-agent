@@ -203,6 +203,10 @@ complete_task(task_id, verdict, summary, confidence?, findings?, evidence_refs?,
   否则分不清「查了没证据」和「根本没查完」。
 - `tools_used` / `duration_ms`：**如实填**，这是调预算的唯一依据。
 - 交回后任务置 `done`，写 `analysis_results` 一行，并给该对象记一次「已分析」（覆盖率靠它）。
+- **事件级结论自动镜像**：命中线索（`kind=hit`）的任务带 `hint.事件ID`，交回时 NDR 会把结论
+  同步写一份到 `conclusion_records`（同一事件只留一份、重复覆盖）。事件列表/详情/统计里的
+  `agent_status / agent_summary / agent_updated_at` 就是它 —— 所以**不需要**再单独调
+  `record_conclusion`（analyst 档本来也没有这个工具）。
 
 ---
 

@@ -429,12 +429,20 @@ def detector_hits(
     q: str = "",
     cluster_id: str = "",
     sort: str = "recent",
+    agent_status: str = "",
+    agent_task_state: str = "",
 ):
     """**命中事件列表**（PG，最新在前）—— 每条都有**系统唯一事件 ID**。
 
     `source_kind` 按**三类来源**过滤（前端三个分组直接用）：
     `feature_match`=特征匹配 / `behavior_analysis`=行为分析 / `baseline_deviation`=基线偏离；
     留空 = 全部。
+
+    `agent_status` 按**智能体结论**筛（判定权转移后的主口径）：结论词表
+    `true_positive / false_positive / benign / suspicious / inconclusive` + 流程态
+    `pending / done` + 特殊值 `unanalyzed`（结论表里没有记录 = 智能体还没返回）。
+    `agent_task_state` 按**派工任务态**筛：`none`（未派工）/ `queued`（排队中）/
+    `claimed`（分析中）/ `done` / `failed`。两个参数留空 = 不筛。
 
     为什么落 PG（2026-10 用户要求）：命中以前只是 Redis 里的一段「最近命中」流水（重启即丢、
     没有稳定标识），而事件需要被长期引用与关联分析。现在每条命中有唯一 ID，界面详情、忽略、
@@ -452,6 +460,8 @@ def detector_hits(
         q=q,
         cluster_id=cluster_id,
         sort=sort,
+        agent_status=agent_status,
+        agent_task_state=agent_task_state,
     )
 
 
@@ -484,7 +494,11 @@ def detector_hits_stats(
     _: Annotated[User, Depends(get_current_user)],
     minutes: int = 1440,
 ):
-    """**命中事件聚合**（事件中心首页用）：总量、按三类来源、按严重度、TOP 事件归类、趋势。
+    """**命中事件聚合**（事件中心首页用）：**检测器口径 + 智能体结论口径两套并存**。
+
+    检测器口径：`total` / `by_source_kind` / `by_severity` / `top_rules` / `trend`（保持原样）。
+    智能体口径：`by_agent_status[]`（各桶之和 = `total`，含 `unanalyzed`）+ `agent_pending_total`
+    （智能体尚未返回结论的事件数）。
 
     `minutes` 默认 1440（近 24 小时）；`trend` 的桶大小随窗口变（≤6 小时按 10 分钟，否则按小时），
     前端直接拿 `trend[]` 画折线、拿 `by_source_kind[]` 画三类占比。

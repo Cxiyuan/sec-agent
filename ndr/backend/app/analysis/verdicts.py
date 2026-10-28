@@ -57,6 +57,24 @@ VALUE_ALIASES: dict[str, str] = {
 }
 
 
+#: 中文展示名（界面直接用；与 VALUE_ALIASES 里的主标签一致，单一来源）
+DISPLAY_LABELS: dict[str, str] = {
+    "true_positive": "确认攻击",
+    "false_positive": "误报",
+    "benign": "正常",
+    "suspicious": "可疑",
+    "inconclusive": "无法定性",
+    "pending": "分析中",
+    "done": "已完成",
+}
+
+
+def label_of(value: str) -> str:
+    """结论态 → 中文展示名；未知值原样返回（不吞掉脏值，界面能看出来）。"""
+    key = str(value or "").strip().lower()
+    return DISPLAY_LABELS.get(key, str(value or ""))
+
+
 def clean_value(
     raw: Any,
     *,

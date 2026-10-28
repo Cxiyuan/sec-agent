@@ -991,3 +991,33 @@ def test_result_payload_marks_reuse(queue_mod: Any) -> None:
     view = _mod("app.api.routes.analysis")
     src = inspect.getsource(view.inventory_results)
     assert '"reused": bool(tasks.reused_from(r))' in src
+
+
+# ===== ⑰ 交回结论要镜像到事件级（事件列表的 agent_* 靠它）=====
+
+
+def test_complete_task_mirrors_event_conclusion(queue_mod: Any) -> None:
+    """`complete_task` 必须把结论镜像到 `conclusion_records`（否则事件列表永远看不到结论）。
+
+    为什么需要：分析档只给智能体 `complete_task`（没有 `record_conclusion`），而事件
+    列表按 `dedup_key = hit_events.id` 读结论。不镜像的话，"判定权转移"只落在任务队列里，
+    事件列表的 agent_* 字段永远是 null（线上实测 conclusion_records 为 0 行）。
+    """
+    src = inspect.getsource(queue_mod.complete_task)
+    assert "_mirror_event_conclusion" in src
+    assert '"事件ID"' in src or "事件ID" in inspect.getsource(queue_mod._event_id_of)
+    mirror = inspect.getsource(queue_mod._mirror_event_conclusion)
+    assert "ConclusionRecord" in mirror
+    assert "dedup_key" in mirror
+    # 失败不能影响任务交回
+    assert "except Exception" in mirror
+    # 任务级结论没有严重度这一维：不能瞎编
+    assert 'rec.severity = ""' in mirror
+
+
+def test_event_conclusion_status_uses_the_verdict_vocabulary() -> None:
+    """镜像写的 status 是结论词表里的值（不是 done/pending 这种流程态）。"""
+    queue_mod = _mod("app.analysis.queue")
+    src = inspect.getsource(queue_mod._mirror_event_conclusion)
+    assert "verdict" in src
+    assert "status_values" not in src  # 不该再另抄一份词表

@@ -20,8 +20,9 @@ from typing import Any
 
 from sqlalchemy import String, case, cast, func, or_, select
 
+from app.analysis import verdicts as verdicts_mod
 from app.db.base import SessionLocal
-from app.db.models import ConclusionRecord, HitEvent
+from app.db.models import AnalysisTask, ConclusionRecord, HitEvent
 from app.detector import clustering
 from app.ingestion.log_types import EVENT_TYPE_LABELS
 from app.workers.log import get_logger
@@ -336,8 +337,164 @@ def _agent_fields(rec: ConclusionRecord | None, *, detail: bool = False) -> dict
     return fields
 
 
+#: 智能体**尚未返回结论**的特殊筛选值（没有结论记录）
+AGENT_STATUS_UNANALYZED = "unanalyzed"
+
+#: `agent_status` 允许的筛选值：结论词表 + 流程态 + unanalyzed
+AGENT_FILTER_STATUSES: frozenset[str] = frozenset(
+    (*verdicts_mod.STATUS_VALUES, AGENT_STATUS_UNANALYZED)
+)
+
+#: 派工任务态 → 前端能用的四档（`pending/deferred`=排队、`claimed`=分析中、`done`、`stuck/expired`=失败）
+AGENT_TASK_BUCKETS: dict[str, tuple[str, ...]] = {
+    "queued": ("pending", "deferred"),
+    "claimed": ("claimed",),
+    "done": ("done",),
+    "failed": ("stuck", "expired"),
+}
+
+#: 列表筛选允许的任务态（含「没有派工任务」）
+AGENT_TASK_STATES: frozenset[str] = frozenset(("none", *AGENT_TASK_BUCKETS))
+
+#: 桶 → 中文（前端直接显示；这里描述的是流程，与结论态分开）
+AGENT_TASK_STATE_LABELS: dict[str, str] = {
+    "none": "未派工",
+    "queued": "排队中",
+    "claimed": "分析中",
+    "done": "已完成",
+    "failed": "已失败",
+}
+
+#: 结论态排序：聚合簇时「真阳性优先，其次可疑/无法定性/误报」
+_AGENT_STATUS_RANK: dict[str, int] = {
+    "true_positive": 5,
+    "suspicious": 4,
+    "inconclusive": 3,
+    "pending": 2,
+    "false_positive": 1,
+    "benign": 1,
+    "done": 1,
+}
+
+#: 严重度排序（簇聚合用）
+_SEVERITY_RANK: dict[str, int] = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+
+
+def _agent_status_condition(agent_status: str) -> Any | None:
+    """`agent_status` 筛选 → SQL 条件（纯函数，不碰数据库）。
+
+    - 结论态/流程态（true_positive… / pending / done）：命中「有该结论」的事件；
+    - `unanalyzed`：命中「结论表里没有记录」的事件（智能体还没返回）。
+    未识别的值不加条件（与 `source_kind` 同策略：脏值不把列表筛空）。
+    """
+    value = str(agent_status or "").strip().lower()
+    if value == "" or value not in AGENT_FILTER_STATUSES:
+        return None
+    exists = select(ConclusionRecord.dedup_key).where(
+        # hit 主键是 UUID、结论键是 VARCHAR(64)：SQL 侧必须显式转文本再比
+        ConclusionRecord.dedup_key == cast(HitEvent.id, String)
+    )
+    if value == AGENT_STATUS_UNANALYZED:
+        return ~exists.exists()
+    return exists.where(ConclusionRecord.status == value).exists()
+
+
+def _agent_task_state_condition(agent_task_state: str) -> Any | None:
+    """`agent_task_state` 筛选 → SQL 条件（纯函数）。
+
+    派工任务与命中事件的关联键：`analysis_tasks.hint->>'事件ID'`（与 claim_tasks
+    下发的 hint 同源）。一次 EXISTS 子查询，不逐行查。
+    """
+    value = str(agent_task_state or "").strip().lower()
+    if value == "" or value not in AGENT_TASK_STATES:
+        return None
+    exists = select(AnalysisTask.id).where(
+        AnalysisTask.kind == "hit",
+        AnalysisTask.hint["事件ID"].astext == cast(HitEvent.id, String),
+    )
+    if value == "none":
+        return ~exists.exists()
+    return exists.where(AnalysisTask.state.in_(AGENT_TASK_BUCKETS[value])).exists()
+
+
+def _agent_task_bucket(state: str) -> str:
+    """任务状态 → 四档桶。"""
+    value = str(state or "").strip()
+    if value == "":
+        return "none"
+    for bucket, states in AGENT_TASK_BUCKETS.items():
+        if value in states:
+            return bucket
+    return "failed"
+
+
+def _agent_task_map(rows: list[HitEvent]) -> dict[str, AnalysisTask]:
+    """一次 `IN` 批量取本页事件对应的派工任务（`hint.事件ID → 最新一条`）。
+
+    读失败按「没有任务」处理：事件列表不能因为任务表挂了就打不开。
+    """
+    ids = [str(row.id) for row in rows if str(row.id or "").strip()]
+    if not ids:
+        return {}
+    try:
+        with SessionLocal() as db:
+            tasks = list(
+                db.scalars(
+                    select(AnalysisTask)
+                    .where(
+                        AnalysisTask.kind == "hit",
+                        AnalysisTask.hint["事件ID"].astext.in_(ids),
+                    )
+                    .order_by(AnalysisTask.created_at.desc())
+                ).all()
+            )
+    except Exception as exc:  # noqa: BLE001 — 任务读失败只丢任务字段，不影响事件本身
+        log.warning("读派工任务失败: %s", exc)
+        return {}
+    out: dict[str, AnalysisTask] = {}
+    for task in tasks:
+        hint = task.hint if isinstance(task.hint, dict) else {}
+        event_id = str(hint.get("事件ID") or "")
+        if event_id and event_id not in out:
+            out[event_id] = task
+    return out
+
+
+def _agent_task_fields(
+    task: AnalysisTask | None,
+    conclusion: ConclusionRecord | None,
+    *,
+    detail: bool = False,
+) -> dict[str, Any]:
+    """一条派工任务 → 平铺的 `agent_task_*` 字段（无任务时 `agent_task_state=none`）。"""
+    if task is None:
+        fields: dict[str, Any] = {"agent_task_state": "none", "agent_task_id": ""}
+        if detail:
+            fields["agent_task"] = None
+        return fields
+    bucket = _agent_task_bucket(task.state)
+    fields: dict[str, Any] = {
+        "agent_task_state": bucket,
+        "agent_task_id": str(task.id),
+    }
+    if detail:
+        claimed_at = ""
+        if str(task.state or "") == "claimed" and task.updated_at is not None:
+            claimed_at = task.updated_at.isoformat()
+        fields["agent_task"] = {
+            "task_id": str(task.id),
+            "state": str(task.state or ""),
+            "bucket": bucket,
+            "claimed_by": str(task.claimed_by or ""),
+            "verdict": str(conclusion.status or "") if conclusion is not None else "",
+            "claimed_at": claimed_at,
+        }
+    return fields
+
+
 def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[str, Any]]:
     conclusions = _agent_conclusion_map(rows)
+    tasks = _agent_task_map(rows)
     out: list[dict[str, Any]] = []
     for row in rows:
         item: dict[str, Any] = {
@@ -378,6 +535,11 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "whitelist_id": row.whitelist_id or "",
             # 智能体分析结论（判定权威来源；无记录为 null，界面回退显示 NDR 初判）
             **_agent_fields(
+                next((conclusions.get(k) for k in _conclusion_keys_of(row) if k in conclusions), None),
+                detail=detail,
+            ),
+            **_agent_task_fields(
+                next((tasks.get(k) for k in _conclusion_keys_of(row) if k in tasks), None),
                 next((conclusions.get(k) for k in _conclusion_keys_of(row) if k in conclusions), None),
                 detail=detail,
             ),
@@ -823,6 +985,8 @@ def _hit_conditions(
     ip: str = "",
     q: str = "",
     cluster_id: str = "",
+    agent_status: str = "",
+    agent_task_state: str = "",
 ) -> list[Any]:
     """把过滤条件翻译成 SQLAlchemy 条件（**纯函数**，可单测，不碰数据库）。
 
@@ -836,6 +1000,13 @@ def _hit_conditions(
     kind = str(source_kind or "").strip()
     if kind in SOURCE_LABELS:
         conds.append(HitEvent.source_kind == kind)
+    # 智能体口径（判定权转移后的主口径）：结论态筛选 + 派工任务态筛选
+    for condition in (
+        _agent_status_condition(agent_status),
+        _agent_task_state_condition(agent_task_state),
+    ):
+        if condition is not None:
+            conds.append(condition)
     sev = str(severity or "").strip().lower()
     if sev:
         conds.append(HitEvent.rule_severity == sev)
@@ -889,6 +1060,8 @@ def list_hits(
     q: str = "",
     cluster_id: str = "",
     sort: str = "recent",
+    agent_status: str = "",
+    agent_task_state: str = "",
 ) -> dict[str, Any]:
     """命中事件列表（默认最近在前）。
 
@@ -907,6 +1080,8 @@ def list_hits(
         ip=ip,
         q=q,
         cluster_id=cluster_id,
+        agent_status=agent_status,
+        agent_task_state=agent_task_state,
     )
     order_by = {
         "oldest": func.coalesce(HitEvent.last_seen, HitEvent.created_at).asc(),
@@ -928,9 +1103,13 @@ def list_hits(
 
 
 def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
-    """事件中心首页要的聚合：总量、按三类来源、按严重度、按事件归类、按小时趋势。
+    """事件中心首页要的聚合：检测器口径 + **智能体结论口径**两套并存。
 
-    一次 SQL 拿完（group by 三次 + 时间分桶），前端直接画卡片和折线，不用自己聚合。
+    检测器口径（原有，保持不动）：`total` / `by_source_kind` / `by_severity` / `top_rules` / `trend`。
+    智能体口径（2026-10 判定权转移后新增）：
+    - `by_agent_status[]`：按结论态分组（`unanalyzed` = 结论表里没有记录），各桶之和 = `total`；
+    - `agent_pending_total`：智能体**尚未返回结论**的事件数（运营一眼看积压）。
+    两套口径并存、字段名区分开，不改写原有字段（历史对比不断裂）。
     """
     window = max(1, int(minutes or 1440))
     since = datetime.now(UTC) - timedelta(minutes=window)
@@ -991,6 +1170,42 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读命中事件统计失败：{exc}", "total": 0}
 
+    # 智能体口径：一次 left join 分组（结论表为空/异常 → 空桶 + pending 未知，不影响检测器口径）
+    by_agent_status: list[dict[str, Any]] = []
+    agent_pending_total: int | None = None
+    try:
+        with SessionLocal() as db:
+            agent_rows = list(
+                db.execute(
+                    select(ConclusionRecord.status, func.count())
+                    .select_from(HitEvent)
+                    .outerjoin(
+                        ConclusionRecord,
+                        ConclusionRecord.dedup_key == cast(HitEvent.id, String),
+                    )
+                    .where(
+                        func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
+                        HitEvent.ignored.is_(False),
+                    )
+                    .group_by(ConclusionRecord.status)
+                ).all()
+            )
+        counts: dict[str, int] = {}
+        for row in agent_rows:
+            key = str(row[0] or AGENT_STATUS_UNANALYZED)
+            counts[key] = counts.get(key, 0) + int(row[1] or 0)
+        by_agent_status = [
+            {
+                "key": key,
+                "label": verdicts_mod.label_of(key) if key != AGENT_STATUS_UNANALYZED else "未分析",
+                "count": count,
+            }
+            for key, count in sorted(counts.items(), key=lambda kv: -kv[1])
+        ]
+        agent_pending_total = int(counts.get(AGENT_STATUS_UNANALYZED, 0))
+    except Exception as exc:  # noqa: BLE001 — 结论口径读失败不能拖垮检测器口径
+        log.warning("读智能体结论统计失败: %s", exc)
+
     buckets: dict[str, int] = {}
     for row in trend_rows:
         ts_value = row[0]
@@ -1012,9 +1227,107 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
         "ignored": ignored,
         "by_source_kind": by_kind,
         "by_severity": by_severity,
+        # 智能体口径（与上面检测器口径并存；字段名区分开，不做覆盖）
+        "by_agent_status": by_agent_status,
+        "agent_pending_total": agent_pending_total,
         "top_rules": by_rule,
         "trend": [{"ts": k, "count": v} for k, v in sorted(buckets.items())],
     }
+
+
+def _empty_cluster_agent() -> dict[str, Any]:
+    """没有结论时的簇级 agent 字段（与列表的 null 语义一致）。"""
+    return {
+        "agent_status": None,
+        "agent_status_label": None,
+        "agent_severity": None,
+        "agent_analyzed": 0,
+        "agent_pending": 0,
+        "agent_true_positive": 0,
+    }
+
+
+def _cluster_agent_stats(
+    cluster_ids: list[str], *, since: datetime, include_ignored: bool
+) -> dict[str, dict[str, Any]]:
+    """一个簇内所有事件各取结论后聚合：真阳性优先、严重度取最高、并给出已分析/未分析计数。
+
+    为什么在库侧做：一簇可能有几十上百条事件，逐条回查结论就是 N+1；
+    这里一条 group by（cluster_id, status, severity）就够。
+    读失败返回空表（簇列表照常显示，只是没有 agent_* 字段）。
+    """
+    ids = [cid for cid in cluster_ids if cid]
+    if not ids:
+        return {}
+    conds: list[Any] = [
+        HitEvent.cluster_id.in_(ids),
+        func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since,
+    ]
+    if not include_ignored:
+        conds.append(HitEvent.ignored.is_(False))
+    try:
+        with SessionLocal() as db:
+            rows = list(
+                db.execute(
+                    select(
+                        HitEvent.cluster_id,
+                        ConclusionRecord.status,
+                        ConclusionRecord.severity,
+                        func.count(),
+                    )
+                    .select_from(HitEvent)
+                    .outerjoin(
+                        ConclusionRecord,
+                        ConclusionRecord.dedup_key == cast(HitEvent.id, String),
+                    )
+                    .where(*conds)
+                    .group_by(HitEvent.cluster_id, ConclusionRecord.status, ConclusionRecord.severity)
+                ).all()
+            )
+    except Exception as exc:  # noqa: BLE001 — 簇的结论读失败不影响簇本身
+        log.warning("读告警簇结论失败: %s", exc)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cid = str(row[0] or "")
+        if cid == "":
+            continue
+        status = str(row[1] or "")
+        severity = str(row[2] or "")
+        count = int(row[3] or 0)
+        acc = out.setdefault(cid, {
+            "agent_status": "",
+            "agent_status_label": "",
+            "agent_severity": "",
+            "agent_analyzed": 0,
+            "agent_pending": 0,
+            "agent_true_positive": 0,
+            "_status_rank": 0,
+            "_severity_rank": 0,
+        })
+        if status == "":
+            acc["agent_pending"] += count
+            continue
+        acc["agent_analyzed"] += count
+        rank = _AGENT_STATUS_RANK.get(status, 0)
+        if rank > int(acc["_status_rank"] or 0):
+            acc["_status_rank"] = rank
+            acc["agent_status"] = status
+            acc["agent_status_label"] = verdicts_mod.label_of(status)
+        sev_rank = _SEVERITY_RANK.get(severity, 0)
+        if sev_rank > int(acc["_severity_rank"] or 0):
+            acc["_severity_rank"] = sev_rank
+            acc["agent_severity"] = severity
+        if status == "true_positive":
+            acc["agent_true_positive"] += count
+    for acc in out.values():
+        if int(acc["agent_analyzed"] or 0) == 0:
+            acc["agent_status"] = None
+            acc["agent_status_label"] = None
+        acc["agent_severity"] = acc["agent_severity"] or None
+        acc.pop("_status_rank", None)
+        acc.pop("_severity_rank", None)
+    return out
 
 
 def clusters(
@@ -1083,6 +1396,11 @@ def clusters(
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读告警簇失败：{exc}", "items": [], "total": 0}
 
+    # 智能体口径：本页每个簇的成员事件各取结论后聚合（与列表同一套关联键，一次 group by）
+    agent_by_cluster = _cluster_agent_stats(
+        [str(row[0] or "") for row in rows], since=since, include_ignored=include_ignored
+    )
+
     items: list[dict[str, Any]] = []
     for row in rows:
         cid = str(row[0] or "")
@@ -1107,6 +1425,8 @@ def clusters(
                 "clients": int(row[8] or 0),
                 "first_seen": first.isoformat() if first else "",
                 "last_seen": last.isoformat() if last else "",
+                # 智能体结论口径（簇内聚合；与列表视图同一套 agent_* 命名）
+                **agent_by_cluster.get(cid, _empty_cluster_agent()),
             }
         )
     return {
