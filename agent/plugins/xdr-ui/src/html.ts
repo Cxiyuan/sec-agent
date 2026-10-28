@@ -187,8 +187,6 @@ ${THEME}
   .tag { font-size: .7rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .tag.ok { color: var(--ok); border-color: rgba(52,211,153,.4); }
   .tag.bad { color: var(--bad); border-color: rgba(248,113,113,.4); }
-  .tag.warn { color: #fbbf24; border-color: rgba(251,191,36,.4); }
-  .tag.off { color: var(--muted); border-color: var(--line); opacity: .8; }
   #toast { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
            background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
            padding: .55rem 1rem; border-radius: 9px; font-size: .83rem; opacity: 0;
@@ -210,7 +208,6 @@ ${THEME}
     <div class="brand"><span class="logo">瞳</span><div><b>深瞳</b><small>安全分析智能体</small></div></div>
     <nav>
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
-      <a href="#/projects" data-view="projects"><span class="dot"></span>项目</a>
       <a href="#/processes" data-view="processes"><span class="dot"></span>分析过程</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
       <a href="#/scripts" data-view="scripts"><span class="dot"></span>分析脚本</a>
@@ -262,25 +259,6 @@ ${THEME}
         <button id="prev">‹ 上一页</button>
         <button id="next">下一页 ›</button>
         <span id="page"></span>
-      </div>
-    </section>
-
-    <section id="view-projects" hidden>
-      <div class="toolbar">
-        <button id="pr-new" class="primary">新增项目</button>
-        <button id="pr-refresh">刷新</button>
-        <span class="count" id="pr-count"></span>
-      </div>
-      <table>
-        <thead>
-          <tr><th>项目ID</th><th>名称</th><th>MCP 地址</th><th>令牌</th><th>状态</th><th>最近校验</th><th>操作</th></tr>
-        </thead>
-        <tbody id="pr-rows"></tbody>
-      </table>
-      <div class="notice" style="margin-top:.8rem">
-        项目ID 必须与对应 NDR「系统授权页」展示的授权ID 完全一致（8 位大写字母+数字）；
-        授权ID 对不上时该项目会自动停用并标红，不影响其它项目。MCP 令牌留空 = 只收门铃、不分析。
-        删除项目只停运行时与展示，历史数据仍留在库里。
       </div>
     </section>
 
@@ -546,42 +524,7 @@ ${THEME}
       <button id="sc-save" class="btn primary">保存</button>
     </div>
   </div>
-</dialog>
-<dialog id="project-dialog">
-  <div class="panel" style="min-width:min(560px,92vw)">
-    <h2 id="pr-dialog-title" style="margin-top:0">新增项目</h2>
-    <div class="form-grid">
-      <div class="field">
-        <label for="pr-id">项目ID（= NDR 授权ID，8 位大写字母+数字）</label>
-        <input id="pr-id" maxlength="8" placeholder="ZPL6QQLG" style="text-transform:uppercase" class="mono">
-        <small>编辑时改成新 ID 会视为「换绑」：旧项目行删除（历史数据留在旧项目下）</small>
-      </div>
-      <div class="field"><label for="pr-name">名称（备注用）</label><input id="pr-name" maxlength="120" placeholder="如：南充职业技术学院"></div>
-      <div class="field">
-        <label for="pr-url">NDR MCP 地址</label>
-        <input id="pr-url" placeholder="http://ndr.example:8090/mcp">
-        <small>必须是 http(s):// 开头；一般是 NDR 的 :8090/mcp</small>
-      </div>
-      <div class="field">
-        <label for="pr-token">MCP 令牌（stmcp_ 开头）</label>
-        <input id="pr-token" type="password" autocomplete="new-password" placeholder="留空 = 只收门铃、不分析">
-      </div>
-      <div class="field">
-        <label for="pr-push">门铃推送令牌（与 NDR agent_push.token 一致）</label>
-        <input id="pr-push" type="password" autocomplete="new-password" placeholder="多项目下每个项目一个，agent 按它路由门铃">
-      </div>
-    </div>
-    <label style="display:flex;align-items:center;gap:.4rem"><input id="pr-enabled" type="checkbox" checked> 启用（校验通过后自动起领取循环）</label>
-    <div style="display:flex;gap:.6rem;justify-content:flex-end">
-      <button id="pr-cancel" class="btn">取消</button>
-      <button id="pr-save" class="btn primary">保存并校验</button>
-    </div>
-    <div class="notice" style="margin-top:.8rem">
-      保存即校验：授权ID 一致 → 起该项目自己的领取循环；不一致或连不上 → 只落库并标状态，不会误用别的项目数据。
-    </div>
-  </div>
-</dialog>
-<div id="toast"></div>
+</dialog><div id="toast"></div>
 
 <script>
 (() => {
@@ -589,7 +532,6 @@ ${THEME}
   const PAGE = 20
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
-    projects: { title: '项目', sub: '一台 NDR = 一个项目（项目ID = NDR 授权ID）；数据与运行时按项目隔离' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
     processes: { title: '分析过程', sub: '任务 → 会话：耗时、工具数、时间线；运行中实时追新' },
     scripts: { title: '分析脚本', sub: '模型写过的分析工具脚本：看、改、停用' },
@@ -599,21 +541,7 @@ ${THEME}
   let offset = 0, total = 0, settingsLoaded = false
   let sOffset = 0, sTotal = 0, editing = ''
   let pOffset = 0, pTotal = 0, procSeq = 0, procTimer = 0, procRunning = false
-  /** 项目编辑态：'' = 新增，否则是被编辑的原始项目ID（保存时若改了 ID，作为 previousId 换绑） */
-  let prEditing = ''
 
-  /** 项目状态徽章：与 agent-console.md §二 的界面建议一致 */
-  function statusTag(status) {
-    const map = {
-      ok: ['分析中', 'ok'],
-      unchecked: ['待校验', 'off'],
-      auth_mismatch: ['授权不符', 'bad'],
-      unreachable: ['不可达', 'warn'],
-      disabled: ['已停用', 'off'],
-    }
-    const it = map[status] || [status || '未知', 'off']
-    return '<span class="tag ' + it[1] + '">' + esc(it[0]) + '</span>'
-  }
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
   const fmt = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
@@ -635,7 +563,6 @@ ${THEME}
     document.getElementById('view-title').textContent = VIEWS[view].title
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
-    if (view === 'projects') void loadProjects().catch(onError)
     if (view === 'processes') void loadProcesses().catch(onError)
     if (view === 'scripts') void loadScripts().catch(onError)
     if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
@@ -672,15 +599,6 @@ ${THEME}
         ['已存结论（复用库）', esc((s.task_reuse || {}).stored ?? 0), ''],
       ]],
     ]
-    // 多项目运行态：每台 NDR 一个项目，异常状态直接进总览，不用切到「项目」页才发现
-    const projects = Array.isArray(s.projects) ? s.projects : []
-    if (projects.length) {
-      groups.push(['项目（' + projects.length + '）', projects.map(p => [
-        (p.projectId || '?') + (p.name ? ' · ' + p.name : ''),
-        statusText(p.status),
-        p.status === 'ok' ? 'ok' : (p.status === 'auth_mismatch' ? 'bad' : (p.status === 'unreachable' ? 'warn' : '')),
-      ])])
-    }
     let html = ''
     for (const [title, cards] of groups) {
       html += '<h2>' + esc(title) + '</h2><div class="cards">' + cards.map(([k, v, cls]) =>
@@ -691,101 +609,6 @@ ${THEME}
     const chip = document.getElementById('state')
     chip.textContent = analysisOn ? '分析循环运行中' : '分析循环停用'
     chip.className = 'chip ' + (analysisOn ? 'ok' : 'off')
-  }
-
-  /** 项目视图：GET /api/projects 渲染表格；行内操作 = 复核 / 编辑 / 删除。 */
-  async function loadProjects() {
-    const data = await json(BASE + '/api/projects')
-    const rows = document.getElementById('pr-rows')
-    const items = data.projects || []
-    document.getElementById('pr-count').textContent = data.available
-      ? '共 ' + items.length + ' 个项目'
-      : '数据面不可用'
-    if (!items.length) {
-      rows.innerHTML = '<tr><td colspan="7" class="empty">还没有项目 —— 点「新增项目」，把 NDR 的授权ID、MCP 地址与令牌填进来</td></tr>'
-      return
-    }
-    rows.innerHTML = items.map(p =>
-      '<tr data-project="' + esc(p.projectId) + '">' +
-      '<td class="mono">' + esc(p.projectId) + '</td>' +
-      '<td>' + esc(p.name || '—') + '</td>' +
-      '<td class="mono" style="max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.mcpUrl || '—') + '</td>' +
-      '<td class="mono">' + esc(p.mcpToken || '—') + '</td>' +
-      '<td>' + statusTag(p.status) + (p.statusDetail ? ' <span class="mono" style="font-size:.68rem" title="' + esc(p.statusDetail) + '">详情</span>' : '') + '</td>' +
-      '<td>' + esc(fmt(p.lastCheckedAt)) + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="btn" data-act="verify" title="重新调 NDR server_info 核对授权ID：一致 → 起循环；不一致 → 停用并标红">复核</button> ' +
-        '<button class="btn" data-act="edit">编辑</button> ' +
-        '<button class="btn ghost" data-act="del">删除</button>' +
-      '</td></tr>').join('')
-  }
-
-  /** 新增 / 编辑对话框：editing 保存原始 ID（换绑用 previousId 传递）。 */
-  function openProject(projectId) {
-    prEditing = projectId || ''
-    document.getElementById('pr-dialog-title').textContent = prEditing ? '编辑项目 ' + prEditing : '新增项目'
-    const fill = p => {
-      document.getElementById('pr-id').value = p ? p.projectId : ''
-      document.getElementById('pr-name').value = p ? (p.name || '') : ''
-      document.getElementById('pr-url').value = p ? (p.mcpUrl || '') : ''
-      document.getElementById('pr-token').value = ''   // 令牌不回显：留空 = 保留已存值由后端处理
-      document.getElementById('pr-push').value = ''
-      document.getElementById('pr-enabled').checked = p ? p.enabled !== false : true
-    }
-    if (prEditing) {
-      const data = json(BASE + '/api/projects').then(d => {
-        const p = (d.projects || []).find(x => x.projectId === prEditing)
-        fill(p || null)
-      }).catch(onError)
-    } else fill(null)
-    document.getElementById('project-dialog').showModal()
-  }
-
-  async function saveProject() {
-    const projectId = document.getElementById('pr-id').value.trim().toUpperCase()
-    const body = {
-      projectId,
-      name: document.getElementById('pr-name').value.trim(),
-      mcpUrl: document.getElementById('pr-url').value.trim(),
-      mcpToken: document.getElementById('pr-token').value,
-      pushToken: document.getElementById('pr-push').value,
-      enabled: document.getElementById('pr-enabled').checked,
-    }
-    // 编辑时改了项目ID = 换绑：把原 ID 传给后端（旧项目行删除，数据留在旧项目下）
-    if (prEditing && prEditing !== projectId) body.previousId = prEditing
-    if (!/^[A-Z0-9]{8}$/.test(projectId)) { toast('项目ID 必须是 8 位大写字母或数字'); return }
-    const btn = document.getElementById('pr-save')
-    btn.disabled = true
-    try {
-      const d = await json(BASE + '/api/projects', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-      })
-      if (d.ok === false) { toast(d.error || '保存失败（项目已落库，可改完再校验）'); void loadProjects().catch(() => {}); return }
-      document.getElementById('project-dialog').close()
-      const st = (d.project || {}).status
-      toast(st === 'ok' ? '已保存，校验通过，领取循环已启动' : '已保存：' + (st ? statusText(st) : '待校验'))
-      void loadProjects().catch(() => {})
-    } finally { btn.disabled = false }
-  }
-
-  const statusText = s => ({ ok: '校验通过', unchecked: '待校验', auth_mismatch: '授权ID 不一致（已停用）', unreachable: 'NDR 不可达', disabled: '已停用' }[s] || s)
-
-  async function verifyProject(projectId) {
-    toast('复核中：正在调 NDR server_info…')
-    const d = await json(BASE + '/api/projects/' + encodeURIComponent(projectId) + '/verify', { method: 'POST' })
-    const p = d.project || {}
-    toast(d.ok === false
-      ? '复核失败：' + (d.error || '未知错误')
-      : p.status === 'ok' ? '复核通过：授权ID 一致，领取循环运行中' : '复核结果：' + statusText(p.status))
-    void loadProjects().catch(() => {})
-  }
-
-  async function deleteProject(projectId) {
-    if (!window.confirm('删除项目 ' + projectId + '？运行时与展示会移除；历史数据仍留在库里，但不再展示。')) return
-    const d = await json(BASE + '/api/projects/' + encodeURIComponent(projectId), { method: 'DELETE' })
-    if (d.ok === false) { toast(d.error || '删除失败'); return }
-    toast('已删除项目 ' + projectId)
-    void loadProjects().catch(() => {})
   }
 
   /** 结论行：对象 / 类型 / 判定 / 置信度 / 摘要 / 工具·耗时 / 时间。 */
@@ -899,10 +722,12 @@ ${THEME}
 
   function renderProcMeta(tl) {
     const tokens = tl.tokens || {}
-    document.getElementById('proc-meta').textContent =
-      (tl.running ? '● 运行中 · ' : '') +
-      'token：输入 ' + (tokens.input || 0) + ' / 输出 ' + (tokens.output || 0) +
-      '（合计 ' + (tokens.total || 0) + '）'
+    // 这个部署的会话日志可能没有记录用量（provider 没回）：如实显示"未上报"，不要假装是 0
+    const tokenText = tokens.reported === false
+      ? 'token：未上报（当前模型服务商未返回用量）'
+      : 'token：输入 ' + (tokens.input || 0) + ' / 输出 ' + (tokens.output || 0) +
+        '（合计 ' + (tokens.total || 0) + '）'
+    document.getElementById('proc-meta').textContent = (tl.running ? '● 运行中 · ' : '') + tokenText
     const tools = (tl.tools || []).map(x => x.name + ' ×' + x.count + (x.errors ? '（' + x.errors + ' 次报错）' : '')).join(' · ')
     document.getElementById('proc-tools').textContent = tools ? ('工具：' + tools) : ''
   }
@@ -1196,21 +1021,6 @@ ${THEME}
     const tr = ev.target.closest('tr[data-task]')
     if (tr) void openProcess(tr.dataset.task).catch(onError)
   })
-  // 项目视图：行内三操作 + 工具条
-  document.getElementById('pr-rows').addEventListener('click', ev => {
-    const btn = ev.target.closest('button[data-act]')
-    if (!btn) return
-    const tr = btn.closest('tr[data-project]')
-    if (!tr) return
-    const id = tr.dataset.project
-    if (btn.dataset.act === 'edit') openProject(id)
-    else if (btn.dataset.act === 'verify') void verifyProject(id).catch(onError)
-    else if (btn.dataset.act === 'del') void deleteProject(id).catch(onError)
-  })
-  document.getElementById('pr-new').addEventListener('click', () => openProject(''))
-  document.getElementById('pr-refresh').addEventListener('click', () => { void loadProjects().catch(onError) })
-  document.getElementById('pr-save').addEventListener('click', () => void saveProject().catch(onError))
-  document.getElementById('pr-cancel').addEventListener('click', () => document.getElementById('project-dialog').close())
   document.getElementById('psearch').addEventListener('click', () => { pOffset = 0; void loadProcesses().catch(onError) })
   document.getElementById('pq').addEventListener('keydown', ev => { if (ev.key === 'Enter') { pOffset = 0; void loadProcesses().catch(onError) } })
   document.getElementById('poutcome').addEventListener('change', () => { pOffset = 0; void loadProcesses().catch(onError) })
