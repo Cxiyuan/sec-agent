@@ -62,6 +62,23 @@ function conclusion(id: string): Record<string, unknown> {
   }
 }
 
+/** 一个工作流模版（分析编排形状）。 */
+function workflowRow(name: string) {
+  return {
+    workflowId: 'default',
+    name,
+    description: '默认编排',
+    stages: [
+      { key: 'context', title: '定位与上下文', goal: '这条线索是什么', guidance: '先查历史', tools: ['prior_findings'] },
+    ],
+    enabled: true,
+    isDefault: true,
+    createdAt: '2026-10-29T00:00:00.000Z',
+    updatedAt: '2026-10-29T00:00:00.000Z',
+    updatedBy: 'test',
+  }
+}
+
 /** 一个项目组织（P2 形状）。 */
 function projectRow(projectId: string) {
   return {
@@ -531,6 +548,87 @@ test('分析过程：列表带 outcome/project 透传；详情附时间线；eve
 
     const missing = await fetch(`${base}${BASE}/api/processes/none`, { headers: { cookie } })
     assert.equal(missing.status, 404)
+  } finally {
+    server.close()
+  }
+})
+
+test('工作流：列表/保存/启停/删除/项目引用（阶段是提纲，不是死流程）', async () => {
+  const ingest = makeIngest()
+  let saved: Record<string, unknown> | null = null
+  let bound: [string, string] | null = null
+  let toggled: [string, boolean] | null = null
+  let removed = ''
+  ingest.workflows = async () => [workflowRow('标准分析')]
+  ingest.saveWorkflow = async body => {
+    saved = body as Record<string, unknown>
+    return workflowRow(String(saved['name']))
+  }
+  ingest.bindWorkflow = async (projectId, workflowId) => {
+    bound = [projectId, workflowId]
+    return { ok: true }
+  }
+  ingest.setWorkflowEnabled = async (id, enabled) => {
+    toggled = [id, enabled]
+    return true
+  }
+  ingest.removeWorkflow = async id => {
+    removed = id
+    return true
+  }
+  const { server } = makeApp({ ingest })
+  const base = await listen(server)
+  try {
+    const cookie = await login(base)
+    const anon = await fetch(`${base}${BASE}/api/workflows`)
+    assert.equal(anon.status, 401)
+
+    const list = await fetch(`${base}${BASE}/api/workflows`, { headers: { cookie } })
+    assert.equal(list.status, 200)
+    const data = await list.json() as { items: Array<Record<string, unknown>> }
+    assert.equal(data.items[0]?.['name'], '标准分析')
+
+    const create = await fetch(`${base}${BASE}/api/workflows`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '外连专项', stages: [{ title: '只看外连' }] }),
+    })
+    assert.equal(create.status, 200)
+    assert.equal(saved?.['name'], '外连专项')
+
+    // 项目引用（授权ID 8 位校验）
+    const bind = await fetch(`${base}${BASE}/api/workflows/bind`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'zpl6qqlg', workflowId: 'default' }),
+    })
+    assert.equal(bind.status, 200)
+    assert.deepEqual(bound, ['ZPL6QQLG', 'default'])
+
+    const badBind = await fetch(`${base}${BASE}/api/workflows/bind`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'abc', workflowId: '' }),
+    })
+    assert.equal(badBind.status, 400)
+
+    const toggle = await fetch(`${base}${BASE}/api/workflows/default/enabled`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    assert.equal(toggle.status, 200)
+    assert.deepEqual(toggled, ['default', false])
+
+    const del = await fetch(`${base}${BASE}/api/workflows/default`, { method: 'DELETE', headers: { cookie } })
+    assert.equal(del.status, 200)
+    assert.equal(removed, 'default')
+
+    // 页面入口：工作流视图 + 过程详情的工作流进度条
+    const page = await fetch(`${base}${BASE}/`, { headers: { cookie } })
+    const html = await page.text()
+    assert.ok(html.includes('view-workflows'))
+    assert.ok(html.includes('proc-workflow'))
   } finally {
     server.close()
   }

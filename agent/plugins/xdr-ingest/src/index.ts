@@ -31,10 +31,10 @@ import type { RuntimeSettings } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 import { identityOfMatch } from './task-results.ts'
 import { MemoryStateStore } from './state-store.ts'
-import type { DataStore, ProjectInput } from './state-store.ts'
+import type { DataStore, ProjectInput, WorkflowInput } from './state-store.ts'
 import { PostgresStateStore } from './pg-state-store.ts'
 import type { TaskResultStore } from './task-results.ts'
-import { ProjectManager, SessionProjects } from './projects.ts'
+import { ProjectManager, SessionProjects, ensureDefaultWorkflow } from './projects.ts'
 import { readSessionTimeline } from './session-timeline.ts'
 import type { ProjectRuntime } from './projects.ts'
 
@@ -359,6 +359,8 @@ export function apply(ctx: Context, config: Config): void {
    * 问不到就**不建**项目（宁可让控制台提示"去新增项目"，也不写归属不明的数据）。
    */
   void (async (): Promise<void> => {
+    // 首次启动播种默认工作流（已有模版就不动）；必须在起循环前，任务才能拿到编排
+    if (admin !== null) await ensureDefaultWorkflow(admin, new Date().toISOString())
     let projectId = config.projectId.trim().toUpperCase()
     if (!/^[A-Z0-9]{8}$/u.test(projectId) && config.mcpToken.trim() !== '' && /^https?:\/\//u.test(config.mcpUrl.trim())) {
       try {
@@ -420,6 +422,16 @@ export function apply(ctx: Context, config: Config): void {
     saveProject: (body: unknown) => manager.save(projectInputOf(body)),
     removeProject: (projectId: string) => manager.remove(projectId),
     verifyProject: (projectId: string) => manager.verify(projectId),
+    /** 工作流模版（全局）：列表/保存/启停/删除 + 项目引用。 */
+    workflows: () => (admin ?? memoryStore).listWorkflows(),
+    saveWorkflow: (body: unknown) => (admin ?? memoryStore).upsertWorkflow(
+      workflowInputOf(body), new Date().toISOString(),
+    ),
+    setWorkflowEnabled: (id: string, enabled: boolean) =>
+      (admin ?? memoryStore).setWorkflowEnabled(id, enabled),
+    removeWorkflow: (id: string) => (admin ?? memoryStore).removeWorkflow(id),
+    bindWorkflow: (projectId: string, workflowId: string) =>
+      manager.bindWorkflow(projectId, workflowId),
     projectStatus: () => manager.status(),
     taskReuseStats: (projectId?: string) =>
       (runtimeOf(projectId)?.status()['task_reuse'] as { reused: number, stored: number } | undefined)
@@ -526,6 +538,35 @@ export function apply(ctx: Context, config: Config): void {
   )
 }
 
+/** 控制台「工作流」页的入参归一：阶段数组做清洗（空标题丢弃、工具名去空白）。 */
+function workflowInputOf(body: unknown): WorkflowInput {
+  const row = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  const rawStages = Array.isArray(row['stages']) ? row['stages'] : []
+  const stages = rawStages.slice(0, 20).map((item, index) => {
+    const stage = (typeof item === 'object' && item !== null ? item : {}) as Record<string, unknown>
+    const tools = Array.isArray(stage['tools']) ? stage['tools'] : []
+    return {
+      key: (typeof stage['key'] === 'string' && stage['key'].trim()) || `stage-${index + 1}`,
+      title: String(stage['title'] ?? '').trim().slice(0, 60),
+      goal: String(stage['goal'] ?? '').trim().slice(0, 200),
+      guidance: String(stage['guidance'] ?? '').trim().slice(0, 500),
+      tools: tools
+        .filter((name): name is string => typeof name === 'string')
+        .map(name => name.trim())
+        .filter(name => name !== '')
+        .slice(0, 20),
+    }
+  }).filter(stage => stage.title !== '')
+  return {
+    name: String(row['name'] ?? '').trim().slice(0, 60),
+    description: String(row['description'] ?? '').trim().slice(0, 300),
+    stages,
+    enabled: row['enabled'] !== false,
+    isDefault: row['isDefault'] === true,
+    ...(typeof row['workflowId'] === 'string' ? { workflowId: row['workflowId'] } : {}),
+  }
+}
+
 /** 控制台「项目组织」页的入参归一（按 NDR 授权ID / MCP 地址 / 两个令牌）。 */
 function projectInputOf(body: unknown): ProjectInput & { previousId?: string } {
   const row = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
@@ -536,6 +577,7 @@ function projectInputOf(body: unknown): ProjectInput & { previousId?: string } {
     mcpToken: String(row['mcpToken'] ?? row['mcp_token'] ?? '').trim(),
     pushToken: String(row['pushToken'] ?? row['push_token'] ?? '').trim(),
     enabled: row['enabled'] !== false,
+    ...(typeof row['workflowId'] === 'string' ? { workflowId: row['workflowId'] } : {}),
     ...(typeof row['previousId'] === 'string' ? { previousId: row['previousId'] } : {}),
   }
 }

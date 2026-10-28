@@ -39,6 +39,8 @@ export interface ProjectRecord {
   readonly mcpToken: string
   readonly pushToken: string
   readonly enabled: boolean
+  /** 引用的工作流模版 ID（空 = 用默认模版） */
+  readonly workflowId: string
   readonly status: ProjectStatus
   readonly statusDetail: string
   readonly lastCheckedAt: string
@@ -54,6 +56,60 @@ export interface ProjectInput {
   readonly mcpToken: string
   readonly pushToken: string
   readonly enabled?: boolean
+  readonly workflowId?: string
+}
+
+/* ------------------------------------------------------------------ */
+/* 工作流模版（分析编排）                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 一个分析阶段。
+ *
+ * 为什么阶段里要写 `tools`：控制台要**实时**显示"这次分析走到第几步了"。
+ * 让模型每步上报太脆（漏一次就断），所以用工具调用做锚点：
+ * 某阶段声明了 tools，控制台就按"第一个命中的阶段"归位；模型也可以主动写
+ * `【阶段】<标题>` 覆盖（更准），两种都支持。
+ */
+export interface WorkflowStage {
+  readonly key: string
+  readonly title: string
+  /** 这一阶段要回答的问题 */
+  readonly goal: string
+  /** 具体要点/判据（写进提示词） */
+  readonly guidance: string
+  /** 归位用：工具名前缀（如 `search_events` / `mcp__ndr__`） */
+  readonly tools: readonly string[]
+}
+
+/** 工作流模版（**全局**，项目组织按 ID 引用；不是项目数据）。 */
+export interface WorkflowRecord {
+  readonly workflowId: string
+  readonly name: string
+  readonly description: string
+  readonly stages: readonly WorkflowStage[]
+  readonly enabled: boolean
+  readonly isDefault: boolean
+  readonly createdAt: string
+  readonly updatedAt: string
+  readonly updatedBy: string
+}
+
+export interface WorkflowInput {
+  readonly name: string
+  readonly description?: string
+  readonly stages: readonly WorkflowStage[]
+  readonly enabled?: boolean
+  readonly isDefault?: boolean
+}
+
+/** 工作流模版仓库（全局表，不按 project_id 过滤）。 */
+export interface WorkflowStore {
+  listWorkflows(): Promise<WorkflowRecord[]>
+  getWorkflow(workflowId: string): Promise<WorkflowRecord | null>
+  upsertWorkflow(input: WorkflowInput, nowIso: string): Promise<WorkflowRecord>
+  setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean>
+  removeWorkflow(workflowId: string): Promise<boolean>
 }
 
 /* ------------------------------------------------------------------ */
@@ -62,7 +118,7 @@ export interface ProjectInput {
 
 /** 项目数据面：一个项目绑定一套（分析循环、脚本工具、控制台共用同一实例）。 */
 export type DataStore = TaskResultStore & ScriptStore & TaskSeenStore & ConclusionStore
-  & SettingsStore & ProcessStore
+  & SettingsStore & ProcessStore & WorkflowStore
 
 /** 一次分析的结局。`running` 表示还没结束（控制台可实时看当前工具调用）。 */
 export type ProcessOutcome = 'running' | 'done' | 'reused' | 'suppressed' | 'deferred' | 'failed'
@@ -81,6 +137,10 @@ export interface ProcessRecord {
   readonly durationMs: number
   readonly verdict: string
   readonly note: string
+  /** 这次分析用的工作流（模版改了也不影响历史：过程里存的是**快照**） */
+  readonly workflowId: string
+  readonly workflowName: string
+  readonly workflowStages: readonly WorkflowStage[]
 }
 
 /** 开始一次分析（起会话前调用）。 */
@@ -91,6 +151,9 @@ export interface ProcessStart {
   readonly subject: string
   readonly model: string
   readonly startedAt: string
+  readonly workflowId?: string
+  readonly workflowName?: string
+  readonly workflowStages?: readonly WorkflowStage[]
 }
 
 /** 收尾（不起会话的复用/抑制跳过也走这里，`sessionId` 为空）。 */
@@ -234,7 +297,7 @@ export interface ProcessStore {
 /* ------------------------------------------------------------------ */
 
 export class MemoryStateStore
-implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, SettingsStore, ProcessStore {
+implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, SettingsStore, ProcessStore, WorkflowStore {
   readonly kind = 'memory' as const
   readonly projectId: string
 
@@ -247,6 +310,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
   private readonly seen = new Map<string, TaskSeenRecord & { readonly suppressedBy: string }>()
   private readonly conclusions = new Map<string, ConclusionRecord>()
   private readonly processes = new Map<string, ProcessRecord>()
+  private readonly workflows = new Map<string, WorkflowRecord>()
   private settings: RuntimeSettings | null = null
 
   /* ---------- 结论复用 ---------- */
@@ -462,6 +526,45 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     return true
   }
 
+  /* ---------- 工作流模版（全局） ---------- */
+
+  async listWorkflows(): Promise<WorkflowRecord[]> {
+    return [...this.workflows.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+  }
+
+  async getWorkflow(workflowId: string): Promise<WorkflowRecord | null> {
+    return this.workflows.get(workflowId.trim()) ?? null
+  }
+
+  async upsertWorkflow(input: WorkflowInput, nowIso: string): Promise<WorkflowRecord> {
+    const id = input.isDefault === true ? 'default' : `wf-${randomUUID().slice(0, 8)}`
+    const previous = this.workflows.get(id)
+    const row: WorkflowRecord = {
+      workflowId: id,
+      name: input.name.trim(),
+      description: (input.description ?? '').trim(),
+      stages: input.stages ?? [],
+      enabled: input.enabled ?? previous?.enabled ?? true,
+      isDefault: input.isDefault === true || previous?.isDefault === true,
+      createdAt: previous?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+      updatedBy: 'console',
+    }
+    this.workflows.set(id, row)
+    return row
+  }
+
+  async setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean> {
+    const row = this.workflows.get(workflowId.trim())
+    if (row === undefined) return false
+    this.workflows.set(row.workflowId, { ...row, enabled, updatedAt: new Date().toISOString() })
+    return true
+  }
+
+  async removeWorkflow(workflowId: string): Promise<boolean> {
+    return this.workflows.delete(workflowId.trim())
+  }
+
   /* ---------- 过程索引 ---------- */
 
   async startProcess(start: ProcessStart): Promise<void> {
@@ -473,6 +576,9 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       durationMs: 0,
       verdict: '',
       note: '',
+      workflowId: start.workflowId ?? '',
+      workflowName: start.workflowName ?? '',
+      workflowStages: start.workflowStages ?? [],
     })
   }
 
@@ -491,6 +597,9 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       durationMs: finish.durationMs ?? previous?.durationMs ?? 0,
       verdict: finish.verdict ?? previous?.verdict ?? '',
       note: finish.note ?? previous?.note ?? '',
+      workflowId: previous?.workflowId ?? '',
+      workflowName: previous?.workflowName ?? '',
+      workflowStages: previous?.workflowStages ?? [],
     })
   }
 

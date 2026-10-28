@@ -9,8 +9,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ProjectManager, SessionProjects } from '../src/projects.ts'
 import { parseSessionLog } from '../src/session-timeline.ts'
+import { buildAnalysisPrompt } from '../src/prompt.ts'
+import { DEFAULT_WORKFLOW_STAGES, resolveWorkflow } from '../src/projects.ts'
 import type { ProjectAdminStore, ProjectRuntimeConfig } from '../src/projects.ts'
-import type { MemoryStateStore } from '../src/state-store.ts'
+import type { WorkflowInput, WorkflowRecord } from '../src/state-store.ts'
+import { MemoryStateStore } from '../src/state-store.ts'
 import type { ProjectInput, ProjectRecord, ProjectStatus } from '../src/state-store.ts'
 
 const CONFIG: ProjectRuntimeConfig = {
@@ -47,6 +50,7 @@ function project(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
 /** 内存项目表：只实现管理器用到的五个方法。 */
 class FakeAdmin implements ProjectAdminStore {
   readonly rows = new Map<string, ProjectRecord>()
+  readonly workflows = new Map<string, WorkflowRecord>()
 
   constructor(seed: ProjectRecord[] = []) {
     for (const row of seed) this.rows.set(row.projectId, row)
@@ -80,6 +84,49 @@ class FakeAdmin implements ProjectAdminStore {
 
   async removeProject(projectId: string): Promise<boolean> {
     return this.rows.delete(projectId)
+  }
+
+  async listWorkflows(): Promise<WorkflowRecord[]> {
+    return [...this.workflows.values()]
+  }
+
+  async getWorkflow(workflowId: string): Promise<WorkflowRecord | null> {
+    return this.workflows.get(workflowId) ?? null
+  }
+
+  async upsertWorkflow(input: WorkflowInput, nowIso: string): Promise<WorkflowRecord> {
+    const id = input.isDefault === true ? 'default' : `wf-${this.workflows.size + 1}`
+    const row = {
+      workflowId: id,
+      name: input.name,
+      description: input.description ?? '',
+      stages: input.stages,
+      enabled: input.enabled ?? true,
+      isDefault: input.isDefault === true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      updatedBy: 'test',
+    }
+    this.workflows.set(id, row)
+    return row
+  }
+
+  async setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean> {
+    const row = this.workflows.get(workflowId)
+    if (row === undefined) return false
+    this.workflows.set(workflowId, { ...row, enabled })
+    return true
+  }
+
+  async removeWorkflow(workflowId: string): Promise<boolean> {
+    return this.workflows.delete(workflowId)
+  }
+
+  async setProjectWorkflow(projectId: string, workflowId: string): Promise<boolean> {
+    const row = this.rows.get(projectId)
+    if (row === undefined) return false
+    this.rows.set(projectId, { ...row, workflowId })
+    return true
   }
 }
 
@@ -234,4 +281,50 @@ test('时间线：after 只回增量（实时轮询靠它，不重复渲染整�
   const out = parseSessionLog(lines.map(line => JSON.stringify(line)).join('\n'), 's-1', { after: 2 })
   assert.deepEqual(out.events.map(event => event.seq), [3])
   assert.equal(out.nextSeq, 3)
+})
+
+
+test('工作流：默认模版解析（绑定优先，停用/不存在回落默认）', async () => {
+  const admin = new FakeAdmin()
+  await admin.upsertWorkflow({ name: '标准', stages: DEFAULT_WORKFLOW_STAGES, isDefault: true }, '2026-10-29T00:00:00Z')
+  const custom = await admin.upsertWorkflow({ name: '外连专项', stages: [{ key: 'x', title: '只看外连', goal: '', guidance: '', tools: [] }] }, '2026-10-29T00:00:00Z')
+  assert.equal((await resolveWorkflow(admin, custom.workflowId))?.name, '外连专项')
+  assert.equal((await resolveWorkflow(admin, 'nope'))?.name, '标准', '绑定的模版被删了要回落默认')
+  await admin.setWorkflowEnabled(custom.workflowId, false)
+  assert.equal((await resolveWorkflow(admin, custom.workflowId))?.name, '标准', '停用的模版不能再用')
+})
+
+test('工作流：提示词带阶段与进度标记要求（事实在前，阶段不是死步骤）', () => {
+  const prompt = buildAnalysisPrompt(
+    { id: 't-1', kind: 'observation', strength: 0.6, subject_kind: 'ip', subject: '10.1.2.3' },
+    {
+      workflowId: 'w1', name: '外连专项', description: '', stages: [
+        { key: 'a', title: '先看外连', goal: '确认是否新目标', guidance: '对比历史目的地', tools: ['egress_baseline'] },
+      ], enabled: true, isDefault: false, createdAt: '', updatedAt: '', updatedBy: 'test',
+    },
+  )
+  assert.ok(prompt.includes('分析编排：外连专项'))
+  assert.ok(prompt.includes('1. 先看外连'))
+  assert.ok(prompt.includes('egress_baseline'))
+  assert.ok(prompt.includes('【阶段】'))
+  assert.ok(prompt.includes('阶段是提纲不是死步骤'))
+  // 没绑定模版时不能凭空造一段编排
+  const plain = buildAnalysisPrompt(
+    { id: 't-2', kind: 'novelty', strength: 0.3, subject_kind: 'ip', subject: '10.1.2.4' },
+    null,
+  )
+  assert.ok(!plain.includes('分析编排'))
+})
+
+test('工作流：过程索引存模版快照（模版后来改了，历史仍显示当时的阶段）', async () => {
+  const store = new MemoryStateStore('ZPL6QQLG')
+  const stages = [{ key: 'a', title: '阶段甲', goal: '', guidance: '', tools: [] }]
+  await store.startProcess({
+    taskId: 't-1', sessionId: 's-1', kind: 'hit', subject: '10.1.2.3', model: 'm',
+    startedAt: '2026-10-29T00:00:00Z', workflowId: 'w1', workflowName: '旧模版', workflowStages: stages,
+  })
+  const row = await store.getProcess('t-1')
+  assert.equal(row?.workflowId, 'w1')
+  assert.equal(row?.workflowName, '旧模版')
+  assert.deepEqual(row?.workflowStages, stages)
 })

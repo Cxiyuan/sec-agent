@@ -23,7 +23,9 @@ export interface PromptTask {
   readonly attempts?: number
 }
 
-export function buildAnalysisPrompt(task: PromptTask): string {
+import type { WorkflowRecord } from './state-store.ts'
+
+export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord | null): string {
   const facts = {
     task_id: task.id,
     kind: task.kind,
@@ -47,6 +49,25 @@ export function buildAnalysisPrompt(task: PromptTask): string {
     JSON.stringify(facts, null, 2),
     '</task>',
     '',
+    ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0
+      ? [
+          '<workflow>',
+          `分析编排：${workflow.name}${workflow.description ? ` —— ${workflow.description}` : ''}`,
+          '按下面的阶段推进。**阶段是提纲不是死步骤**：证据够了可以提前收尾、也可以在阶段之间',
+          '回头补查；但结论里要交代哪些阶段没做、为什么（别假装做过）。',
+          ...workflow.stages.map((stage, index) =>
+            [
+              `${index + 1}. ${stage.title}`,
+              stage.goal ? `   目标：${stage.goal}` : '',
+              stage.guidance ? `   要点：${stage.guidance}` : '',
+              stage.tools.length > 0 ? `   常用工具：${stage.tools.join(' / ')}` : '',
+            ].filter(line => line !== '').join('\n'),
+          ),
+          '每**进入**一个阶段，先单独输出一行 `【阶段】<阶段标题>`（控制台按它画工作流进度）。',
+          '</workflow>',
+          '',
+        ]
+      : []),
     '## 先加载技能',
     '工具用法与处置口径写在两个技能里，复杂线索先用 `skill` 工具加载：',
     '- `skill(ndr-tools)`：22 个 NDR 工具的用途、证据引用规则、抑制门槛；',

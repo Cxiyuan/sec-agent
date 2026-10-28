@@ -8,6 +8,7 @@
  */
 
 import type { AgentsServiceLike } from './agent-port.ts'
+import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
@@ -111,6 +112,8 @@ export interface AnalystOptions {
    * 起会话前 `start`，会话收尾后 `end`。
    */
   readonly onSession?: (sessionId: string, phase: 'start' | 'end') => void
+  /** 分析工作流（项目组织引用）：可以是固定模版，也可以是每次取最新绑定的 getter。 */
+  readonly workflow?: WorkflowRecord | null | (() => WorkflowRecord | null)
 }
 
 export interface AnalystOutcome {
@@ -183,6 +186,9 @@ export class Analyst {
     const provider = this.options.provider?.trim() || selected?.provider.trim()
     const model = this.options.model?.trim() || selected?.model.trim()
     // 过程索引：控制台据此列出「任务 → 会话 → 耗时/工具数/状态」，并读会话时间线
+    const workflow = typeof this.options.workflow === 'function'
+      ? this.options.workflow()
+      : this.options.workflow ?? null
     await this.options.process?.startProcess({
       taskId: task.id,
       sessionId,
@@ -190,6 +196,9 @@ export class Analyst {
       subject: task.subject,
       model: [provider, model].filter(v => (v ?? '') !== '').join('/'),
       startedAt: new Date(startedAt).toISOString(),
+      workflowId: workflow?.workflowId ?? '',
+      workflowName: workflow?.name ?? '',
+      workflowStages: workflow?.stages ?? [],
     })
     this.options.onSession?.(sessionId, 'start')
     const handle = await this.options.agents.create({
@@ -203,7 +212,7 @@ export class Analyst {
     let error: string | undefined
     try {
       const followup = handle.agent.followup({
-        content: [{ type: 'text', text: buildAnalysisPrompt(task) }],
+        content: [{ type: 'text', text: buildAnalysisPrompt(task, workflow) }],
         source: { kind: this.options.source ?? 'xdr-ingest' },
       })
       await Promise.resolve(followup)

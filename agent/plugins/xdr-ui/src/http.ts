@@ -47,6 +47,12 @@ export interface IngestServiceView {
   saveProject?(body: unknown): Promise<{ ok: boolean, error?: string, project?: unknown }>
   removeProject?(projectId: string): Promise<boolean>
   verifyProject?(projectId: string): Promise<unknown>
+  /** 工作流模版（分析编排）：列表 / 保存 / 启停 / 删除 / 项目引用。 */
+  workflows?(): Promise<readonly unknown[]>
+  saveWorkflow?(body: unknown): Promise<unknown>
+  setWorkflowEnabled?(workflowId: string, enabled: boolean): Promise<boolean>
+  removeWorkflow?(workflowId: string): Promise<boolean>
+  bindWorkflow?(projectId: string, workflowId: string): Promise<{ ok: boolean, error?: string }>
   /** 分析过程（P3）：列表 / 详情 / 会话时间线（after 增量）。 */
   listProcesses?(query: { limit: number, offset: number, search: string, outcome: string, project?: string }): Promise<{
     total: number
@@ -524,6 +530,123 @@ export function createUiHandler(
         }
         const done = await ingest.removeProject(rest)
         respondJson(res, done ? 200 : 404, { ok: done })
+        return
+      }
+      // ---------- 工作流模版（分析编排） ----------
+      if (tail === '/api/workflows') {
+        if (method === 'GET') {
+          if (!apiGuard()) return
+          const ingest = options.ingest()
+          if (ingest === null || typeof ingest.workflows !== 'function') {
+            respondJson(res, 200, { available: false, items: [] })
+            return
+          }
+          respondJson(res, 200, { available: true, items: await ingest.workflows() })
+          return
+        }
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        if (typeof options.ingest()?.saveWorkflow !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用' })
+          return
+        }
+        const body = await readBody(req, MAX_SETTINGS_BODY * 4)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: unknown
+        try {
+          patch = JSON.parse(body.text)
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        try {
+          const saved = await options.ingest()?.saveWorkflow?.(patch)
+          respondJson(res, 200, { ok: true, workflow: saved })
+        } catch (error) {
+          respondJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
+      if (tail === '/api/workflows/bind') {
+        if (method !== 'POST') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!apiGuard()) return
+        if (typeof options.ingest()?.bindWorkflow !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用' })
+          return
+        }
+        const body = await readBody(req, MAX_SETTINGS_BODY)
+        if (body === undefined) {
+          respondJson(res, 413, { ok: false, error: '请求体过大' })
+          return
+        }
+        let patch: { projectId?: unknown, workflowId?: unknown } = {}
+        try {
+          patch = JSON.parse(body.text) as typeof patch
+        } catch {
+          respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+          return
+        }
+        const projectId = String(patch.projectId ?? '').trim().toUpperCase()
+        if (!/^[A-Z0-9]{8}$/u.test(projectId)) {
+          respondJson(res, 400, { ok: false, error: 'projectId 必须是 8 位授权ID' })
+          return
+        }
+        const result = await options.ingest()?.bindWorkflow?.(projectId, String(patch.workflowId ?? '').trim())
+        respondJson(res, result?.ok === false ? 400 : 200, result ?? { ok: false })
+        return
+      }
+      if (tail.startsWith('/api/workflows/')) {
+        if (!apiGuard()) return
+        const rest = decodeURIComponent(tail.slice('/api/workflows/'.length)).trim()
+        if (rest === '' || rest.length > 80 || /[\u0000-\u001f]/u.test(rest)) {
+          respondJson(res, 400, { error: 'invalid workflow id' })
+          return
+        }
+        if (rest.endsWith('/enabled')) {
+          if (method !== 'POST') {
+            respondJson(res, 405, { error: 'method not allowed' })
+            return
+          }
+          const body = await readBody(req, MAX_SETTINGS_BODY)
+          if (body === undefined) {
+            respondJson(res, 413, { ok: false, error: '请求体过大' })
+            return
+          }
+          let patch: { enabled?: unknown } = {}
+          try {
+            patch = JSON.parse(body.text) as { enabled?: unknown }
+          } catch {
+            respondJson(res, 400, { ok: false, error: '请求体必须是 JSON' })
+            return
+          }
+          if (typeof patch.enabled !== 'boolean' || typeof options.ingest()?.setWorkflowEnabled !== 'function') {
+            respondJson(res, 400, { ok: false, error: 'enabled 必须是布尔值' })
+            return
+          }
+          const key = rest.slice(0, -'/enabled'.length)
+          const done = await options.ingest()?.setWorkflowEnabled?.(key, patch.enabled)
+          respondJson(res, done === true ? 200 : 404, { ok: done === true })
+          return
+        }
+        if (method !== 'DELETE') {
+          respondJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (typeof options.ingest()?.removeWorkflow !== 'function') {
+          respondJson(res, 503, { ok: false, error: '数据面不可用' })
+          return
+        }
+        const done = await options.ingest()?.removeWorkflow?.(rest)
+        respondJson(res, done === true ? 200 : 404, { ok: done === true })
         return
       }
       // ---------- 分析过程（P3：任务 → 会话 → 时间线，运行中可增量轮询） ----------

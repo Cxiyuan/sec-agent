@@ -26,6 +26,9 @@ import type {
   ProjectInput,
   ProjectRecord,
   ProjectStatus,
+  WorkflowInput,
+  WorkflowRecord,
+  WorkflowStage,
 } from './state-store.ts'
 
 /** 项目运行参数（从插件配置里抽出来的那几项）。 */
@@ -51,6 +54,13 @@ export interface ProjectAdminStore {
   upsertProject(input: ProjectInput): Promise<ProjectRecord | null>
   setProjectStatus(projectId: string, status: ProjectStatus, detail: string): Promise<void>
   removeProject(projectId: string): Promise<boolean>
+  /** 工作流模版（全局表）：项目按 ID 引用。 */
+  listWorkflows(): Promise<WorkflowRecord[]>
+  getWorkflow(workflowId: string): Promise<WorkflowRecord | null>
+  upsertWorkflow(input: WorkflowInput, nowIso: string): Promise<WorkflowRecord>
+  setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean>
+  removeWorkflow(workflowId: string): Promise<boolean>
+  setProjectWorkflow(projectId: string, workflowId: string): Promise<boolean>
 }
 
 /** 分析会话 → 项目：脚本工具靠它找到「这次分析属于哪个项目」。 */
@@ -72,6 +82,74 @@ export class SessionProjects {
   }
 }
 
+/** 项目引用的工作流；没绑定/被停用就回落到默认模版（再没有就 null = 不注入编排）。 */
+export async function resolveWorkflow(
+  admin: ProjectAdminStore,
+  workflowId: string,
+): Promise<WorkflowRecord | null> {
+  const id = (workflowId ?? '').trim()
+  if (id !== '') {
+    const bound = await admin.getWorkflow(id).catch(() => null)
+    if (bound !== null && bound.enabled) return bound
+  }
+  const all = await admin.listWorkflows().catch(() => [] as WorkflowRecord[])
+  return all.find(row => row.isDefault && row.enabled)
+    ?? all.find(row => row.enabled)
+    ?? null
+}
+
+/** 默认工作流（首次启动播种）：与提示词里的取证顺序一致，不写死工具白名单。 */
+export const DEFAULT_WORKFLOW_STAGES: readonly WorkflowStage[] = [
+  {
+    key: 'context',
+    title: '定位与上下文',
+    goal: '这条线索是什么、对象是谁、之前看过没有',
+    guidance: '先查历史结论与资产台账；确认对象角色（服务器/终端/代理）再决定查哪类数据',
+    tools: ['prior_findings', 'asset_context', 'entity_profile', 'describe_data'],
+  },
+  {
+    key: 'evidence',
+    title: '现场取证',
+    goal: '用原始事件确认发生了什么（时间窗、五元组、证据引用）',
+    guidance: '证据必须本会话真取回（raw_evidence）；正文里的话不算证据',
+    tools: ['search_events', 'aggregate_events', 'raw_evidence', 'net_flows', 'dns_queries', 'tls_fingerprints', 'web_requests'],
+  },
+  {
+    key: 'baseline',
+    title: '基线与偏离核对',
+    goal: '这次和它自己的平时比，哪里不一样（外连目的地/账号/连接数）',
+    guidance: '新目标要看它原本连多少个目标；账号看上次登录地点与失败来源',
+    tools: ['baseline_lookup', 'list_observations', 'egress_baseline'],
+  },
+  {
+    key: 'correlate',
+    title: '关联与影响面',
+    goal: '是否影响其他资产、是否经过代理/中继、是否成簇',
+    guidance: '反代/中继会让源 IP 失真；同簇事件是同一件事，别重复分析',
+    tools: ['search_hits', 'get_event_detail', 'relay_nodes', 'asset_map', 'hit_clusters'],
+  },
+  {
+    key: 'conclude',
+    title: '结论与交回',
+    goal: '定性 + 证据 + 影响面（anchors）+ 是否提交抑制',
+    guidance: '交回是唯一硬性收尾要求；没查完也要交回并写 terminal_reason',
+    tools: ['complete_task'],
+  },
+]
+
+/** 首次启动播种默认模版（已有任何模版就不动）。 */
+export async function ensureDefaultWorkflow(admin: ProjectAdminStore, nowIso: string): Promise<void> {
+  const existing = await admin.listWorkflows().catch(() => [] as WorkflowRecord[])
+  if (existing.length > 0) return
+  await admin.upsertWorkflow({
+    name: '标准分析',
+    description: '默认编排：上下文 → 取证 → 基线核对 → 关联 → 结论。阶段是提纲，可按需调整。',
+    stages: DEFAULT_WORKFLOW_STAGES,
+    enabled: true,
+    isDefault: true,
+  }, nowIso).catch(() => null)
+}
+
 /** 一个项目的运行时（MCP 客户端 + 领取循环 + 分析器 + 抑制同步）。 */
 export class ProjectRuntime {
   readonly projectId: string
@@ -86,6 +164,7 @@ export class ProjectRuntime {
   private analyst: Analyst | null = null
   private loop: ClaimLoop | null = null
   private syncSuppressions: (() => Promise<void>) | null = null
+  private workflowRecord: WorkflowRecord | null = null
   private lastError = ''
 
   constructor(deps: {
@@ -157,6 +236,7 @@ export class ProjectRuntime {
       this.lastError = `授权ID 不一致：项目 ${this.projectId} / NDR ${info.authId || '(空)'}`
       return this.mark('auth_mismatch', this.lastError)
     }
+    this.workflowRecord = await resolveWorkflow(this.admin, this.record.workflowId)
     const analyst = new Analyst({
       agents: this.agents,
       ndr: this.ndr,
@@ -171,6 +251,8 @@ export class ProjectRuntime {
       process: this.store,
       conclusions: this.store,
       projectId: this.projectId,
+      // 每次起会话都取当前绑定：控制台换模版后下一个任务立刻生效（不用重启）
+      workflow: () => this.workflowRecord,
       onSession: (sessionId, phase) => {
         if (phase === 'start') this.sessions.set(sessionId, this.projectId)
         else this.sessions.delete(sessionId)
@@ -288,6 +370,8 @@ export class ProjectRuntime {
       running: this.loop !== null,
       last_checked_at: this.record.lastCheckedAt,
       mcp_url: this.record.mcpUrl,
+      workflow_id: this.workflowRecord?.workflowId ?? this.record.workflowId,
+      workflow_name: this.workflowRecord?.name ?? '',
       ...settingsView(this.settings()),
       ...(this.analyst === null ? {} : { task_reuse: this.analyst.reuseStats }),
       ...(this.loop === null ? {} : { loop: this.loop.stats }),
@@ -297,6 +381,13 @@ export class ProjectRuntime {
   async syncNow(): Promise<void> {
     if (this.syncSuppressions === null) return
     await this.syncSuppressions()
+  }
+
+  /** 换绑工作流：更新内存绑定（下一个任务生效）并把模版 ID 落库。 */
+  async applyWorkflow(workflowId: string): Promise<void> {
+    this.workflowRecord = await resolveWorkflow(this.admin, workflowId)
+    this.record = { ...this.record, workflowId: workflowId.trim() }
+    await this.admin.setProjectWorkflow(this.projectId, workflowId).catch(() => false)
   }
 
   /** 会话时间线（分析过程页；`after` 用于实时轮询只取新增事件）。 */
@@ -453,6 +544,27 @@ export class ProjectManager {
       if (owner === id) this.tokenIndex.delete(token)
     }
     return this.admin?.removeProject(id) ?? Promise.resolve(false)
+  }
+
+  /** 项目引用某个工作流（空串 = 用默认模版）。 */
+  async bindWorkflow(projectId: string, workflowId: string): Promise<{ ok: boolean, error?: string }> {
+    if (this.admin === null) return { ok: false, error: 'state store 不可用' }
+    const id = projectId.trim().toUpperCase()
+    const project = await this.admin.getProject(id).catch(() => null)
+    if (project === null) return { ok: false, error: '项目不存在' }
+    const target = (workflowId ?? '').trim()
+    if (target !== '') {
+      const workflow = await this.admin.getWorkflow(target).catch(() => null)
+      if (workflow === null) return { ok: false, error: '工作流不存在' }
+    }
+    const runtime = this.runtimes.get(id)
+    if (runtime !== undefined) {
+      await runtime.applyWorkflow(target)
+    } else {
+      const done = await this.admin.setProjectWorkflow(id, target).catch(() => false)
+      if (!done) return { ok: false, error: '保存失败' }
+    }
+    return { ok: true }
   }
 
   async verify(projectId: string): Promise<ProjectRecord | null> {

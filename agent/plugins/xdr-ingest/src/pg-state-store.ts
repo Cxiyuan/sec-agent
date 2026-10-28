@@ -29,6 +29,10 @@ import type {
   ScriptStore,
   SettingsStore,
   TaskSeenStore,
+  WorkflowInput,
+  WorkflowRecord,
+  WorkflowStage,
+  WorkflowStore,
 } from './state-store.ts'
 import { seenKey } from './state-store.ts'
 import type { ConclusionPage, ConclusionQuery, ConclusionRecord } from './conclusions.ts'
@@ -142,6 +146,17 @@ CREATE INDEX IF NOT EXISTS xdr_ingest_conclusion_project_idx
   ON xdr_ingest_conclusion (project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS xdr_ingest_conclusion_task_idx
   ON xdr_ingest_conclusion (project_id, task_id);
+CREATE TABLE IF NOT EXISTS xdr_ingest_workflow (
+  workflow_id  TEXT PRIMARY KEY,
+  name         TEXT NOT NULL DEFAULT '',
+  description  TEXT NOT NULL DEFAULT '',
+  stages       JSONB NOT NULL DEFAULT '[]'::jsonb,
+  enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+  is_default   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by   TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS xdr_ingest_process (
   project_id   TEXT NOT NULL,
   task_id      TEXT NOT NULL,
@@ -160,6 +175,10 @@ CREATE TABLE IF NOT EXISTS xdr_ingest_process (
 );
 CREATE INDEX IF NOT EXISTS xdr_ingest_process_started_idx
   ON xdr_ingest_process (project_id, started_at DESC);
+ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS workflow_stages JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE TABLE IF NOT EXISTS xdr_ingest_settings (
   project_id TEXT PRIMARY KEY,
   value      JSONB NOT NULL,
@@ -255,6 +274,21 @@ interface ProcessRow {
   duration_ms: number | string
   verdict: string
   note: string
+  workflow_id: string
+  workflow_name: string
+  workflow_stages: unknown
+}
+
+interface WorkflowRow {
+  workflow_id: string
+  name: string
+  description: string
+  stages: unknown
+  enabled: boolean
+  is_default: boolean
+  created_at: Date | string
+  updated_at: Date | string
+  updated_by: string
 }
 
 interface ProjectRow {
@@ -264,6 +298,7 @@ interface ProjectRow {
   mcp_token: string
   push_token: string
   enabled: boolean
+  workflow_id: string
   status: string
   status_detail: string
   last_checked_at: Date | string | null
@@ -284,6 +319,7 @@ function toProject(row: ProjectRow): ProjectRecord {
     mcpToken: String(row.mcp_token ?? ''),
     pushToken: String(row.push_token ?? ''),
     enabled: row.enabled === true,
+    workflowId: String(row.workflow_id ?? ''),
     status: (PROJECT_STATUSES.has(status) ? status : 'unchecked') as ProjectStatus,
     statusDetail: String(row.status_detail ?? ''),
     lastCheckedAt: isoTime(row.last_checked_at),
@@ -368,6 +404,26 @@ function toProcess(row: ProcessRow): ProcessRecord {
     durationMs: Number(row.duration_ms ?? 0),
     verdict: String(row.verdict ?? ''),
     note: String(row.note ?? ''),
+    workflowId: String(row.workflow_id ?? ''),
+    workflowName: String(row.workflow_name ?? ''),
+    workflowStages: Array.isArray(row.workflow_stages)
+      ? (row.workflow_stages as WorkflowStage[])
+      : [],
+  }
+}
+
+function toWorkflow(row: WorkflowRow): WorkflowRecord {
+  const stages = Array.isArray(row.stages) ? (row.stages as WorkflowStage[]) : []
+  return {
+    workflowId: String(row.workflow_id),
+    name: String(row.name ?? ''),
+    description: String(row.description ?? ''),
+    stages,
+    enabled: row.enabled === true,
+    isDefault: row.is_default === true,
+    createdAt: isoTime(row.created_at),
+    updatedAt: isoTime(row.updated_at),
+    updatedBy: String(row.updated_by ?? ''),
   }
 }
 
@@ -384,7 +440,7 @@ export interface PostgresStateStoreOptions {
 }
 
 export class PostgresStateStore
-implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, SettingsStore, ProcessStore {
+implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, SettingsStore, ProcessStore, WorkflowStore {
   readonly kind = 'postgres' as const
   readonly projectId: string
   private readonly pool: Pool
@@ -924,8 +980,9 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     try {
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
-           (project_id, task_id, session_id, kind, subject, model, started_at, outcome)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running')
+           (project_id, task_id, session_id, kind, subject, model, started_at, outcome,
+            workflow_id, workflow_name, workflow_stages)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10::jsonb)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
            session_id = EXCLUDED.session_id,
            kind = EXCLUDED.kind,
@@ -933,8 +990,15 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            model = EXCLUDED.model,
            started_at = EXCLUDED.started_at,
            ended_at = NULL,
-           outcome = 'running'`,
-        [this.projectId, start.taskId, start.sessionId, start.kind, start.subject, start.model, start.startedAt],
+           outcome = 'running',
+           workflow_id = EXCLUDED.workflow_id,
+           workflow_name = EXCLUDED.workflow_name,
+           workflow_stages = EXCLUDED.workflow_stages`,
+        [
+          this.projectId, start.taskId, start.sessionId, start.kind, start.subject, start.model,
+          start.startedAt, start.workflowId ?? '', start.workflowName ?? '',
+          JSON.stringify(start.workflowStages ?? []),
+        ],
       )
     } catch (error) {
       console.error(`${LOG_PREFIX} process start failed:`, this.message(error))
@@ -1017,6 +1081,88 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     }
   }
 
+  /* ---------- 工作流模版（全局，不按项目过滤） ---------- */
+
+  async listWorkflows(): Promise<WorkflowRecord[]> {
+    if (!await this.usable()) return []
+    try {
+      const { rows } = await this.pool.query<WorkflowRow>(
+        'SELECT * FROM xdr_ingest_workflow ORDER BY is_default DESC, updated_at DESC',
+      )
+      return rows.map(toWorkflow)
+    } catch (error) {
+      console.error(`${LOG_PREFIX} workflow list failed:`, this.message(error))
+      return []
+    }
+  }
+
+  async getWorkflow(workflowId: string): Promise<WorkflowRecord | null> {
+    if (!await this.usable()) return null
+    try {
+      const { rows } = await this.pool.query<WorkflowRow>(
+        'SELECT * FROM xdr_ingest_workflow WHERE workflow_id = $1',
+        [workflowId.trim()],
+      )
+      const row = rows[0]
+      return row === undefined ? null : toWorkflow(row)
+    } catch (error) {
+      console.error(`${LOG_PREFIX} workflow get failed:`, this.message(error))
+      return null
+    }
+  }
+
+  async upsertWorkflow(input: WorkflowInput, nowIso: string): Promise<WorkflowRecord> {
+    if (!await this.usable()) throw new Error('state store unavailable')
+    const fallbackId = `wf-${randomUUID().slice(0, 8)}`
+    const workflowId = input.isDefault === true ? 'default' : (input as { workflowId?: string }).workflowId?.trim() || fallbackId
+    const { rows } = await this.pool.query<WorkflowRow>(
+      `INSERT INTO xdr_ingest_workflow
+         (workflow_id, name, description, stages, enabled, is_default, updated_at, updated_by)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, 'console')
+       ON CONFLICT (workflow_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         stages = EXCLUDED.stages,
+         enabled = EXCLUDED.enabled,
+         is_default = EXCLUDED.is_default,
+         updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        workflowId, input.name.trim(), (input.description ?? '').trim(),
+        JSON.stringify(input.stages ?? []), input.enabled ?? true, input.isDefault === true, nowIso,
+      ],
+    )
+    return toWorkflow(rows[0] as WorkflowRow)
+  }
+
+  async setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean> {
+    if (!await this.usable()) return false
+    try {
+      const { rowCount } = await this.pool.query(
+        'UPDATE xdr_ingest_workflow SET enabled = $1, updated_at = now() WHERE workflow_id = $2',
+        [enabled, workflowId.trim()],
+      )
+      return (rowCount ?? 0) > 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} workflow toggle failed:`, this.message(error))
+      return false
+    }
+  }
+
+  async removeWorkflow(workflowId: string): Promise<boolean> {
+    if (!await this.usable()) return false
+    try {
+      const { rowCount } = await this.pool.query(
+        'DELETE FROM xdr_ingest_workflow WHERE workflow_id = $1',
+        [workflowId.trim()],
+      )
+      return (rowCount ?? 0) > 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} workflow remove failed:`, this.message(error))
+      return false
+    }
+  }
+
   /* ---------- 项目组织（不按实例项目过滤：跨项目读写） ---------- */
 
   async listProjects(): Promise<ProjectRecord[]> {
@@ -1052,19 +1198,21 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     try {
       const { rows } = await this.pool.query<ProjectRow>(
         `INSERT INTO xdr_ingest_project
-           (project_id, name, mcp_url, mcp_token, push_token, enabled, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
+           (project_id, name, mcp_url, mcp_token, push_token, enabled, workflow_id, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
          ON CONFLICT (project_id) DO UPDATE SET
            name = EXCLUDED.name,
            mcp_url = EXCLUDED.mcp_url,
            mcp_token = EXCLUDED.mcp_token,
            push_token = EXCLUDED.push_token,
            enabled = EXCLUDED.enabled,
+           workflow_id = CASE WHEN EXCLUDED.workflow_id = '' THEN xdr_ingest_project.workflow_id
+                              ELSE EXCLUDED.workflow_id END,
            updated_at = now()
          RETURNING *`,
         [
           input.projectId.trim(), input.name.trim(), input.mcpUrl.trim(), input.mcpToken,
-          input.pushToken, input.enabled ?? true,
+          input.pushToken, input.enabled ?? true, String(input.workflowId ?? '').trim(),
         ],
       )
       const row = rows[0]
@@ -1086,6 +1234,20 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       )
     } catch (error) {
       console.error(`${LOG_PREFIX} project status failed:`, this.message(error))
+    }
+  }
+
+  async setProjectWorkflow(projectId: string, workflowId: string): Promise<boolean> {
+    if (!await this.usable()) return false
+    try {
+      const { rowCount } = await this.pool.query(
+        'UPDATE xdr_ingest_project SET workflow_id = $1, updated_at = now() WHERE project_id = $2',
+        [workflowId.trim(), projectId.trim()],
+      )
+      return (rowCount ?? 0) > 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} project workflow failed:`, this.message(error))
+      return false
     }
   }
 

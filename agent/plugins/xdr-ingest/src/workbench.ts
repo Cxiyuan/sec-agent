@@ -46,6 +46,21 @@ export interface XdrIngestService {
   /** 多项目运行态聚合（`{project_count, enabled, projects[]}`）。 */
   projectStatus(): Record<string, unknown>
 
+  /** 工作流模版（全局）：列表。 */
+  workflows(): Promise<readonly unknown[]>
+
+  /** 新建/编辑工作流模版（`stages[]` 见 `WorkflowStage`）。 */
+  saveWorkflow(body: unknown): Promise<unknown>
+
+  /** 启用/停用工作流模版。 */
+  setWorkflowEnabled(workflowId: string, enabled: boolean): Promise<boolean>
+
+  /** 删除工作流模版（已绑定它的项目会回落到默认模版）。 */
+  removeWorkflow(workflowId: string): Promise<boolean>
+
+  /** 项目组织引用某个工作流（空串 = 默认模版）。 */
+  bindWorkflow(projectId: string, workflowId: string): Promise<{ ok: boolean, error?: string }>
+
   /** 分析记录按 last_seen 降序分页（含已过期记录——过期只是"待重分析"）。 */
   listAnalyses(query: AnalysesQuery): Promise<AnalysesPage>
 

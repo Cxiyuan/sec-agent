@@ -98,6 +98,65 @@
 
 ---
 
+## 二·补、工作流编排
+
+分析工作流是**提纲**（阶段 + 要点 + 常用工具），不是死流程：智能体可以提前收尾、回头补查；
+控制台用它展示"这次分析走到第几步"。
+
+### 数据形状
+
+```json
+{
+  "workflowId": "default",
+  "name": "标准分析",
+  "description": "默认编排：上下文 → 取证 → 基线核对 → 关联 → 结论",
+  "stages": [
+    {
+      "key": "context",
+      "title": "定位与上下文",
+      "goal": "这条线索是什么、对象是谁、之前看过没有",
+      "guidance": "先查历史结论与资产台账",
+      "tools": ["prior_findings", "asset_context"]
+    }
+  ],
+  "enabled": true,
+  "isDefault": true,
+  "updatedAt": "2026-10-29T10:00:00.000Z",
+  "updatedBy": "console"
+}
+```
+
+- `stages[].tools`：**进度归位**用。控制台的「分析过程」按"工具调用命中哪个阶段"画进度；
+  模型也会在进入阶段时输出 `【阶段】<标题>`（更准，优先用它）。
+- `isDefault`：没有绑定工作流的项目用它；同一时间建议只有一个默认。
+
+### 接口
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET {BASE}/api/workflows` | `{available, items[]}`，默认模版排最前 |
+| `POST {BASE}/api/workflows` | 新建/编辑。body 同上（编辑带 `workflowId`）；`stages` 最多 20 个，空标题丢弃 |
+| `POST {BASE}/api/workflows/{id}/enabled` | body `{enabled:false}`；停用后绑定它的项目回落到默认模版 |
+| `DELETE {BASE}/api/workflows/{id}` | 删除；绑定它的项目同样回落默认 |
+| `POST {BASE}/api/workflows/bind` | body `{projectId:"ZPL6QQLG", workflowId:"default"}`；`workflowId=""` = 用默认模版 |
+
+> 首次启动会自动播种一个「标准分析」默认模版（已有任何模版则不动）。
+> 项目保存接口 `POST /api/projects` 也接受 `workflowId` 字段（与 `bind` 等价，但会走一次绑定校验）。
+
+### 过程里怎么看到进度
+
+`GET /api/processes` / `/api/processes/{taskId}` 的每一行带 **工作流快照**：
+
+```json
+{
+  "workflowId": "default",
+  "workflowName": "标准分析",
+  "workflowStages": [ { "key": "...", "title": "...", "tools": ["..."] } ]
+}
+```
+
+存的是**任务开始时的快照**：模版后来改了，历史记录仍按当时的阶段展示。
+
 ## 三、分析过程（P3）
 
 数据来自 agent 自己的**过程索引**（任务 → 会话）+ DSH 会话日志（时间线）。

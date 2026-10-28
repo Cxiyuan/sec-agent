@@ -187,6 +187,14 @@ ${THEME}
   .tag { font-size: .7rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .tag.ok { color: var(--ok); border-color: rgba(52,211,153,.4); }
   .tag.bad { color: var(--bad); border-color: rgba(248,113,113,.4); }
+  .tag.warn { color: #fbbf24; border-color: rgba(251,191,36,.5); }
+  .tag.off { color: var(--muted); opacity: .55; }
+  .wf-strip { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+  .wf-stage { font-size: .76rem; padding: .18rem .5rem; border-radius: 999px; border: 1px solid var(--line); }
+  .wf-stage.done { color: var(--ok); border-color: rgba(52,211,153,.45); }
+  .wf-stage.current { color: #fbbf24; border-color: rgba(251,191,36,.55); background: rgba(251,191,36,.08); }
+  .wf-stage.pending { color: var(--muted); opacity: .6; }
+  .wf-arrow { color: var(--muted); opacity: .45; font-size: .8rem; }
   #toast { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
            background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
            padding: .55rem 1rem; border-radius: 9px; font-size: .83rem; opacity: 0;
@@ -208,6 +216,7 @@ ${THEME}
     <div class="brand"><span class="logo">瞳</span><div><b>深瞳</b><small>安全分析智能体</small></div></div>
     <nav>
       <a href="#/overview" data-view="overview"><span class="dot"></span>运行总览</a>
+      <a href="#/workflows" data-view="workflows"><span class="dot"></span>工作流</a>
       <a href="#/processes" data-view="processes"><span class="dot"></span>分析过程</a>
       <a href="#/records" data-view="records"><span class="dot"></span>分析记录</a>
       <a href="#/scripts" data-view="scripts"><span class="dot"></span>分析脚本</a>
@@ -260,6 +269,27 @@ ${THEME}
         <button id="next">下一页 ›</button>
         <span id="page"></span>
       </div>
+    </section>
+
+    <section id="view-workflows" hidden>
+      <div class="toolbar">
+        <button id="wf-new" class="primary">新建工作流</button>
+        <button id="wf-refresh">刷新</button>
+        <span class="count" id="wf-count"></span>
+      </div>
+      <table>
+        <thead><tr><th>名称</th><th>阶段</th><th>默认</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+        <tbody id="wf-rows"></tbody>
+      </table>
+      <div class="notice" style="margin:.8rem 0">
+        工作流是**分析提纲**（阶段 + 要点 + 常用工具），不是死流程：智能体可以提前收尾或回头补查。
+        项目组织引用某个模版后，新任务按它的阶段推进；控制台「分析过程」里能看到实际走到了第几步。
+      </div>
+      <h3 style="margin:.4rem 0">项目引用</h3>
+      <table>
+        <thead><tr><th>项目</th><th>授权ID</th><th>当前工作流</th></tr></thead>
+        <tbody id="wf-bind"></tbody>
+      </table>
     </section>
 
     <section id="view-processes" hidden>
@@ -494,10 +524,34 @@ ${THEME}
     <button id="close" class="btn">关闭</button>
   </div>
 </dialog>
+<dialog id="wf-dialog">
+  <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(760px,92vw);max-height:82vh">
+    <h3 id="wf-title" style="margin:0">新建工作流</h3>
+    <div class="form-grid">
+      <div class="field"><label for="wf-name">名称</label><input id="wf-name" maxlength="60"></div>
+      <div class="field"><label for="wf-desc">说明</label><input id="wf-desc" maxlength="300"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:1rem">
+      <label style="display:flex;align-items:center;gap:.4rem"><input id="wf-enabled" type="checkbox" checked> 启用</label>
+      <label style="display:flex;align-items:center;gap:.4rem"><input id="wf-default" type="checkbox"> 设为默认（没有绑定的项目用它）</label>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b style="font-size:.85rem">阶段</b>
+      <button id="wf-add-stage" class="btn">+ 加一个阶段</button>
+    </div>
+    <div id="wf-stages" style="overflow:auto;flex:1;display:flex;flex-direction:column;gap:.5rem"></div>
+    <div style="display:flex;gap:.6rem;justify-content:flex-end">
+      <button id="wf-delete" class="btn ghost">删除</button>
+      <button id="wf-cancel" class="btn">取消</button>
+      <button id="wf-save" class="btn primary">保存</button>
+    </div>
+  </div>
+</dialog>
 <dialog id="proc-dialog">
   <div style="display:flex;flex-direction:column;gap:.6rem;min-width:min(820px,92vw);max-height:80vh">
     <h3 id="proc-title" style="margin:0">分析过程</h3>
     <div id="proc-meta" class="count" style="margin:0"></div>
+    <div id="proc-workflow" class="wf-strip"></div>
     <div id="proc-tools" class="count" style="margin:0"></div>
     <div id="proc-events" style="overflow:auto;flex:1;border-top:1px solid rgba(255,255,255,.08);padding-top:.5rem"></div>
     <div style="display:flex;justify-content:flex-end;gap:.6rem">
@@ -533,7 +587,8 @@ ${THEME}
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
-    processes: { title: '分析过程', sub: '任务 → 会话：耗时、工具数、时间线；运行中实时追新' },
+    workflows: { title: '工作流', sub: '分析编排模版：阶段 + 要点 + 常用工具；项目组织按需引用' },
+    processes: { title: '分析过程', sub: '任务 → 会话：耗时、工具数、工作流进度、时间线；运行中实时追新' },
     scripts: { title: '分析脚本', sub: '模型写过的分析工具脚本：看、改、停用' },
     settings: { title: '配置', sub: '运行参数、连接状态与入口' },
     system: { title: '系统', sub: '模型与密钥、插件清单、原生设置入口' },
@@ -541,6 +596,7 @@ ${THEME}
   let offset = 0, total = 0, settingsLoaded = false
   let sOffset = 0, sTotal = 0, editing = ''
   let pOffset = 0, pTotal = 0, procSeq = 0, procTimer = 0, procRunning = false
+  let wfEditId = ''
 
 
   const esc = v => { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML }
@@ -563,6 +619,7 @@ ${THEME}
     document.getElementById('view-title').textContent = VIEWS[view].title
     document.getElementById('view-sub').textContent = VIEWS[view].sub
     if (view === 'records') void loadList().catch(onError)
+    if (view === 'workflows') void loadWorkflows().catch(onError)
     if (view === 'processes') void loadProcesses().catch(onError)
     if (view === 'scripts') void loadScripts().catch(onError)
     if (view === 'settings' && !settingsLoaded) void loadSettings().catch(onError)
@@ -738,12 +795,14 @@ ${THEME}
   }
 
   function appendEvents(tl) {
+    procEvents = procEvents.concat(tl.events || [])
     const box = document.getElementById('proc-events')
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40
     box.insertAdjacentHTML('beforeend', (tl.events || []).map(procRowHtml).join(''))
     if (atBottom) box.scrollTop = box.scrollHeight
     if (typeof tl.nextSeq === 'number') procSeq = tl.nextSeq
     renderProcMeta(tl)
+    renderProcWorkflow()
   }
 
   async function pollProc(taskId) {
@@ -768,6 +827,9 @@ ${THEME}
     document.getElementById('proc-meta').textContent =
       '任务 ' + taskId + ' · 会话 ' + (entry.sessionId || '（未起会话）') + ' · ' +
       outcomeLabel(entry.outcome) + ' · 耗时 ' + duration(entry.durationMs) + ' · 工具 ' + (entry.toolsUsed || 0)
+    procEntry = entry
+    procEvents = []
+    document.getElementById('proc-workflow').innerHTML = ''
     const tl = data.timeline || {}
     if (tl.ok === false) {
       document.getElementById('proc-events').innerHTML =
@@ -775,8 +837,191 @@ ${THEME}
       return
     }
     procRunning = tl.running === true
+    procEvents = []
     appendEvents(tl)
+    renderProcWorkflow()
     if (procRunning) procTimer = setInterval(() => { void pollProc(taskId).catch(onError) }, 3000)
+  }
+
+  /* ---------------- 工作流编排 ---------------- */
+
+  let wfList = []
+
+  async function loadWorkflows() {
+    const data = await json(BASE + '/api/workflows')
+    wfList = data.items || []
+    document.getElementById('wf-count').textContent = '共 ' + wfList.length + ' 个'
+    document.getElementById('wf-rows').innerHTML = wfList.map(w => {
+      const stages = (w.stages || []).length
+      return '<tr>' +
+        '<td><b>' + esc(w.name) + '</b><div class="count" style="margin:0">' + esc(w.description || '') + '</div></td>' +
+        '<td>' + stages + '</td>' +
+        '<td>' + (w.isDefault ? '<span class="tag ok">默认</span>' : '') + '</td>' +
+        '<td>' + (w.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag off">停用</span>') + '</td>' +
+        '<td>' + esc(fmt(w.updatedAt)) + '</td>' +
+        '<td><button class="btn" data-wf-edit="' + esc(w.workflowId) + '">编辑</button> ' +
+        '<button class="btn ghost" data-wf-toggle="' + esc(w.workflowId) + '">' + (w.enabled ? '停用' : '启用') + '</button></td>' +
+        '</tr>'
+    }).join('') || '<tr><td colspan="6" class="empty">还没有工作流（新建一个，或等默认模版播种）</td></tr>'
+    await loadWorkflowBindings()
+  }
+
+  async function loadWorkflowBindings() {
+    let projects = []
+    try {
+      const data = await json(BASE + '/api/projects')
+      projects = data.projects || []
+    } catch { projects = [] }
+    document.getElementById('wf-bind').innerHTML = projects.map(p => {
+      const options = ['<option value="">（默认模版）</option>']
+        .concat(wfList.filter(w => w.enabled).map(w =>
+          '<option value="' + esc(w.workflowId) + '"' + (w.workflowId === p.workflowId ? ' selected' : '') + '>' + esc(w.name) + '</option>'))
+        .join('')
+      return '<tr><td>' + esc(p.name) + '</td><td class="mono">' + esc(p.projectId) + '</td>' +
+        '<td><select data-bind-project="' + esc(p.projectId) + '">' + options + '</select></td></tr>'
+    }).join('') || '<tr><td colspan="3" class="empty">还没有项目组织（先到「项目组织」新增）</td></tr>'
+  }
+
+  function stageRow(stage, index) {
+    const s = stage || {}
+    const id = 'st-' + index
+    return '<div class="panel" style="padding:.6rem;border:1px solid var(--line);border-radius:8px">' +
+      '<div class="form-grid">' +
+      '<div class="field"><label>阶段 ' + (index + 1) + ' 标题</label><input id="' + id + '-title" maxlength="60" value="' + esc(s.title || '') + '"></div>' +
+      '<div class="field"><label>常用工具（逗号分隔，用于进度归位）</label><input id="' + id + '-tools" maxlength="300" value="' + esc((s.tools || []).join(', ')) + '"></div>' +
+      '</div>' +
+      '<div class="field"><label>目标（这一阶段要回答什么）</label><input id="' + id + '-goal" maxlength="200" value="' + esc(s.goal || '') + '"></div>' +
+      '<div class="field"><label>要点 / 判据</label><input id="' + id + '-guidance" maxlength="500" value="' + esc(s.guidance || '') + '"></div>' +
+      '<div style="text-align:right"><button class="btn ghost" data-wf-del-stage="' + index + '">删除这个阶段</button></div>' +
+      '</div>'
+  }
+
+  function renderStageEditor(stages) {
+    document.getElementById('wf-stages').innerHTML = (stages || []).map(stageRow).join('')
+  }
+
+  function collectStages() {
+    const box = document.getElementById('wf-stages')
+    return [...box.children].map((el, index) => ({
+      key: 'stage-' + (index + 1),
+      title: el.querySelector('[id$="-title"]').value.trim(),
+      goal: el.querySelector('[id$="-goal"]').value.trim(),
+      guidance: el.querySelector('[id$="-guidance"]').value.trim(),
+      tools: el.querySelector('[id$="-tools"]').value.split(',').map(x => x.trim()).filter(Boolean),
+    })).filter(stage => stage.title !== '')
+  }
+
+  function openWorkflow(id) {
+    const w = wfList.find(x => x.workflowId === id)
+    wfEditId = id || ''
+    document.getElementById('wf-title').textContent = w ? ('编辑工作流：' + w.name) : '新建工作流'
+    document.getElementById('wf-name').value = w ? w.name : ''
+    document.getElementById('wf-desc').value = w ? (w.description || '') : ''
+    document.getElementById('wf-enabled').checked = w ? w.enabled !== false : true
+    document.getElementById('wf-default').checked = w ? w.isDefault === true : false
+    document.getElementById('wf-delete').style.display = w ? '' : 'none'
+    renderStageEditor(w ? w.stages : [{
+      title: '定位与上下文', goal: '这条线索是什么、对象是谁、之前看过没有',
+      guidance: '先查历史结论与资产台账', tools: ['prior_findings', 'asset_context'],
+    }])
+    document.getElementById('wf-dialog').showModal()
+  }
+
+  async function saveWorkflow() {
+    const body = {
+      ...(wfEditId ? { workflowId: wfEditId } : {}),
+      name: document.getElementById('wf-name').value.trim(),
+      description: document.getElementById('wf-desc').value.trim(),
+      enabled: document.getElementById('wf-enabled').checked,
+      isDefault: document.getElementById('wf-default').checked,
+      stages: collectStages(),
+    }
+    if (!body.name) { toast('名称不能为空'); return }
+    if (body.stages.length === 0) { toast('至少要有 1 个阶段'); return }
+    const r = await fetch(BASE + '/api/workflows', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast(data.error || '保存失败'); return }
+    document.getElementById('wf-dialog').close()
+    toast('已保存')
+    await loadWorkflows()
+  }
+
+  async function deleteWorkflow() {
+    if (!wfEditId) return
+    if (!confirm('删除这个工作流？绑定它的项目会回落到默认模版。')) return
+    const r = await fetch(BASE + '/api/workflows/' + encodeURIComponent(wfEditId), { method: 'DELETE' })
+    if (r.status === 401) { location.href = BASE + '/login'; return }
+    document.getElementById('wf-dialog').close()
+    toast('已删除')
+    await loadWorkflows()
+  }
+
+  async function toggleWorkflow(id) {
+    const w = wfList.find(x => x.workflowId === id)
+    if (!w) return
+    await fetch(BASE + '/api/workflows/' + encodeURIComponent(id) + '/enabled', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: !w.enabled }),
+    })
+    await loadWorkflows()
+  }
+
+  async function bindWorkflow(projectId, workflowId) {
+    const r = await fetch(BASE + '/api/workflows/bind', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, workflowId }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok || data.ok === false) { toast(data.error || '绑定失败'); return }
+    toast('已绑定')
+  }
+
+  /* 过程详情：工作流进度（阶段 + 每个阶段调了几次工具） */
+  let procEntry = null
+  let procEvents = []
+
+  function renderProcWorkflow() {
+    const box = document.getElementById('proc-workflow')
+    const stages = (procEntry && procEntry.workflowStages) || []
+    if (stages.length === 0) { box.innerHTML = '<span class="count">这次任务没有引用工作流</span>'; return }
+    const finished = procEntry.outcome !== 'running'
+    const counts = {}
+    const reached = new Set()
+    let current = -1
+    const stageOfTool = name => stages.findIndex(s => (s.tools || []).some(t => name === t || name.endsWith(t) || name.includes(t)))
+    for (const ev of procEvents) {
+      if (ev.kind === 'tool') {
+        const name = String(ev.label || '').replace(/^调用\\s*/, '').replace(/^mcp__ndr__/, '')
+        let index = stageOfTool(name)
+        if (index < 0) index = current >= 0 ? current : 0
+        counts[index] = (counts[index] || 0) + 1
+        current = Math.max(current, index)
+        for (let i = 0; i <= current; i += 1) reached.add(i)
+      }
+      if (ev.kind === 'assistant') {
+        const mark = /【阶段】\\s*([^\\n]+)/.exec(String(ev.detail || ''))
+        if (mark) {
+          const title = mark[1].trim()
+          const index = stages.findIndex(s => title.includes(s.title) || s.title.includes(title))
+          if (index >= 0) {
+            current = Math.max(current, index)
+            for (let i = 0; i <= current; i += 1) reached.add(i)
+          }
+        }
+      }
+    }
+    box.innerHTML = stages.map((s, i) => {
+      const cls = reached.has(i) ? (finished ? 'done' : (i === current ? 'current' : 'done')) : (finished ? 'pending' : 'pending')
+      const label = (i + 1) + '. ' + s.title + (counts[i] ? ' · ' + counts[i] + ' 次工具' : '')
+      return '<span class="wf-stage ' + cls + '" title="' + esc(s.goal || '') + '">' + esc(label) + '</span>'
+    }).join('<span class="wf-arrow">→</span>')
   }
 
   /* ---------------- 分析脚本（P4） ---------------- */
@@ -1017,6 +1262,30 @@ ${THEME}
   })
   window.addEventListener('hashchange', route)
 
+  document.getElementById('wf-rows').addEventListener('click', ev => {
+    const edit = ev.target.closest('[data-wf-edit]')
+    if (edit) { openWorkflow(edit.dataset.wfEdit); return }
+    const toggle = ev.target.closest('[data-wf-toggle]')
+    if (toggle) void toggleWorkflow(toggle.dataset.wfToggle).catch(onError)
+  })
+  document.getElementById('wf-bind').addEventListener('change', ev => {
+    const select = ev.target.closest('[data-bind-project]')
+    if (select) void bindWorkflow(select.dataset.bindProject, select.value).catch(onError)
+  })
+  document.getElementById('wf-new').addEventListener('click', () => openWorkflow(''))
+  document.getElementById('wf-refresh').addEventListener('click', () => void loadWorkflows().catch(onError))
+  document.getElementById('wf-save').addEventListener('click', () => void saveWorkflow().catch(onError))
+  document.getElementById('wf-cancel').addEventListener('click', () => document.getElementById('wf-dialog').close())
+  document.getElementById('wf-delete').addEventListener('click', () => void deleteWorkflow().catch(onError))
+  document.getElementById('wf-add-stage').addEventListener('click', () => {
+    const box = document.getElementById('wf-stages')
+    box.insertAdjacentHTML('beforeend', stageRow({ title: '', goal: '', guidance: '', tools: [] }, box.children.length))
+  })
+  document.getElementById('wf-stages').addEventListener('click', ev => {
+    const del = ev.target.closest('[data-wf-del-stage]')
+    if (!del) return
+    del.closest('.panel').remove()
+  })
   document.getElementById('prows').addEventListener('click', ev => {
     const tr = ev.target.closest('tr[data-task]')
     if (tr) void openProcess(tr.dataset.task).catch(onError)
@@ -1163,6 +1432,7 @@ ${THEME}
     await loadOverview().catch(onError)
     if (viewOf(location.hash) === 'overview') await loadRecent().catch(onError)
     if (viewOf(location.hash) === 'records') await loadList().catch(onError)
+    if (viewOf(location.hash) === 'workflows') await loadWorkflows().catch(onError)
     if (viewOf(location.hash) === 'processes') await loadProcesses().catch(onError)
     if (viewOf(location.hash) === 'scripts') await loadScripts().catch(onError)
     if (viewOf(location.hash) === 'system') await loadSystem().catch(onError)
