@@ -70,7 +70,7 @@
   "projectId": "ZPL6QQLG",
   "previousId": "OLDID234",
   "name": "南充职业技术学院",
-  "mcpUrl": "http://172.16.196.77:8090/mcp",
+  "mcpUrl": "http://ndr.example:8090/mcp",
   "mcpToken": "stmcp_xxx",
   "pushToken": "推送令牌（与 NDR agent_push.token 一致）",
   "enabled": true
@@ -116,7 +116,7 @@
       "taskId": "a2e55326-8c85-4894-8a03-efc48cc970b9",
       "sessionId": "xdr-analysis-a2e55326-...-25",
       "kind": "hit",
-      "subject": "10.90.130.102",
+      "subject": "192.0.2.10",
       "model": "minimax/MiniMax-M2.5",
       "startedAt": "2026-10-28T13:38:50.000Z",
       "endedAt": "2026-10-28T13:52:10.000Z",

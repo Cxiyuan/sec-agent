@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import ipaddress
+import time
 from collections.abc import Iterable
 from typing import Annotated, Any
 
@@ -327,6 +328,162 @@ def _pair_body(
     }
 
 
+#: 公网源 IP 的 terms 取数上限（24 小时实测约 1 万个不同源 IP，2 万够用且便宜）
+_PUBLIC_SRC_TERMS = 20_000
+
+
+def _base_filter(minutes: int) -> list[dict[str, Any]]:
+    return [{"range": {"@timestamp": {"gte": f"now-{max(1, minutes)}m"}}}]
+
+
+def _public_peers_body(minutes: int) -> dict[str, Any]:
+    """第一段（对外业务专用）：把窗口内出现过的源 IP / 真实客户端 IP 全取出来。
+
+    为什么不像横向/外连那样按主语取 TOP-N：对外业务的**主语是小流量资产**（被公网
+    扫一枪、只有几条握手，`bytes_in` 接近 0），按流量排名永远排不进前几百，
+    整台主机就从界面上消失了（2026-10 实测：1 小时 13 台只剩 8 台）。
+    公网源 IP 本身是少数（1 小时几十个、24 小时一百多个），全取回来再过滤反而更准。
+    """
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": _base_filter(minutes),
+                "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
+            }
+        },
+        "aggs": {
+            "src": {"terms": {"field": "src_ip.keyword", "size": _PUBLIC_SRC_TERMS}},
+            "real": {"terms": {"field": "real_client_ip.keyword", "size": _PUBLIC_SRC_TERMS}},
+        },
+    }
+
+
+def _outbound_body(
+    *, minutes: int, peers: list[str], real_peers: list[str], size: int
+) -> dict[str, Any]:
+    """第二段（对外业务专用）：只看公网来源，按**被访问资产**（dst）聚合。
+
+    单次 terms 聚合就能拿全，不需要 composite 翻页 —— `composite` 只返回字典序第一页，
+    24 小时 1.8 万个 (源,目的) 对只取到 5000 个，资产数从 40 台掉到 1 台（2026-10 实测）。
+    """
+    should: list[dict[str, Any]] = []
+    if peers:
+        should.append({"terms": {"src_ip.keyword": peers}})
+    if real_peers:
+        should.append({"terms": {"real_client_ip.keyword": real_peers}})
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": _base_filter(minutes),
+                "should": should,
+                "minimum_should_match": 1,
+                "must_not": [{"terms": {"log_type.keyword": ["analyzer", "stats", "metrics"]}}],
+            }
+        },
+        "aggs": {
+            "assets": {
+                "terms": {"field": "dst_ip.keyword", "size": size, "order": {"bi": "desc"}},
+                "aggs": {
+                    "bo": {"sum": {"field": "bytes_out"}},
+                    "bi": {"sum": {"field": "bytes_in"}},
+                    "docs": {"value_count": {"field": "@timestamp"}},
+                    "last_seen": {"max": {"field": "@timestamp"}},
+                    "clients": {"cardinality": {"field": "src_ip.keyword", "precision_threshold": 1000}},
+                    "peer_top": {
+                        "terms": {"field": "src_ip.keyword", "size": 10, "order": {"bi": "desc"}},
+                        "aggs": {
+                            "bo": {"sum": {"field": "bytes_out"}},
+                            "bi": {"sum": {"field": "bytes_in"}},
+                        },
+                    },
+                    "hostname": {"terms": {"field": "hostname.keyword", "size": 3}},
+                    "ports": {
+                        "terms": {"field": "dst_port", "size": 10, "order": {"bo": "desc"}},
+                        "aggs": {
+                            "bo": {"sum": {"field": "bytes_out"}},
+                            "bi": {"sum": {"field": "bytes_in"}},
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+
+def _outbound_rows(
+    resp: Any, *, limit: int, minutes: int
+) -> dict[str, Any]:
+    """对外业务：资产行（公网 → 监控网段）。字段形状与 `shape_pairs` 一致。"""
+    nets = _nets()
+    scanned = 0
+    rows: list[dict[str, Any]] = []
+    for bucket in (((resp.get("aggregations") or {}).get("assets") or {}).get("buckets")) or []:
+        scanned += 1
+        ip = str(bucket.get("key") or "")
+        if not ip or not _in(ip, nets):
+            continue
+        bytes_out = int((bucket.get("bo") or {}).get("value") or 0)
+        bytes_in = int((bucket.get("bi") or {}).get("value") or 0)
+        hostname = ""
+        for hb in ((bucket.get("hostname") or {}).get("buckets")) or []:
+            cleaned = _clean_hostname(str(hb.get("key") or ""), ip)
+            if cleaned:
+                hostname = cleaned
+                break
+        peers = [
+            {
+                "ip": str(pb.get("key") or ""),
+                # 对端是公网客户端，没有主机名（域名是资产的，不是客户端的）
+                "hostname": "",
+                "bytes": int((pb.get("bo") or {}).get("value") or 0)
+                + int((pb.get("bi") or {}).get("value") or 0),
+            }
+            for pb in ((bucket.get("peer_top") or {}).get("buckets")) or []
+            if pb.get("key")
+        ]
+        ports = [
+            {
+                "port": pb.get("key"),
+                "app": app_of(pb.get("key")),
+                "bytes": int((pb.get("bo") or {}).get("value") or 0)
+                + int((pb.get("bi") or {}).get("value") or 0),
+            }
+            for pb in ((bucket.get("ports") or {}).get("buckets")) or []
+        ]
+        rows.append(
+            {
+                "ip": ip,
+                "hostname": hostname,
+                "bytes_out": bytes_out,
+                "bytes_in": bytes_in,
+                "bytes_total": bytes_out + bytes_in,
+                "conns": int((bucket.get("docs") or {}).get("value") or 0),
+                "peers": int((bucket.get("clients") or {}).get("value") or 0),
+                "ports": ports,
+                "peers_top": peers[:10],
+                "log_types": [],
+                "last_seen": (bucket.get("last_seen") or {}).get("value_as_string") or "",
+                "regions": _regions_from_peers(peers[:10]),
+            }
+        )
+    rows.sort(key=lambda r: -int(r["bytes_total"]))
+    return {
+        "items": rows[:limit],
+        "scanned_pairs": scanned,
+        "kept_pairs": len(rows),
+        "filtered_out": max(0, scanned - len(rows)),
+        "geo_available": _geo_available(),
+        "note": ""
+        if _geo_available()
+        else "「地区」需要离线地理库（部署时用 ST_GEOIP_DB 指向 .mmdb），当前显示「未知」",
+        "monitored_nets": [str(n) for n in nets],
+        "truncated": False,
+        "minutes": minutes,
+    }
+
+
 def _classify(view: str, src: str, dst: str, nets: list[ipaddress._BaseNetwork]) -> bool:
     """这一对是否属于该视角。
 
@@ -457,8 +614,12 @@ def traffic_ips(
 ) -> dict[str, Any]:
     """按 IP 出三个视角的流量明细（对外业务 / 横向 / 外连）。
 
-    两段式查询：① 按流量取 top 主语 → ② 只在这些主语上做 (源,目的) 对聚合。
-    （`composite` 只能按字典序，单段拿不到"流量最大的那批"，数据会残缺。）
+    **对外业务走单独一条路**（2026-10 修正）：公网来源取全量 → 按被访问资产聚合。
+    旧的两段式（按流量取 TOP-N 主语 + composite 对聚合）会把"被扫一枪的小流量资产"
+    和"第 5000 条之后的资产"悄悄丢掉（实测 1 小时 13 台只显示 8 台、24 小时 40 台只剩 1 台）。
+
+    横向/外连仍是两段式（内网主语太多，必须按流量抽样），但 composite **会翻页**，
+    并在 `truncated=true` 时明确告诉界面"这还不是全部"。
     """
     if view not in VIEWS:
         view = "outbound"
@@ -469,6 +630,58 @@ def traffic_ips(
         candidate_size, pair_size = 400, 5000
     else:
         candidate_size, pair_size = 200, 1500
+    # composite 翻页上限：一页 5000 对，4 页够覆盖 24 小时的资产量，再大就太慢
+    pair_pages = 4 if minutes <= 1440 else 2
+
+    # ---------- 对外业务：公网来源全量 → 按资产聚合（不抽样、不翻页截断） ----------
+    if view == "outbound":
+        try:
+            peers_resp = _es().search(
+                index=settings.es_events_index,
+                body=_public_peers_body(minutes),
+                request_timeout=120,
+            )
+            aggs = (peers_resp.get("aggregations") or {})
+            peers = [
+                str(b.get("key"))
+                for b in ((aggs.get("src") or {}).get("buckets") or [])
+                if b.get("key") and is_public_ip(str(b.get("key")))
+            ]
+            real_peers = [
+                str(b.get("key"))
+                for b in ((aggs.get("real") or {}).get("buckets") or [])
+                if b.get("key") and is_public_ip(str(b.get("key")))
+            ]
+            if not peers and not real_peers:
+                return {
+                    "items": [],
+                    "view": view,
+                    "minutes": minutes,
+                    "scanned_pairs": 0,
+                    "kept_pairs": 0,
+                    "filtered_out": 0,
+                    "truncated": False,
+                    "warning": "",
+                    "note": "窗口内没有公网来源的访问",
+                }
+            resp = _es().search(
+                index=settings.es_events_index,
+                body=_outbound_body(
+                    minutes=minutes,
+                    peers=peers,
+                    real_peers=real_peers,
+                    size=min(3000, max(limit * 3, 500)),
+                ),
+                request_timeout=120,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("对外流量聚合失败: %s", exc)
+            return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
+        out = _outbound_rows(resp, limit=limit, minutes=minutes)
+        out.update({"view": view, "warning": shard_problem(resp)})
+        return out
+
+    # ---------- 横向 / 外连：按流量取 TOP-N 主语 → 对聚合（翻页，标明截断） ----------
     subject_field = _subject_field(view)
     try:
         top = _es().search(
@@ -483,28 +696,42 @@ def traffic_ips(
             )
             if b.get("key")
         ]
-        body = _pair_body(
-            minutes=minutes, size=pair_size, subject_field=subject_field, subjects=candidates
-        )
-        resp = _es().search(index=settings.es_events_index, body=body, request_timeout=120)
-        # 对外业务：再按**真实客户端**（代理后）聚合一次，合并进结果
-        extra = None
-        if view == "outbound":
-            real_body = _pair_body(
-                minutes=minutes,
-                size=min(pair_size, 3000),
-                subject_field=subject_field,
-                subjects=candidates,
-                use_real_client=True,
+        buckets: list[dict[str, Any]] = []
+        subject_hosts: dict[str, Any] = {}
+        once = False
+        after: Any = None
+        started = time.monotonic()
+        for _page in range(pair_pages):
+            # 时间预算：24 小时的对聚合单页就要 20 秒，翻页再多会把接口拖死；
+            # 超预算就停在当前页，用 truncated 告诉界面"这不是全部"（比静默丢数据好）。
+            if _page > 0 and time.monotonic() - started > 8:
+                break
+            body = _pair_body(
+                minutes=minutes, size=pair_size, subject_field=subject_field, subjects=candidates
             )
-            extra = _es().search(
-                index=settings.es_events_index, body=real_body, request_timeout=120
-            )
+            if after is not None:
+                body["aggs"]["pairs"]["composite"]["after"] = after
+            resp = _es().search(index=settings.es_events_index, body=body, request_timeout=120)
+            if not once:
+                subject_hosts = (resp.get("aggregations") or {}).get("subject_hosts") or {}
+                once = True
+            agg = ((resp.get("aggregations") or {}).get("pairs") or {})
+            buckets.extend(agg.get("buckets") or [])
+            after = agg.get("after_key")
+            if after is None:
+                break
+        truncated = after is not None
+        resp = {"aggregations": {"pairs": {"buckets": buckets}, "subject_hosts": subject_hosts}}
     except Exception as exc:  # noqa: BLE001
         log.warning("流量聚合失败: %s", exc)
         return {"items": [], "error": f"ES 查询失败：{exc}", "view": view, "minutes": minutes}
-    out = shape_pairs(resp, view=view, limit=limit, extra=extra)
+    out = shape_pairs(resp, view=view, limit=limit, extra=None)
     out.update({"view": view, "minutes": minutes, "warning": shard_problem(resp)})
+    out["truncated"] = truncated
+    if truncated:
+        out["note"] = (
+            (out.get("note") or "") + "；窗口内数据量较大，只统计了流量最高的部分资产（缩小时间范围可看全）"
+        ).strip("；")
     return out
 
 

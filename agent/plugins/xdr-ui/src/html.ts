@@ -559,7 +559,7 @@ ${THEME}
       <div class="field"><label for="pr-name">名称（备注用）</label><input id="pr-name" maxlength="120" placeholder="如：南充职业技术学院"></div>
       <div class="field">
         <label for="pr-url">NDR MCP 地址</label>
-        <input id="pr-url" placeholder="http://172.16.196.77:8090/mcp">
+        <input id="pr-url" placeholder="http://ndr.example:8090/mcp">
         <small>必须是 http(s):// 开头；一般是 NDR 的 :8090/mcp</small>
       </div>
       <div class="field">

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib
+import ipaddress
 from types import ModuleType
 
 import pytest
@@ -265,3 +266,77 @@ def test_unmonitored_private_src_is_not_outbound(
     rows = traffic.shape_pairs(resp, view="outbound", limit=50)["items"]
     assert [r["ip"] for r in rows] == ["10.1.2.20"]
     assert rows[0]["peers"] == 1, "只有那个真公网客户端"
+
+
+def test_outbound_uses_full_public_peer_set(traffic: ModuleType) -> None:
+    """对外业务的取数口径：**公网来源全量**，不按流量取 TOP-N 主语。
+
+    2026-10 实机踩过：被公网扫一枪的资产 `bytes_in` 接近 0，按流量排名永远进不了
+    候选集（1 小时 13 台只剩 8 台）；composite 又只取字典序第一页（24 小时 40 台只剩 1 台）。
+    这里钉住：第一段同时取 src_ip 与 real_client_ip（公网来源是少数，全取回来再过滤）。
+    """
+    body = traffic._public_peers_body(1440)
+    aggs = body["aggs"]
+    assert aggs["src"]["terms"]["field"] == "src_ip.keyword"
+    assert aggs["real"]["terms"]["field"] == "real_client_ip.keyword"
+    assert aggs["src"]["terms"]["size"] >= 10_000
+
+    out = traffic._outbound_body(
+        minutes=1440, peers=["203.0.113.9"], real_peers=[], size=500
+    )
+    query = out["query"]["bool"]
+    assert query["minimum_should_match"] == 1
+    assert {"terms": {"src_ip.keyword": ["203.0.113.9"]}} in query["should"]
+    # 不允许再出现"按主语候选"的 terms 过滤（那正是漏数据的地方）
+    assert all("dst_ip.keyword" not in str(f) for f in query["filter"])
+    assert out["aggs"]["assets"]["terms"]["field"] == "dst_ip.keyword"
+
+
+def test_outbound_rows_keeps_small_assets_and_filters_foreign_dst(
+    traffic: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """资产行：0 字节的小流量资产也要留下；非监控网段的 dst 不能算资产。"""
+    monkeypatch.setattr(
+        traffic,
+        "_nets",
+        lambda: [ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("192.168.0.0/16")],
+    )
+    resp = {
+        "aggregations": {
+            "assets": {
+                "buckets": [
+                    {
+                        "key": "10.1.2.3",
+                        "bo": {"value": 0},
+                        "bi": {"value": 0},
+                        "docs": {"value": 1},
+                        "last_seen": {"value_as_string": "2026-10-17T12:00:00.000Z"},
+                        "clients": {"value": 1},
+                        "hostname": {"buckets": [{"key": "portal.example"}]},
+                        "peer_top": {"buckets": [{"key": "203.0.113.9", "bo": {"value": 0}, "bi": {"value": 0}}]},
+                        "ports": {"buckets": [{"key": 443, "bo": {"value": 0}, "bi": {"value": 0}}]},
+                    },
+                    {
+                        "key": "8.8.8.8",
+                        "bo": {"value": 9},
+                        "bi": {"value": 9},
+                        "docs": {"value": 9},
+                        "last_seen": {"value_as_string": ""},
+                        "clients": {"value": 1},
+                        "hostname": {"buckets": []},
+                        "peer_top": {"buckets": []},
+                        "ports": {"buckets": []},
+                    },
+                ]
+            }
+        }
+    }
+    out = traffic._outbound_rows(resp, limit=50, minutes=1440)
+    items = out["items"]
+    assert [row["ip"] for row in items] == ["10.1.2.3"], "公网 dst 不是资产，小流量资产不能被丢"
+    row = items[0]
+    assert row["hostname"] == "portal.example"
+    assert row["peers"] == 1
+    assert row["ports"][0]["app"] == "HTTPS/TLS"
+    assert out["kept_pairs"] == 1 and out["filtered_out"] == 1
+    assert out["truncated"] is False
