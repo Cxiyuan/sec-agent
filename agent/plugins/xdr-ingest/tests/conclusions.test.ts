@@ -91,7 +91,7 @@ test('postgres 结论面：列表 / 详情 / 搜索 / 计数', { skip: !withPg }
     assert.equal(await reader.get(randomUUID()), null)
     assert.ok(await reader.count() >= 1)
   } finally {
-    await pool.query('DELETE FROM analysis_results WHERE id = ANY($1::uuid[])', [[id, plainId]])
+    await pool.query('DELETE FROM analysis_results WHERE id = $1', [id])
     await reader.close()
     await pool.end()
   }
