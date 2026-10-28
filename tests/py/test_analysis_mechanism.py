@@ -898,3 +898,56 @@ def test_structure_clue_uses_a_snapshot_before_reset(cand: Any) -> None:
     reset_at = src.index("collector.reset()")
     snapshot_at = src.index("fail_events = dict(collector.fail_events)")
     assert snapshot_at < reset_at, "快照必须早于 reset"
+
+
+# ===== ⑮ 首见是一次性事件：新面孔窗口 + 不带时间桶 =====
+
+
+def test_novelty_dedupe_key_has_no_time_bucket(queue_mod: Any) -> None:
+    """「首见」这件事只发生一次：同一个对象不该每个小时再派一遍工。
+
+    线上症状：同一个资产每小时排一条，3581 个资产轮着来，队列每小时涨 700，
+    真正该看的规则命中（强度更低）被挤在后面。
+    """
+    key_a = queue_mod.dedupe_key(
+        "novelty", "asset", "10.0.0.5", "first:asset", datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+    )
+    key_b = queue_mod.dedupe_key(
+        "novelty", "asset", "10.0.0.5", "first:asset", datetime(2026, 10, 28, 9, 30, tzinfo=UTC)
+    )
+    assert key_a == key_b, "首见线索不应随时间桶变化"
+    # 其它类型的线索仍按时间桶去重（hit/shift 还得能在新窗口里再报一次）
+    hit_a = queue_mod.dedupe_key(
+        "hit", "ip", "10.0.0.5", "sid:1", datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+    )
+    hit_b = queue_mod.dedupe_key(
+        "hit", "ip", "10.0.0.5", "sid:1", datetime(2026, 10, 28, 9, 30, tzinfo=UTC)
+    )
+    assert hit_a != hit_b, "规则命中仍要按时间桶去重"
+
+
+def test_newcomer_window_bounds_novelty(cand: Any) -> None:
+    """过了新面孔窗口，对象就不再是"新东西"（该由 coverage 盲区提醒接手）。"""
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+    assert cand.is_newcomer(now, now, 24) is True
+    assert cand.is_newcomer(datetime(2026, 10, 28, 1, 0, tzinfo=UTC), now, 24) is True
+    assert cand.is_newcomer(datetime(2026, 10, 27, 1, 0, tzinfo=UTC), now, 24) is False
+    assert cand.is_newcomer(None, now, 24) is True
+    assert cand.is_newcomer(now, now, 0) is True, "窗口至少 1 小时"
+
+
+def test_newcomer_window_is_a_tunable_knob(params_mod: Any) -> None:
+    """窗口是旋钮（现场网段的"新东西"节奏不一样），不是写死的常量。"""
+    assert params_mod.novelty_newcomer_hours() >= 1
+    src = inspect.getsource(params_mod)
+    assert "analysis.novelty_newcomer_hours" in src
+
+
+def test_squeezed_novelty_task_comes_back(queue_mod: Any) -> None:
+    """一次性现象被挤出队列（容量挤掉/超期）后要能重新排队。
+
+    否则这个对象就再也不会被看了 —— 一次性语义变成了"一次机会"。
+    """
+    src = inspect.getsource(queue_mod.enqueue)
+    assert 'kind == "novelty"' in src
+    assert 'existing.state = "pending"' in src

@@ -167,6 +167,23 @@ def is_recurring(seen_count: int) -> bool:
         return False
 
 
+def is_newcomer(first_seen_at: datetime | None, now: datetime, window_hours: int) -> bool:
+    """还在"新面孔窗口"内的对象才算新线索（纯函数，便于测）。
+
+    过了窗口，这个对象就是环境的一部分了 —— 再派"第一次见到"没有意义，
+    想让它别被忘掉应该走 `coverage`（久未分析的盲区提醒）。
+    """
+    if first_seen_at is None:
+        return True
+    try:
+        age = (now - first_seen_at).total_seconds() / 3600.0
+    except TypeError:
+        return True
+    if age < 0:
+        return True
+    return age <= max(1, int(window_hours))
+
+
 def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tuple[str, str, datetime]]:
     """批量登记"见过"，返回其中**跨窗口反复出现**的 (kind, value, 首次出现时间)。
 
@@ -193,11 +210,12 @@ def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tu
             found[(str(row.kind), str(row.value))] = row
     # 已见过的：只刷新"最近见到时间"与计数（覆盖率与 rarity 的数据源）
     recurring: list[tuple[str, str, datetime]] = []
+    window_hours = params.novelty_newcomer_hours()
     for row in found.values():
         row.last_seen_at = now
         row.seen_count = int(row.seen_count or 0) + 1
         # seen_count ≥ 2 = 本次之前已经在别的窗口出现过（本次是第二次及以后）
-        if is_recurring(row.seen_count):
+        if is_recurring(row.seen_count) and is_newcomer(row.first_seen_at, now, window_hours):
             recurring.append((str(row.kind), str(row.value), row.first_seen_at or now))
     fresh = [kv for kv in keys if kv not in found]
     for kind, value in fresh:
@@ -217,7 +235,10 @@ def _record_seen(db: Any, rows: list[tuple[str, str]], now: datetime) -> list[tu
 def _novelty_tasks(
     db: Any, recurring: list[tuple[str, str, datetime]], now: datetime, client: Any
 ) -> int:
-    """反复出现的对象 → novelty 线索（强度按"多久没分析过"加成，冷门口对象更容易排上）。"""
+    """反复出现、且还在新面孔窗口内的对象 → novelty 线索。
+
+    强度按"多久没分析过"加成，冷门口对象更容易排上。
+    """
     made = 0
     for kind, value, first_seen in recurring[:_MAX_ENQUEUE_PER_FLUSH]:
         stale = subjects.staleness("asset", value, now) if kind == subjects.KIND_ASSET else 0.6

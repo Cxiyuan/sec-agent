@@ -48,9 +48,16 @@ def dedupe_key(
 ) -> str:
     """去重键：同现象 + 同时间桶只有一条（桶宽按类型分，避免"每窗口一条"刷满队列）。
 
-    `hit`/`shift`/`novelty`/`structure` 按 `analysis.dedupe_bucket_minutes`（默认 60 分钟）、
+    `hit`/`shift`/`structure` 按 `analysis.dedupe_bucket_minutes`（默认 60 分钟）、
     `coverage` 按天（盲区一天提醒一次足够）。
+
+    **`novelty` 不带时间桶**（一次性事件）："这个对象是新面孔"这件事只发生一次，
+    不该每个小时再派一遍工 —— 线上就是这么把队列灌满的（同一个资产每小时一条，
+    几千个资产轮着来，真正该看的规则命中被挤在后面）。
+    同一个现象后来的出现只累加 `coalesced` 计数；现象变强时 `enqueue` 会把它重新排队。
     """
+    if kind == "novelty":
+        return f"{kind}|{subject_kind}:{subject}|{feature or '-'}|once"
     ts = now or datetime.now(UTC)
     # 盲区一天提醒一次就够；其余按 `analysis.dedupe_bucket_minutes`（默认 60 分钟）
     bucket_minutes = 1440 if kind == "coverage" else max(5, params.dedupe_bucket_minutes())
@@ -136,6 +143,12 @@ def enqueue(
                     if existing.state in ("expired", "done"):
                         existing.state = "pending"
                         existing.note = "同现象再次出现，已重新排队"
+                elif kind == "novelty" and existing.state == "expired":
+                    # 一次性现象（首见）被挤出队列（容量挤掉/超期）时，只要它还在
+                    # 新面孔窗口内就重新排一次 —— 否则这个对象就再也不会被看了。
+                    # 能走到这里说明它已经跨窗口反复出现（调用方过滤过一次性对象）。
+                    existing.state = "pending"
+                    existing.note = "同现象再次出现，已重新排队"
                 existing.updated_at = now
                 db.commit()
                 bump(client, "merged")

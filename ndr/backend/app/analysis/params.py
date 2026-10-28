@@ -74,6 +74,10 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.dedupe_bucket_minutes", "去重时间桶", "int", 60,
          low=5, high=1440, unit="分钟",
          note="同一现象在这个时间桶内只排一条线索；调小更灵敏但队列会长，调大更省但可能压掉重复发生"),
+    Knob("analysis.novelty_newcomer_hours", "新面孔窗口", "int", 24,
+         low=1, high=720, unit="小时",
+         note="对象首次出现后这么多小时内还算「新面孔」，才派 novelty 线索；"
+              "过了窗口它就是环境的一部分，改由 coverage（久未分析）提醒"),
     Knob("analysis.flush_seconds", "队列节拍", "int", 60,
          low=10, high=3600, unit="秒",
          note="生成线索 + 门铃 + 清理的最短间隔（与聚合窗口同量级）"),
@@ -194,6 +198,10 @@ def coverage_stale_days() -> int:
 
 def subject_retention_days() -> int:
     return int(_num(_BY_KEY["analysis.subject_retention_days"]))
+
+
+def novelty_newcomer_hours() -> int:
+    return int(_num(_BY_KEY["analysis.novelty_newcomer_hours"]))
 
 
 def flush_seconds() -> int:

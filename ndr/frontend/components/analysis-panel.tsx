@@ -134,6 +134,7 @@ const PARAM_GROUPS: { title: string; hint: string; keys: string[] }[] = [
       "analysis.queue_capacity",
       "analysis.pending_ttl_hours",
       "analysis.dedupe_bucket_minutes",
+      "analysis.novelty_newcomer_hours",
       "analysis.flush_seconds",
     ],
   },

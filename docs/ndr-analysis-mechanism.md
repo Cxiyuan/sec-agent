@@ -118,12 +118,17 @@ NDR（只做廉价统计与派工，不替智能体下威胁判断）           
 
 - 每窗口对**全量事件**（非仅命中规则的）统计三个计数特征 —— 这条采样通道已存在
   （`baseline/sampler.py`），`shift` 直接复用它的判定结果；
-- `novelty`：**跨窗口反复出现**的对象 —— 新资产 / 新服务端口 / 新外部对端 / 新协议 / 新签名
-  （查 `observed_subjects`）。
+- `novelty`：**跨窗口反复出现、且还在"新面孔窗口"内**的对象 —— 新资产 / 新服务端口 /
+  新外部对端 / 新协议 / 新签名（查 `observed_subjects`）。
   **为什么不是"第一次见到就派工"**：镜像口上的一次性连接（代理/NAT 的临时套接字、扫描器的
   单次探测）每次端口都不同，一个采集窗口能刷出 25 万个"新服务端口"，队列直接被垃圾线索
   灌满（实测丢弃 1.5 万条、真正的新服务被挤掉）。所以只把「第二个窗口仍出现」的对象交出去
-  （`seen_count ≥ 2`），首次出现时间一并写进 `hint`，由智能体自己判断是新服务还是老熟人；
+  （`seen_count ≥ 2`），首次出现时间一并写进 `hint`，由智能体自己判断是新服务还是老熟人。
+  **为什么"首见"只派一次**：首见是一次性事件，同一个对象不该每个小时再排一条工
+  （实测 3581 个资产轮着来、队列每小时涨 700，真正该看的规则命中被挤在后面）。所以
+  `novelty` 的去重键**不带时间桶**（同一现象只排一条，后来只累加出现次数；现象变强时
+  重新排队），并且对象首次出现超过 `analysis.novelty_newcomer_hours`（默认 24 小时）
+  就不再算"新面孔"——它已经是环境的一部分，改由 `coverage`（久未分析的盲区）提醒；
 - `structure`：失败率、端口熵、周期性初筛（只给事实，如「404 占比 0.62」）；
 - `coverage`：`observed_subjects` 里"从未 / 久未分析"的对象（低强度，保证不抢占）；
 - `hit`：新落库的 `hit_events`（D4）。
@@ -164,6 +169,8 @@ strength = max(rarity, significance, scale, staleness, coalescing)
 | `analysis.pending_ttl_hours` | 48 | 过老的线索自动 `expired` |
 | `analysis.queue_capacity` | 2000 | 队列硬上限 |
 | `analysis.stuck_after_attempts` | 5 | 反复领取不交回 → `stuck`，不再派发，界面可见 |
+| `analysis.dedupe_bucket_minutes` | 60 | 同一现象的去重时间桶（`novelty` 不用时间桶：首见只派一次） |
+| `analysis.novelty_newcomer_hours` | 24 | 新面孔窗口：对象首次出现后多久内还算"新" |
 | `analysis.doorbell_cooldown_seconds` | 180 | 门铃合并限频 |
 | `analysis.enabled` | true | 总开关 |
 
