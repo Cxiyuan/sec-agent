@@ -388,6 +388,8 @@ def enqueue_suppression_followup(client: Any) -> int:
             window_start=now - timedelta(hours=24),
             window_end=now,
             client=client,
+            # 运维类待办：不受「生成哪些线索」的旋钮约束
+            force=True,
         )
         if result in ("new", "merged"):
             made += 1

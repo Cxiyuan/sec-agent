@@ -951,3 +951,17 @@ def test_squeezed_novelty_task_comes_back(queue_mod: Any) -> None:
     src = inspect.getsource(queue_mod.enqueue)
     assert 'kind == "novelty"' in src
     assert 'existing.state = "pending"' in src
+
+
+def test_operational_todo_can_bypass_candidate_kinds(queue_mod: Any) -> None:
+    """运维类待办不受「生成哪些线索」开关约束。
+
+    例："你之前提交的抑制没生效，请收窄后重提" —— 那不是检测线索，
+    不该被 `analysis.candidate_kinds`（默认不含 structure）悄悄关掉，
+    否则闭环就断在这里：智能体永远收不到这条待办。
+    """
+    src = inspect.getsource(queue_mod.enqueue)
+    assert "force: bool = False" in src
+    assert "not force and kind not in params.candidate_kinds()" in src
+    follow = inspect.getsource(_mod("app.analysis.candidates").enqueue_suppression_followup)
+    assert "force=True" in follow

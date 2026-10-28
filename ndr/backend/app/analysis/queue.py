@@ -114,13 +114,18 @@ def enqueue(
     parent_id: str = "",
     depth: int = 0,
     client: Any = None,
+    force: bool = False,
 ) -> str:
     """线索入队。返回状态串（`new` / `merged` / `superseded` / `dropped` / `skipped` / `error`）。
 
     满了怎么办：新线索强度**高于**队列里最低强度的 pending 就把那条挤出去（标 `expired`
     + `superseded` 计数），否则合并到同族或计数丢弃 —— 三条路都留痕。
+
+    `force=True` = 不受 `analysis.candidate_kinds` 开关约束。给**运维类待办**用
+    （例如"你之前提交的抑制没生效，请收窄后重提"）—— 那不是检测线索，
+    不该被"生成哪些线索"的旋钮关掉。
     """
-    if not params.enabled() or kind not in params.candidate_kinds():
+    if not params.enabled() or (not force and kind not in params.candidate_kinds()):
         return "skipped"
     try:
         strength = max(0.0, min(1.0, float(strength)))
