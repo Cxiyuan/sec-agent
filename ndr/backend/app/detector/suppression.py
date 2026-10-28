@@ -538,14 +538,87 @@ def _src_ips_of(match: dict[str, Any]) -> list[str]:
     return values
 
 
+def _hit_event_matches(row: HitEvent, match: dict[str, Any]) -> bool:
+    """这条**命中事件**是否落在条件树里（用落库的样例事件求值）。
+
+    为什么用命中事件而不是任意原始日志：抑制拦的是"规则命中"这条路径，
+    条件树必须能匹配**触发噪声的那条规则的命中事件**。智能体常见的错法是
+    拿良性流量的字段（UA/URI）去写条件，而噪声那条规则的命中事件是另一种
+    日志（没有那些字段）—— 于是抑制一条也拦不住，还以为生效了。
+    """
+    extra = {"hit_rule": str(row.rule or "")}
+    for sample in (row.evidence or [])[:3]:
+        if not isinstance(sample, dict):
+            continue
+        pseudo = UnifiedLog(
+            source_system="hit_event",
+            ts=row.created_at or datetime.now(UTC),
+            event_type=str((row.event_types or [""])[0] or ""),
+            log_type=str((row.log_types or [""])[0] or ""),
+            src_ip=str(row.src_ip or ""),
+            dst_ip=str(sample.get("dst_ip") or (row.dst_ips or [""])[0] or ""),
+            dst_port=_as_port(sample.get("dst_port") or (row.dst_ports or ["0"])[0] or 0),
+            protocol=str(sample.get("protocol") or ""),
+            signature_id=str(sample.get("signature_id") or ""),
+            query=str(sample.get("query") or ""),
+            uri_path=str(sample.get("uri_path") or ""),
+            hostname=str(sample.get("hostname") or ""),
+            user_agent=str(sample.get("user_agent") or ""),
+            ja3=str(sample.get("ja3") or ""),
+            fuid=str(sample.get("fuid") or ""),
+        )
+        if evaluate_conditions(match, pseudo, extra):
+            return True
+    return False
+
+
+def _as_port(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coverage_of_match(match: dict[str, Any], since: datetime) -> dict[str, Any]:
+    """条件树在近 N 天命中事件上的**真实覆盖面**（命中条数 / 源数 / 网段数）。
+
+    这是护栏真正要量的东西：这条抑制会静默掉多少条命中事件。
+    """
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(HitEvent)
+                .where(func.coalesce(HitEvent.last_seen, HitEvent.created_at) >= since)
+                .order_by(HitEvent.created_at.desc())
+                .limit(2000)
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — 算不出就按"覆盖面未知"处理
+        log.debug("算抑制覆盖面失败: %s", exc)
+        return {"scanned": 0, "matched_rows": 0, "events": -1, "srcs": -1, "segments": -1}
+    matched = [row for row in rows if _hit_event_matches(row, match)]
+    events = sum(max(1, int(row.count or 1)) for row in matched)
+    srcs = {str(row.src_ip or "") for row in matched if str(row.src_ip or "").strip()}
+    segments = {_segment_of(ip) for ip in srcs}
+    return {
+        "scanned": len(rows),
+        "matched_rows": len(matched),
+        "events": events,
+        "srcs": len(srcs),
+        "segments": len(segments),
+    }
+
+
 def estimate_trial(match: dict[str, Any]) -> dict[str, Any]:
     """回看近 N 天同类命中的规模：命中条数 / 不同源 / 跨网段数。
 
     只看**已落库的命中事件**（PG），不回 ES 扫原始日志 —— 这是申请时的一次性成本，
     目的是估计"这条抑制会不会把一大片东西静默掉"，不是精确取证。
 
-    口径：条件树里写了 src_ip 就按**那些源**试算（全部，不只是第一个），
-    否则"加一个 src_ip"就能把网段护栏绕过去 —— 护栏要量的是真实覆盖面。
+    口径：
+    1. **真实覆盖面**（条件树在命中事件上求值）—— 护栏量的是这个；
+    2. 现象维度（同一规则/签名/来源的规模）—— 作为对照一并给出。
+    3. 条件树里写了 src_ip 就按**那些源**算（全部，不只是第一个），
+       否则"加一个 src_ip"就能把网段护栏绕过去。
     """
     days = trial_days()
     since = datetime.now(UTC) - timedelta(days=days)
@@ -560,6 +633,7 @@ def estimate_trial(match: dict[str, Any]) -> dict[str, Any]:
         base.append(func.cast(HitEvent.evidence, HitEvent.evidence.type).astext.like(f"%{value}%"))
     elif field == "src_ip":
         base.append(HitEvent.src_ip == value)
+    coverage = _coverage_of_match(match, since)
     try:
         with SessionLocal() as db:
             events = int(db.scalar(select(func.count()).select_from(HitEvent).where(*base)) or 0)
@@ -571,12 +645,19 @@ def estimate_trial(match: dict[str, Any]) -> dict[str, Any]:
         log.warning("抑制试算失败（按保守档处理）: %s", exc)
         return {"days": days, "error": str(exc)[:200], "events": -1, "srcs": -1, "segments": -1}
     segments = len({_segment_of(str(ip or "")) for ip in ips if str(ip or "").strip()})
+    # 覆盖面优先（护栏看它）：条件树匹配不到任何命中事件时，覆盖面为 0 —— 说明这条
+    # 抑制压根拦不到东西（多半是拿错了字段），此时不能拿"现象维度"的规模来顶。
+    events = coverage["events"] if coverage["events"] >= 0 else events
+    srcs = coverage["srcs"] if coverage["srcs"] >= 0 else srcs
+    segments = coverage["segments"] if coverage["segments"] >= 0 else segments
     return {
         "days": days,
         "phenomenon": f"{field}:{value}" if field else "",
         "events": events,
         "srcs": srcs,
         "segments": segments,
+        "matched_rows": coverage["matched_rows"],
+        "scanned_rows": coverage["scanned"],
         "max_events": trial_max_hits(),
         "max_srcs": trial_max_srcs(),
         "max_segments": trial_max_segments(),
@@ -1003,6 +1084,26 @@ def create_item(
     trial = estimate_trial(match)
     mode = choose_mode(trial)
     downgrade = mode_downgrade(trial)
+    # **拦得住才叫抑制**：条件树在近 N 天的命中事件上一条都匹配不到，说明
+    # 字段写错了（常见：拿良性流量的 UA/URI 去写，而噪声那条规则的命中事件
+    # 根本没有这些字段 —— 实测「TLS 握手失败风暴」的命中事件里没有 UA）。
+    # 这种抑制一条也拦不住，却会让人以为"已经处理了"。要求把来源钉死
+    # （src_ip）或用 rule 维度指出是哪条规则。
+    # 只卡智能体自动提交：人工在界面建条目时自己负责（人知道自己在拦什么）。
+    if (
+        is_agent
+        and int(trial.get("scanned_rows") or 0) > 0
+        and int(trial.get("matched_rows") or 0) == 0
+        and not _src_ips_of(match)
+    ):
+        raise ValueError(
+            "你的条件在近 "
+            f"{int(trial.get('days') or 0)} 天的命中事件里一条都匹配不到"
+            f"（扫了 {int(trial.get('scanned_rows') or 0)} 条命中事件）—— "
+            "抑制要匹配的是**触发噪声的那条规则的命中事件**："
+            "加 rule 维度指出是哪条规则，或把 src_ip 精确到具体来源；"
+            "别拿良性流量自己的字段（UA/URI）去写条件"
+        )
     now = datetime.now(UTC)
     ttl = int(body.get("ttl_days") or default_ttl_days())
     ttl = max(1, min(30, ttl))

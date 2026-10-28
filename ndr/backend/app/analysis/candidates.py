@@ -359,6 +359,20 @@ def enqueue_suppression_followup(client: Any) -> int:
             continue
         reason = dict(item.get("downgrade") or {})
         trial = dict(item.get("trial") or {})
+        matched = int(trial.get("matched_rows") or 0)
+        if matched == 0 and int(trial.get("scanned_rows") or 0) > 0:
+            reason = {
+                **reason,
+                "reason": (
+                    "这条抑制的条件在近 "
+                    f"{int(trial.get('days') or 0)} 天的命中事件里一条都匹配不到"
+                    "（多半是拿良性流量的字段写的）"
+                ),
+                "advice": (
+                    "重写条件去匹配**触发噪声的那条规则的命中事件**："
+                    "加 rule 维度指出是哪条规则，或把 src_ip 精确到具体来源"
+                ),
+            }
         strength = feedback.apply(0.5, "structure", name)
         result = queue.enqueue(
             kind="structure",

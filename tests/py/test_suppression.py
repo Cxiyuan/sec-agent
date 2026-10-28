@@ -613,3 +613,43 @@ def test_downgraded_items_expose_reason_and_advice(sup: ModuleType, monkeypatch:
     assert items[0]["name"] == "心跳噪声"
     assert items[0]["downgrade"]["dimension"] == "segments"
     assert items[0]["downgrade"]["advice"]
+
+
+def test_trial_measures_real_match_coverage(sup: ModuleType) -> None:
+    """试算要量**条件树在命中事件上的真实覆盖面**，不是某个维度的代理。
+
+    护栏量的是"这条抑制会静默掉多少条命中事件"。用现象维度（某个规则/来源的
+    规模）去代理，会得出"影响面很大"或"影响面很小"的错误结论。
+    """
+    src = inspect.getsource(sup.estimate_trial)
+    assert "_coverage_of_match" in src
+    assert "matched_rows" in src
+    coverage = inspect.getsource(sup._coverage_of_match)
+    assert "_hit_event_matches" in coverage
+
+
+def test_no_match_is_rejected_for_agent(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """一条都拦不住的抑制要被挡下来（智能体自动提交时）。
+
+    线上症状：抑制写的是良性流量的字段（UA/URI），而噪声那条规则的命中事件
+    根本没有这些字段 —— 抑制一条也拦不住，却让人以为"已经处理了"。
+    """
+    monkeypatch.setattr(sup, "phenomenon_age_hours", lambda match: 200.0)
+    monkeypatch.setattr(
+        sup,
+        "estimate_trial",
+        lambda match: {
+            "days": 7, "events": 0, "srcs": 0, "segments": 0,
+            "matched_rows": 0, "scanned_rows": 120,
+            "max_events": 5000, "max_srcs": 200, "max_segments": 8,
+        },
+    )
+    monkeypatch.setattr(sup, "SessionLocal", _FakeSession)
+    # 条件里没有 src_ip（没把来源钉死）→ 一条都拦不住就要被挡下
+    body = _body(match=_tree(("dst_port", "eq", 22346), ("user_agent", "eq", "00_linux_client")))
+    with pytest.raises(ValueError, match="匹配不到"):
+        sup.create_item(body, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
+    # 钉死了来源的（src_ip）不拦：它本来就只针对那一个来源
+    ok = _body(match=_tree(("src_ip", "eq", "10.1.2.3"), ("dst_port", "eq", 22346)))
+    out = sup.create_item(ok, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
+    assert out["mode"] in (sup.MODE_SUPPRESS, sup.MODE_RECORD_ONLY)
