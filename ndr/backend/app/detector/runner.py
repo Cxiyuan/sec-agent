@@ -864,6 +864,12 @@ def _analysis_round(
             if analysis_params.digest_enabled():
                 folded = run_digest_round()
                 stats["results_digested"] += int(folded.get("results") or 0)
+        # 抑制闭环的补齐：被护栏降级的抑制重新派回给智能体（它自己收窄后同名重提）。
+        # 不做这一步，被降级的现象就从智能体视野里消失了 —— 它没机会发现自己那条
+        # 抑制其实没生效，闭环就断在这儿。
+        if now - float(state.get("last_sup_followup") or 0.0) >= 600:
+            state["last_sup_followup"] = now
+            stats["candidate_sup_followup"] += candidates.enqueue_suppression_followup(client)
         if now - float(state.get("last_sweep") or 0.0) >= max(300, gap * 5):
             state["last_sweep"] = now
             done = analysis_queue.sweep(client)

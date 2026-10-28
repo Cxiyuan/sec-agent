@@ -343,6 +343,57 @@ def _structure_tasks(
     return made
 
 
+def enqueue_suppression_followup(client: Any) -> int:
+    """降级的精准抑制 → 一条待办任务（让智能体自己收窄后同名重提）。
+
+    为什么需要这一条：抑制被爆炸半径护栏降级时只是"只不派工"，现象从此不再
+    出现在智能体面前 —— 它就没有机会发现自己那条抑制其实没生效。闭环要闭上，
+    就得把这件事**重新派回给它**：它按 `downgrade.advice` 收窄条件、同名重提，
+    通过护栏即真正生效。
+    """
+    made = 0
+    now = datetime.now(UTC)
+    for item in suppression.downgraded_items():
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        reason = dict(item.get("downgrade") or {})
+        trial = dict(item.get("trial") or {})
+        strength = feedback.apply(0.5, "structure", name)
+        result = queue.enqueue(
+            kind="structure",
+            subject_kind="suppression",
+            subject=name,
+            strength=strength,
+            feature="suppression_downgrade",
+            hint={
+                "事实": (
+                    f"你之前提交的精准抑制「{name}」没有真正生效（当前只不派工）："
+                    f"{reason.get('reason') or '影响面过大被降级'}"
+                ),
+                "怎么收窄": reason.get("advice") or "收窄到单个来源 + 具体行为特征",
+                "超限维度": reason.get("dimension") or "",
+                "实际值": reason.get("actual"),
+                "上限": reason.get("limit"),
+                "试算": trial,
+                "抑制ID": item.get("id") or "",
+                "原任务": item.get("source_task_id") or "",
+                "要求": (
+                    "按上面的建议收窄条件（收窄到单个来源 src_ip + 具体行为特征），"
+                    "重新取证后用**同一个 name** 调用 submit_suppression 提交（同名会覆盖旧条目）；"
+                    "不要换新名字，也不要直接撤销"
+                ),
+                "客观强度": strength,
+            },
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+            client=client,
+        )
+        if result in ("new", "merged"):
+            made += 1
+    return made
+
+
 def enqueue_shift(deviations: list[dict[str, Any]], client: Any) -> int:
     """自身基线偏离 → `shift` 线索（由 `baseline` 的计数上尾检验产出）。"""
     made = 0

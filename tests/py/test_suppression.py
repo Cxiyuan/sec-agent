@@ -590,13 +590,26 @@ def test_trial_counts_every_src_ip_in_the_match(sup: ModuleType) -> None:
             {
                 "logic": "or",
                 "rules": [
-                    {"field": "src_ip", "op": "eq", "value": "10.0.0.1"},
-                    {"field": "src_ip", "op": "eq", "value": "10.0.1.2"},
+                    {"field": "src_ip", "op": "eq", "value": "10.1.2.3"},
+                    {"field": "src_ip", "op": "eq", "value": "10.1.2.4"},
                 ],
             },
         ],
     }
-    assert sup._src_ips_of(match) == ["10.0.0.1", "10.0.1.2"]
+    assert sup._src_ips_of(match) == ["10.1.2.3", "10.1.2.4"]
     src = inspect.getsource(sup.estimate_trial)
     assert "_src_ips_of(match)" in src, "试算必须用条件树里的全部 src_ip"
     assert "HitEvent.src_ip.in_(src_ips)" in src
+
+
+def test_downgraded_items_expose_reason_and_advice(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """降级条目要能被重新派回给智能体：带 id、name、降级原因与收窄建议。"""
+    row = _Row(name="心跳噪声", mode=sup.MODE_RECORD_ONLY)
+    row.trial = {"days": 7, "events": 151, "srcs": 28, "segments": 10,
+                 "max_events": 5000, "max_srcs": 200, "max_segments": 8}
+    monkeypatch.setattr(sup, "SessionLocal", lambda: _FakeSession(existing=[row]))
+    items = sup.downgraded_items()
+    assert len(items) == 1
+    assert items[0]["name"] == "心跳噪声"
+    assert items[0]["downgrade"]["dimension"] == "segments"
+    assert items[0]["downgrade"]["advice"]

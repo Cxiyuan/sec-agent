@@ -1103,6 +1103,57 @@ def create_item(
     return out
 
 
+def downgraded_items(*, limit: int = 50) -> list[dict[str, Any]]:
+    """生效中但没真正生效（`record_only` 档）的条目：降级原因 + 收窄建议。
+
+    闭环的补齐一环：降级不是终点。NDR 把这些条目当成一条待办派给智能体，
+    让它自己按建议收窄后**同名重提**（同名覆盖）——而不是等人想起来。
+    """
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(AnalysisSuppression)
+                .where(
+                    AnalysisSuppression.enabled.is_(True),
+                    AnalysisSuppression.mode == MODE_RECORD_ONLY,
+                )
+                .order_by(AnalysisSuppression.created_at.asc())
+                .limit(max(1, int(limit or 50)))
+            ).all()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                trial = dict(row.trial or {})
+                reason = mode_downgrade(trial)
+                if not reason:
+                    # 档位是历史遗留的（试算数据不在了）→ 仍然提醒一次，让它重新按最小面提
+                    reason = {
+                        "dimension": "unknown",
+                        "actual": 0,
+                        "limit": 0,
+                        "reason": "该条目处于「只不派工」档，没有真正生效",
+                        "advice": (
+                            "按同类现象的最小匹配面重提：收窄到单个来源（src_ip 精确匹配）"
+                            "+ 具体行为特征，用同一个 name 提交（同名覆盖）"
+                        ),
+                    }
+                out.append(
+                    {
+                        "id": str(row.id),
+                        "name": str(row.name or ""),
+                        "mode": str(row.mode or MODE_RECORD_ONLY),
+                        "trial": trial,
+                        "downgrade": reason,
+                        "source_task_id": str(row.source_task_id or ""),
+                        "note": str(row.note or "")[:300],
+                        "expires_at": row.expires_at.isoformat() if row.expires_at else "",
+                    }
+                )
+            return out
+    except Exception as exc:  # noqa: BLE001 — 读不到就当没有待办，不影响派工
+        log.debug("读降级抑制清单失败: %s", exc)
+        return []
+
+
 def list_items(
     *,
     q: str = "",
