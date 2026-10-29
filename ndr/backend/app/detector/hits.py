@@ -383,20 +383,37 @@ _SEVERITY_RANK: dict[str, int] = {"critical": 5, "high": 4, "medium": 3, "low": 
 def _agent_status_condition(agent_status: str) -> Any | None:
     """`agent_status` 筛选 → SQL 条件（纯函数，不碰数据库）。
 
-    - 结论态/流程态（true_positive… / pending / done）：命中「有该结论」的事件；
-    - `unanalyzed`：命中「结论表里没有记录」的事件（智能体还没返回）。
-    未识别的值不加条件（与 `source_kind` 同策略：脏值不把列表筛空）。
+    支持**逗号分隔多值**（OR），例如事件中心默认的 `true_positive,suspicious`
+    （= 智能体确认为可疑/威胁）。`unanalyzed` 可以单独用，也可以和具体状态混用
+    （混用时 = 有这些结论 **或** 还没结论）。未识别的值忽略；全脏值不加条件。
     """
-    value = str(agent_status or "").strip().lower()
-    if value == "" or value not in AGENT_FILTER_STATUSES:
+    wanted = {
+        item.strip().lower()
+        for item in str(agent_status or "").split(",")
+        if item.strip() != ""
+    }
+    values = {item for item in wanted if item in AGENT_FILTER_STATUSES}
+    if not values:
         return None
-    exists = select(ConclusionRecord.dedup_key).where(
-        # hit 主键是 UUID、结论键是 VARCHAR(64)：SQL 侧必须显式转文本再比
-        ConclusionRecord.dedup_key == cast(HitEvent.id, String)
-    )
-    if value == AGENT_STATUS_UNANALYZED:
-        return ~exists.exists()
-    return exists.where(ConclusionRecord.status == value).exists()
+
+    def confirmed() -> Any:
+        return select(ConclusionRecord.dedup_key).where(
+            # hit 主键是 UUID、结论键是 VARCHAR(64)：SQL 侧必须显式转文本再比
+            ConclusionRecord.dedup_key == cast(HitEvent.id, String),
+            ConclusionRecord.status.in_(values - {AGENT_STATUS_UNANALYZED}),
+        ).exists()
+
+    def unanalyzed() -> Any:
+        return ~select(ConclusionRecord.dedup_key).where(
+            ConclusionRecord.dedup_key == cast(HitEvent.id, String)
+        ).exists()
+
+    statuses = values - {AGENT_STATUS_UNANALYZED}
+    if not statuses:
+        return unanalyzed()
+    if AGENT_STATUS_UNANALYZED in values:
+        return or_(confirmed(), unanalyzed())
+    return confirmed()
 
 
 def _agent_task_state_condition(agent_task_state: str) -> Any | None:
@@ -1173,6 +1190,7 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
     # 智能体口径：一次 left join 分组（结论表为空/异常 → 空桶 + pending 未知，不影响检测器口径）
     by_agent_status: list[dict[str, Any]] = []
     agent_pending_total: int | None = None
+    agent_confirmed_total = 0
     try:
         with SessionLocal() as db:
             agent_rows = list(
@@ -1203,6 +1221,8 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
             for key, count in sorted(counts.items(), key=lambda kv: -kv[1])
         ]
         agent_pending_total = int(counts.get(AGENT_STATUS_UNANALYZED, 0))
+        # 事件中心「智能体确认」口径：可疑 + 威胁（不含误报/正常/待定/未分析）
+        agent_confirmed_total = int(counts.get("true_positive", 0)) + int(counts.get("suspicious", 0))
     except Exception as exc:  # noqa: BLE001 — 结论口径读失败不能拖垮检测器口径
         log.warning("读智能体结论统计失败: %s", exc)
 
@@ -1230,6 +1250,7 @@ def hits_stats(*, minutes: int = 1440) -> dict[str, Any]:
         # 智能体口径（与上面检测器口径并存；字段名区分开，不做覆盖）
         "by_agent_status": by_agent_status,
         "agent_pending_total": agent_pending_total,
+        "agent_confirmed_total": agent_confirmed_total,
         "top_rules": by_rule,
         "trend": [{"ts": k, "count": v} for k, v in sorted(buckets.items())],
     }

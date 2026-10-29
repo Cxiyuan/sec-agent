@@ -575,6 +575,12 @@ export function EventsPanel() {
     stats?.by_severity?.find((g) => g.key === key)?.count ?? 0;
   const crit = sevCount("critical");
   const high = sevCount("high");
+  // 智能体口径：可疑 + 威胁 = 事件列表默认展示的"确认事件"；未分析数用于筛选按钮
+  const agentConfirmed = stats?.agent_confirmed_total
+    ?? (stats?.by_agent_status ?? [])
+      .filter((g) => g.key === "true_positive" || g.key === "suspicious")
+      .reduce((sum, g) => sum + g.count, 0);
+  const agentUnanalyzed = (stats?.by_agent_status ?? []).find((g) => g.key === "unanalyzed")?.count ?? 0;
   const trend = stats?.trend ?? [];
   const topRules = stats?.top_rules ?? [];
 
@@ -642,11 +648,17 @@ export function EventsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Stat
                 label="事件总数"
                 value={stats ? fmt(stats.total) : "—"}
                 hint="窗口内 · 不含已忽略"
+              />
+              <Stat
+                label="智能体确认"
+                value={stats ? fmt(agentConfirmed) : "—"}
+                tone="high"
+                hint="可疑 + 威胁（事件列表默认只看这些）"
               />
               <Stat
                 label="高危及以上"
@@ -659,6 +671,33 @@ export function EventsPanel() {
                 value={stats ? fmt(stats.ignored) : "—"}
                 hint="默认列表不显示 · 勾选『包含已忽略』可查"
               />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">智能体结论：</span>
+              {([
+                ["confirmed", "可疑 / 威胁", agentConfirmed],
+                ["all", "全部（含初判）", stats?.total ?? 0],
+                ["unanalyzed", "未分析", agentUnanalyzed],
+              ] as const).map(([key, label, n]) => {
+                const active = form.agentStatus === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => applyForm({ agentStatus: key })}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-xs transition-colors motion-reduce:transition-none",
+                      active
+                        ? "border-primary bg-brand-50 text-primary"
+                        : "border-border-subtle text-muted-foreground hover:border-border hover:text-foreground",
+                    )}
+                  >
+                    {label} · {fmt(n)}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5">
@@ -989,8 +1028,10 @@ export function EventsPanel() {
                 />
               ) : (
                 <EmptyState
-                  title="没有符合条件的事件"
-                  hint="放宽时间范围，或清除部分筛选条件"
+                  title={form.agentStatus === "confirmed" ? "暂无智能体确认的可疑/威胁事件" : "没有符合条件的事件"}
+                  hint={form.agentStatus === "confirmed"
+                    ? "事件列表现在以智能体结论为准；切到『全部（含初判）』可看未分析与 NDR 初判"
+                    : "放宽时间范围，或清除部分筛选条件"}
                   tone="muted"
                   action={
                     <Button size="sm" variant="outline" onClick={reset}>

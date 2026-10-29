@@ -876,11 +876,16 @@ ${THEME}
 
   function renderProcMeta(tl) {
     const tokens = tl.tokens || {}
-    // 这个部署的会话日志可能没有记录用量（provider 没回）：如实显示"未上报"，不要假装是 0
+    // 缓存命中率决定成本：Go/Anthropic 类服务商按 cacheRead 计价（通常 10%），
+    // 所以这一行要把"缓存读 / 新输入"分开显示，别只给总数。
+    const cacheRead = tokens.cacheRead || 0
+    const fresh = tokens.input || 0
+    const hitBase = cacheRead + fresh
+    const hitRate = hitBase > 0 ? Math.round((cacheRead / hitBase) * 100) : 0
     const tokenText = tokens.reported === false
       ? 'token：未上报（当前模型服务商未返回用量）'
-      : 'token：输入 ' + (tokens.input || 0) + ' / 输出 ' + (tokens.output || 0) +
-        '（合计 ' + (tokens.total || 0) + '）'
+      : 'token：缓存 ' + cacheRead + ' / 新输入 ' + fresh + ' / 输出 ' + (tokens.output || 0) +
+        '（命中率 ' + hitRate + '%）'
     document.getElementById('proc-meta').textContent = (tl.running ? '● 运行中 · ' : '') + tokenText
     const tools = (tl.tools || []).map(x => x.name + ' ×' + x.count + (x.errors ? '（' + x.errors + ' 次报错）' : '')).join(' · ')
     document.getElementById('proc-tools').textContent = tools ? ('工具：' + tools) : ''

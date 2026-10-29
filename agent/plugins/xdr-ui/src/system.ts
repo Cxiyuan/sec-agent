@@ -435,11 +435,28 @@ export async function saveProvider(context: unknown, patch: unknown): Promise<Sy
     ? apiKeyEnv
     : `${route.replace(/[^a-z0-9]+/gu, '_').toUpperCase()}_API_KEY`
 
+  // 额外请求头：OpenCode Go 的网关**强制**要求 `x-opencode-session`（缺了直接 400
+  // MissingSessionID），而这个字段在界面上没有输入框 —— 所以按 baseURL 自动补。
+  // 用 per-provider 的稳定值（不是每会话随机）：同一段系统提示词可以跨任务命中缓存。
+  const headers: Record<string, string> = {}
+  if (isPlainObject(patch['headers'])) {
+    for (const [key, value] of Object.entries(patch['headers'] as Record<string, unknown>)) {
+      if (typeof key === 'string' && key.trim() !== '' && typeof value === 'string') {
+        headers[key.trim()] = value
+      }
+    }
+  }
+  const isOpenCodeGo = /^https:\/\/opencode\.ai\/inference\/go\//u.test(baseURL)
+  if (isOpenCodeGo && headers['x-opencode-session'] === undefined) {
+    headers['x-opencode-session'] = `xdr-${route}`
+  }
+
   const profile: Record<string, unknown> = {
     displayName: displayName === null || displayName === '' ? route : displayName,
     api,
     baseURL,
     apiKeyEnv: ref,
+    ...(Object.keys(headers).length === 0 ? {} : { headers }),
     models: [{
       id: modelId,
       ...(contextWindow === undefined ? {} : { contextWindow }),

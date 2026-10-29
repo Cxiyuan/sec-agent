@@ -485,3 +485,29 @@ def test_detector_route_exposes_agent_filters(route: Any) -> None:
     params = spec["paths"]["/api/detector/hits"]["get"].get("parameters", [])
     names = {str(p.get("name")) for p in params}
     assert {"agent_status", "agent_task_state"} <= names
+
+
+def test_agent_status_filter_accepts_multi_value(hits: Any) -> None:
+    """事件中心默认只看「智能体确认的可疑/威胁」：`agent_status` 必须支持逗号多值（OR）。"""
+    cond = hits._agent_status_condition("true_positive,suspicious")
+    assert cond is not None
+    sql = str(cond.compile(compile_kwargs={"literal_binds": True}))
+    assert "true_positive" in sql and "suspicious" in sql
+    assert " IN " in sql.upper()
+    # 混用 unanalyzed：有结论的 OR 还没结论的
+    mixed = hits._agent_status_condition("suspicious,unanalyzed")
+    assert mixed is not None
+    sql_mixed = str(mixed.compile(compile_kwargs={"literal_binds": True}))
+    assert " OR " in sql_mixed.upper() and "NOT" in sql_mixed.upper()
+    # 全脏值不筛
+    assert hits._agent_status_condition("nope,nope2") is None
+
+
+def test_hits_stats_expose_confirmed_total(hits: Any) -> None:
+    """事件中心 KPI 用「可疑 + 威胁」：统计里要单列 agent_confirmed_total。"""
+    import inspect
+
+    src = inspect.getsource(hits.hits_stats)
+    assert '"agent_confirmed_total": agent_confirmed_total' in src
+    assert 'counts.get("true_positive"' in src
+    assert 'counts.get("suspicious"' in src

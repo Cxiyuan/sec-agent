@@ -159,6 +159,12 @@
 
 ## 三、分析过程（P3）
 
+> 时间线里的 `tokens` 现在包含 `cacheRead / cacheWrite`（provider 支持 prompt cache 时才有值），
+> 控制台显示「缓存 X / 新输入 Y / 输出 Z（命中率 N%）」。缓存命中率决定了按量计费的实际成本：
+> 换模型会清空缓存，尽量在任务中途不要切模型。
+
+
+
 数据来自 agent 自己的**过程索引**（任务 → 会话）+ DSH 会话日志（时间线）。
 运行中的会话可以轮询拿增量。
 
@@ -327,6 +333,10 @@
 
 项目记录新增字段：`model` / `fallbackModel`（`provider/model`；空 = 全局默认/不切换），
 `POST /api/projects` 可直接带这两个字段。
+
+**OpenCode Go 的 `x-opencode-session`**：该网关强制要求此请求头（缺了 400 MissingSessionID）。
+控制台保存服务商时会**自动**对 `https://opencode.ai/inference/go/*` 地址注入
+`x-opencode-session: xdr-<route>`（不需要手工填，也不会被重新保存覆盖）。
 
 **告警外发**：配置 `XDR_ALERT_WEBHOOK_URL`（插件配置 `alertWebhookUrl`）后，
 项目不可达 / 授权ID 不一致 / 熔断打开会 POST：

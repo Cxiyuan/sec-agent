@@ -47,6 +47,11 @@ export interface HitForm {
   sourceKind: string;
   /** 严重度：小写英文精确匹配（critical/high/medium/low/info）；空 = 全部 */
   severity: string;
+  /**
+   * 智能体口径（2026-10 判定权转移：事件列表默认只看智能体确认为可疑/威胁的）：
+   * `confirmed` = true_positive,suspicious；`unanalyzed` = 还没结论；`all` = 不筛。
+   */
+  agentStatus: "confirmed" | "unanalyzed" | "all";
   /** 时间范围（分钟）：四档 60/360/1440/10080，恒 > 0（Q-A 裁决砍掉「不限」） */
   minutes: number;
   /** 勾选 = 请求带 include_ignored=true；默认 false（不传） */
@@ -64,6 +69,7 @@ export const EMPTY_HIT_FORM: HitForm = {
   ip: "",
   sourceKind: "",
   severity: "",
+  agentStatus: "confirmed",
   minutes: 1440,
   includeIgnored: false,
   sort: "recent",
@@ -82,6 +88,9 @@ export function buildHitsQuery(form: HitForm, nextOffset: number): string {
   put("q", form.q);                    // 跨字段关键字（含 evidence）
   put("rule", form.rule);              // 事件归类子串
   put("ip", form.ip);                  // src_ip/client/via/dst_ips 子串
+  // 智能体口径：默认只看确认的可疑/威胁（判定权在智能体，规则命中只是初判参考）
+  if (form.agentStatus === "confirmed") put("agent_status", "true_positive,suspicious");
+  else if (form.agentStatus === "unanalyzed") put("agent_status", "unanalyzed");
   put("source_kind", form.sourceKind); // 值 = 英文 key（feature_match/…），标签显中文
   put("severity", form.severity);      // 值 = 小写英文（后端 == 精确匹配，先 lower）
   params.set("minutes", String(form.minutes)); // 四档之一：60/360/1440/10080，恒 >0

@@ -814,6 +814,12 @@ export interface HitEventStats {
   ignored: number;
   by_source_kind: HitStatsGroup[];
   by_severity: HitStatsGroup[];
+  /** 智能体口径：按结论态分组（含 unanalyzed 桶） */
+  by_agent_status?: HitStatsGroup[];
+  /** 智能体尚未返回结论的事件数 */
+  agent_pending_total?: number | null;
+  /** 智能体确认为可疑/威胁的事件数（true_positive + suspicious） */
+  agent_confirmed_total?: number;
   top_rules: HitTopRule[];
   trend: HitTrendPoint[];
   /** 失败时后端只回 { error, total: 0 }，上面这些字段全部缺失 —— 读取点一律写 ?? [] */

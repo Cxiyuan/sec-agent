@@ -35,7 +35,14 @@ export interface SessionTimeline {
   readonly updatedAt: string
   readonly events: readonly TimelineEvent[]
   readonly tools: readonly { readonly name: string; readonly count: number; readonly errors: number; readonly totalMs: number }[]
-  readonly tokens: { readonly input: number; readonly output: number; readonly total: number, readonly reported: boolean }
+  readonly tokens: {
+    readonly input: number
+    readonly output: number
+    readonly cacheRead: number
+    readonly cacheWrite: number
+    readonly total: number
+    readonly reported: boolean
+  }
   readonly nextSeq: number
   readonly truncated: boolean
 }
@@ -96,7 +103,13 @@ function textOfContent(content: unknown): string {
 }
 
 /** 一条 usage 对象 → 三个数（兼容 camelCase 与 Anthropic 的 snake_case）。 */
-function usageCounts(raw: unknown): { input: number, output: number, total: number } | null {
+function usageCounts(raw: unknown): {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+} | null {
   if (typeof raw !== 'object' || raw === null) return null
   const row = raw as Record<string, unknown>
   const pick = (...keys: string[]): number => {
@@ -108,9 +121,11 @@ function usageCounts(raw: unknown): { input: number, output: number, total: numb
   }
   const input = pick('inputTokens', 'input_tokens', 'input')
   const output = pick('outputTokens', 'output_tokens', 'output')
-  const total = pick('totalTokens', 'total_tokens', 'total') || input + output
-  if (input === 0 && output === 0 && total === 0) return null
-  return { input, output, total }
+  const cacheRead = pick('cacheReadTokens', 'cache_read_input_tokens', 'cache_read_tokens', 'cached_tokens')
+  const cacheWrite = pick('cacheWriteTokens', 'cache_creation_input_tokens', 'cache_write_tokens')
+  const total = pick('totalTokens', 'total_tokens', 'total') || input + output + cacheRead
+  if (input === 0 && output === 0 && cacheRead === 0 && total === 0) return null
+  return { input, output, cacheRead, cacheWrite, total }
 }
 
 function reasoningOfContent(content: unknown): string {
@@ -146,7 +161,7 @@ export async function readSessionTimeline(
     updatedAt: '',
     events: [],
     tools: [],
-    tokens: { input: 0, output: 0, total: 0, reported: false },
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false },
     nextSeq: options.after ?? 0,
     truncated: false,
   })
@@ -174,7 +189,7 @@ export function parseSessionLog(
   const after = Math.max(0, Number(options.after ?? 0))
   const events: TimelineEvent[] = []
   const tools = new Map<string, { name: string, count: number, errors: number, totalMs: number, openAt: number }>()
-  const tokens = { input: 0, output: 0, total: 0, reported: false }
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false }
   let firstTime = 0
   let lastTime = 0
   let nextSeq = after
@@ -222,9 +237,11 @@ export function parseSessionLog(
       if (fromMessage !== null) {
         tokens.input += fromMessage.input
         tokens.output += fromMessage.output
+        tokens.cacheRead += fromMessage.cacheRead
+        tokens.cacheWrite += fromMessage.cacheWrite
         tokens.total += fromMessage.total
         tokens.reported = true
-        push({ ...base, kind: 'usage', label: 'token 用量', detail: `输入 ${fromMessage.input} / 输出 ${fromMessage.output}`, tokens: fromMessage.total })
+        push({ ...base, kind: 'usage', label: 'token 用量', detail: `缓存读 ${fromMessage.cacheRead} / 新输入 ${fromMessage.input} / 输出 ${fromMessage.output}`, tokens: fromMessage.total })
       }
       const thinking = reasoningOfContent(message['content'])
       if (thinking !== '') push({ ...base, kind: 'thinking', label: '思考', detail: clip(thinking) })
@@ -271,9 +288,11 @@ export function parseSessionLog(
           if (counts !== null) {
             tokens.input += counts.input
             tokens.output += counts.output
+            tokens.cacheRead += counts.cacheRead
+            tokens.cacheWrite += counts.cacheWrite
             tokens.total += counts.total
             tokens.reported = true
-            push({ ...base, kind: 'usage', label: 'token 用量', detail: `输入 ${counts.input} / 输出 ${counts.output}`, tokens: counts.total })
+            push({ ...base, kind: 'usage', label: 'token 用量', detail: `缓存读 ${counts.cacheRead} / 新输入 ${counts.input} / 输出 ${counts.output}`, tokens: counts.total })
           }
         }
         if (chunk['type'] === 'finish') {

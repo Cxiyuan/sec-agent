@@ -192,6 +192,34 @@ test('保存服务商：写 pi-ai providers、存 Key、设为默认模型', asy
   assert.equal(modelUpdate?.args[2], 7)
 })
 
+test('保存服务商：OpenCode Go 自动带 x-opencode-session（缺了会 400 MissingSessionID）', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettings(calls), credentials: fakeCredentials(calls) })
+  const result = await saveProvider(ctx, {
+    route: 'opencode-go',
+    api: 'openai-completions',
+    baseURL: 'https://opencode.ai/inference/go/openai/v1',
+    modelId: 'qwen3.8-flash',
+    apiKey: 'sk-opencode-test',
+  })
+  assert.equal(result.ok, true)
+  const piUpdate = calls.find(call => call.kind === 'update' && call.args[0] === 'llm-pi-ai')
+  const profile = (piUpdate?.args[1] as { providers: Record<string, { headers?: Record<string, string> }> })
+    .providers['opencode-go']
+  assert.equal(profile?.headers?.['x-opencode-session'], 'xdr-opencode-go')
+
+  // 非 Go 地址不自作主张加头
+  const calls2: Calls = []
+  const ctx2 = fakeContext({ settings: fakeSettings(calls2), credentials: fakeCredentials(calls2) })
+  await saveProvider(ctx2, {
+    route: 'kimi', api: 'openai-completions', baseURL: 'https://api.moonshot.cn/v1',
+    modelId: 'kimi-k2', apiKey: '',
+  })
+  const pi2 = calls2.find(call => call.kind === 'update' && call.args[0] === 'llm-pi-ai')
+  const profile2 = (pi2?.args[1] as { providers: Record<string, { headers?: unknown }> }).providers['kimi']
+  assert.equal(profile2?.headers, undefined)
+})
+
 test('保存服务商：非法 route / URL / 协议直接拒绝', async () => {
   const calls: Calls = []
   const ctx = fakeContext({ settings: fakeSettings(calls), credentials: fakeCredentials(calls) })
