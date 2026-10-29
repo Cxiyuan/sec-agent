@@ -1,0 +1,45 @@
+# 智能体线路 · OpenCode 免费模型桥接（可选 sidecar）
+#
+# 用途：把隔离的 OpenCode 免费模型包装成 OpenAI 兼容接口，给 dsh 当模型通道。
+# 与主 compose 一起用：
+#   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
+#
+# 关键点：
+# - network_mode: service:agent → 与 agent 共用网络命名空间，dsh 用 127.0.0.1:41980；
+# - 镜像里自带 opencode（version pin 在 CI build-args），不依赖宿主机；
+# - 只读根文件系统 + /tmp tmpfs + 无特权；唯一可写卷是 /data；
+# - 免费额度有限：BRIDGE_MAX_REQUESTS_PER_DAY 是硬预算，超了返回 429。
+
+services:
+  ow-bridge:
+    image: ${OW_BRIDGE_IMAGE:-ghcr.io/cxiyuan/sec-agent/shentong-ow-bridge:latest}
+    network_mode: "service:agent"
+    depends_on:
+      - agent
+    environment:
+      TZ: Asia/Shanghai
+      BRIDGE_PORT: "41980"
+      BRIDGE_HOST: "127.0.0.1"
+      BRIDGE_API_KEY: ${OW_BRIDGE_KEY:?请在 .env 设置 OW_BRIDGE_KEY（dsh 里填同一个值）}
+      BRIDGE_DATA_DIR: /data
+      BRIDGE_MAX_CONCURRENCY: "2"
+      BRIDGE_MAX_REQUESTS_PER_DAY: ${OW_BRIDGE_DAILY_BUDGET:-200}
+      BRIDGE_TIMEOUT_MS: "300000"
+    volumes:
+      - ow-bridge-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ow-bridge-data:
