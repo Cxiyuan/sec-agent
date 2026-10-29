@@ -1421,6 +1421,9 @@ ${THEME}
     'minimax':         { name: 'MiniMax',              api: 'openai-completions',   baseURL: 'https://api.minimax.chat/v1',           models: ['MiniMax-M1', 'abab6.5s-chat'] },
     'deepseek-openai': { name: 'DeepSeek（OpenAI 兼容）', api: 'openai-completions', baseURL: 'https://api.deepseek.com/v1',           models: ['deepseek-chat', 'deepseek-reasoner'] },
     'anthropic':       { name: 'Anthropic',            api: 'anthropic-messages',   baseURL: 'https://api.anthropic.com',             models: ['claude-sonnet-4-5'] },
+    // OpenCode Go：$10/月订阅，一个 key 走 OpenAI 兼容端点；模型 id 见
+    // https://opencode.ai/inference/go/v1/models（点「刷新」可在线拉取）。
+    'opencode-go':     { name: 'OpenCode Go',          api: 'openai-completions',   baseURL: 'https://opencode.ai/inference/go/openai/v1', models: ['glm-5.3-flash', 'glm-5.3', 'kimi-k2.7-code', 'kimi-k3', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'minimax-m3.1-flash', 'minimax-m3', 'qwen3.8-flash', 'qwen3.7-plus', 'mimo-v2.6-flash', 'claude-haiku-5-5', 'gpt-6-luna', 'grok-4.7', 'hy3', 'step-5-preview'] },
     'custom':          { name: '自定义网关',            api: 'openai-completions',   baseURL: '',                                      models: [] },
   }
   const presetEl = document.getElementById('p-preset')
