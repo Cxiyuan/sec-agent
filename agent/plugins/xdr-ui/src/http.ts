@@ -333,7 +333,8 @@ export function createUiHandler(
             respondJson(res, 200, { available: false, meta })
             return
           }
-          const settings = await ingest.settings()
+          // 带 project 时读该项目的参数（项目对话框回显轻量初筛配置用）；不带 = 默认项目
+          const settings = await ingest.settings(projectParam(queryOf(req)).project)
           respondJson(res, 200, { available: true, settings, meta })
           return
         }

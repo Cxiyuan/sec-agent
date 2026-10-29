@@ -26,8 +26,8 @@ import { createIngestHandler } from './handler.ts'
 import { PostgresColdStore } from './pg-store.ts'
 import { MemoryColdStore } from './store.ts'
 import type { ColdStore } from './store.ts'
-import { mergeSettings, settingsView } from './settings.ts'
-import type { RuntimeSettings } from './settings.ts'
+import { DEFAULT_LIGHT_TRIAGE, lightTriageOf, mergeSettings, settingsView } from './settings.ts'
+import type { LightTriageConfig, RuntimeSettings } from './settings.ts'
 import { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 import { identityOfMatch } from './task-results.ts'
 import { MemoryStateStore } from './state-store.ts'
@@ -55,8 +55,11 @@ export { processItems, createIngestHandler, WebhookHttpError } from './handler.t
 export { MemoryColdStore } from './store.ts'
 export { PostgresColdStore } from './pg-store.ts'
 export type { ColdEntry, ColdStore, AnalysesPage, AnalysesQuery } from './store.ts'
-export { mergeSettings, settingsView, SETTING_LIMITS } from './settings.ts'
-export type { RuntimeSettings, SettingsStore } from './settings.ts'
+export { mergeSettings, settingsView, SETTING_LIMITS, lightTriageOf, DEFAULT_LIGHT_TRIAGE } from './settings.ts'
+export type { RuntimeSettings, SettingsStore, LightTriageConfig } from './settings.ts'
+// 轻量初筛（低阶模型闸门）：对外可复用其校验器与客户端（测试/其他宿主拼装用）
+export { LightTriage, parseTriageOutput, buildLightPrompt } from './light-triage.ts'
+export type { LightTriagePort, TriageResult, LightVerdict } from './light-triage.ts'
 export { ANALYSIS_SCRIPT_TOOL_NAMES, registerScriptTools } from './script-tools.ts'
 export { MemoryStateStore } from './state-store.ts'
 export { PostgresStateStore } from './pg-state-store.ts'
@@ -360,6 +363,17 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /** 轻量初筛配置：项目在跑时取运行时快照（热生效值），否则回落到冷库（停用项目也能回显/改）。 */
+  async function lightConfigOf(projectId?: string): Promise<LightTriageConfig> {
+    const runtime = runtimeOf(projectId)
+    if (runtime !== null) return runtime.lightSettings()
+    const saved = await storeFor(projectId).loadSettings().catch(() => null)
+    const raw = (saved as { light?: unknown } | null)?.light
+    if (raw === undefined) return DEFAULT_LIGHT_TRIAGE
+    const checked = lightTriageOf(raw)
+    return 'error' in checked ? DEFAULT_LIGHT_TRIAGE : checked.config
+  }
+
   /** 运行观测快照：`/xdr/ingest/status` 与 xdrIngest 服务共用同一份。 */
   function statusSnapshot(): Record<string, unknown> {
     const runtime = runtimeOf()
@@ -384,6 +398,7 @@ export function apply(ctx: Context, config: Config): void {
       ),
       ...(runtime === null ? {} : {
         task_reuse: (runtime.status() as Record<string, unknown>)['task_reuse'],
+        light_triage: (runtime.status() as Record<string, unknown>)['light_triage'],
         loop: (runtime.status() as Record<string, unknown>)['loop'],
       }),
     }
@@ -567,17 +582,36 @@ export function apply(ctx: Context, config: Config): void {
     settings: async (projectId?: string) => ({
       ...settingsView(currentSettings(projectId)),
       store: storeFor(projectId).kind,
+      light: await lightConfigOf(projectId),
     }),
     updateSettings: async (patch: unknown, projectId?: string) => {
       const runtime = runtimeOf(projectId)
-      if (runtime === null) return { ok: false, error: '没有启用中的项目，无法修改运行参数' }
-      return runtime.configure(patch)
+      if (runtime !== null) return runtime.configure(patch)
+      // 项目没在跑（停用/未启动）：只放行轻量初筛配置 —— 它不依赖运行时，落库后项目启动即生效。
+      // 领取节奏/并发是循环参数，循环没起就无从改（与旧行为一致）。
+      const row = (typeof patch === 'object' && patch !== null && !Array.isArray(patch))
+        ? patch as Record<string, unknown>
+        : null
+      const keys = row === null ? [] : Object.keys(row)
+      if (row === null || !keys.includes('light') || keys.some(key => key !== 'light')) {
+        return { ok: false, error: '没有启用中的项目，无法修改运行参数' }
+      }
+      const saved = await storeFor(projectId).loadSettings().catch(() => null)
+      const base: RuntimeSettings = (saved !== null && typeof saved === 'object' ? saved : {
+        pollSeconds: config.pollSeconds,
+        maxConcurrent: config.maxConcurrent,
+        claimLimit: config.claimLimit,
+      }) as RuntimeSettings
+      const merged = mergeSettings(base, { light: row['light'] })
+      if ('error' in merged) return { ok: false, error: merged.error }
+      const persisted = await storeFor(projectId).saveSettings(merged.settings)
+      return { ok: true, persisted, settings: settingsView(merged.settings) }
     },
     /** 分析过程：某个任务对应的会话时间线（DSH 会话日志只读）。 */
     processEvents: async (taskId: string, projectId?: string, after?: number) => {
       const process = await storeFor(projectId).getProcess(taskId)
       if (process === null) return { ok: false, error: '没有这条分析过程' }
-      if (process.sessionId === '') return { ok: false, error: '这条过程没有起会话（复用/抑制跳过）' }
+      if (process.sessionId === '') return { ok: false, error: '这条过程没有起会话（复用/抑制/初筛关单）' }
       // 直接读会话日志（不依赖该项目当前是否在跑）：停用/换绑后历史过程也要能回看
       return readSessionTimeline(config.sessionDir, process.sessionId, {
         running: process.outcome === 'running',
@@ -703,6 +737,9 @@ function projectInputOf(body: unknown): ProjectInput & { previousId?: string } {
     mcpToken: String(row['mcpToken'] ?? row['mcp_token'] ?? '').trim(),
     pushToken: String(row['pushToken'] ?? row['push_token'] ?? '').trim(),
     enabled: row['enabled'] !== false,
+    // 模型/备用模型透传：DB 列早就有，此前控制台保存一直丢掉（项目上配的模型重启后被 upsert 清回）
+    ...(typeof row['model'] === 'string' ? { model: row['model'].trim() } : {}),
+    ...(typeof row['fallbackModel'] === 'string' ? { fallbackModel: row['fallbackModel'].trim() } : {}),
     ...(typeof row['workflowId'] === 'string' ? { workflowId: row['workflowId'] } : {}),
     ...(typeof row['previousId'] === 'string' ? { previousId: row['previousId'] } : {}),
   }

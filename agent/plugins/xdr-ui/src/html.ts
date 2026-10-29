@@ -356,6 +356,7 @@ ${THEME}
           <option value="done">已完成</option>
           <option value="reused">复用（未起会话）</option>
           <option value="suppressed">抑制跳过</option>
+          <option value="triaged">初筛关单（小模型）</option>
           <option value="deferred">已延后</option>
           <option value="failed">失败</option>
         </select>
@@ -595,6 +596,23 @@ ${THEME}
     </div>
     <div class="field"><label>引用工作流</label><select id="pj-workflow"></select></div>
     <label style="display:flex;align-items:center;gap:.4rem"><input id="pj-enabled" type="checkbox" checked> 启用（校验通过才会起领取循环）</label>
+    <div style="border-top:1px solid rgba(255,255,255,.08);padding-top:.55rem;display:flex;flex-direction:column;gap:.5rem">
+      <label style="display:flex;align-items:center;gap:.4rem">
+        <input id="lt-enabled" type="checkbox"> 轻量初筛（自建小模型粗筛：明显 benign/误报才关单，其余升级付费模型）
+      </label>
+      <div class="form-grid">
+        <div class="field"><label>推理服务地址（OpenAI 兼容，通常以 /v1 结尾）</label><input id="lt-url" placeholder="http://172.16.196.77:8080/v1"></div>
+        <div class="field"><label>模型名</label><input id="lt-model" placeholder="Qwen3.5-2B-Q4_K_M"></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>API Key（本地 llama.cpp 可留空）</label><input id="lt-key" maxlength="400"></div>
+        <div class="field"><label>置信阈值（低于它升级付费，0~1）</label><input id="lt-threshold" type="number" min="0" max="1" step="0.05"></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>适用任务种类（逗号分隔；hit/shift 等安全攸关的别加）</label><input id="lt-kinds" placeholder="novelty,observation"></div>
+        <div class="field"><label>抽检率（0~1：可关单任务里送付费复核的比例）</label><input id="lt-audit" type="number" min="0" max="1" step="0.05"></div>
+      </div>
+    </div>
     <div style="display:flex;gap:.6rem;justify-content:flex-end">
       <button id="pj-delete" class="btn ghost">删除</button>
       <button id="pj-verify" class="btn">立即复核</button>
@@ -838,7 +856,7 @@ ${THEME}
   }
   const outcomeLabel = o => ({
     running: '在跑', done: '已完成', reused: '复用', suppressed: '抑制跳过',
-    deferred: '已延后', failed: '失败',
+    triaged: '初筛关单', deferred: '已延后', failed: '失败',
   })[o] || (o || '—')
 
   async function loadProcesses() {
@@ -991,7 +1009,33 @@ ${THEME}
     document.getElementById('pj-workflow').innerHTML = '<option value="">（默认模版）</option>' +
       workflows.map(w => '<option value="' + esc(w.workflowId) + '"' +
         (p && p.workflowId === w.workflowId ? ' selected' : '') + '>' + esc(w.name) + '</option>').join('')
+    let light = null
+    if (p) {
+      try {
+        const s = await fetch(BASE + '/api/settings?project=' + encodeURIComponent(id)).then(r => r.json())
+        light = (s.settings && s.settings.light) || null
+      } catch { light = null }
+    }
+    fillLight(light)
     document.getElementById('pj-dialog').showModal()
+  }
+
+  /* 轻量初筛（低阶模型）：项目对话框里的配置块回显/取值 */
+  function fillLight(light) {
+    const l = light || { enabled: false, baseUrl: '', model: '', apiKey: '', threshold: 0.85, auditRate: 0.1, kinds: ['novelty', 'observation'] }
+    document.getElementById('lt-enabled').checked = l.enabled === true
+    document.getElementById('lt-url').value = l.baseUrl || ''
+    document.getElementById('lt-model').value = l.model || ''
+    document.getElementById('lt-key').value = l.apiKey || ''
+    document.getElementById('lt-threshold').value = (typeof l.threshold === 'number') ? l.threshold : 0.85
+    document.getElementById('lt-audit').value = (typeof l.auditRate === 'number') ? l.auditRate : 0.1
+    document.getElementById('lt-kinds').value = Array.isArray(l.kinds) ? l.kinds.join(',') : 'novelty,observation'
+  }
+
+  function ltNum(id, def) {
+    const raw = document.getElementById(id).value.trim()
+    const v = Number(raw)
+    return raw !== '' && isFinite(v) ? v : def
   }
 
   async function saveProject() {
@@ -1013,8 +1057,23 @@ ${THEME}
     })
     const data = await r.json().catch(() => ({}))
     if (!r.ok || data.ok === false) { toast(data.error || '保存失败'); return }
+    // 项目行保存成功后，轻量初筛配置走运行参数接口（存 settings JSONB，不加表列）
+    const light = {
+      enabled: document.getElementById('lt-enabled').checked,
+      baseUrl: document.getElementById('lt-url').value.trim(),
+      model: document.getElementById('lt-model').value.trim(),
+      apiKey: document.getElementById('lt-key').value.trim(),
+      threshold: ltNum('lt-threshold', 0.85),
+      auditRate: ltNum('lt-audit', 0.1),
+      kinds: document.getElementById('lt-kinds').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    }
+    const rs = await fetch(BASE + '/api/settings?project=' + encodeURIComponent(body.projectId), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ light }),
+    })
+    const rd = await rs.json().catch(() => ({}))
+    const lightError = (!rs.ok || rd.ok === false) ? (rd.error || '轻量初筛配置保存失败') : ''
     document.getElementById('pj-dialog').close()
-    toast('已保存')
+    toast(lightError ? ('项目已保存；轻量初筛配置未保存：' + lightError) : '已保存')
     await loadProjects()
   }
 

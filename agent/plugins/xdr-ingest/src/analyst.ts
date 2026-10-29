@@ -10,6 +10,7 @@
 import type { AgentsServiceLike } from './agent-port.ts'
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
+import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
@@ -101,6 +102,8 @@ export interface AnalystOptions {
   readonly process?: ProcessStore
   /** 结论留档（控制台「分析记录」的数据源）；不传 = 不留档。 */
   readonly conclusions?: ConclusionStore
+  /** 轻量初筛（低阶模型闸门）；不传 = 不做初筛，一切任务走付费会话。 */
+  readonly lightTriage?: LightTriagePort
   /** 当前项目（NDR 授权ID），写进结论留档；空串 = 未知项目。 */
   readonly projectId?: string
   /** 复用有效期（毫秒，从上次真实分析起算；0 = 关闭复用）。 */
@@ -133,6 +136,14 @@ export interface AnalystOutcome {
   readonly error?: string
   /** true = 没有起会话，直接复用了同类现象的既往结论。 */
   readonly reused?: boolean
+  /** true = 没有起会话，由轻量初筛（低阶模型）单轮判定关单。 */
+  readonly triaged?: boolean
+}
+
+/** 轻量初筛一次尝试的结果：要么关单成功，要么带回抽检预判（升级付费时留痕）。 */
+interface LightTriageAttempt {
+  readonly closed?: { verdict: string, confidence: number, summary: string, model: string, ms: number }
+  readonly audit?: { verdict: string, confidence: number, model: string }
 }
 
 let sessionCounter = 0
@@ -190,6 +201,32 @@ export class Analyst {
       await this.finishProcess(task, 'suppressed', startedAt, { note: '已被精准抑制（未起会话）' })
       return suppressed
     }
+
+    // 轻量初筛（低阶模型闸门）：复用/抑制都没命中才轮到它。它只有「排除权」——
+    // 只收得下通过全部硬约束的 benign/误报判定；拿不准/输出不合法/调用失败
+    // 一律返回空对象，落到下面的付费会话（fail-open：初筛是省钱手段，不是正确性前提）。
+    const triage = await this.tryLightTriage(task)
+    if (triage.closed !== undefined) {
+      const closed = triage.closed
+      await this.finishProcess(task, 'triaged', startedAt, {
+        verdict: closed.verdict,
+        note: `轻量初筛关单：${closed.verdict}（${closed.model} 置信度 ${closed.confidence}）`,
+        model: `light:${closed.model}`,
+      })
+      return {
+        taskId: task.id,
+        completed: true,
+        state: 'done',
+        deferred: false,
+        durationMs: Date.now() - startedAt,
+        triaged: true,
+      }
+    }
+    // 抽检样本：初筛本可关单，但被抽中送付费复核 —— 预判跟着会话走，事后可比对
+    const audit = triage.audit
+    const auditNote = audit === undefined
+      ? ''
+      : `抽检复核：初筛判 ${audit.verdict}（${audit.model} 置信度 ${audit.confidence}），已送付费复核`
 
     const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
     const selected = this.options.modelSelection?.()
@@ -274,7 +311,14 @@ export class Analyst {
     if (completed) {
       // 结论入库供下次复用；失败只告警，不要让一条已交回的任务看起来失败
       await this.remember(task, reply)
-      await this.archiveFromReply(task, reply)
+      await this.archiveFromReply(task, reply, audit)
+      if (audit !== undefined) {
+        // 抽检比对（校准初筛用）：两条判定摆在一起，控制台分析记录里也能看到 light_audit
+        console.log(
+          `[xdr-ingest] 任务 ${task.id} 抽检比对：初筛 ${audit.verdict}（${audit.model} 置信 ${audit.confidence}）`
+          + ` vs 付费 ${String(reply.results?.[0]?.verdict ?? '') || '(未回执)'}`,
+        )
+      }
     }
     let deferred = false
     if (!completed) {
@@ -295,11 +339,14 @@ export class Analyst {
       startedAt,
       {
         verdict: String(reply.results?.[0]?.verdict ?? ''),
-        note: completed
-          ? ''
-          : watch.budgetExceeded
-            ? '工具调用超过预算，已取消并延后'
-            : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
+        note: [
+          auditNote,
+          completed
+            ? ''
+            : watch.budgetExceeded
+              ? '工具调用超过预算，已取消并延后'
+              : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
+        ].filter(text => text !== '').join('；'),
       },
     )
     // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型
@@ -466,12 +513,94 @@ export class Analyst {
     }
   }
 
+  /**
+   * 轻量初筛：低阶模型单轮判定（无工具、无会话），只收通过全部硬约束的判定。
+   *
+   * 与复用/抑制同一套哲学：交回失败、输出不合法、置信不够、被抽中复核 ——
+   * 一律返回空对象落回付费会话。唯一不能做的是"没交回成功却当完成"。
+   * 初筛结论**不写复用库**：防止小模型的结论被后续同类任务悄悄放大。
+   */
+  private async tryLightTriage(task: ClaimedTask): Promise<LightTriageAttempt> {
+    const port = this.options.lightTriage
+    if (port === undefined) return {}
+    let result: TriageResult
+    try {
+      result = await port.triage(task)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[xdr-ingest] 轻量初筛异常（任务 ${task.id}）：${message.slice(0, 240)}；改为付费分析`)
+      return {}
+    }
+    if (result.kind === 'escalate') {
+      if (result.reason === 'audit_sample' && result.preview !== undefined) {
+        console.log(
+          `[xdr-ingest] 任务 ${task.id} 命中初筛抽检：初筛判 ${result.preview.verdict}`
+          + `（${result.preview.model} 置信 ${result.preview.confidence}），仍送付费复核`,
+        )
+        return { audit: result.preview }
+      }
+      return {}
+    }
+    const payload = {
+      verdict: result.verdict,
+      summary: `〔轻量初筛 ${result.model} · 置信度 ${result.confidence}〕${result.summary}`,
+      confidence: result.confidence,
+      findings: {
+        triaged_by: 'light',
+        light_model: result.model,
+        light_confidence: result.confidence,
+      },
+      terminal_reason: 'concluded',
+      // 没有真的取证：成本如实记 0，证据引用留空
+      tools_used: 0,
+      duration_ms: result.ms,
+    }
+    try {
+      const reply = await this.options.ndr.completeTask(task.id, payload)
+      if (typeof reply.error === 'string' && reply.error !== '') {
+        console.warn(`[xdr-ingest] 初筛交回失败（任务 ${task.id}）：${reply.error.slice(0, 240)}；改为付费分析`)
+        return {}
+      }
+      const state = String(reply.task_state ?? reply.state ?? '')
+      if (reply.ok !== true && state !== 'done') return {}
+      if (state !== '' && state !== 'done') return {}
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[xdr-ingest] 初筛交回异常（任务 ${task.id}）：${message.slice(0, 240)}；改为付费分析`)
+      return {}
+    }
+    console.log(
+      `[xdr-ingest] 任务 ${task.id} 轻量初筛关单（${result.verdict} · ${result.model} 置信 ${result.confidence}），未起会话`,
+    )
+    await this.archiveConclusion(task, {
+      verdict: result.verdict,
+      confidence: result.confidence,
+      summary: payload.summary,
+      findings: payload.findings,
+      evidenceRefs: [],
+      toolsUsed: 0,
+      durationMs: result.ms,
+      terminalReason: 'concluded',
+      reused: false,
+      reusedFrom: '',
+    })
+    return {
+      closed: {
+        verdict: result.verdict,
+        confidence: result.confidence,
+        summary: result.summary,
+        model: result.model,
+        ms: result.ms,
+      },
+    }
+  }
+
   /** 过程索引收尾（控制台「分析过程」页的数据来源）。 */
   private async finishProcess(
     task: ClaimedTask,
-    outcome: 'running' | 'done' | 'reused' | 'suppressed' | 'deferred' | 'failed',
+    outcome: 'running' | 'done' | 'reused' | 'suppressed' | 'triaged' | 'deferred' | 'failed',
     startedAt: number,
-    extra: { toolsUsed?: number; verdict?: string; note?: string } = {},
+    extra: { toolsUsed?: number; verdict?: string; note?: string; model?: string } = {},
   ): Promise<void> {
     const store = this.options.process
     if (store === undefined) return
@@ -484,6 +613,7 @@ export class Analyst {
         ...(extra.toolsUsed === undefined ? {} : { toolsUsed: extra.toolsUsed }),
         ...(extra.verdict === undefined ? {} : { verdict: extra.verdict }),
         ...(extra.note === undefined ? {} : { note: extra.note }),
+        ...(extra.model === undefined ? {} : { model: extra.model }),
       })
     } catch (error) {
       console.warn(
@@ -549,15 +679,25 @@ export class Analyst {
   }
 
   /** 从 `task_state` 的回执留档（正常分析路径）。 */
-  private async archiveFromReply(task: ClaimedTask, reply: TaskStateReply): Promise<void> {
+  private async archiveFromReply(
+    task: ClaimedTask,
+    reply: TaskStateReply,
+    audit?: { readonly verdict: string, readonly confidence: number, readonly model: string },
+  ): Promise<void> {
     const latest = reply.results?.[0]
     if (latest === undefined) return
+    // 抽检样本：把初筛预判并进 findings（light_audit），控制台分析记录里能直接比对两条判定
+    const base = (typeof latest.findings === 'object' && latest.findings !== null && !Array.isArray(latest.findings))
+      ? latest.findings as Record<string, unknown>
+      : {}
     await this.archiveConclusion(task, {
       ...(typeof reply.result_id === 'string' && reply.result_id !== '' ? { id: reply.result_id } : {}),
       verdict: String(latest.verdict ?? ''),
       confidence: Number.isFinite(latest.confidence) ? Number(latest.confidence) : 0,
       summary: String(latest.summary ?? ''),
-      findings: latest.findings ?? {},
+      findings: audit === undefined
+        ? (latest.findings ?? {})
+        : { ...base, light_audit: { verdict: audit.verdict, confidence: audit.confidence, model: audit.model } },
       evidenceRefs: Array.isArray(latest.evidence_refs) ? latest.evidence_refs : [],
       toolsUsed: Number(latest.tools_used ?? 0),
       durationMs: Number(latest.duration_ms ?? 0),

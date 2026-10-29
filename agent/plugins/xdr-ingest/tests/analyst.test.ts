@@ -13,6 +13,7 @@ import { Analyst } from '../src/analyst.ts'
 import type { AgentCreateOptions, AgentHandleLike, AgentsServiceLike } from '../src/agent-port.ts'
 import type { ClaimedTask } from '../src/claim-loop.ts'
 import type { NdrTaskPort, ReusePayload, TaskStateReply } from '../src/analyst.ts'
+import type { LightTriagePort, TriageResult } from '../src/light-triage.ts'
 import { MemoryStateStore } from '../src/state-store.ts'
 import { taskResultKey } from '../src/task-results.ts'
 
@@ -471,4 +472,149 @@ test('复用命中：过程 reused、结论留档标 reused 与来源任务', as
   assert.equal(conclusion?.reused, true)
   assert.equal(conclusion?.reusedFrom, 'task-old')
   assert.ok(page.total >= 0)
+})
+
+/* ---------------- 轻量初筛闸门（低阶模型） ---------------- */
+
+function stubTriage(results: TriageResult[]): { port: LightTriagePort, calls: ClaimedTask[] } {
+  const queue = [...results]
+  const calls: ClaimedTask[] = []
+  return {
+    calls,
+    port: {
+      async triage(t: ClaimedTask): Promise<TriageResult> {
+        calls.push(t)
+        return queue.shift() ?? { kind: 'escalate', reason: 'disabled', ms: 0 }
+      },
+    },
+  }
+}
+
+test('初筛关单：不起会话、直接交回、过程 triaged、结论不写复用库', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore('PROJ1')
+  const triage = stubTriage([{
+    kind: 'closed', verdict: 'false_positive', confidence: 0.93,
+    summary: '组播保留地址误报', model: 'qwen-2b', ms: 1200,
+  }])
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 3_600_000,
+    process: store,
+    conclusions: store,
+    projectId: 'PROJ1',
+    lightTriage: triage.port,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-light' })
+  assert.equal(outcome.completed, true)
+  assert.equal(outcome.triaged, true)
+  assert.equal(triage.calls.length, 1)
+  assert.equal(rec.prompts.length, 0, '初筛关单不该起付费会话')
+  assert.equal(rec.completed.length, 1)
+  assert.match(rec.completed[0]?.summary ?? '', /轻量初筛/u)
+  assert.equal(rec.completed[0]?.findings['triaged_by'], 'light')
+  assert.equal(rec.completed[0]?.tools_used, 0, '没取证就如实记 0')
+  const proc = await store.getProcess('task-light')
+  assert.equal(proc?.outcome, 'triaged')
+  assert.equal(proc?.model, 'light:qwen-2b')
+  assert.equal(proc?.verdict, 'false_positive')
+  const conclusion = await store.getConclusion('PROJ1:task-light')
+  assert.equal((conclusion?.findings as Record<string, unknown>)['triaged_by'], 'light')
+  // 初筛结论不写复用库：同类第二条必须重新分析，而不是"复用"初筛那条
+  const second = await analyst.run({ ...task, id: 'task-light-2' })
+  assert.equal(second.reused, undefined, '初筛结论绝不写复用库（防小模型结论被放大）')
+})
+
+test('初筛拿不准/升级 → 照常起付费会话（fail-open）', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore('PROJ1')
+  const triage = stubTriage([{
+    kind: 'escalate', reason: 'uncertain', ms: 40,
+    preview: { verdict: 'inconclusive', confidence: 0.4, model: 'qwen-2b' },
+  }])
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    process: store,
+    projectId: 'PROJ1',
+    lightTriage: triage.port,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-escalate' })
+  assert.equal(outcome.triaged, undefined)
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.prompts.length, 1, '初筛不收就必须升级付费会话')
+})
+
+test('初筛交回失败 → 回退付费会话（不许当完成）', async () => {
+  const rec = recorder()
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() { return { state: 'claimed' } },
+    async completeTask() { return { ok: false, error: '交回失败' } },
+    async deferTask(id, reason) { rec.deferred.push({ id, reason }) },
+  }
+  const triage = stubTriage([{
+    kind: 'closed', verdict: 'benign', confidence: 0.9,
+    summary: '看着正常', model: 'qwen-2b', ms: 900,
+  }])
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr,
+    timeoutMs: 1000,
+    lightTriage: triage.port,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-failopen' })
+  assert.equal(outcome.completed, false)
+  assert.equal(outcome.deferred, true)
+  assert.equal(rec.prompts.length, 1, '交回没成功就必须落回付费会话')
+})
+
+test('初筛抽检：仍走付费复核，结论带 light_audit、过程留痕', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore('PROJ1')
+  const triage = stubTriage([{
+    kind: 'escalate', reason: 'audit_sample', ms: 800,
+    preview: { verdict: 'benign', confidence: 0.92, model: 'qwen-2b' },
+  }])
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() {
+      return {
+        state: 'done',
+        result_id: 'res-9',
+        results: [{ verdict: 'suspicious', terminal_reason: 'concluded', confidence: 0.8, summary: '付费结论：可疑' }],
+      }
+    },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask() {},
+  }
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr,
+    timeoutMs: 1000,
+    process: store,
+    conclusions: store,
+    projectId: 'PROJ1',
+    lightTriage: triage.port,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-audit' })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.prompts.length, 1, '抽检样本必须真送付费复核')
+  const conclusion = await store.getConclusion('res-9')
+  const findings = conclusion?.findings as Record<string, unknown>
+  const audit = findings['light_audit'] as { verdict: string, confidence: number, model: string }
+  assert.equal(audit.verdict, 'benign')
+  assert.equal(audit.confidence, 0.92)
+  assert.equal(conclusion?.verdict, 'suspicious', '最终判定仍以付费模型为准')
+  const proc = await store.getProcess('task-audit')
+  assert.match(proc?.note ?? '', /抽检复核/u)
+  assert.match(proc?.note ?? '', /初筛判 benign/u)
 })

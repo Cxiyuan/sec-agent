@@ -1034,9 +1034,11 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     try {
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
-           (project_id, task_id, started_at, ended_at, outcome, tools_used, duration_ms, verdict, note)
-         VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8)
+           (project_id, task_id, model, started_at, ended_at, outcome, tools_used, duration_ms, verdict, note)
+         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
+           model = CASE WHEN EXCLUDED.model = '' THEN xdr_ingest_process.model
+                        ELSE EXCLUDED.model END,
            ended_at = EXCLUDED.ended_at,
            outcome = EXCLUDED.outcome,
            tools_used = EXCLUDED.tools_used,
@@ -1044,7 +1046,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            verdict = EXCLUDED.verdict,
            note = EXCLUDED.note`,
         [
-          this.projectId, finish.taskId, finish.endedAt, finish.outcome,
+          this.projectId, finish.taskId, finish.model ?? '', finish.endedAt, finish.outcome,
           finish.toolsUsed ?? 0, finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
         ],
       )

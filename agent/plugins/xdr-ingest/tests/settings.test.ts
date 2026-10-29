@@ -3,7 +3,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { MemoryColdStore } from '../src/store.ts'
-import { mergeSettings, SETTING_LIMITS, settingsView } from '../src/settings.ts'
+import { DEFAULT_LIGHT_TRIAGE, mergeSettings, SETTING_LIMITS, settingsView } from '../src/settings.ts'
 import type { RuntimeSettings } from '../src/settings.ts'
 
 const CURRENT: RuntimeSettings = { pollSeconds: 900, maxConcurrent: 2, claimLimit: 2 }
@@ -42,7 +42,72 @@ test('mergeSettings：空补丁等于原样返回', () => {
 })
 
 test('settingsView：拍成工作台用的下划线字段', () => {
-  assert.deepEqual(settingsView(CURRENT), { poll_seconds: 900, max_concurrent: 2, claim_limit: 2 })
+  assert.deepEqual(settingsView(CURRENT), { poll_seconds: 900, max_concurrent: 2, claim_limit: 2, light_enabled: 0 })
+})
+
+/* ---------- 轻量初筛（低阶模型）配置 ---------- */
+
+test('mergeSettings.light：补丁只带部分字段时先合并当前值再校验（不冲掉端点/模型）', () => {
+  const merged = mergeSettings(CURRENT, {
+    light: {
+      enabled: true,
+      baseUrl: 'http://172.16.196.77:8080/v1',
+      model: 'Qwen3.5-2B-Q4_K_M',
+      threshold: 0.9,
+    },
+  })
+  assert.ok('settings' in merged)
+  assert.equal(merged.settings.light?.enabled, true)
+  assert.equal(merged.settings.light?.threshold, 0.9)
+  assert.equal(merged.settings.light?.auditRate, DEFAULT_LIGHT_TRIAGE.auditRate, '没传的字段保留默认')
+
+  // 只改阈值：端点/模型不动
+  const again = mergeSettings(merged.settings, { light: { threshold: 0.7 } })
+  assert.ok('settings' in again)
+  assert.equal(again.settings.light?.threshold, 0.7)
+  assert.equal(again.settings.light?.baseUrl, 'http://172.16.196.77:8080/v1')
+  assert.equal(again.settings.light?.model, 'Qwen3.5-2B-Q4_K_M')
+})
+
+test('mergeSettings.light：启用必须有地址和模型（缺了等于每条任务都白白升级付费）', () => {
+  const off = mergeSettings(CURRENT, { light: { enabled: false } })
+  assert.ok('settings' in off)
+  assert.equal(off.settings.light?.enabled, false)
+
+  for (const patch of [
+    { light: { enabled: true } },
+    { light: { enabled: true, baseUrl: 'http://x:8080/v1' } },
+  ]) {
+    const merged = mergeSettings(CURRENT, patch)
+    assert.ok('error' in merged, JSON.stringify(patch))
+  }
+})
+
+test('mergeSettings.light：阈值/抽检率越界、地址不是 URL、种类名非法都报错', () => {
+  const base = { enabled: false, baseUrl: 'http://x:8080/v1', model: 'm' }
+  for (const light of [
+    { ...base, threshold: 1.2 },
+    { ...base, threshold: -0.1 },
+    { ...base, auditRate: 2 },
+    { ...base, baseUrl: 'ftp://x/v1' },
+    { ...base, baseUrl: '不是地址' },
+    { ...base, kinds: ['novelty', 'BAD KIND!'] },
+    { ...base, kinds: 'novelty' },
+    { ...base, timeoutMs: 5 },
+    { ...base, enabled: 'yes' },
+  ]) {
+    const merged = mergeSettings(CURRENT, { light })
+    assert.ok('error' in merged, `应当报错：${JSON.stringify(light)}`)
+    assert.ok(typeof merged.error === 'string' && merged.error !== '')
+  }
+})
+
+test('settingsView：初筛开关反映在 light_enabled', () => {
+  const merged = mergeSettings(CURRENT, {
+    light: { enabled: true, baseUrl: 'http://x:8080/v1', model: 'm' },
+  })
+  assert.ok('settings' in merged)
+  assert.equal(settingsView(merged.settings).light_enabled, 1)
 })
 
 test('内存冷库保存运行参数：返回副本，读回不受后续修改影响', async () => {

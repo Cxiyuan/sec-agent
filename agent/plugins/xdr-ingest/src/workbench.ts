@@ -118,8 +118,8 @@ export interface XdrIngestService {
   removeScript(nameOrId: string, projectId?: string): Promise<boolean>
 
   /**
-   * 当前生效的运行参数：`{poll_seconds, max_concurrent, claim_limit, store}`。
-   * 工作台配置页与 status 读同一份（可能已被工作台改过）。
+   * 当前生效的运行参数：`{poll_seconds, max_concurrent, claim_limit, light_enabled, store, light}`。
+   * 工作台配置页与 status 读同一份（可能已被工作台改过）；`light` 是轻量初筛（低阶模型）配置。
    */
   settings(projectId?: string): Promise<Record<string, unknown>>
 

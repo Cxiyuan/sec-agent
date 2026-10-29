@@ -129,8 +129,13 @@ export interface WorkflowStore {
 export type DataStore = TaskResultStore & ScriptStore & TaskSeenStore & ConclusionStore
   & SettingsStore & ProcessStore & WorkflowStore
 
-/** 一次分析的结局。`running` 表示还没结束（控制台可实时看当前工具调用）。 */
-export type ProcessOutcome = 'running' | 'done' | 'reused' | 'suppressed' | 'deferred' | 'failed'
+/**
+ * 一次分析的结局。`running` 表示还没结束（控制台可实时看当前工具调用）。
+ *
+ * `triaged` = 轻量初筛关单（低阶模型单轮判定，没起会话）——与 `reused`/`suppressed`
+ * 一样是「未起会话」的一类，但它是**本次真的做了判定**，控制台要能单独筛出来统计。
+ */
+export type ProcessOutcome = 'running' | 'done' | 'reused' | 'suppressed' | 'triaged' | 'deferred' | 'failed'
 
 /** 过程索引的一行。 */
 export interface ProcessRecord {
@@ -165,7 +170,7 @@ export interface ProcessStart {
   readonly workflowStages?: readonly WorkflowStage[]
 }
 
-/** 收尾（不起会话的复用/抑制跳过也走这里，`sessionId` 为空）。 */
+/** 收尾（不起会话的复用/抑制/初筛关单也走这里，`sessionId` 为空）。 */
 export interface ProcessFinish {
   readonly taskId: string
   readonly endedAt: string
@@ -174,6 +179,8 @@ export interface ProcessFinish {
   readonly durationMs?: number
   readonly verdict?: string
   readonly note?: string
+  /** 没起会话却有「模型」的过程（初筛）：补记 `light:<模型名>`；空/缺省 = 不动已有值。 */
+  readonly model?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -598,10 +605,10 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       sessionId: previous?.sessionId ?? '',
       kind: previous?.kind ?? '',
       subject: previous?.subject ?? '',
-      model: previous?.model ?? '',
       startedAt: previous?.startedAt ?? finish.endedAt,
       endedAt: finish.endedAt,
       outcome: finish.outcome,
+      model: finish.model !== undefined && finish.model !== '' ? finish.model : (previous?.model ?? ''),
       toolsUsed: finish.toolsUsed ?? previous?.toolsUsed ?? 0,
       durationMs: finish.durationMs ?? previous?.durationMs ?? 0,
       verdict: finish.verdict ?? previous?.verdict ?? '',

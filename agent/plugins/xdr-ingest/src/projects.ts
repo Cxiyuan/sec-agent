@@ -16,13 +16,14 @@ import { ConcurrencyGate, FailureBreaker, isTransientFailure } from './breaker.t
 import { sendAlert } from './notify.ts'
 import { Analyst } from './analyst.ts'
 import { ClaimLoop } from './claim-loop.ts'
+import { LightTriage } from './light-triage.ts'
 import { identityOfMatch } from './task-results.ts'
 import { McpHttpClient } from './mcp-http.ts'
 import { NdrTaskPortAdapter } from './ndr-port.ts'
-import { mergeSettings, settingsView } from './settings.ts'
+import { DEFAULT_LIGHT_TRIAGE, mergeSettings, settingsView } from './settings.ts'
 import { readSessionTimeline } from './session-timeline.ts'
 import type { SessionTimeline } from './session-timeline.ts'
-import type { RuntimeSettings } from './settings.ts'
+import type { LightTriageConfig, RuntimeSettings } from './settings.ts'
 import type {
   DataStore,
   ProjectInput,
@@ -189,6 +190,9 @@ export class ProjectRuntime {
   private client: McpHttpClient | null = null
   private ndr: NdrTaskPortAdapter | null = null
   private analyst: Analyst | null = null
+  /** 轻量初筛（低阶模型闸门）：配置每任务现取，控制台改了下一个任务就生效。 */
+  private lightTriage: LightTriage | null = null
+  private light: LightTriageConfig = DEFAULT_LIGHT_TRIAGE
   private loop: ClaimLoop | null = null
   private syncSuppressions: (() => Promise<void>) | null = null
   private workflowRecord: WorkflowRecord | null = null
@@ -224,11 +228,17 @@ export class ProjectRuntime {
 
   /** 当前生效的运行参数（领取循环可就地改）。 */
   settings(): RuntimeSettings {
-    return this.loop?.settingsSnapshot() ?? {
+    const base = this.loop?.settingsSnapshot() ?? {
       pollSeconds: this.config.pollSeconds,
       maxConcurrent: this.config.maxConcurrent,
       claimLimit: this.config.claimLimit,
     }
+    return { ...base, light: this.light }
+  }
+
+  /** 轻量初筛配置快照（控制台回显/status 用）。 */
+  lightSettings(): LightTriageConfig {
+    return { ...this.light, kinds: [...this.light.kinds] }
   }
 
   /** 只有「校验通过 + 循环在跑」才算 enabled；控制台据此显示"分析中"。 */
@@ -274,6 +284,9 @@ export class ProjectRuntime {
     // 每项目模型：`provider/model`；空则回落到全局配置（三处兜底：项目 → 配置 → DSH 默认）
     const [modelProvider, modelName] = splitModel(this.record.model)
     const [fallbackProvider, fallbackName] = splitModel(this.record.fallbackModel)
+    // 初筛器只建一次：配置经 getter 现取（改配置不用重启、不用换实例），
+    // 熔断状态也因此跨任务保留。
+    this.lightTriage = new LightTriage({ config: () => this.light })
     const analyst = new Analyst({
       agents: this.agents,
       ndr: this.ndr,
@@ -290,6 +303,7 @@ export class ProjectRuntime {
       taskSeen: this.store,
       process: this.store,
       conclusions: this.store,
+      lightTriage: this.lightTriage,
       projectId: this.projectId,
       // 每次起会话都取当前绑定：控制台换模版后下一个任务立刻生效（不用重启）
       workflow: () => this.workflowRecord,
@@ -384,6 +398,7 @@ export class ProjectRuntime {
         console.warn(`[xdr-ingest] ${this.projectId} 已保存的运行参数不合法，忽略：`, merged.error)
       } else {
         loop.configure(merged.settings)
+        this.light = merged.settings.light ?? DEFAULT_LIGHT_TRIAGE
       }
     }
     loop.start()
@@ -401,6 +416,7 @@ export class ProjectRuntime {
     this.loop?.stop()
     this.loop = null
     this.analyst = null
+    this.lightTriage = null
     this.syncSuppressions = null
     this.ndr = null
     this.client = null
@@ -431,16 +447,24 @@ export class ProjectRuntime {
     this.loop?.wake()
   }
 
-  /** 运行参数：就地改循环 + 按项目落库。 */
-  async configure(patch: unknown): Promise<{ ok: boolean, error?: string, persisted?: boolean, settings?: Record<string, number> }> {
+  /** 运行参数：就地改循环 + 按项目落库（含轻量初筛配置，同样热生效）。 */
+  async configure(patch: unknown): Promise<{
+    ok: boolean
+    error?: string
+    persisted?: boolean
+    settings?: Record<string, number>
+    light?: LightTriageConfig
+  }> {
     const merged = mergeSettings(this.settings(), patch)
     if ('error' in merged) return { ok: false, error: merged.error }
     this.loop?.configure(merged.settings)
+    // LightTriage 的 getter 每任务现取 this.light：改配置不用重启、不用换实例
+    this.light = merged.settings.light ?? DEFAULT_LIGHT_TRIAGE
     const persisted = await this.store.saveSettings(merged.settings)
     if (!persisted) {
       console.warn(`[xdr-ingest] ${this.projectId} 运行参数只在内存生效：写入失败，重启后会回到上次成功保存的值。`)
     }
-    return { ok: true, persisted, settings: settingsView(merged.settings) }
+    return { ok: true, persisted, settings: settingsView(merged.settings), light: this.light }
   }
 
   status(): Record<string, unknown> {
@@ -457,6 +481,15 @@ export class ProjectRuntime {
       model: this.record.model,
       breaker: this.breaker.state(),
       ...settingsView(this.settings()),
+      light_triage: {
+        enabled: this.light.enabled,
+        model: this.light.model,
+        endpoint: this.light.baseUrl,
+        threshold: this.light.threshold,
+        audit_rate: this.light.auditRate,
+        kinds: [...this.light.kinds],
+        ...(this.lightTriage === null ? {} : { stats: this.lightTriage.stats() }),
+      },
       ...(this.analyst === null ? {} : { task_reuse: this.analyst.reuseStats }),
       ...(this.loop === null ? {} : { loop: this.loop.stats }),
     }
@@ -611,6 +644,10 @@ export class ProjectManager {
       mcpToken: input.mcpToken.trim(),
       pushToken: input.pushToken.trim(),
       enabled: input.enabled ?? existing?.enabled ?? true,
+      // 模型/备用模型：DB 列与 ProjectInput 早就有，但控制台保存一直没透传（缺口顺手补上）。
+      // 注意 upsert 的语义是「空串保留原值」，所以清空只能到库里改。
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.fallbackModel !== undefined ? { fallbackModel: input.fallbackModel } : {}),
     })
     if (project === null) return { ok: false, error: '保存项目失败（数据库不可用）' }
     if (previous !== projectId) {
