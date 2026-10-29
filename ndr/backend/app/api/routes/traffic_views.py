@@ -612,6 +612,7 @@ def traffic_ips(
     view: str = Query(default="outbound"),
     minutes: int = Query(default=60, ge=1, le=60 * 24 * 30),
     limit: int = Query(default=100, ge=1, le=300),
+    source: str = Query(default="public"),
 ) -> dict[str, Any]:
     """按 IP 出三个视角的流量明细（对外业务 / 横向 / 外连）。
 
@@ -619,11 +620,17 @@ def traffic_ips(
     旧的两段式（按流量取 TOP-N 主语 + composite 对聚合）会把"被扫一枪的小流量资产"
     和"第 5000 条之后的资产"悄悄丢掉（实测 1 小时 13 台只显示 8 台、24 小时 40 台只剩 1 台）。
 
+    `source` 只作用于对外业务（2026-10 方案 1）：`public`=仅公网来源（默认，口径不变），
+    `all`=全部来源（内网/未监控网段访问资产也算，回答"到底谁在访问我的资产"）。
+    横向/外连无视此参数。
+
     横向/外连仍是两段式（内网主语太多，必须按流量抽样），但 composite **会翻页**，
     并在 `truncated=true` 时明确告诉界面"这还不是全部"。
     """
     if view not in VIEWS:
         view = "outbound"
+    if source not in ("public", "all"):
+        source = "public"
     # 窗口越大越要收着查（7 天/30 天把 ES 打超时过：2026-10 实测 ConnectionTimeout）
     if minutes <= 120:
         candidate_size, pair_size = min(1500, max(limit * 3, 300)), 8000
@@ -643,33 +650,38 @@ def traffic_ips(
                 request_timeout=120,
             )
             aggs = (peers_resp.get("aggregations") or {})
+            # source=all：不过滤公网，内网/未监控网段访问资产的来源也全算（回答"谁在访问我的资产"）
             peers = [
                 str(b.get("key"))
                 for b in ((aggs.get("src") or {}).get("buckets") or [])
-                if b.get("key") and is_public_ip(str(b.get("key")))
+                if b.get("key") and (source == "all" or is_public_ip(str(b.get("key"))))
             ]
             real_peers = [
                 str(b.get("key"))
                 for b in ((aggs.get("real") or {}).get("buckets") or [])
-                if b.get("key") and is_public_ip(str(b.get("key")))
+                if b.get("key") and (source == "all" or is_public_ip(str(b.get("key"))))
             ]
             # terms 聚合只返回出现最多的 2 万个源 IP；更长窗口里"只出现一次"的公网源
-            # 可能被截断（sum_other_doc_count > 0）——这时如实标 truncated，不假装完整
+            # 可能被截断（sum_other_doc_count > 0）——这时如实标 truncated，不假装完整。
+            # 第二段的 terms 过滤器还会把来源截到 5 千个，超出同样如实标。
             peers_truncated = bool(
                 (aggs.get("src") or {}).get("sum_other_doc_count")
                 or (aggs.get("real") or {}).get("sum_other_doc_count")
+                or len(peers) > 5000
+                or len(real_peers) > 5000
             )
             if not peers and not real_peers:
                 return {
                     "items": [],
                     "view": view,
+                    "source": source,
                     "minutes": minutes,
                     "scanned_pairs": 0,
                     "kept_pairs": 0,
                     "filtered_out": 0,
                     "truncated": False,
                     "warning": "",
-                    "note": "窗口内没有公网来源的访问",
+                    "note": "窗口内没有公网来源的访问" if source == "public" else "窗口内没有访问记录",
                     # 字段形状与正常返回一致：前端不用做"空结果是另一套结构"的兼容
                     "geo_available": _geo_available(),
                     "monitored_nets": [str(n) for n in _nets()],
@@ -691,7 +703,7 @@ def traffic_ips(
         out["truncated"] = bool(out.get("truncated")) or peers_truncated
         if peers_truncated and not out.get("note"):
             out["note"] = "窗口内有大量只出现一次的来源地址，统计可能不完整（缩小时间范围可看全）"
-        out.update({"view": view, "warning": shard_problem(resp)})
+        out.update({"view": view, "source": source, "warning": shard_problem(resp)})
         return out
 
     # ---------- 横向 / 外连：按流量取 TOP-N 主语 → 对聚合（翻页，标明截断） ----------

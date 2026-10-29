@@ -88,6 +88,8 @@ interface IpResult {
   geo_available?: boolean;
   note?: string;
   minutes?: number;
+  /** 对外业务的来源范围口径：public=仅公网（默认）/ all=全部来源 */
+  source?: string;
   monitored_nets?: string[];
 }
 
@@ -152,6 +154,8 @@ export function TrafficPanel({ view }: { view: View }) {
   useAliases();
   const [minutes, setMinutes] = React.useState(60);
   const [limit, setLimit] = React.useState(100);
+  // 对外业务的来源范围（方案 1）：public=仅公网（默认口径），all=全部来源（含内网/未监控网段）
+  const [source, setSource] = React.useState<"public" | "all">("public");
   const [data, setData] = React.useState<IpResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [peers, setPeers] = React.useState<PeersResult | null>(null);
@@ -168,7 +172,7 @@ export function TrafficPanel({ view }: { view: View }) {
   const load = React.useCallback(async () => {
     setLoading(true);
     const res = await apiFetch<IpResult>(
-      `/api/traffic/ips?view=${view}&minutes=${minutes}&limit=${limit}`,
+      `/api/traffic/ips?view=${view}&minutes=${minutes}&limit=${limit}&source=${source}`,
     ).catch(() => null);
     setLoading(false);
     if (res) {
@@ -178,7 +182,7 @@ export function TrafficPanel({ view }: { view: View }) {
       errs.fail(SRC.ips);
       setData(null);
     }
-  }, [errs, limit, minutes, SRC.ips, view]);
+  }, [errs, limit, minutes, SRC.ips, source, view]);
 
   React.useEffect(() => {
     void load();
@@ -409,7 +413,7 @@ export function TrafficPanel({ view }: { view: View }) {
             {meta.title}
           </span>
         }
-        description={`${meta.subject} ←→ ${meta.peer}`}
+        description={`${meta.subject} ←→ ${view === "outbound" && source === "all" ? "全部访问来源（含内网）" : meta.peer}`}
         help="按 IP 统计的流量排行"
         extra={
           <div className="flex flex-wrap items-center gap-2">
@@ -443,6 +447,19 @@ export function TrafficPanel({ view }: { view: View }) {
                 ))}
               </select>
             </label>
+            {view === "outbound" ? (
+              <label className="text-xs text-muted-foreground">
+                来源范围
+                <select
+                  value={source}
+                  onChange={(e) => setSource(e.target.value === "all" ? "all" : "public")}
+                  className="ml-1 h-8 rounded-sm border border-input bg-surface-2 px-2 text-13 text-foreground"
+                >
+                  <option value="public">仅公网来源</option>
+                  <option value="all">全部来源（含内网）</option>
+                </select>
+              </label>
+            ) : null}
             <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
               {loading ? "加载中…" : "刷新"}
             </Button>
