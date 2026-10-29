@@ -21,6 +21,11 @@ export interface PromptTask {
   readonly hint?: unknown
   readonly coalesced?: number
   readonly attempts?: number
+  /** C2：NDR 下发的主体/方向/对端（老版本缺失 → 从 hint 里取或自己判） */
+  readonly direction?: string
+  readonly principal_asset?: string
+  readonly affected_assets?: readonly { readonly kind?: string; readonly value?: string }[]
+  readonly peers?: readonly string[]
 }
 
 import type { WorkflowRecord } from './state-store.ts'
@@ -31,6 +36,10 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     kind: task.kind,
     subject_kind: task.subject_kind,
     subject: task.subject,
+    principal_asset: task.principal_asset ?? null,
+    direction: task.direction ?? null,
+    affected_assets: task.affected_assets ?? null,
+    peers: task.peers ?? null,
     feature: task.feature ?? null,
     objective_strength: task.strength,
     priority: task.priority ?? null,

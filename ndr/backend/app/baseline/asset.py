@@ -302,6 +302,8 @@ JUDGE_FEATURES: tuple[str, ...] = (
 
 #: 单资产每小时偏差计数的进程内账本：`asset -> (小时桶, 已报次数)`
 _dev_budget: dict[str, tuple[int, int]] = {}
+#: 账本当前小时桶（跨小时清理用）
+_dev_budget_hour: list[int] = [0]
 
 
 def _allow_deviation(asset: str, now: datetime) -> bool:
@@ -314,6 +316,12 @@ def _allow_deviation(asset: str, now: datetime) -> bool:
     if cap <= 0:
         return True
     hour = int(now.timestamp() // 3600)
+    # 账本按小时自愈：跨小时且条目过多时丢掉上一小时的（常驻进程不能无界增长）
+    if hour != _dev_budget_hour[0]:
+        _dev_budget_hour[0] = hour
+        if len(_dev_budget) > 5000:
+            for key in [k for k, (bucket, _) in _dev_budget.items() if bucket != hour]:
+                _dev_budget.pop(key, None)
     bucket, used = _dev_budget.get(asset, (hour, 0))
     if bucket != hour:
         bucket, used = hour, 0

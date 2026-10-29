@@ -617,7 +617,10 @@ def enqueue_observations(client: Any) -> int:
     made = 0
     enqueued_ids: list[str] = []
     for row in rows:
-        subject_kind = "account" if str(row.subject_kind) == "account" else "ip"
+        # 主体类型保留原样（asset_shift 的 subject 是站点、profile_anomaly 可能是会话）；
+        # 一律写成 ip 会让 agent 把「会话标识」当 IP、把资产当发起方（C2 口径）
+        raw_kind = str(row.subject_kind or "")
+        subject_kind = raw_kind if raw_kind in ("asset", "account", "session") else "ip"
         # 规则命中只作为**附加证据**：默认不再单独派工，但对象被事实选中时把它带上，
         # 免得 agent 又要单独去翻一遍（2026-10 用户口径：规则是证据，不是结论）
         evidence = _recent_rule_hits(str(row.subject or ""))
