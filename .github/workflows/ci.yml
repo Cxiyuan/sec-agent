@@ -691,5 +691,6 @@ jobs:
           IMAGE="${{ steps.ns.outputs.name }}/shentong-ow-bridge:${GITHUB_SHA}"
           VERSION=$(docker run --rm --entrypoint /opt/opencode/opencode "$IMAGE" --version)
           echo "opencode: $VERSION"
-          echo "$VERSION" | grep -qx '2.0.18'
+          # 输出形如 `opencode v2.0.18`，只断言版本号出现，不假设前缀格式
+          echo "$VERSION" | grep -q '2\.0\.18'
           docker run --rm "$IMAGE" node --check /app/src/main.js
