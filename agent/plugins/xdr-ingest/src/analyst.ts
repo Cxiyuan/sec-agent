@@ -165,7 +165,7 @@ let sessionCounter = 0
 
 export class Analyst {
   private readonly options: AnalystOptions
-  private readonly reuse = { reused: 0, stored: 0 }
+  private readonly reuse = { reused: 0, stored: 0, rejected: 0, identityMissing: 0 }
   /** 主模型刚失败过：下一轮用备用模型（成功即恢复）。 */
   private preferFallback = false
   /** 同一现象的并发任务排队：后来的任务等前一个写入结论后再查缓存。 */
@@ -176,13 +176,23 @@ export class Analyst {
   }
 
   /** 复用/入库计数（`/status` 观测用）。 */
-  get reuseStats(): { readonly reused: number, readonly stored: number } {
+  get reuseStats(): {
+    readonly reused: number
+    readonly stored: number
+    /** 复用被拒次数（过期/更强/suspicious/终端原因…，Phase 3 指标看板用） */
+    readonly rejected: number
+    /** 任务缺 NDR 下发身份而跳过复用的次数（B1：拒绝跨现象复用） */
+    readonly identityMissing: number
+  } {
     return { ...this.reuse }
   }
 
   async run(task: ClaimedTask): Promise<AnalystOutcome> {
     const key = taskResultKey(task)
-    if (key === null) return this.runUnlocked(task)
+    if (key === null) {
+      if (taskResultKey(task, { requireIdentity: false }) !== null) this.reuse.identityMissing += 1
+      return this.runUnlocked(task)
+    }
 
     const previous = this.keyLocks.get(key)
     let release!: () => void
@@ -444,7 +454,11 @@ export class Analyst {
     const decision = reuseDecision(
       record, task, startedAt, ttlMs, this.options.taskReuseStrengthDelta ?? 0,
     )
-    if (!decision.reuse || record === null) return null
+    if (!decision.reuse || record === null) {
+      // 有记录但被拒（过期/更强/suspicious/终端原因）→ 计入拒绝，供指标看板看"复用没生效"
+      if (record !== null) this.reuse.rejected += 1
+      return null
+    }
     try {
       // B2：复用不只回放 verdict —— findings / anchors / recommendation 一并带上，
       // 否则 NDR 里的新结论只剩一句 summary，之前查到的结构化事实和资产归属全丢了。

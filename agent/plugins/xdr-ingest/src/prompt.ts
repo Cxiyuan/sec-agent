@@ -70,8 +70,14 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
       : []),
     '## 先加载技能',
     '工具用法与处置口径写在两个技能里，复杂线索先用 `skill` 工具加载：',
-    '- `skill(ndr-tools)`：22 个 NDR 工具的用途、证据引用规则、抑制门槛；',
+    '- `skill(ndr-tools)`：NDR 工具面（analyst 档 41 个只读取证工具）的用途、证据引用规则、抑制门槛；',
     '- `skill(alert-triage)`：扫描/爆破/横向/C2/外传/Web 攻击的取证要点与误报特征。',
+    '',
+    '## 分析对象与方向（固定口径）',
+    '分析对象以 NDR **监控网段内**的 IP 资产为主：先调 `list_networks` 确认网段（'
+    + '`claim_tasks` 回执里的 `scope` 也有）；外部 IP 只作为对端/线索，'
+    + '网段外的私网不是"我们的资产"。任务回执自带 `direction` / `principal_asset` / '
+    + '`affected_assets` / `peers`，`hint` 里也有一份；方向不明时才自己按网段判断。',
     '',
     '## 规划与取证（由你决定）',
     'NDR 工具在模型侧带命名空间，形如 `mcp__ndr__search_events`（下文写裸名，指同一批工具）。',

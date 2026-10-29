@@ -218,7 +218,7 @@ def test_truncation_is_visible_and_rarest_first(
     """超上限时先按全舰队稀有度排序，并如实计数（不静默丢）。"""
     monkeypatch.setattr(egress, "MAX_PER_WINDOW", 2)
     fleet = [
-        ("dst_ip", "8.8.4.4", 1),   # 最稀有 → 必留
+        ("dst_ip", "1.1.1.2", 1),   # 最稀有 → 必留
         ("dst_ip", "1.1.1.1", 30),  # 常见 → 被截
         ("dst_ip", "9.9.9.9", 2),   # 次稀有 → 留
     ]
@@ -228,11 +228,11 @@ def test_truncation_is_visible_and_rarest_first(
     counts = egress.observe_window(
         [
             _sample(dst="1.1.1.1"),
-            _sample(dst="8.8.4.4"),
+            _sample(dst="1.1.1.2"),
             _sample(dst="9.9.9.9"),
         ],
         now=NOW,
     )
     assert counts["capped"] == 1
     kept = {c["facts"]["目标"] for c in calls if c["kind"] == "egress_new"}
-    assert kept == {"8.8.4.4", "9.9.9.9"}
+    assert kept == {"1.1.1.2", "9.9.9.9"}

@@ -1500,12 +1500,19 @@ export interface AnalysisStats {
   avg_tools_used: number;
   avg_duration_ms: number;
   counters: Record<string, number>;
+  /** 指标看板（Phase 3，2026-10-29）：方向/主体/基线事实/自动白名单 */
+  metrics?: {
+    by_direction?: { direction: string; count: number }[];
+    by_subject_kind?: { subject_kind: string; count: number }[];
+    observations_24h?: { kind: string; count: number }[];
+    auto_allow_total?: number;
+  };
   queue_policy: AnalysisQueuePolicy;
   generated_at: string;
   error?: string;
 }
 
-/** 盲区清单的一行。**`kind` 恒为 `"asset"`（后端硬编码），真实类别看 `subject_kind`** */
+/** 盲区清单的一行。`kind` 与 `subject_kind` 都是登记时的真实类型（2026-10-29 C4 起不再写死 asset） */
 export interface AnalysisCoverageItem {
   kind: string;
   subject: string;

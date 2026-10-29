@@ -697,6 +697,48 @@ export function AnalysisPanel() {
             />
           </div>
         )}
+        {stats?.metrics ? (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+            <div className="rounded-xs bg-surface-1 px-3 py-2">
+              <div className="text-muted-foreground">方向分布（近 7 天命中）</div>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {(stats.metrics.by_direction ?? []).slice(0, 5).map(row => (
+                  <Badge key={row.direction} variant="outline">
+                    {row.direction} · {numText(row.count)}
+                  </Badge>
+                ))}
+                {(stats.metrics.by_direction ?? []).length === 0 ? <span>—</span> : null}
+              </div>
+            </div>
+            <div className="rounded-xs bg-surface-1 px-3 py-2">
+              <div className="text-muted-foreground">任务主体（近 7 天）</div>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {(stats.metrics.by_subject_kind ?? []).slice(0, 5).map(row => (
+                  <Badge key={row.subject_kind} variant="outline">
+                    {row.subject_kind || "unknown"} · {numText(row.count)}
+                  </Badge>
+                ))}
+                {(stats.metrics.by_subject_kind ?? []).length === 0 ? <span>—</span> : null}
+              </div>
+            </div>
+            <div className="rounded-xs bg-surface-1 px-3 py-2">
+              <div className="text-muted-foreground">基线事实（近 24h）</div>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {(stats.metrics.observations_24h ?? []).slice(0, 5).map(row => (
+                  <Badge key={row.kind} variant="outline">
+                    {row.kind} · {numText(row.count)}
+                  </Badge>
+                ))}
+                {(stats.metrics.observations_24h ?? []).length === 0 ? <span>—</span> : null}
+              </div>
+            </div>
+            <div className="rounded-xs bg-surface-1 px-3 py-2">
+              <div className="text-muted-foreground">自动入白名单</div>
+              <div className="mt-1">{numText(stats.metrics.auto_allow_total ?? 0)} 条</div>
+              <div className="text-muted-foreground">默认关闭时不再增长</div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xs bg-surface-1 px-3 py-2">
           <span className="text-xs text-muted-foreground">容量</span>

@@ -769,6 +769,8 @@ ${THEME}
         ['结论数据源', esc(s.conclusion_source || '—'), cc.available === false ? 'bad' : 'ok'],
         ['同类结论复用', esc((s.task_reuse || {}).reused ?? 0), ''],
         ['已存结论（复用库）', esc((s.task_reuse || {}).stored ?? 0), ''],
+        ['复用被拒（过期/更强/未定性）', esc((s.task_reuse || {}).rejected ?? 0), ''],
+        ['缺身份跳过复用', esc((s.task_reuse || {}).identityMissing ?? 0), ''],
       ]],
     ]
     let html = ''

@@ -243,8 +243,26 @@ def test_coverage_items_report_their_own_kind() -> None:
     assert out["items"][0]["subject_kind"] == "signature"
 
 
-# ---------- C2-1：novelty 只管资产/端口/账号 ----------
+# ---------- C3：claim_tasks 带回监控网段 ----------
 
+
+def test_scope_payload_reports_networks(monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = importlib.import_module("app.analysis.queue")
+    scope_mod = importlib.import_module("app.ingestion.scope")
+    monkeypatch.setattr(scope_mod, "monitored_nets", lambda: ["10.1.1.0/24", "10.2.0.0/24"])
+    out = queue._scope_payload()
+    assert out["configured"] is True
+    assert out["monitored_nets"] == ["10.1.1.0/24", "10.2.0.0/24"]
+    assert "监控网段内" in out["note"]
+
+    monkeypatch.setattr(scope_mod, "monitored_nets", list)
+    empty = queue._scope_payload()
+    assert empty["configured"] is False
+    assert empty["monitored_nets"] == []
+    assert "未配置" in empty["note"]
+
+
+# ---------- C2-1：novelty 只管资产/端口/账号 ----------
 
 def test_novelty_skips_protocol_and_signature(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     spy = EnqueueSpy()

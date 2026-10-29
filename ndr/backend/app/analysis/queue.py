@@ -21,7 +21,14 @@ from sqlalchemy.exc import IntegrityError
 from app.analysis import anchors as anchors_mod, digests as digests_mod, feedback, params
 from app.analysis.verdicts import VERDICT_VALUES, clean_terminal_reason, clean_verdict
 from app.db.base import SessionLocal
-from app.db.models import AnalysisResult, AnalysisTask, ConclusionRecord
+from app.db.models import (
+    AnalysisResult,
+    AnalysisTask,
+    ConclusionRecord,
+    EgressAllow,
+    HitEvent,
+    Observation,
+)
 from app.workers.log import get_logger
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
@@ -309,7 +316,30 @@ def claim_tasks(
 
     bump(client, "claimed", len(taken))
 
-    return {"tasks": out, "watermark": now.isoformat()}
+    return {"tasks": out, "watermark": now.isoformat(), "scope": _scope_payload()}
+
+
+def _scope_payload() -> dict[str, Any]:
+    """监控网段（C3，2026-10-29）：任务主体是"监控网段内资产"，agent 必须有坐标系。
+
+    未配置时明确说明内网判定退化成"非公网即内网"（Zeek 侧不过滤）——
+    不能假装网段已配置，否则 agent 会把未监控私网当成自己的资产。
+    """
+    try:
+        from app.ingestion import scope as scope_mod
+
+        nets = [str(x) for x in (scope_mod.monitored_nets() or [])][:200]
+    except Exception:  # noqa: BLE001 — 读不到网段按"未配置"如实说明
+        nets = []
+    return {
+        "configured": bool(nets),
+        "monitored_nets": nets,
+        "note": (
+            "分析对象以监控网段内的 IP 资产为主；外部 IP 只作为对端/线索。"
+            if nets
+            else "未配置监控网段：内网判定退化为「非公网即内网」，Zeek 侧也不按网段过滤，内外方向结论要打折"
+        ),
+    }
 
 
 # ---------- 交回 / 延后 ----------
@@ -693,6 +723,43 @@ def stats(client: Any) -> dict[str, Any]:
         reused_total = (
             db.scalar(select(func.count()).select_from(AnalysisResult).where(~real)) or 0
         )
+        # 指标看板（Phase 3，2026-10-29）：方向分布 / 资产主体比例 / 基线事实量 / 自动白名单数
+        week_ago = now - timedelta(days=7)
+        by_direction = [
+            {"direction": str(direction or "unknown"), "count": int(count)}
+            for direction, count in db.execute(
+                select(HitEvent.direction, func.count())
+                .where(HitEvent.created_at >= week_ago)
+                .group_by(HitEvent.direction)
+                .order_by(func.count().desc())
+            ).all()
+        ]
+        by_subject_kind = [
+            {"subject_kind": str(subject_kind or ""), "count": int(count)}
+            for subject_kind, count in db.execute(
+                select(AnalysisTask.subject_kind, func.count())
+                .where(AnalysisTask.created_at >= week_ago)
+                .group_by(AnalysisTask.subject_kind)
+                .order_by(func.count().desc())
+            ).all()
+        ]
+        facts_24h = [
+            {"kind": str(kind or ""), "count": int(count)}
+            for kind, count in db.execute(
+                select(Observation.kind, func.count())
+                .where(Observation.last_seen >= now - timedelta(hours=24))
+                .group_by(Observation.kind)
+                .order_by(func.count().desc())
+            ).all()
+        ]
+        auto_allow_total = (
+            db.scalar(
+                select(func.count())
+                .select_from(EgressAllow)
+                .where(EgressAllow.source == "learned")
+            )
+            or 0
+        )
     return {
         "enabled": params.enabled(),
         "by_state": by_state,
@@ -708,6 +775,16 @@ def stats(client: Any) -> dict[str, Any]:
         "avg_tools_used": round(float(avg_tools or 0), 2),
         "avg_duration_ms": int(avg_ms or 0),
         "counters": read_stats(client),
+        "metrics": {
+            # 方向分布（近 7 天命中事件）：out→in / in→out / in→in / out→out / unknown
+            "by_direction": by_direction,
+            # 任务主体类型分布（近 7 天）：asset 占比越高 = 主体资产化越到位
+            "by_subject_kind": by_subject_kind,
+            # 基线事实量（近 24 小时，按 kind）
+            "observations_24h": facts_24h,
+            # 自动进白名单的条目数（egress.auto_allow 关着时不再增长）
+            "auto_allow_total": int(auto_allow_total),
+        },
         "queue_policy": {
             "lease_seconds": params.lease_seconds(),
             "queue_capacity": params.queue_capacity(),

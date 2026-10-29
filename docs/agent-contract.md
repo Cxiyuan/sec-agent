@@ -7,8 +7,8 @@
 
 | 地址 | 工具数 | 用途 |
 |---|---|---|
-| `http://ndr-mcp:8090/mcp` | **23**（analyst 档） | 智能体默认入口：闭环动作 + 身份（`server_info`）+ 取数底座（`baseline_lookup` / `entity_profile`）+ 方向/规则上下文（`relay_nodes` / `hit_clusters` / `get_rule` / `list_rules`），**不含**撤销抑制、取提取件正文、改结论、改规则等 |
-| `http://ndr-mcp:8090/mcp/full` | 43（全量） | 人工排查 / 复现 / 运维 |
+| `http://ndr-mcp:8090/mcp` | **41**（analyst 档） | 智能体默认入口：**全部只读取证工具**（取数/上下文/过程/成本）+ 闭环动作 + 身份，**不含**撤销抑制、替 agent 写结论、改规则、改系统配置 |
+| `http://ndr-mcp:8090/mcp/full` | 44（全量） | 人工排查 / 复现 / 运维 |
 
 两档共用同一层 Bearer 鉴权（`stmcp_` 令牌）。**按能力收窄工具面**的理由：既省上下文，
 也修掉"任何持令牌者都能撤销抑制"的缺口——撤销留在 full 档与界面上做。
@@ -76,18 +76,24 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 
 - `limit` 上限 20；NDR 不设领取额度或并发上限，领多少由你决定。
 - `kinds` 逗号分隔：`novelty`（首见）/ `shift`（自身基线偏离）/ `structure`（结构特征）/
-  `coverage`（盲区）/ `hit`（规则命中）。留空=全都要。
+  `coverage`（盲区）/ `hit`（逐条规则命中，**默认关**）/ `hit_cluster`（命中簇：一次扫描
+  折成一件，**默认开**）/ `observation`（行为基线事实）/ `retest`（复测误报抑制）。
+  留空=全都要。
 - `wait_seconds` 0~30 长轮询：队列空时最多等这么久（服务端只在「队列空」时继续等）。
-- 返回：
+- 返回（2026-10-29 起新增方向/主体/对端一等字段；`hint` 里也有一份中英两套键）：
 
 ```json
 {
   "tasks": [{
-    "id": "...", "kind": "shift", "strength": 0.72, "priority": 72,
-    "subject_kind": "ip", "subject": "10.0.0.5",
-    "feature": "conn_count",
+    "id": "...", "kind": "hit_cluster", "strength": 0.72, "priority": 72,
+    "subject_kind": "asset", "subject": "10.1.2.20",
+    "principal_asset": "10.1.2.20",
+    "affected_assets": [{"kind": "ip", "value": "10.1.2.20"}],
+    "direction": "out→in", "peers": ["198.51.100.9"],
+    "feature": "cluster:3f9c...",
     "window_start": "...", "window_end": "...",
-    "hint": {"事实": "conn_count 本窗口=42，历史均值=6", "上尾概率": 0.0001},
+    "hint": {"簇": "端口扫描 · 198.51.100.0/24 · 2026102912 时", "方向": "out→in",
+             "对端": ["198.51.100.9"], "事件ID": ["..."], "reuse_identity": "..."},
     "coalesced": 2, "attempts": 0, "depth": 0, "state": "claimed",
     "lease_until": "...", "created_at": "..."
   }],
@@ -118,25 +124,32 @@ claim_tasks(limit=1, kinds="", min_strength=0.0, wait_seconds=0)
 | `asset_context(ips=[...])` | 台账上下文（主机名/重要级别/责任人/分组）—— 判严重度的唯一依据 |
 | `list_rules()` | NDR 现在到底在检测什么（**没事件 ≠ 没攻击**） |
 | `relay_nodes()` | 哪些地址是反代/DNS 转发（否则会把代理访问误判成内网主动外联） |
+| `asset_baseline(asset?, feature?)` | 被访问方资产的窗口基线（客户端数/请求数均值、样本数、是否过观测期；`warmed=false` 表示还在学习） |
+| `list_observations(kind?, subject?, minutes?)` | 行为基线事实（外连新目标/异地登录/爆破/404/资产访问量偏离/画像异常） |
+| `list_networks()` | 监控网段（判断"内外"的唯一坐标系；未配置时内网判定失效，要明说） |
+| `fetch_window(...)` / `timeline` / `net_flows` / `dns_queries` / `tls_fingerprints` / `web_requests` | 整窗回溯与细分取证（原只在 full 档，2026-10 起 analyst 档可用） |
+| `task_stats()` / `log_step` / `search_traces` / `get_trace` | 看队列与自己的预算、记过程轨迹、避免重复取数 |
 
 ---
 
 ## 3.1 同类现象复用（智能体侧，NDR 不参与）
 
 NDR 的任务去重键带时间桶：同一现象跨窗口会**再次派工**。智能体侧（`xdr-ingest`）
-维护一份结论库，身份是 `kind | subject_kind | subject | feature`：
+维护一份结论库。身份（2026-10-29 起）：**以 NDR 下发的 `hint.reuse_identity` 为准**，
+所有 kind 都有（hit/hit_cluster 是跨时间窗稳定的内容身份；observation 用事实自身的
+去重键 —— 同一资产外连 A/B 是两条不同事实；novelty/structure/coverage/retest 也各发一份）。
 
-- `hit` 线索还用 `hint.reuse_identity` 区分同源同规则下不同目标/端口/事件类型；
-  不带这份客观身份元数据时不会复用。
-
+- 默认 `taskReuseRequireIdentity=true`：任务没带身份就**不复用**（回滚开关
+  `taskReuseRequireIdentity=false` 才退回旧的 `kind|subject|feature` 拼键）；
 - 有效期（默认 24h，`taskReuseTtlHours`）内，同一现象再来一次：**不起分析会话**，
-  直接把上次的 `verdict/confidence/summary` 交回（`findings.reused_from` 标来源）；
+  直接交回上次的结论，并把 `findings` / `anchors` / `recommendation` **原样回放**
+  （过程标记 `reused_*`/`triaged_by` 不回放），`findings.reused_from` 标来源；
 - 只复用 `true_positive / false_positive / benign / inconclusive`；`suspicious`
   必须重查（可疑 = 还没查完）；
 - 新线索强度比上次高出 `taskReuseStrengthDelta`（默认 0.15）→ 重查；
 - TTL 从**上次真实分析**起算，复用时只累加次数、不续期；
 - 复用结果会落入 NDR 任务记录，但不会再次训练反馈系数或触发“真阳性撤抑制”——它不是新证据；
-- 拿不到 `feature` 时**不复用**（宁可多查一次，也不能把同机不同规则混成一条结论）。
+- 拿不到身份时**不复用**（宁可多查一次，也不能把同机不同规则混成一条结论）。
 
 这是省预算的兜底，不替代 `prior_findings`：开工前仍然先查历史结论。
 
@@ -185,13 +198,17 @@ get_trace(task_id, limit?)                          # 取某任务的全部步�
 
 ```text
 complete_task(task_id, verdict, summary, confidence?, findings?, evidence_refs?,
-              next_tasks?, suppression?, tools_used?, duration_ms?)
+              next_tasks?, suppression?, anchors?, recommendation?, terminal_reason?,
+              tools_used?, duration_ms?)
 ```
 
 - `verdict` **只认**：`true_positive` / `false_positive` / `benign` / `suspicious` / `inconclusive`
   （中文别名与 `tp`/`fp` 简写也认；`pending`/`done` 属于流程态，不接受）。
 - `evidence_refs`：支撑结论的引用（`es:索引/文档id` 或 `ev:uuid`）。
-  **提交抑制时它必须全是本会话真取回过的**，否则 `evidence_not_found`。
+  **2026-10-29 起全部结论都硬校验**：非空引用必须都是本会话真取回过的（伪造直接拒）；
+  `verdict=true_positive` 必须至少 1 条有效引用（复用交回豁免，取证在原始会话）。
+  benign/false_positive/inconclusive 允许空引用（轻量初筛关单就是空引用）。
+- `recommendation`：一句话建议后续动作（随结论落库、随复用回放）；客观动作，不预设威胁。
 - `next_tasks`：追问数组，每项 `{kind, subject_kind, subject, feature, strength, hint}`；
   受 `analysis.followup_depth`（默认 2 层）与 `followup_max_per_task`（默认 3 条）限制，
   超限**拒绝并说明原因**（不静默丢）。
@@ -219,14 +236,21 @@ complete_task(task_id, verdict, summary, confidence?, findings?, evidence_refs?,
 
 ## 4·补、行为基线事实（`observation` 类任务）
 
-2026-10 起，行为基线**只产出事实、不产出结论**：外连目的地首次/罕见、账号异地登录、
-同账号多来源爆破、客户端大量 404、连接数偏离。它们进入任务队列时 `kind=observation`，
-`hint` 只有事实（改了哪一维、基线值、观测值、时间），**没有 severity、没有 verdict**。
+2026-10 起，行为基线**只产出事实、不产出结论**：外连目的地首次/罕见/持续出现、
+账号异地登录、同账号多来源爆破、客户端大量 404、连接数偏离、**被访问资产访问量偏离
+（asset_shift）**、**账号/会话画像异常（profile_anomaly）**。它们进入任务队列时
+`kind=observation`，`hint` 只有事实（改了哪一维、基线值、观测值、时间），
+**没有 severity、没有 verdict**。
 
-- 取数：`list_observations(kind=?, subject=?, minutes=?)`（analyst 档）；
+- 取数：`list_observations(kind=?, subject=?, minutes=?)` 与 `asset_baseline(asset?, feature?)`（analyst 档）；
+- 派工配额（2026-10-29）：每轮总数 5、**每类最多 2**、同一事实 6 小时内不重复派工 ——
+  低强度事实（爆破/资产偏离）不会被大量 egress_new 挤掉；
+- 强度 < 0.45 的事实（`conn_shift` 0.2、`egress_rare` 0.35）**只可查询、不派工**，
+  别等它们出现任务；
 - 判定：要不要当攻击处理、算不算异常，**由你自己结合证据下**；
-- 规则命中（`search_hits`）现在**只是证据**：默认不再单独派工，可以在你分析某个对象时
-  作为补充材料；`get_rule` 仍可查规则判据；
+- 规则命中（`search_hits`）现在**只是证据**：默认不再单独派工（批量走 `hit_cluster`），
+  可以在你分析某个对象时作为补充材料（hint 里会带 `as_source`/`as_destination`）；
+  `get_rule` 仍可查规则判据；
 - FTP 登录已进账号画像（`ftp_login`：`reply_code` 230=成功、5xx=失败），与 HTTP 登录同一套
   「新源 IP / 认证失败突增 / 异地登录」事实。
 

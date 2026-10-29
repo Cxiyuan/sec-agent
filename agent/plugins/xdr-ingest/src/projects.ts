@@ -131,7 +131,7 @@ export const DEFAULT_WORKFLOW_STAGES: readonly WorkflowStage[] = [
     title: '定位与上下文',
     goal: '这条线索是什么、对象是谁、之前看过没有',
     guidance: '先查历史结论与资产台账；确认对象角色（服务器/终端/代理）再决定查哪类数据',
-    tools: ['prior_findings', 'asset_context', 'entity_profile', 'describe_data'],
+    tools: ['prior_findings', 'asset_context', 'entity_profile', 'describe_data', 'list_networks'],
   },
   {
     key: 'evidence',

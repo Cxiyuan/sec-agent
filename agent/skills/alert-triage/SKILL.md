@@ -1,7 +1,7 @@
 ---
 name: alert-triage
 description: 告警初判与处置手册：先看什么、如何区分扫描/爆破/横向/C2/数据外传、误报长什么样、结论和建议怎么写。
-whenToUse: 拿到一条线索（novelty/shift/coverage/hit）需要给出定性结论与处置建议时
+whenToUse: 拿到一条线索（hit_cluster/observation/novelty/shift/coverage/retest）需要给出定性结论与处置建议时
 ---
 
 # 深瞳 · 告警初判与处置手册
@@ -12,8 +12,10 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 
 ## 一、先建立三个坐标
 
-1. **资产**：源和目的是谁（`asset_context` / `asset_map`）。内网业务机、办公机、服务器、网关、外部 IP —— 角色不同，结论完全不同。
-2. **方向**：内→外（外联/C2/外传）、外→内（扫描/入侵尝试）、内→内（横向/病毒扩散）。
+1. **资产**：源和目的是谁（`asset_context` / `asset_map`）。主体以 `principal_asset`（监控网段内）为准，
+   `peers` 是对端；内网业务机、办公机、服务器、网关、外部 IP —— 角色不同，结论完全不同。
+2. **方向**：任务回执的 `direction`（in→out / out→in / in→in / out→out）优先；不够再用
+   `list_networks` 的网段自己判。**网段外的私网不是"我们的资产"**（它是 out→in，不是内→内）。
 3. **成败**：请求有没有被响应、有没有登录成功、有没有数据回包。**只看到"尝试"就别按"失陷"下结论。**
 
 ## 二、按类型看关键特征
@@ -36,6 +38,8 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 4. `search_events`：按时间窗与五元组收敛到具体会话。
 5. `raw_evidence`：固化关键证据（抓包字段、响应码、载荷片段）。
 6. 必要时 `get_event_detail` / `search_hits` 看单条事件与规则命中上下文。
+7. 判断"这次比平时多不多"：`baseline_lookup`（发起方数值基线）、`asset_baseline`（被访问资产基线，
+   `warmed=false` 说明还在学习期）、`list_observations`（外连/账号/资产/画像事实）。
 
 ## 四、判定口径
 
@@ -58,7 +62,6 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 - 不要在没有证据时建议"全网封禁""关停业务"。
 
 ## 六、必须升级给人的情况
-
 - 内网横向成功、域控/数据库/跳板机涉及。
 - 明确的 C2 外联或大流量外传。
 - 同一源在多个资产上重复成功。

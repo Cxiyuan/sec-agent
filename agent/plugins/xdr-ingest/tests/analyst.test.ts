@@ -463,6 +463,42 @@ test('B2: remember keeps findings/anchors/recommendation for later replay', asyn
   assert.equal(saved?.recommendation, '封禁源地址')
 })
 
+test('reuse stats: rejections and missing identity are counted', async () => {
+  // 缺身份：任务没有 NDR 下发的 reuse_identity → 跳过复用并计数
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 86_400_000,
+  })
+  await analyst.run({ ...task, hint: { 事实: 'x' }, feature: 'conn_count' })
+  assert.equal(analyst.reuseStats.identityMissing, 1)
+
+  // 有记录但已过期 → 计入拒绝
+  const rec2 = recorder()
+  const store2 = new MemoryStateStore()
+  const key = await seed(store2, 'benign')
+  const saved = await store2.load(key)
+  assert.ok(saved !== null)
+  await store2.save({
+    ...saved,
+    analyzedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    expiresAt: new Date(Date.now() - 86_400_000).toISOString(),
+  })
+  const analyst2 = new Analyst({
+    agents: fakeAgents(rec2, async () => undefined),
+    ndr: fakeNdr(rec2, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store2,
+    taskReuseTtlMs: 86_400_000,
+  })
+  await analyst2.run(reusable)
+  assert.equal(analyst2.reuseStats.rejected, 1)
+})
+
 test('suspicious conclusions are never reused', async () => {
   const rec = recorder()
   const store = new MemoryStateStore()

@@ -29,7 +29,7 @@
 | D1 | 领取通道 | **门铃 + MCP 领取**：NDR 只在有新线索时按门铃（**不含任何数据**），智能体收到后经 MCP `claim_tasks` 领取并自主决定查什么；另加**低频自轮询兜底**（建议 15 分钟） |
 | D2 | 优先级归属 | **NDR 只排客观强度**（显著性 p、是否首见、影响面规模、距上次分析时长），**不写威胁语义** |
 | D3 | 找活方式 | **双通道**：① 数据地图（智能体自主选目标）② 客观线索队列（NDR 报"变了/第一次见/很久没看"） |
-| D4 | 规则命中的地位 | `hit_events` **进队列**（`kind=hit`），但只按客观强度排队（规模/首见），**不用 rule_severity**；智能体可整体不领这类活 |
+| D4 | 规则命中的地位 | `hit_events` 默认**不逐条派工**（`hit` 关）；按「归类·网段·小时」成簇后以 `hit_cluster` 派工（主体是被访问资产，2026-10-29 D2/C2）；强度只用客观量，**不用 rule_severity** |
 | D5 | 切换方式 | 门铃**直接复用现有推送路径**，载荷一次性换成门铃对象（不分两条路径、不留双载荷语义）；两侧同版本上线 |
 | D6 | 队列溢出 | **延后重排 + 队列容量**：不静默丢弃；同族线索合并计数（`coalesced`），超过容量按强度替换或可见计数后丢弃 |
 | D7 | 误报抑制 | **全自动生效**（够证据就连事件生成都抑制），但必须过**机械护栏**（见第七节）；理由必须落白名单码，不接受自由文本当判据 |
@@ -74,7 +74,7 @@ NDR（只做廉价统计与派工，不替智能体下威胁判断）           
 | --- | --- |
 | `id` | UUID 主键 |
 | `dedupe_key` | **唯一**，`{kind}\|{subject_kind}:{subject}\|{feature}\|{时间桶}` —— 同现象同桶只一条（防队列爆） |
-| `kind` | `novelty` / `shift` / `structure` / `coverage` / `hit` |
+| `kind` | `novelty` / `shift` / `structure` / `coverage` / `hit`（默认关）/ `hit_cluster` / `observation` / `retest` |
 | `strength` | 0~1 客观强度（见第五节公式） |
 | `priority` | `round(strength*100)`；同分按 `created_at` 先进先出 |
 | `subject_kind` / `subject` | `ip` / `asset` / `segment` / `protocol` / `account` / `cluster` |
@@ -130,8 +130,14 @@ NDR（只做廉价统计与派工，不替智能体下威胁判断）           
   重新排队），并且对象首次出现超过 `analysis.novelty_newcomer_hours`（默认 24 小时）
   就不再算"新面孔"——它已经是环境的一部分，改由 `coverage`（久未分析的盲区）提醒；
 - `structure`：失败率、端口熵、周期性初筛（只给事实，如「404 占比 0.62」）；
-- `coverage`：`observed_subjects` 里"从未 / 久未分析"的对象（低强度，保证不抢占）；
-- `hit`：新落库的 `hit_events`（D4）。
+- `coverage`：`observed_subjects` 里"从未 / 久未分析"的对象（低强度，保证不抢占）；主体类型保留原样
+  （签名盲区仍是 `signature`，见 C4 2026-10-29）；
+- `hit`：新落库的 `hit_events`（逐条，**默认关**，只给低流量环境或手工排查打开）；
+- `hit_cluster`：**默认开**（D2 2026-10-29）。近 60 分钟的 `hit_events` 按 `cluster_id`
+  （归类+网段+小时）成簇，主体选监控网段内资产；hint 带方向/对端/受影响资产/事件 ID；
+  强度只用事件数/涉及资产数/staleness；60 分钟桶去重 + 每轮上限 20 + 同簇族 24 小时观察护栏；
+- `observation`：行为基线事实（外连/账号/404/资产访问量偏离/画像异常），
+  派工公平（每类最多 2 条、同事实 6 小时冷却，D7 2026-10-29）。
 
 异常处理：生成器整体 `try/except`，失败只计数（`candidate_error`），**绝不影响检测与入库**。
 
@@ -548,3 +554,24 @@ coverage_report(days=7, kind="", limit=100)
 4. 不新增容器：候选生成与门铃都在检测器 leader 循环内；
 5. 数据地图读 PG/Redis 快照，不让智能体每次巡逻都全量扫 ES；
 6. 时间一律 UTC 存储、北京时间展示（沿用既有全局约定）。
+
+---
+
+## 十五、2026-10-29 架构整改（已上线代码）
+
+> 依据 `XDR-智能体分析架构整改方案.md`，四批全部落地。以下是与本文前面描述的**差异点**。
+
+| 主题 | 现在 | 开关/回滚 |
+|---|---|---|
+| 工具面 | analyst 档 = **全部只读取证工具**（41 个）；写/破坏性动作只在 full 档 | 档位配置 |
+| 网段口径 | 候选/采样/资产台账/外连基线/方向判定统一走 `iputil.is_internal_ip()`（唯一坐标系） | — |
+| 任务主体 | `principal_asset` / `affected_assets` / `direction` / `peers` 提成一等字段；外部↔外部不派工 | — |
+| 方向 | 摘要定型时算一次，落 `hit_events.direction`，事件详情/hint/任务全链路下发 | — |
+| 规则命中 | 默认 `hit_cluster`（按簇折成一件）；逐条 `hit` 默认关 | `analysis.candidate_kinds` 移除 `hit_cluster` |
+| 复用身份 | 所有 kind 下发 `hint.reuse_identity`；agent 默认必须带身份才复用；复用时回放 findings/anchors/recommendation | `taskReuseRequireIdentity=false` |
+| 证据校验 | 所有结论的引用都验证"本会话真取回"；`true_positive` 至少 1 条 | `mcp.require_evidence_refs` |
+| 资产基线 | `asset_shift` 判异（先判后学，p 值 + 限额）+ `asset_baseline` 工具 | `baseline.asset_shift_enabled`（默认关） |
+| 画像异常 | `profile_anomaly` 事实（带内网源的按资产主体发） | `baseline.profile_anomaly_enabled` |
+| 外连生命周期 | `egress_sustained` 持续跟踪 + 全舰队稀有度 + 截断可见 | `egress.auto_allow`（默认关） |
+| 事实派工 | 每类 2 条 / 总 5 条 / 同事实 6 小时冷却 | `analysis.candidate_kinds` 移除 `observation` |
+| 轻量初筛 | 默认只筛 `coverage`（2B 模型无权关 novelty/observation）；NDR 不把初筛关单记成"已分析" | 控制台 `light.enabled` |

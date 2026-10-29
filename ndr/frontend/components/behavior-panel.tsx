@@ -1418,7 +1418,7 @@ export function BehaviorPanel() {
       {/* ---------- 6. 外连目的地与白名单 ---------- */}
       <Section
         title="外连目的地与白名单"
-        description="上表是资产已学到的主动外连（排查「这台机器平时连谁」）；白名单条目命中后不再产出 egress_new / egress_rare 事实。删除留墓碑 —— 该目标以后不会再被自动学回来。"
+        description="上表是资产已学到的主动外连（排查「这台机器平时连谁」）；白名单条目命中后不再产出 egress_new / egress_rare / egress_sustained 事实。自动入白名单默认关闭（只能人工新增），开启时也会跳过有真阳性/可疑结论或正被任务跟踪的目标。删除留墓碑 —— 该目标以后不会再被自动学回来。"
         extra={
           <Button size="sm" onClick={() => {
             setAllowEditId("");
