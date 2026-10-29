@@ -447,8 +447,14 @@ def complete_task(
         row.state = "done"
         row.lease_until = None
         row.updated_at = now
-        # 分析过要记账：覆盖率与 staleness 分量都靠它
-        _mark_analyzed(db, row.subject_kind, row.subject, now)
+        # 分析过要记账：覆盖率与 staleness 分量都靠它。
+        # **轻量初筛关单不算**（2026-10-29 架构整改 A3）：2B 小模型只看 hint 没有真取证，
+        # 它关单 ≤ 覆盖率就会虚高（把"其实没看"记成"看过了"），还会压低 staleness 派工分量。
+        # 结论仍完整留档（findings.triaged_by=light 在控制台可见、抽检可比对），只是不记账。
+        if str((findings or {}).get("triaged_by") or "") != "light":
+            _mark_analyzed(db, row.subject_kind, row.subject, now)
+        else:
+            bump(client, "light_triaged")
         db.commit()
         # 事件级结论镜像：命中线索关联到具体事件时同步写一份（失败不影响交回）
         _mirror_event_conclusion(
@@ -472,8 +478,11 @@ def complete_task(
     # - 复用结论只是把旧判断写到新任务作审计，**不是新证据**，不能再次训练反馈，
     #   尤其不能因为复用旧 true_positive 就误撤一条后来新增的抑制。
     reused_from = str((findings or {}).get("reused_from") or "").strip()
+    light_triaged = str((findings or {}).get("triaged_by") or "") == "light"
     rebound = 0
-    if not reused_from:
+    if not reused_from and not light_triaged:
+        # 初筛关单同理：2B 小模型只看 hint，它的 benign/false_positive 不是取证结论，
+        # 不许拿来训练反馈系数（否则一次初筛误判就会机床化后续的派工强度）。
         rebound = int(feedback.note_verdict(task_kind, task_subject, verdict).get("rebound") or 0)
     if rebound:
         bump(client, "suppression_rebound", rebound)
@@ -574,6 +583,18 @@ def sweep(client: Any) -> dict[str, int]:
 
 def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
     hint = dict(row.hint or {})
+    # C2（2026-10-29）：任务主体统一成「监控网段内资产」视角 —— 把主体/受影响资产/对端
+    # 提成任务的一等字段，界面与智能体不用再从中文 hint 里各猜一套。
+    principal_hint = hint.get("主体资产")
+    principal = str(principal_hint.get("value") or "") if isinstance(principal_hint, dict) else ""
+    affected_raw = hint.get("受影响资产") or []
+    affected = [
+        {"kind": str(x.get("kind") or ""), "value": str(x.get("value") or "")}
+        for x in (affected_raw if isinstance(affected_raw, list) else [])
+        if isinstance(x, dict) and str(x.get("value") or "").strip()
+    ][:20]
+    peers_raw = hint.get("对端") or []
+    peers = [str(x) for x in (peers_raw if isinstance(peers_raw, list) else [])][:20]
     return {
         "id": str(row.id),
         "kind": row.kind,
@@ -581,6 +602,11 @@ def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
         "priority": int(row.priority or 0),
         "subject_kind": row.subject_kind,
         "subject": row.subject,
+        # 主体资产（监控网段内）；缺省时就是任务主体本身（observation/coverage 已是资产视角）
+        "principal_asset": principal or str(row.subject or ""),
+        "affected_assets": affected,
+        "direction": str(hint.get("方向") or ""),
+        "peers": peers,
         # 现象特征（命中=规则名、偏移=指标名……）：智能体侧的同类结论复用靠它
         # 区分"同一台机器上的不同规则"，不参与任何判定。
         "feature": _feature_of(
@@ -741,27 +767,36 @@ def task_detail(task_id: str) -> dict[str, Any]:
         if row is None:
             return {"error": "任务不存在"}
         out = _task_dict(row)
+        results = list(
+            db.scalars(
+                select(AnalysisResult)
+                .where(AnalysisResult.task_id == str(row.id))
+                .order_by(AnalysisResult.created_at.desc())
+                .limit(10)
+            ).all()
+        )
+        # B2：复用要回放「上次这条结论挂了哪些资产」——锚点按 result_id 查回
+        anchors_of = anchors_mod.assets_of_results([str(r.id) for r in results])
         out["results"] = [
             {
                 "verdict": r.verdict,
                 "terminal_reason": r.terminal_reason,
                 "confidence": r.confidence,
                 "summary": r.summary,
+                # B6：一句话建议（_complete_task 落在 findings["recommendation"]），
+                # 提升成结果行的一等字段，界面/复用回放不用再翻 findings
+                "recommendation": str((r.findings or {}).get("recommendation") or ""),
                 # 智能体侧要留档一份结论（控制台不再直连各 NDR 的 PG），
-                # 所以把 findings / 证据引用一并回给它；都是它自己交回来的内容。
+                # 所以把 findings / 证据引用 / 锚点一并回给它；都是它自己交回来的内容。
                 "findings": dict(r.findings or {}),
                 "evidence_refs": list(r.evidence_refs or []),
+                "anchors": anchors_of.get(str(r.id), []),
                 "tools_used": r.tools_used,
                 "duration_ms": r.duration_ms,
                 "claimed_by": r.claimed_by,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
             }
-            for r in db.scalars(
-                select(AnalysisResult)
-                .where(AnalysisResult.task_id == str(row.id))
-                .order_by(AnalysisResult.created_at.desc())
-                .limit(10)
-            ).all()
+            for r in results
         ]
         return out
 

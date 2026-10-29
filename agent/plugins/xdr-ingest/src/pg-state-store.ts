@@ -76,10 +76,19 @@ CREATE TABLE IF NOT EXISTS xdr_ingest_task_result (
   occurrences  INTEGER NOT NULL DEFAULT 1,
   analyzed_at  TIMESTAMPTZ NOT NULL,
   expires_at   TIMESTAMPTZ NOT NULL,
+  recommendation TEXT NOT NULL DEFAULT '',
+  payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  version      INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (project_id, reuse_key)
 );
 ALTER TABLE xdr_ingest_task_result
   ADD COLUMN IF NOT EXISTS terminal_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_task_result
+  ADD COLUMN IF NOT EXISTS recommendation TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_task_result
+  ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE xdr_ingest_task_result
+  ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS xdr_ingest_task_result_expires_idx
   ON xdr_ingest_task_result (project_id, expires_at);
 CREATE TABLE IF NOT EXISTS xdr_ingest_script (
@@ -239,6 +248,9 @@ interface TaskRow {
   occurrences: number
   analyzed_at: Date | string
   expires_at: Date | string
+  recommendation: string
+  payload: unknown
+  version: number
 }
 
 interface ScriptRow {
@@ -351,6 +363,21 @@ function toProject(row: ProjectRow): ProjectRecord {
 }
 
 function toRecord(row: TaskRow): TaskResultRecord {
+  // B2：复用回放的附加字段（老记录 payload 为空 → 不回放，行为同改造前）
+  const payload =
+    typeof row.payload === 'object' && row.payload !== null && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : {}
+  const findings =
+    typeof payload['findings'] === 'object' && payload['findings'] !== null
+      ? (payload['findings'] as Record<string, unknown>)
+      : undefined
+  const anchors = Array.isArray(payload['anchors'])
+    ? (payload['anchors'] as { kind?: unknown; value?: unknown }[])
+        .map(a => ({ kind: String(a.kind ?? ''), value: String(a.value ?? '') }))
+        .filter(a => a.kind !== '' && a.value !== '')
+    : []
+  const recommendation = String(row.recommendation ?? '')
   return {
     key: row.reuse_key,
     kind: row.kind,
@@ -366,6 +393,10 @@ function toRecord(row: TaskRow): TaskResultRecord {
     occurrences: Number(row.occurrences),
     analyzedAt: isoTime(row.analyzed_at),
     expiresAt: isoTime(row.expires_at),
+    version: Number(row.version ?? 1),
+    ...(findings !== undefined && Object.keys(findings).length > 0 ? { findings } : {}),
+    ...(anchors.length > 0 ? { anchors } : {}),
+    ...(recommendation !== '' ? { recommendation } : {}),
   }
 }
 
@@ -530,8 +561,9 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       await this.pool.query(
         `INSERT INTO xdr_ingest_task_result
            (project_id, reuse_key, kind, subject_kind, subject, feature, task_id, verdict,
-            terminal_reason, confidence, summary, strength, occurrences, analyzed_at, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            terminal_reason, confidence, summary, strength, occurrences, analyzed_at, expires_at,
+            recommendation, payload, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          ON CONFLICT (project_id, reuse_key) DO UPDATE SET
            task_id = EXCLUDED.task_id,
            verdict = EXCLUDED.verdict,
@@ -541,11 +573,20 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            strength = EXCLUDED.strength,
            occurrences = EXCLUDED.occurrences,
            analyzed_at = EXCLUDED.analyzed_at,
-           expires_at = EXCLUDED.expires_at`,
+           expires_at = EXCLUDED.expires_at,
+           recommendation = EXCLUDED.recommendation,
+           payload = EXCLUDED.payload,
+           version = EXCLUDED.version`,
         [
           this.projectId, record.key, record.kind, record.subjectKind, record.subject,
           record.feature, record.taskId, record.verdict, record.terminalReason, record.confidence,
           record.summary, record.strength, record.occurrences, record.analyzedAt, record.expiresAt,
+          record.recommendation ?? '',
+          JSON.stringify({
+            findings: record.findings ?? {},
+            anchors: record.anchors ?? [],
+          }),
+          record.version ?? 1,
         ],
       )
       return true

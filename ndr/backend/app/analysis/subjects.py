@@ -191,7 +191,8 @@ def coverage(days: int = 7, kind: str = "", limit: int = 100) -> dict[str, Any]:
         return {"error": f"读覆盖率失败：{exc}", "days": window, "items": []}
     items = [
         {
-            "kind": KIND_ASSET,
+            # C4：主体类型就是登记时的类型（资产的盲区任务不该写成 signature，反之亦然）
+            "kind": r.kind,
             "subject": r.value,
             "subject_kind": r.kind,
             "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else "",

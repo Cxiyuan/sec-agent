@@ -23,7 +23,8 @@ const task: ClaimedTask = {
   strength: 0.7,
   subject_kind: 'ip',
   subject: '10.0.0.5',
-  hint: { 事实: 'conn_count 偏高' },
+  // B1：所有 kind 都由 NDR 下发稳定身份（复用的前提）
+  hint: { 事实: 'conn_count 偏高', reuse_identity: 'shift|ip:10.0.0.5|conn_count' },
 }
 
 interface Recorder {
@@ -175,6 +176,100 @@ test('timeout cancels the session and defers with reason timeout', async () => {
   assert.deepEqual(rec.deferred.map(d => d.reason), ['timeout'])
 })
 
+// ---------- stall：会话停滞（A4：stallMinutes 不能是死配置） ----------
+
+/** 把 console.warn 换成收集器（stall 的 1× 信号走 WARN）。 */
+async function withWarnCapture<T>(fn: (warnings: string[]) => Promise<T>): Promise<T> {
+  const warnings: string[] = []
+  const original = console.warn
+  console.warn = ((...args: unknown[]) => {
+    warnings.push(args.join(' '))
+  }) as typeof console.warn
+  try {
+    return await fn(warnings)
+  } finally {
+    console.warn = original
+  }
+}
+
+test('stallMinutes 1×: warn once, keep session alive if it resumes', async () => {
+  await withWarnCapture(async warnings => {
+    const rec = recorder()
+    // 会话 300ms 后空闲结束：1×=200ms 会 WARN，但活不过 2×=400ms，不该 cancel
+    const analyst = new Analyst({
+      agents: fakeAgents(rec, () => new Promise<void>(resolve => setTimeout(resolve, 300))),
+      ndr: fakeNdr(rec, () => ({ state: 'claimed' })),
+      timeoutMs: 10_000,
+      // stallMinutes 这里当"秒"用：1/300 分钟 = 200ms，纯为测试计时
+      stallMinutes: 1 / 300,
+      probeIntervalMs: 25,
+      probeSession: async () => ({ tools: 0, lastEventAt: 0 }),
+    })
+    const outcome = await analyst.run(task)
+    assert.equal(outcome.completed, false)
+    assert.equal(rec.cancelled, 0, '只到 1× 不许 cancel')
+    assert.equal(warnings.some(w => w.includes('无新事件')), true, '1× 必须 WARN（可观测）')
+    assert.equal(rec.disposed, 1)
+  })
+})
+
+test('stallMinutes 2×: cancel the session and defer with reason stalled', async () => {
+  const rec = recorder()
+  let releaseIdle: (() => void) | undefined
+  const idlePromise = new Promise<void>(resolve => {
+    releaseIdle = resolve
+  })
+  const agents: AgentsServiceLike = {
+    async create(): Promise<AgentHandleLike> {
+      return {
+        agent: {
+          followup() {},
+          whenIdle: () => idlePromise,
+          cancel() {
+            rec.cancelled += 1
+            // 模拟真实行为：cancel 之后会话进入空闲（idle 兑现）
+            releaseIdle?.()
+          },
+        },
+        dispose() {
+          rec.disposed += 1
+        },
+      }
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr: fakeNdr(rec, () => ({ state: 'claimed' })),
+    timeoutMs: 10_000,
+    stallMinutes: 1 / 600, // 2× = 200ms
+    probeIntervalMs: 25,
+    probeSession: async () => ({ tools: 0, lastEventAt: 0 }),
+  })
+  const outcome = await analyst.run(task)
+  assert.equal(rec.cancelled, 1, '过 2× 没有任何事件必须 cancel')
+  assert.equal(outcome.completed, false)
+  assert.equal(outcome.deferred, true)
+  assert.deepEqual(rec.deferred.map(d => d.reason), ['stalled'])
+})
+
+test('stallMinutes=0 keeps the probe idle-only (no stall supervision)', async () => {
+  const rec = recorder()
+  let probes = 0
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    stallMinutes: 0,
+    probeIntervalMs: 20,
+    probeSession: async () => {
+      probes += 1
+      return { tools: 0, lastEventAt: Date.now() }
+    },
+  })
+  await analyst.run(task)
+  assert.equal(probes, 0, '没有 maxTools 且 stallMinutes=0 时不起探针')
+})
+
 // ---------- 同类现象结论复用（智能体侧缓存） ----------
 
 const reusable: ClaimedTask = {
@@ -291,6 +386,81 @@ test('same-phenomenon tasks serialize so the second task sees the first result',
   assert.equal(firstOutcome.completed, true)
   assert.equal(secondOutcome.reused, true)
   assert.equal(sessionCount, 1)
+})
+
+test('B2: reuse replays findings/anchors/recommendation (but not process markers)', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  const key = await seed(store, 'false_positive')
+  const saved = await store.load(key)
+  assert.ok(saved !== null)
+  await store.save({
+    ...saved,
+    findings: { 协议: 'HTTP', 目的端口: 443, triaged_by: 'light', reused_at: 'stale' },
+    anchors: [
+      { kind: 'ip', value: '10.0.0.9' },
+      { kind: 'host', value: 'www.example.com' },
+    ],
+    recommendation: '复核这台机器的 443 出站',
+  })
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 86_400_000,
+  })
+  const outcome = await analyst.run(reusable)
+  assert.equal(outcome.reused, true)
+  const payload = rec.completed[0]
+  assert.ok(payload !== undefined)
+  // 结构化事实要回放，过程标记不能回放
+  assert.equal(payload.findings['协议'], 'HTTP')
+  assert.equal(payload.findings['目的端口'], 443)
+  assert.equal(payload.findings['reused_from'], 'task-old')
+  assert.equal(payload.findings['triaged_by'], undefined, '初筛标记不能漂到复用行')
+  assert.notEqual(payload.findings['reused_at'], 'stale', '上次的复用时戳要被这次的覆盖')
+  assert.deepEqual(payload.anchors, [
+    { kind: 'ip', value: '10.0.0.9' },
+    { kind: 'host', value: 'www.example.com' },
+  ])
+  assert.equal(payload.recommendation, '复核这台机器的 443 出站')
+})
+
+test('B2: remember keeps findings/anchors/recommendation for later replay', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({
+      state: 'done',
+      results: [
+        {
+          verdict: 'true_positive',
+          terminal_reason: 'concluded',
+          confidence: 0.8,
+          summary: '确认扫描',
+          findings: { 目的端口: 22, triaged_by: 'light', reused_at: 'x', reused_from: 'old' },
+          anchors: [{ kind: 'ip', value: '10.0.0.9' }],
+          recommendation: '封禁源地址',
+        },
+      ],
+    })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 86_400_000,
+  })
+  const outcome = await analyst.run(reusable)
+  assert.equal(outcome.completed, true)
+  const key = taskResultKey(reusable)
+  assert.ok(key !== null)
+  const saved = await store.load(key)
+  assert.equal((saved?.findings ?? {})['目的端口'], 22)
+  assert.equal((saved?.findings ?? {})['triaged_by'], undefined)
+  assert.equal((saved?.findings ?? {})['reused_at'], undefined)
+  assert.equal((saved?.findings ?? {})['reused_from'], undefined)
+  assert.deepEqual(saved?.anchors, [{ kind: 'ip', value: '10.0.0.9' }])
+  assert.equal(saved?.recommendation, '封禁源地址')
 })
 
 test('suspicious conclusions are never reused', async () => {

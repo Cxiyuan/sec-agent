@@ -1735,6 +1735,9 @@ const KIND_LABEL_FALLBACK: Record<string, string> = {
   structure: "结构",
   coverage: "覆盖",
   hit: "命中",
+  hit_cluster: "命中簇",
+  retest: "复测",
+  observation: "基线事实",
 };
 
 const TASK_KIND_LABEL_FALLBACK: Record<string, string> = KIND_LABEL_FALLBACK;

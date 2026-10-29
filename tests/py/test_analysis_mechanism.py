@@ -151,7 +151,14 @@ def test_confidence_keeps_fraction(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ndr_tools, "_client", lambda: None)
     monkeypatch.setattr(ndr_tools.analysis_queue, "complete_task", complete)
     result = ndr_tools._complete_task(
-        {"task_id": "t-confidence", "verdict": "true_positive", "confidence": 0.9}
+        {
+            "task_id": "t-confidence",
+            "verdict": "true_positive",
+            "confidence": 0.9,
+            # B4 起 true_positive 无有效引用会被证据校验先拦下到不了这层（防伪造引用入库）
+            "evidence_refs": ["es:real/1"],
+            "_valid_refs": ["es:real/1"],
+        }
     )
     assert result["ok"] is True
     assert seen["confidence"] == 0.9

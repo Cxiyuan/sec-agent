@@ -27,6 +27,12 @@ export interface ClaimedTask {
   readonly hint?: unknown
   readonly coalesced?: number
   readonly attempts?: number
+  /** B1/B2/C2：NDR 下发的一等字段（老版本缺失 → undefined，走 hint 兜底） */
+  readonly reuse_identity?: string
+  readonly direction?: string
+  readonly principal_asset?: string
+  readonly affected_assets?: readonly { readonly kind?: string; readonly value?: string }[]
+  readonly peers?: readonly string[]
 }
 
 export interface ClaimReply {

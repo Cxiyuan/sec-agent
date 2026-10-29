@@ -41,11 +41,12 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from app.baseline import stats as stats_mod
+from app.baseline import params as params_mod, poisson as poisson_mod, stats as stats_mod
 from app.config import settings
 from app.db.base import SessionLocal
 from app.db.models import AssetStat
 from app.ingestion import relay_nodes
+from app.iputil import is_internal_ip
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -78,9 +79,12 @@ SCOPE_EXTERNAL = "external"
 
 
 def scope_of_ip(ip: Any) -> str:
-    """目标 IP 属于内网还是公网（组播/链路本地/回环都算内网：它们只在本段内活动）。"""
-    import ipaddress
+    """目标 IP 属于监控网段内还是外部（回环/链路本地/组播只在本段内活动，算内网）。
 
+    口径 C1（2026-10-29）：IP 资产的内外判定走 `iputil.is_internal_ip()`（唯一坐标系），
+    不再用「addr 私有」口径 —— 未监控内网段（10.9.9.x）不是我们的资产，之前会被
+    当成 internal 学进基线、判异。hostname 等非 IP 标识无法判，保守按内网保留。
+    """
     text = str(ip or "").strip()
     if not text:
         return SCOPE_INTERNAL
@@ -89,9 +93,9 @@ def scope_of_ip(ip: Any) -> str:
     except ValueError:
         # 不是 IP（域名等其他形式）：保守当成内网，不把未知归到「外部」
         return SCOPE_INTERNAL
-    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+    if addr.is_loopback or addr.is_link_local or addr.is_multicast:
         return SCOPE_INTERNAL
-    return SCOPE_EXTERNAL
+    return SCOPE_INTERNAL if is_internal_ip(text) else SCOPE_EXTERNAL
 
 
 #: 一个观测区间多少秒（界面展示「平均每区间」用）：与基线落库节奏一致，不写死。
@@ -287,6 +291,96 @@ def apply_window(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]
     return stats_mod.apply_stats(values, model=AssetStat, attrs=_scope_attrs(buckets))
 
 
+#: 资产窗口特征的判异维度：一次判定做 5 个检验，阈值按 Bonferroni 收紧
+JUDGE_FEATURES: tuple[str, ...] = (
+    "visits",
+    "requests",
+    "distinct_clients",
+    "distinct_client_ports",
+    "distinct_targets",
+)
+
+#: 单资产每小时偏差计数的进程内账本：`asset -> (小时桶, 已报次数)`
+_dev_budget: dict[str, tuple[int, int]] = {}
+
+
+def _allow_deviation(asset: str, now: datetime) -> bool:
+    """偏差限额（最后一道闸）：同一资产每小时最多报几条。
+
+    为什么必须有：泊松检验 + Bonferroni 之后，基数一大（上千资产 × 5 特征 × 288 窗口/天）
+    仍会积累可观假阳性；"统计显著"要再收敛成"值得人看"。
+    """
+    cap = params_mod.asset_deviation_cap_per_entity_hour()
+    if cap <= 0:
+        return True
+    hour = int(now.timestamp() // 3600)
+    bucket, used = _dev_budget.get(asset, (hour, 0))
+    if bucket != hour:
+        bucket, used = hour, 0
+    if used >= cap:
+        _dev_budget[asset] = (bucket, used)
+        return False
+    _dev_budget[asset] = (bucket, used + 1)
+    return True
+
+
+def judge_window(
+    buckets: dict[str, dict[str, Any]], now: datetime | None = None
+) -> list[dict[str, Any]]:
+    """资产侧判异（D3）：用**旧**基线判本窗口，只对监控网段内资产生效。
+
+    为什么必须"先判后学"：窗口样本一旦并入基线，再拿它比较就是拿自己跟自己比。
+    调用方（`engine._flush_assets`）先调这里、再调 `apply_window`。
+
+    返回 `[{asset, feature, value, mean, std, p, clients, targets}]`，**不发事实** ——
+    发不发、发成什么强度由 engine 决定（事实语义归 observations 模块）。
+    """
+    if not params_mod.baseline_enabled() or not params_mod.asset_shift_enabled():
+        return []
+    moment = now or datetime.now(UTC)
+    wanted: list[str] = []
+    for key, bucket in buckets.items():
+        if str(bucket.get("scope") or SCOPE_INTERNAL) != SCOPE_INTERNAL:
+            continue
+        wanted.extend(f"{key}:{feature}" for feature in JUDGE_FEATURES)
+    if not wanted:
+        return []
+    olds = stats_mod.load_stats(wanted, model=AssetStat)
+    alpha = poisson_mod.bonferroni_alpha(params_mod.alpha(), len(JUDGE_FEATURES))
+    values = window_values(buckets)
+    out: list[dict[str, Any]] = []
+    for key, bucket in buckets.items():
+        if str(bucket.get("scope") or SCOPE_INTERNAL) != SCOPE_INTERNAL:
+            continue
+        for feature in JUDGE_FEATURES:
+            base = olds.get(f"{key}:{feature}")
+            if base is None or int(base.get("count") or 0) < 2 or not base.get("warmed"):
+                continue  # 还在学习期：不报偏离 ≠ 正常（事实里会带 warmed=false）
+            value = float((values.get(f"{key}:{feature}") or [0.0])[0])
+            mean = float(base.get("mean") or 0.0)
+            std = float(base.get("std") or 0.0)
+            if value <= mean:
+                continue  # 只关心上偏（暴涨）；下降不是"异常访问"的证据
+            p = poisson_mod.count_p_value(value, mean=mean, var=std * std)
+            if p >= alpha:
+                continue
+            if not _allow_deviation(key, moment):
+                continue
+            out.append(
+                {
+                    "asset": key,
+                    "feature": feature,
+                    "value": value,
+                    "mean": mean,
+                    "std": std,
+                    "p": round(float(p), 8),
+                    "clients": len(bucket.get("clients") or ()),
+                    "targets": len(bucket.get("targets") or ()),
+                }
+            )
+    return out
+
+
 def _scope_attrs(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """把每个资产的归属写到它的 `:visits` 行。"""
     return {
@@ -294,6 +388,43 @@ def _scope_attrs(buckets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]
         for key, bucket in buckets.items()
         if key
     }
+
+
+def baseline_rows(asset: str = "", feature: str = "", limit: int = 50) -> dict[str, Any]:
+    """读被访问方资产的窗口基线（D3 的只读工具面）。
+
+    `asset`/`feature` 都是包含匹配（会话里常常只记得站点名或只想看客户端数维度）。
+    返回里带 `warmed`：false = 还在观测期，**没报偏离 ≠ 正常**。
+    """
+    cap = max(1, min(int(limit or 50), 200))
+    asset = str(asset or "").strip()
+    feature = str(feature or "").strip()
+    try:
+        with SessionLocal() as db:
+            stmt = select(AssetStat)
+            if asset:
+                stmt = stmt.where(AssetStat.key.like(f"%{asset}%"))
+            if feature:
+                stmt = stmt.where(AssetStat.key.like(f"%:{feature}"))
+            rows = list(db.scalars(stmt.order_by(AssetStat.key).limit(cap)).all())
+    except Exception as exc:  # noqa: BLE001 — 读失败如实返回，不伪造"正常"
+        log.warning("读资产基线失败：%s", exc)
+        return {"available": False, "error": str(exc)[:200], "items": []}
+    now = datetime.now(UTC)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(row.key or "")
+        name, _, feat = key.rpartition(":")
+        state = stats_mod.state_of(row, now)
+        items.append(
+            {
+                "asset": name,
+                "feature": feat,
+                "scope": str(getattr(row, "scope", "") or ""),
+                **state,
+            }
+        )
+    return {"available": True, "items": items, "count": len(items)}
 
 
 def refresh_scopes() -> int:

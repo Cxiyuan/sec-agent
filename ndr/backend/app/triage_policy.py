@@ -3,7 +3,8 @@
 设计要点
 - **判据只有这一份**：同一套规则要在三处使用 —— 检测器（摘要级打标）、图内实时入口、
   图内兜底入口。判据若各写一遍，就会出现"实时跳过了、兜底又捡回来"这类不一致（本项目踩过）。
-- **全部环境无关**：内外网按"是否公网"判定，不写死任何客户网段/端口；阈值全部可配
+- **全部环境无关**：内外网按"监控网段"判定（`iputil.is_internal_ip`，不写死任何
+  客户网段/端口；未配置网段时回落"非公网即内网"）；阈值全部可配
   （后台「系统配置 → 误报治理」即时生效，见 runtime_config）。
 - **绝不静默**：每个"跳过/降级"的决定都要返回可读理由，由调用方落库或计数。
 
@@ -21,7 +22,7 @@ from typing import Any
 
 from app.config import settings
 from app.ingestion.conn_states import ESTABLISHED_CONN_STATES
-from app.iputil import is_public_ip
+from app.iputil import is_internal_ip
 from app.runtime_config import get as runtime_get
 from app.workers.log import get_logger
 
@@ -57,11 +58,16 @@ SUCCESS_CONN_STATES = ESTABLISHED_CONN_STATES
 
 
 def _is_internal(ip: Any) -> bool:
-    """是否内网地址（非公网）。地址缺失返回 False（不把脏数据当内网放行）。"""
+    """是否**监控网段内**地址（口径 C1 2026-10-29：is_internal_ip 是唯一坐标系）。
+
+    不能用"非公网"代替 —— 10.9.9.9 是私网但不在监控网段里，它是"网段外来访"，
+    方向算 out→in，不是 in→in（_region 方向判断的两个口径实测差 13%）。
+    地址缺失返回 False（不把脏数据当内网放行）。
+    """
     value = str(ip or "").strip()
     if not value:
         return False
-    return not is_public_ip(value)
+    return is_internal_ip(value)
 
 
 def direction_of(src_ip: Any, dst_ips: Any, real_client_ips: Any = None) -> str:

@@ -319,6 +319,10 @@ class Settings(BaseSettings):
     # 偏差限额（最后一道闸，把"统计显著"收敛成"值得人看"）
     baseline_deviation_cap_per_entity_hour: int = 3
     baseline_deviation_cap_per_hour: int = 200
+    # 资产侧基线判异（D3，2026-10-29）：默认只学不判，观察一周指标后再开
+    baseline_asset_shift_enabled: bool = False
+    # 同一资产每小时最多报几条 asset_shift（统计显著 ≠ 值得人看）
+    baseline_asset_deviation_cap_per_entity_hour: int = 3
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）
     baseline_cleanup_seconds: int = 3600  # 过期画像清理的检查节奏（秒）
     baseline_max_observations: int = 50000  # 单窗口最多攒多少条画像观测，超了提前落库

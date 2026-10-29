@@ -10,7 +10,7 @@
 export interface LightTriageConfig {
   /** 总开关（false = 一切任务走付费会话，行为与没有初筛完全一致）。 */
   readonly enabled: boolean
-  /** OpenAI 兼容端点根路径（如 `http://172.16.196.77:8080/v1`；空 = 未配置）。 */
+  /** OpenAI 兼容端点根路径（如 `http://192.168.1.10:8080/v1`；空 = 未配置）。 */
   readonly baseUrl: string
   /** 模型名（推理服务侧的名字，如 `Qwen3.5-2B-Q4_K_M`）。 */
   readonly model: string
@@ -35,7 +35,7 @@ export const DEFAULT_LIGHT_TRIAGE: LightTriageConfig = {
   threshold: 0.85,
   auditRate: 0.1,
   timeoutMs: 20_000,
-  kinds: ['novelty', 'observation'],
+  kinds: ['coverage'],
 }
 
 /** 运行参数快照（单位与 Config 一致）。 */

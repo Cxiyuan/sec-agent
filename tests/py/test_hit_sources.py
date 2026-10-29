@@ -231,15 +231,17 @@ def test_hit_item_carries_chinese_event_types(hits_mod: ModuleType) -> None:
     assert "EVENT_TYPE_LABELS.get" in src
 
 
-def test_baseline_events_have_event_type(hits_mod: ModuleType) -> None:
-    """基线偏离事件必须写 event_types，且写**具体归类**（不能是 baseline_deviation 内部码）。"""
+def test_baseline_deviations_are_not_hit_events(hits_mod: ModuleType) -> None:
+    """基线偏离不再伪造 hit事件（E 整改）：画像/数值异常走观察事实与 agent 工具。
+
+    保留这条守卫防止死代码复活：检测侧只出规则/特征命中，
+    「已分析没分析」的语义归智能体侧；绑基线偏离进事件中心会给界面
+    带来内置 severity（NDR 只出事实，强度判断在 agent）—— 与架构方向冲突。
+    """
     src = (ROOT / "ndr" / "backend" / "app" / "detector" / "hits.py").read_text(encoding="utf-8")
-    seg = src[src.index("def save_baseline_deviations") :]
-    assert seg.count("event_types=[") == 2, "画像分支和数值基线分支都要写 event_types"
-    assert 'event_types=["baseline_deviation"]' not in seg, "事件类型不该再写内部码"
-    assert "event_types=[_reason_label(reasons[0])]" in seg, "画像分支要写偏离维度中文名"
-    assert 'event_types=[_FEATURE_LABELS.get(feature, "数值基线偏离")]' in seg, (
-        "数值基线分支要写特征中文名"
+    assert "save_baseline_deviations" not in src, "已删除的死代码不该回来"
+    assert 'source_kind="baseline_deviation"' not in src, (
+        "检测侧不该再生产 baseline_deviation 类事件"
     )
 
 

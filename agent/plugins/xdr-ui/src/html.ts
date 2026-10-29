@@ -601,7 +601,7 @@ ${THEME}
         <input id="lt-enabled" type="checkbox"> 轻量初筛（自建小模型粗筛：明显 benign/误报才关单，其余升级付费模型）
       </label>
       <div class="form-grid">
-        <div class="field"><label>推理服务地址（OpenAI 兼容，通常以 /v1 结尾）</label><input id="lt-url" placeholder="http://172.16.196.77:8080/v1"></div>
+        <div class="field"><label>推理服务地址（OpenAI 兼容，通常以 /v1 结尾）</label><input id="lt-url" placeholder="http://192.168.1.10:8080/v1"></div>
         <div class="field"><label>模型名</label><input id="lt-model" placeholder="Qwen3.5-2B-Q4_K_M"></div>
       </div>
       <div class="form-grid">

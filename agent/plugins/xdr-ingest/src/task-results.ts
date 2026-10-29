@@ -37,6 +37,11 @@ export const REUSABLE_VERDICTS: ReadonlySet<string> = new Set([
 export interface TaskResultRecord {
   /** 现象身份（sha256，见 taskResultKey）。 */
   readonly key: string
+  /**
+   * 记录格式版本：1 = 老记录（只有 verdict/summary）；2 = 带 findings/anchors/recommendation
+   * 的回放字段（B2）。读旧记录照常可用，只是不回放结构化内容。
+   */
+  readonly version?: number
   readonly kind: string
   readonly subjectKind: string
   readonly subject: string
@@ -48,6 +53,15 @@ export interface TaskResultRecord {
   readonly terminalReason: string
   readonly confidence: number
   readonly summary: string
+  /**
+   * B2 回放：上次结论的结构化发现（剔除 volatile 键后原样保存）。
+   * 缺省 = 老记录（复用只回放 verdict/summary）。
+   */
+  readonly findings?: Readonly<Record<string, unknown>>
+  /** B2 回放：上次结论挂的资产锚点（NDR `task_detail.results[].anchors`）。 */
+  readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
+  /** B2 回放：上次结论的一句话建议（B6 字段）。 */
+  readonly recommendation?: string
   /** 上次分析时的客观强度（新线索更强就必须重查）。 */
   readonly strength: number
   /** 该现象被看到/复用的次数（含首次）。 */
@@ -143,25 +157,41 @@ export function identityOfMatch(match: unknown): TaskIdentity | null {
 }
 
 /**
- * 现象身份。`feature` 缺失时返回 null：宁可多分析一次，也不能把不同规则
- * 命中的同一台机器混成一条结论（老版本 NDR 不下发 feature 时就是这种情况）。
+ * 现象身份（B1，2026-10-29 整改）。
+ *
+ * **NDR 在 hint 里下发的 `reuse_identity` 优先**：它按 kind 给出完整客观身份 ——
+ * observation 的身份含事实 key（同一资产外连 A/B 是两条不同事实，各有各的身份），
+ * hit/hit_cluster 是跨时间窗稳定的内容身份。之前 agent 拿 kind|subject|feature 自己拼，
+ * "同一资产的不同外连目标"共用一条结论（实测踩过）。
+ *
+ * 兜底：旧版 NDR 不发身份时，非 hit 类型回退到本地拼法（feature 缺失返回 null：
+ * 宁可多分析一次，也不能把不同规则命中的同一台机器混成一条结论）。
+ * `taskReuseRequireIdentity`（默认 true）关掉后彻底回退旧行为。
  */
-export function taskResultKey(task: ClaimedTask): string | null {
-  const feature = (task.feature ?? '').trim()
+export function taskResultKey(
+  task: ClaimedTask,
+  opts: { requireIdentity?: boolean } = {},
+): string | null {
   const subject = (task.subject ?? '').trim()
-  if (feature === '' || feature === '-' || subject === '' || task.kind.trim() === '' || task.subject_kind.trim() === '') return null
-  let eventIdentity = ''
-  if (task.kind === 'hit') {
-    const hint = task.hint
-    if (typeof hint !== 'object' || hint === null || Array.isArray(hint)) return null
-    const value = (hint as Record<string, unknown>)['reuse_identity']
-    if (typeof value !== 'string' || value.trim() === '') return null
-    // hit 任务同源同规则仍可能是不同目标/端口；必须有 NDR 下发的稳定内容身份。
-    eventIdentity = value.trim()
+  if (subject === '' || task.kind.trim() === '' || task.subject_kind.trim() === '') return null
+  const hint = task.hint
+  const hintIdentity =
+    typeof hint === 'object' && hint !== null && !Array.isArray(hint)
+      ? String((hint as Record<string, unknown>)['reuse_identity'] ?? '').trim()
+      : ''
+  // hit/hit_cluster 本地四元组不够稳（同源同规则仍可能是不同目标/端口/簇）：
+  // 没有下发身份就不复用（taskReuseRequireIdentity=false 时临时回退旧行为）
+  const requireIdentity = opts.requireIdentity ?? true
+  if (hintIdentity === '' && requireIdentity) return null
+  if (hintIdentity !== '') {
+    const base = JSON.stringify([task.kind, task.subject_kind, subject, hintIdentity])
+    return TASK_RESULT_PREFIX + createHash('sha256').update(base, 'utf8').digest('hex').slice(0, 32)
   }
+  const feature = (task.feature ?? '').trim()
+  if (feature === '' || feature === '-') return null
   // JSON tuple 避免 subject/feature 本身含分隔符时出现身份碰撞。
-  const base = JSON.stringify([task.kind, task.subject_kind, subject, feature, eventIdentity])
-  return TASK_RESULT_PREFIX + createHash('sha256').update(base, 'utf8').digest('hex').slice(0, 32)
+  const base = JSON.stringify([task.kind, task.subject_kind, subject, feature, ''])
+  return TASK_RESULT_PREFIX + createHash('sha256').update(base, 'utf-8').digest('hex').slice(0, 32)
 }
 
 export type ReuseDecision =

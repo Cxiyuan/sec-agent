@@ -39,6 +39,7 @@ from app.api.routes.files import (
 )
 from app.api.routes.rules import all_rules as _all_rules
 from app.baseline import (
+    asset as _asset,
     egress as _egress,
     observations as _observations,
     profile as _profile,
@@ -179,6 +180,15 @@ def list_observations(
         kind=kind, subject=subject, minutes=minutes, limit=limit, offset=offset
     )
 
+
+
+def asset_baseline(*, asset: str = "", feature: str = "", limit: int = 50) -> dict[str, Any]:
+    """被访问方资产的窗口基线（D3）：均值/标准差/样本数/是否预热/归属。
+
+    只读；给智能体判断「这次访问量是不是真的异常」用 —— 没有基线数据时如实说
+    「还在学习」，不能拿 0 当"平时就是这样"。
+    """
+    return _asset.baseline_rows(asset=asset, feature=feature, limit=limit)
 
 
 def egress_baseline(src_ip: str, *, kind: str = "", value: str = "", limit: int = 100) -> dict[str, Any]:

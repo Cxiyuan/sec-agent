@@ -414,6 +414,7 @@ def complete_task(
     next_tasks: list[dict[str, Any]] | None = None,
     suppression: dict[str, Any] | None = None,
     anchors: list[dict[str, Any]] | None = None,
+    recommendation: str = "",
     terminal_reason: str = "",
     tools_used: int = 0,
     duration_ms: int = 0,
@@ -423,6 +424,8 @@ def complete_task(
     `anchors` 决定这条结论**影响哪些资产**（如一条"这台是反向代理"要挂到它后面的后端）；
     `terminal_reason` 说明是怎么结束的（查清了 / 预算用尽 / 取数失败 / 超时 / 中断），
     否则 `inconclusive` 无法区分"查了没证据"和"根本没查完"。
+    `recommendation`（B6）：一句话建议后续动作（复核/排查方向/关闭），客观动作不预设威胁，
+    与结论一起落库随 `task_state`/复用回放。
     """
     return _run(
         "complete_task",
@@ -438,6 +441,7 @@ def complete_task(
                 next_tasks=next_tasks,
                 suppression=suppression,
                 anchors=anchors,
+                recommendation=recommendation,
                 terminal_reason=terminal_reason,
                 tools_used=tools_used,
                 duration_ms=duration_ms,
@@ -658,10 +662,19 @@ def egress_baseline(src_ip: str = "", kind: str = "", value: str = "", limit: in
     )
 
 
+def asset_baseline(asset: str = "", feature: str = "", limit: int = 50) -> str:
+    """被访问方资产的窗口基线（D3）：均值/标准差/样本数/是否预热/归属（只有统计，没有结论）。"""
+    return _run(
+        "asset_baseline",
+        _clean(asset=asset, feature=feature, limit=limit),
+        native=True,
+    )
+
+
 def list_observations(
     kind: str = "", subject: str = "", minutes: int = 1440, limit: int = 50, offset: int = 0
 ) -> str:
-    """行为基线事实：外连新目标/罕见、账号异地登录、爆破、404、连接数偏离（只有事实，没有结论）。"""
+    """行为基线事实：外连新目标/罕见、账号异地登录、爆破、404、连接数偏离、被访问资产访问量偏离（只有事实，没有结论）。"""
     return _run(
         "list_observations",
         _clean(kind=kind, subject=subject, minutes=minutes, limit=limit, offset=offset),
@@ -711,6 +724,7 @@ _NDR_TOOL_FUNCS = (
     fetch_window,
     record_conclusion,
     baseline_lookup,
+    asset_baseline,
     entity_profile,
     file_content,
     claim_tasks,
@@ -749,14 +763,30 @@ _NDR_TOOL_FUNCS = (
 #: 真正对得上的是**同族能力**：只把当前身份用得上的工具暴露出来。这同时修掉一个安全缺口——
 #: 原来任何持有令牌的调用方都能看到并调用 `submit_suppression`（等于能关掉一部分检测面）。
 #:
-#: `analyst` 是智能体分析闭环够用的最小集（25 个）；排查/运维/复现用 `/mcp/full`（全部）。
+#: `analyst` 是智能体分析闭环的处理：**全部只读取证工具开放**（2026-10-29 架构整改 A1——
+#: 之前只给 25 个，缺 timeline/net_flows/dns_queries/tls_fingerprints/web_requests/
+#: file_hashes/file_content/fetch_window/list_networks/list_filters/detector_status/
+#: task_stats/log_step/search_traces/get_trace，把取证能力裁掉了，agent 只能切
+#: `/mcp/full` 或瞎猜）。收窄的仅限**写/破坏性**动作：`record_conclusion`（已有事件镜像）、
+#: `revoke_suppression`、规则/过滤修改、系统配置修改、`add_task`。
+#: 排查/运维/复现用 `/mcp/full`（全部）。
 _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "analyst": (
-        # 取数（最小必要集：先看数据地图，再按需检索与聚合）
+        # 取数（先看数据地图，再按需检索与聚合；细分取证工具齐全）
         "describe_data",
         "search_events",
         "aggregate_events",
+        "timeline",
+        "net_flows",
+        "dns_queries",
+        "tls_fingerprints",
+        "web_requests",
+        "file_hashes",
         "raw_evidence",
+        # 整窗回溯（自己拉一段时间窗筛）
+        "fetch_window",
+        # 提取件内容（事件带 extracted/fuid 时的只读取证；有界）
+        "file_content",
         # 事件面与历史
         "search_hits",
         "get_event_detail",
@@ -772,11 +802,20 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "coverage_report",
         # 方向判定：反代/DNS 转发不查清楚，代理访问会被误读成内网主动外联
         "relay_nodes",
+        # 监控网段与过滤闸门（分析的坐标系：先 list_networks 确认网段再判内外）
+        "list_networks",
+        "list_filters",
+        "detector_status",
         # 派工闭环
         "claim_tasks",
         "complete_task",
         "defer_task",
         "task_state",
+        # 过程/成本观测：看队列与自己的预算，决定领取节奏；查轨迹避免重复取数
+        "task_stats",
+        "log_step",
+        "search_traces",
+        "get_trace",
         # 身份：项目组织绑定校验（授权ID 必须与智能体侧配置一致）
         "server_info",
         # 抑制（申请与查看；撤销留给人在界面或 full 档上做）
@@ -784,6 +823,7 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "list_suppressions",
         # 底座：没有这两把"尺子"，agent 只能去 ES 自己算"正常长什么样"
         "baseline_lookup",
+        "asset_baseline",
         "entity_profile",
         # 行为基线事实（外连新目标/异地登录/爆破/404）：事实在前，判断在后
         "list_observations",
@@ -875,6 +915,10 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         ctx.append("relay_nodes 查反代/DNS 转发（否则会把代理访问误判成内网主动外联）")
     if has("baseline_lookup"):
         ctx.append("baseline_lookup 查数值基线（当前值 vs 长期均值与 σ、是否过了观测期）")
+    if has("asset_baseline"):
+        ctx.append(
+            "asset_baseline 查被访问方资产的窗口基线（客户端数/请求数等均值与样本数，warmed=false 表示还在学习）"
+        )
     if has("entity_profile"):
         ctx.append("entity_profile 查账号/会话画像（长期基线、风险分与异常理由）")
     if has("list_observations"):

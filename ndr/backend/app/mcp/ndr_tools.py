@@ -992,9 +992,11 @@ def _claim_tasks(args: dict[str, Any]) -> dict[str, Any]:
 def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
     """交回结论（含成本），可选派生追问与提交精准抑制。
 
-    两道校验是这个机制的安全底座：
+    三道校验是这个机制的安全底座：
     - `evidence_refs` **必须是本会话真取回过的引用**（`ctx.valid_refs`）——
       否则"随便编几条引用"就能换到一条永久抑制；
+    - `verdict=true_positive` 至少 1 条有效引用；**所有**结论的引用都过伪造校验
+      （B4，2026-10-29 架构整改：编造的证据进库会被后续复用当成真的）；
     - `suppression` 走与界面同一套 `suppression.validate_item`（至少 2 个匹配维度 +
       影响面积试算），不把"智能体说了算"变成"智能体说什么算什麼"。
     """
@@ -1003,13 +1005,58 @@ def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
     task_id = str(args.get("task_id") or "")
     valid_refs = {str(x) for x in (args.get("_valid_refs") or [])}
     refs = [str(x) for x in (args.get("evidence_refs") or [])][:20]
+    raw_findings = args.get("findings")
+    findings_arg: dict[str, Any] = dict(raw_findings) if isinstance(raw_findings, dict) else {}
+    # verdict 先归一化再校验（中文别名「真阳性」要能命中同一条规则，与 queue 的收口一致；
+    # `clean_verdict` 走 queue 模块属性，不直接 import —— MCP 依赖门面约束见
+    # test_analysis_mechanism.py 的 boundary guard）
+    verdict_text, verdict_norm_error = analysis_queue.clean_verdict(str(args.get("verdict") or ""))
+    # ---------- B4 硬校验（2026-10-29 架构整改）：结论分级核验证据引用 ----------
+    # 之前只有提抑制才校 valid_refs，普通结论可以编引用——编造的证据一旦进库，
+    # 就会被后续 prior_findings/复用当成真的。现在：
+    # - 非空 refs 必须都在本会话 `valid_refs` 里（会话没取过任何证据时全部算伪造）；
+    # - `true_positive` 至少 1 条有效引用（复用交回豁免：取证发生在原始那轮会话）；
+    # - benign/false_positive/inconclusive 允许空引用（初筛关单就没有引用）。
+    field_errors: list[dict[str, str]] = []
+    if verdict_norm_error != "":
+        field_errors.append({"field": "verdict", "msg": verdict_norm_error})
+    else:
+        forged = [r for r in refs if r not in valid_refs] if refs else []
+        if forged:
+            field_errors.append(
+                {
+                    "field": "evidence_refs",
+                    "msg": f"这些引用本会话没真取回过：{'、'.join(forged[:3])}",
+                }
+            )
+        is_reuse = str(findings_arg.get("reused_from") or "").strip() != ""
+        if verdict_text == "true_positive" and not is_reuse and not forged:
+            grounded = [r for r in refs if r in valid_refs]
+            if not grounded:
+                field_errors.append(
+                    {
+                        "field": "evidence_refs",
+                        "msg": "verdict=true_positive 至少要 1 条本会话真取回的证据引用",
+                    }
+                )
+    if field_errors:
+        return {
+            "error": "；".join(e["msg"] for e in field_errors) + "。重新取数后用真实引用再交。",
+            "field": "evidence_refs",
+            "field_errors": field_errors,
+        }
+    # B6：`recommendation` 是 complete_task 的正式字段（此前只活在技能文案里，交不进来）。
+    # 先落 findings["recommendation"]（不加列）；B2 批次再把它提升到独立列随复用回放。
+    recommendation = str(args.get("recommendation") or "").strip()[:2000]
+    if recommendation:
+        findings_arg.setdefault("recommendation", recommendation)
     out = analysis_queue.complete_task(
         client,
         task_id,
         verdict=str(args.get("verdict") or ""),
         summary=str(args.get("summary") or ""),
         confidence=_bounded_float(args.get("confidence"), default=0.0, lo=0.0, hi=1.0),
-        findings=args.get("findings") if isinstance(args.get("findings"), dict) else {},
+        findings=findings_arg,
         evidence_refs=refs,
         tools_used=_bounded_int(args.get("tools_used"), default=0, lo=0, hi=100000),
         duration_ms=_bounded_int(args.get("duration_ms"), default=0, lo=0, hi=10**9),
@@ -1133,6 +1180,28 @@ def _egress_baseline(args: dict[str, Any]) -> dict[str, Any]:
         value=str(args.get("value") or "").strip(),
         limit=max(1, min(int(args.get("limit") or 100), 500)),
     )
+
+
+def _asset_baseline(args: dict[str, Any]) -> dict[str, Any]:
+    """被访问方资产的窗口基线（D3）：只读统计，不含任何结论。
+
+    `warmed=false` = 还在观测期：没报偏离不等于正常，智能体要据此决定是否相信基线。
+    """
+    from app.mcpapi import asset_baseline as query
+
+    feature = str(args.get("feature") or "").strip()
+    known = ("", "visits", "requests", "distinct_clients", "distinct_client_ports", "distinct_targets")
+    if feature not in known:
+        return {
+            "error": "feature 只能是 visits / requests / distinct_clients / "
+            "distinct_client_ports / distinct_targets（留空=全部）"
+        }
+    return query(
+        asset=str(args.get("asset") or "").strip(),
+        feature=feature,
+        limit=max(1, min(int(args.get("limit") or 50), 200)),
+    )
+
 
 def _list_observations(args: dict[str, Any]) -> dict[str, Any]:
     """行为基线事实（外连新目标 / 异地登录 / 爆破 / 404 / 计数偏离）。
@@ -1723,7 +1792,9 @@ TOOLS: dict[str, dict[str, Any]] = {
         "params": {
             "limit": "最多领几个（默认 1，上限 20）",
             "kinds": "只要这些类型的线索，逗号分隔：novelty 首见 / shift 自身基线偏离 / "
-            "structure 结构特征 / coverage 盲区 / hit 规则命中（留空=都要）",
+            "structure 结构特征 / coverage 盲区 / hit 规则命中 / hit_cluster 命中簇"
+            "（一次扫描折成一件，主体是被访问资产）/ "
+            "observation 行为基线事实(外连新目标、爆破、异地登录…) / retest 复测误报抑制（留空=都要）",
             "min_strength": "只要客观强度不低于这个值的线索（0~1，默认 0）",
             "wait_seconds": "队列暂时没线索时最多等多久（0~30 秒长轮询，默认 0 立刻返回）",
         },
@@ -1748,6 +1819,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "anchors": "数组：这条结论影响哪些资产，每项 {kind, value}；"
             "kind 只认 ip / host / domain / endpoint / service（最多 50 个）。"
             "一条「这台是反向代理」要挂到它后面的后端主机上，否则下次分析还得从头查",
+            "recommendation": "一句话建议后续动作（B6：随结论落库随复用回放；客观动作，不预设威胁）",
             "terminal_reason": "这次是怎么结束的：concluded / budget_exhausted / tool_error / "
             "timeout / aborted（不填按 concluded）",
             "tools_used": "本任务用了多少次工具调用（预算调优的成本口径）",
@@ -1776,6 +1848,20 @@ TOOLS: dict[str, dict[str, Any]] = {
             "limit": "最多返回几条目的地（默认 100）",
         },
     },
+    "asset_baseline": {
+        "run": _asset_baseline,
+        "desc": (
+            "查**被访问方资产**的窗口基线（D3，与你看到的事件同一份统计）："
+            "均值/标准差/样本数/是否过了观测期/所属网段。用来回答「这次访问量是不是"
+            "真的异常」——只有统计事实，没有结论；warmed=false 表示还在学习，不能当正常"
+        ),
+        "params": {
+            "asset": "资产标识（站点 hostname 或 IP:端口，支持包含匹配；留空=全部）",
+            "feature": "只看某个维度：visits 连接数 / requests 请求数 / distinct_clients 客户端数 / "
+            "distinct_client_ports 客户端端口数 / distinct_targets 被访问目标数（留空=全部）",
+            "limit": "最多几条（默认 50）",
+        },
+    },
     "list_observations": {
         "run": _list_observations,
         "desc": (
@@ -1784,7 +1870,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "没有严重度、没有结论 —— 判断权在你"
         ),
         "params": {
-            "kind": "只看某类事实：egress_new / egress_rare / geo_jump / login_bruteforce / path_probe / conn_shift（可省）",
+            "kind": "只看某类事实：egress_new / egress_rare / geo_jump / login_bruteforce / "
+            "path_probe / conn_shift / asset_shift（可省）",
             "subject": "只看某个对象（资产 IP / 账号，可省）",
             "minutes": "回看多少分钟（默认 1440）",
             "limit": "最多几条（默认 50）",

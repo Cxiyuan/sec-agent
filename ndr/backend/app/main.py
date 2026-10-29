@@ -37,6 +37,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
     # 命中事件来源类别（特征匹配 / 行为分析 / 基线偏离）
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS source_kind VARCHAR(24) DEFAULT 'behavior_analysis'",
+    # 命中方向（D1，2026-10-29 架构整改）：out→in / in→out / in→in / out→out / unknown，
+    # 聚合定型时算一次全链路下发（hint/事件详情/智能体都看它决定往哪个方向查）
+    "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS direction VARCHAR(16) DEFAULT ''",
     # 精准抑制：按「启用+到期」筛活跃条目、按命中数排序找最需要复核的条目
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_enabled_expiry ON analysis_suppressions (enabled, expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_hits ON analysis_suppressions (hits)",

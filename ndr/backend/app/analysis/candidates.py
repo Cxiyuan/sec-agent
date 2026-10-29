@@ -38,7 +38,8 @@ from app.baseline import poisson
 from app.db.base import SessionLocal
 from app.db.models import AnalysisResult, AnalysisTask, HitEvent, Observation, ObservedSubject
 from app.detector import suppression
-from app.iputil import is_public_ip
+from app.detector.clustering import cluster_label
+from app.iputil import is_internal_ip
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -129,9 +130,11 @@ class Collector:
         """每条事件调用；只往 set 里塞，不做任何数据库/网络操作。"""
         src = str(entry.src_ip or "")
         dst = str(entry.dst_ip or "")
-        # 资产首见只看**被访问方**（内网 dst）：取 src 会把"新手机/新客户端 IP"
+        # 资产首见只看**被访问方**（监控网段内的 dst）：取 src 会把"新手机/新客户端 IP"
         # 当成新资产，校园网一天上千条（实测 3659 条待办，97% 是客户端噪声）。
-        if dst and dst != "-" and not is_public_ip(dst):
+        # 口径 C1（2026-10-29）：is_internal_ip() 是唯一坐标系 —— 不能用"非公网"代替，
+        # 否则 10.9.9.9 这类**未监控内网段**会被登记成我们的资产、出盲区派工任务。
+        if dst and dst != "-" and is_internal_ip(dst):
             self._add(subjects.KIND_ASSET, dst)
             port = entry.dst_port
             # 服务端口只记高危/常用端口：随机高端口（NAT/临时连接）没有暴露面含义
@@ -143,7 +146,9 @@ class Collector:
         if sig_id:
             self._add(subjects.KIND_SIGNATURE, sig_id)
         account = str(getattr(entry, "account", "") or getattr(entry, "user", "") or "")
-        if account:
+        # 账号首见只在**监控网段内的源**登记（C1）：外部攻击者打的账号字典
+        # 不是"我们见过的新账号"，登记进去只会产生永远瞎的盲区任务
+        if account and is_internal_ip(src):
             self._add(subjects.KIND_ACCOUNT, account[:160])
         # structure 用的轻量计数（默认不产出线索，开着才用）
         status = getattr(entry, "status_code", None)
@@ -252,9 +257,16 @@ def _novelty_tasks(
     """反复出现、且还在新面孔窗口内的对象 → novelty 线索。
 
     强度按"多久没分析过"加成，冷门口对象更容易排上。
+
+    C2（2026-10-29）：novelty 只给**资产/服务端口/账号**派工；协议/签名这类"全局首见"
+    不再单独立线索（它们由 `hit_cluster` 或 agent 主动 `asset_map`/`list_rules` 覆盖，
+    否则一个新签名/新协议就占一条任务，信息量为零）。登记表仍然照记，覆盖率不受影响。
     """
     made = 0
+    novelty_kinds = (subjects.KIND_ASSET, subjects.KIND_PORT, subjects.KIND_ACCOUNT)
     for kind, value, first_seen in recurring[:_MAX_ENQUEUE_PER_FLUSH]:
+        if kind not in novelty_kinds:
+            continue
         stale = subjects.staleness("asset", value, now) if kind == subjects.KIND_ASSET else 0.6
         # 套反馈系数：这个对象上同类现象被连判过误报就捐低优先级（只衰减不否决）
         strength = feedback.apply(
@@ -275,6 +287,8 @@ def _novelty_tasks(
                 "对象类型": kind,
                 "距上次分析": "从未分析" if stale >= 0.9 else "近期未分析",
                 "客观强度": strength,
+                # B1：所有 kind 都下发稳定身份，agent 侧复用只认"同一事实"
+                "reuse_identity": f"novelty|{kind}:{value}",
             },
             window_start=now - timedelta(minutes=30),
             window_end=now,
@@ -289,6 +303,181 @@ def _novelty_tasks(
 #: 事实转任务的门槛：低于它的只留在库里给 MCP 查（避免"每条事实都派一单"）
 _OBS_MIN_STRENGTH = 0.45
 _OBS_WINDOW_MINUTES = 30
+
+#: 观察事实按类别自带的方向（D1）：别的类别方向不明，就别下发，不下发 ≠ 让 agent 猜
+_OBSERVATION_DIRECTION: dict[str, str] = {
+    "egress_new": "in→out",
+    "egress_rare": "in→out",
+    "egress_sustained": "in→out",
+    "path_probe": "out→in",
+}
+
+#: 每轮最多派多少条 `hit_cluster`（D2）：先全貌再逐条，扫几十个 IP 也只占 20 个坑
+_HIT_CLUSTER_PER_ROUND = 20
+#: 簇查询回看窗口（与去重桶 60 分钟一致：同一簇在桶内只派一次）
+_HIT_CLUSTER_RECALL_MINUTES = 60
+#: 每轮最多读多少条近期命中事件参与成簇（防大站点把内存吃满）
+_HIT_CLUSTER_EVENT_CAP = 600
+
+
+def enqueue_hit_clusters(client: Any) -> int:
+    """命中簇 → `hit_cluster` 线索（D2，2026-10-29）：资产为中心，先全貌再逐条。
+
+    为什么不直接开逐条 hit：一次扫描命中几十个 IP，逐条派 = 几十条外部 IP 任务，
+    队列立刻爆量；簇把同一（归类·网段·小时）折成一件，主体是被访问资产。
+    强度只读客观量（事件数/涉及资产数/staleness），**不读 rule_severity** ——
+    严重度是 NDR 的判断，读了就等于替智能体下结论。
+
+    护栏（用户拍板）：60 分钟桶去重（queue 层自带）＋每轮上限 20＋
+    **同一簇族 24 小时最多观察一次**（持续扫描不是新现象，每小时重派刷不完的队列）。
+    """
+    if "hit_cluster" not in params.candidate_kinds():
+        return 0
+    now = datetime.now(UTC)
+    since = now - timedelta(minutes=_HIT_CLUSTER_RECALL_MINUTES)
+    guard_prefixes: set[str] = set()
+    try:
+        with SessionLocal() as db:
+            rows = list(
+                db.scalars(
+                    select(HitEvent)
+                    .where(
+                        HitEvent.created_at >= since,
+                        HitEvent.ignored.is_(False),
+                    )
+                    .order_by(HitEvent.created_at.desc())
+                    .limit(_HIT_CLUSTER_EVENT_CAP)
+                ).all()
+            )
+            # 24h 观察护栏的账本：最近一天派过工的簇族（去重键去掉末尾时间桶）不再重复派
+            day_ago = now - timedelta(hours=24)
+            guard_prefixes = {
+                str(k).rsplit("|", 1)[0]
+                for k in db.scalars(
+                    select(AnalysisTask.dedupe_key).where(
+                        AnalysisTask.kind == "hit_cluster",
+                        AnalysisTask.created_at >= day_ago,
+                    )
+                )
+            }
+    except Exception:  # noqa: BLE001 — 派工失败不能拖垮检测
+        return 0
+    clusters: dict[str, list[Any]] = {}
+    for row in rows:
+        cid = str(row.cluster_id or "")
+        if cid:
+            clusters.setdefault(cid, []).append(row)
+
+    def _objective_strength(events: list[Any], principal: str) -> float:
+        distinct_assets = len(
+            {str(x) for ev in events for x in (ev.dst_ips or []) if is_internal_ip(str(x))}
+        )
+        return feedback.apply(
+            combined_strength(
+                scale_strength(len(events) or distinct_assets),
+                subjects.staleness("asset", principal, now),
+                rarity_strength(0, first_seen=False),
+            ),
+            "hit_cluster",
+            principal,
+        )
+
+    scored: list[tuple[float, str, list[Any], str, list[str]]] = []
+    for events in clusters.values():
+        principal = ""
+        for ev in events:
+            for cand_ip in [str(x) for x in (ev.dst_ips or [])] + [str(ev.src_ip or "")]:
+                if cand_ip and is_internal_ip(cand_ip):
+                    principal = cand_ip
+                    break
+            if principal:
+                break
+        if not principal:
+            continue  # 外部↔外部不是我们的资产
+        rule_names = sorted({str(ev.rule or "") for ev in events} - {""})[:10]
+        # 簇族身份：主体资产 + 规则集合，**不含小时桶**（同一族跨小时可复用结论）
+        family_raw = f"hit_cluster|{principal}|{','.join(rule_names)}"
+        family = hashlib.sha256(family_raw.encode("utf-8")).hexdigest()[:32]
+        if f"hit_cluster|asset:{principal}|cluster:{family}" in guard_prefixes:
+            continue  # 24h 观察护栏：这个簇族 24h 内已经派过工
+        scored.append(
+            (
+                _objective_strength(events, principal),
+                principal,
+                events,
+                family,
+                rule_names,
+            )
+        )
+    scored = sorted(scored, key=lambda item: item[0], reverse=True)
+    made = 0
+    for strength, principal, events, family, rule_names in scored[:_HIT_CLUSTER_PER_ROUND]:
+        event_ids = [str(ev.id) for ev in events[:20]]
+        direction = str((events[0].direction if events else "") or "")
+        lead = events[0]
+        cluster_text = cluster_label(
+            str(lead.rule or ""), str(lead.src_ip or ""), getattr(lead, "last_seen", None)
+        )
+        # 受影响资产：事件里的网段内侧（被访问资产/我方外连源），不预设威胁
+        if direction == "in→out":
+            affected = sorted({str(ev.src_ip or "") for ev in events} - {""})
+        else:
+            affected = sorted(
+                {str(x) for ev in events for x in (ev.dst_ips or []) if is_internal_ip(str(x))}
+            )
+        hint: dict[str, Any] = {
+            "簇": cluster_text,
+            "事件数": len(events),
+            "事件ID": event_ids,
+            "规则": rule_names,
+            "主体资产": {"kind": "ip", "value": principal},
+            "principal_asset": {"kind": "ip", "value": principal},
+            "受影响资产": [{"kind": "ip", "value": v} for v in affected[:20]],
+            "affected_assets": [{"kind": "ip", "value": v} for v in affected[:20]],
+            # 智能体侧复用键（不含时间桶）：同一簇族可以复用上次的结论
+            "reuse_identity": family,
+        }
+        if direction:
+            hint["方向"] = direction
+            hint["direction"] = direction
+            if direction == "in→out":
+                # 我方外连：对端 = 外部目的地
+                peers = sorted(
+                    {
+                        str(x)
+                        for ev in events
+                        for x in (ev.dst_ips or [])
+                        if not is_internal_ip(str(x))
+                    }
+                    - {""}
+                )
+            else:
+                # 入站/横向：对端 = 外部发起方（中继场景优先真实客户端）
+                peers = sorted(
+                    {
+                        str(ev.client or ev.src_ip or "")
+                        for ev in events
+                        if not is_internal_ip(str(ev.client or ev.src_ip or ""))
+                    }
+                    - {""}
+                )
+            if peers:
+                hint["对端"] = peers[:20]
+                hint["peer"] = peers[:20]
+        result = queue.enqueue(
+            kind="hit_cluster",
+            subject_kind="asset",
+            subject=principal,
+            strength=strength,
+            feature=f"cluster:{family}",
+            hint=hint,
+            window_start=events[-1].first_seen if events else None,
+            window_end=events[0].last_seen if events else None,
+            client=client,
+        )
+        if result in ("new", "merged"):
+            made += 1
+    return made
 _OBS_PER_ROUND = 5
 
 
@@ -356,6 +545,9 @@ def enqueue_observations(client: Any) -> int:
         # 规则命中只作为**附加证据**：默认不再单独派工，但对象被事实选中时把它带上，
         # 免得 agent 又要单独去翻一遍（2026-10 用户口径：规则是证据，不是结论）
         evidence = _recent_rule_hits(str(row.subject or ""))
+        # D1：观察事实按"类别决定方向"下发（egress 类是 in→out，入口探测是 out→in）。
+        # 不能派工后再判 —— agent 需要"这个事实本身发生在哪个方向"来选查询路径。
+        direction = _OBSERVATION_DIRECTION.get(str(row.kind or ""), "")
         result = queue.enqueue(
             kind="observation",
             subject_kind=subject_kind,
@@ -368,6 +560,11 @@ def enqueue_observations(client: Any) -> int:
                 "出现次数": int(row.count or 0),
                 "首次观测": row.first_seen.isoformat() if row.first_seen else "",
                 "最近观测": row.last_seen.isoformat() if row.last_seen else "",
+                # B1：复用身份 = 观察事实的稳定去重键（含事实 key，如同一资产的不同
+                # 外连目标各有各的身份）—— 之前 agent 只能拿 kind 拼键，
+                # "同资产外连 A/B 两条事实"会共用一条结论（实测踩过）
+                **({"reuse_identity": str(row.dedupe_key or "")} if str(row.dedupe_key or "") else {}),
+                **({"方向": direction} if direction else {}),
                 **({"相关规则命中": evidence} if evidence else {}),
             },
             client=client,
@@ -451,6 +648,7 @@ def _structure_tasks(
                 "事实": f"本窗口失败响应 {fails}/{total}（占比 {fails / total:.0%}）",
                 "窗口": f"{window_start or ''}",
                 "客观强度": strength,
+                "reuse_identity": f"structure|{src}|fail_ratio",
             },
             window_start=now - timedelta(minutes=30),
             window_end=now,
@@ -564,6 +762,8 @@ def enqueue_shift(deviations: list[dict[str, Any]], client: Any) -> int:
                 "方差": item.get("var"),
                 "是否用了网段先验": bool(item.get("pooled_with")),
                 "客观强度": strength,
+                # B1：所有 kind 都下发稳定身份（agent 侧复用只认同一个事实）
+                "reuse_identity": f"shift|ip:{src}|{feature}",
             },
             window_start=now - timedelta(minutes=30),
             window_end=now,
@@ -611,6 +811,30 @@ def _hit_hint(
         reals = digest.get("real_client_ips") or []
         if reals:
             hint["真实客户端"] = [str(v) for v in reals[:5]]
+    # D1/C2（2026-10-29 架构整改）：方向定型时算好，主体/对端一次说清 ——
+    # 之前 hint 不带方向，agent 得先自己查反代、浏览器真实来源才能开始判断。
+    direction = str(digest.get("direction") or "")
+    if direction:
+        hint["方向"] = direction
+        # 英文别名（C2/D1 验收字段名）：界面/智能体两侧都认这两套键
+        hint["direction"] = direction
+        dsts = [str(x) for x in (digest.get("dst_ips") or [])[:5] if str(x or "").strip()]
+        reals = [str(v) for v in (digest.get("real_client_ips") or [])[:5]]
+        init_src = str(digest.get("src_ip") or "")
+        initiator = reals or ([init_src] if init_src else [])
+        if direction == "in→out":
+            # 主体（=任务 subject）是发起外连的我方资产；"对端"是外部目的地
+            hint["对端"] = dsts
+            hint["peer"] = dsts
+        elif direction:
+            # out→in / in→in / unknown：受影响的是被访问方资产（=分析重点），发起方列出
+            if dsts:
+                affected_assets = [{"kind": "ip", "value": v} for v in dsts]
+                hint["受影响资产"] = affected_assets
+                hint["affected_assets"] = affected_assets
+            if initiator:
+                hint["发起方"] = initiator
+                hint["peer"] = initiator
     return hint
 
 
@@ -645,30 +869,44 @@ def _hits_source_label(rule_source: str) -> str:
 
 
 def enqueue_hit(digest: dict[str, Any], event_id: str, client: Any) -> str:
-    """规则命中 → `hit` 线索。
+    """规则命中 → `hit` 线索（逐条，**默认关**；批量走 `hit_cluster`）。
 
     强度**只用客观量**（涉及多少个目的、命中多少次、这条规则是否第一次见），
     不读 `rule_severity` —— 严重度是 NDR 的判断，读它等于继续替智能体下结论。
+
+    主体口径（C2，2026-10-29）：任务主体 = **监控网段内资产**，不是外部触发方。
+    外→内命中时主体是被访问资产（外部源进 hint.peer）；内→外时主体是我方发起资产。
+    外部↔外部不是我们的资产，直接跳过（旧实现在这类情况下给外部 IP 派工，队列全是噪音）。
     """
     src = str(digest.get("src_ip") or "")
     rule = str(digest.get("rule") or "")
     if not src or not rule:
         return "skipped"
     now = datetime.now(UTC)
+    direction = str(digest.get("direction") or "")
+    dsts_internal = [str(d) for d in (digest.get("dst_ips") or []) if is_internal_ip(str(d))]
+    if direction == "in→out":
+        principal, subject_kind = src, "ip"
+    elif dsts_internal:
+        principal, subject_kind = dsts_internal[0], "asset"
+    elif is_internal_ip(src):
+        principal, subject_kind = src, "asset"
+    else:
+        return "skipped"
     distinct_dst = len(digest.get("dst_ips") or []) or len(digest.get("dst_pairs") or [])
     strength = feedback.apply(
         combined_strength(
             scale_strength(int(digest.get("count") or 1) or distinct_dst),
-            subjects.staleness("ip", src, now),
+            subjects.staleness(subject_kind, principal, now),
             rarity_strength(0, first_seen=False),
         ),
         "hit",
-        src,
+        principal,
     )
     return queue.enqueue(
         kind="hit",
-        subject_kind="ip",
-        subject=src,
+        subject_kind=subject_kind,
+        subject=principal,
         strength=strength,
         feature=rule,
         hint=_hit_hint(digest, rule, event_id, strength, distinct_dst),
@@ -684,9 +922,8 @@ def enqueue_coverage(client: Any) -> int:
     data = subjects.coverage(days=params.coverage_stale_days(), limit=200)
     now = datetime.now(UTC)
     for item in data.get("items") or []:
-        stale = subjects.staleness(
-            str(item.get("subject_kind") or ""), str(item.get("subject") or ""), now
-        )
+        item_kind = str(item.get("subject_kind") or "asset")
+        stale = subjects.staleness(item_kind, str(item.get("subject") or ""), now)
         strength = feedback.apply(
             combined_strength(stale * 0.35, 0.05), "coverage", str(item.get("subject") or "")
         )
@@ -694,7 +931,9 @@ def enqueue_coverage(client: Any) -> int:
         strength = cold_start_mod.damped(strength, client)
         result = queue.enqueue(
             kind="coverage",
-            subject_kind="asset",
+            # C4/C2：盲区主体保留原类型（signature 的盲区任务还是 signature），
+            # 一律写成 asset 会让"签名覆盖率"算到资产头上，口径全歪
+            subject_kind=item_kind,
             subject=str(item.get("subject") or ""),
             strength=strength,
             feature="coverage",
@@ -703,6 +942,7 @@ def enqueue_coverage(client: Any) -> int:
                 "首次出现": item.get("first_seen_at"),
                 "上次分析": item.get("last_analyzed_at") or "从未",
                 "客观强度": strength,
+                "reuse_identity": f"coverage|{item_kind}:{item.get('subject')}",
             },
             window_start=now - timedelta(days=params.coverage_stale_days()),
             window_end=now,
@@ -798,6 +1038,7 @@ def enqueue_retest(client: Any) -> int:
                 "抑制条目": suppression_ids[:10],
                 "客观强度": strength,
                 "要求": "重新判断同一现象是否仍然无害；结论用 complete_task 的 verdict 三态表达",
+                "reuse_identity": f"retest|{kind_text or 'ip'}:{subject_text}",
             },
             window_start=cutoff,
             window_end=now,

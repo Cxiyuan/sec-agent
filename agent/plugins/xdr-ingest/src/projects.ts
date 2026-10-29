@@ -143,9 +143,9 @@ export const DEFAULT_WORKFLOW_STAGES: readonly WorkflowStage[] = [
   {
     key: 'baseline',
     title: '基线与偏离核对',
-    goal: '这次和它自己的平时比，哪里不一样（外连目的地/账号/连接数）',
-    guidance: '新目标要看它原本连多少个目标；账号看上次登录地点与失败来源',
-    tools: ['baseline_lookup', 'list_observations', 'egress_baseline'],
+    goal: '这次和它自己的平时比，哪里不一样（外连目的地/账号/连接数/被访问量）',
+    guidance: '新目标要看它原本连多少个目标；账号看上次登录地点与失败来源；被访问资产看它平时的客户端数（asset_baseline，warmed=false 说明还在学习期）',
+    tools: ['baseline_lookup', 'asset_baseline', 'list_observations', 'egress_baseline'],
   },
   {
     key: 'correlate',

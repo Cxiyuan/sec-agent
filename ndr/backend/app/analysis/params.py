@@ -30,10 +30,11 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.enabled", "启用派工队列", "bool", True,
          note="关掉后不再生成新任务（已有任务保留，智能体仍可领取）"),
     Knob("analysis.candidate_kinds", "生成哪些线索", "text",
-         "novelty,coverage,observation",
+         "novelty,coverage,observation,hit_cluster",
          note=(
-             "逗号分隔。hit/shift 默认关闭（2026-10：规则命中与连接数偏离只作为事实/证据，"
-             "不再单独派工）；observation = 行为基线事实（外连新目标/异地登录/爆破/404）"
+             "逗号分隔。hit（逐条规则命中）/shift 默认关闭（只作为事实/证据，不再单独派工）；"
+             "hit_cluster = 命中簇，以资产为中心把一次扫描折成一件（D2，全局默认开）；"
+             "observation = 行为基线事实（外连新目标/异地登录/爆破/404）"
          )),
     Knob("analysis.lease_seconds", "租约", "int", 900,
          low=60, high=7200, unit="秒",
@@ -114,9 +115,11 @@ KNOBS: tuple[Knob, ...] = (
 _BY_KEY: dict[str, Knob] = {k.key: k for k in KNOBS}
 EDITABLE_KEYS: tuple[str, ...] = tuple(_BY_KEY)
 
-#: 已知的线索类型（校验与界面下拉用）
+#: 已知的线索类型（校验与界面下拉用）。`hit_cluster`（D2，2026-10-29 架构整改）：
+#: **命中簇**线索 —— 同一(归类,网段,小时)的一批命中折成一件：先给全貌再逐条分析，
+#: 扫描类的几十条同因事件不再靠单条 hit 排队。
 KINDS: tuple[str, ...] = (
-    "novelty", "shift", "structure", "coverage", "hit", "retest", "observation",
+    "novelty", "shift", "structure", "coverage", "hit", "hit_cluster", "retest", "observation",
 )
 def _num(knob: Knob) -> float:
     try:

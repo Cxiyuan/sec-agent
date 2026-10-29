@@ -121,6 +121,22 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
           ...(typeof item['confidence'] === 'number' ? { confidence: item['confidence'] } : {}),
           ...(typeof item['summary'] === 'string' ? { summary: item['summary'] } : {}),
           ...(typeof item['created_at'] === 'string' ? { created_at: item['created_at'] } : {}),
+          // B2：复用要回放结构化的东西，这几个不能丢
+          ...(typeof item['findings'] === 'object' && item['findings'] !== null
+            && !Array.isArray(item['findings'])
+            ? { findings: item['findings'] as Record<string, unknown> }
+            : {}),
+          ...(Array.isArray(item['anchors'])
+            ? {
+                anchors: (item['anchors'] as unknown[])
+                  .filter((a): a is Record<string, unknown> => typeof a === 'object' && a !== null)
+                  .map(a => ({ kind: String(a['kind'] ?? ''), value: String(a['value'] ?? '') }))
+                  .filter(a => a.kind !== '' && a.value !== ''),
+              }
+            : {}),
+          ...(typeof item['recommendation'] === 'string'
+            ? { recommendation: item['recommendation'] }
+            : {}),
         }))
       ;(out as { results?: unknown }).results = results
     }
@@ -135,6 +151,9 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
       readonly summary: string
       readonly confidence: number
       readonly findings: Record<string, unknown>
+      /** B2 回放：上次结论的资产锚点/建议（缺省 = 不复用这两项） */
+      readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
+      readonly recommendation?: string
       readonly terminal_reason: string
       readonly tools_used: number
       readonly duration_ms: number

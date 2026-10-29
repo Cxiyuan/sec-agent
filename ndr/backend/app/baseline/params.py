@@ -121,6 +121,26 @@ KNOBS: tuple[Knob, ...] = (
         note="全部实体的数值偏离每小时总上限；0=不限",
     ),
     Knob(
+        "baseline.asset_shift_enabled",
+        "资产基线判异",
+        "bool",
+        settings.baseline_asset_shift_enabled,
+        note=(
+            "被访问方资产（站点/服务）的窗口基线判异 → asset_shift 事实（D3）。"
+            "默认关：先只学不判，观察一周假阳率再打开；回滚就是关回它"
+        ),
+    ),
+    Knob(
+        "baseline.asset_deviation_cap_per_entity_hour",
+        "资产偏差上限",
+        "int",
+        settings.baseline_asset_deviation_cap_per_entity_hour,
+        low=0,
+        high=1000,
+        unit="次/小时",
+        note="同一资产每小时最多报几条 asset_shift；统计显著不等于值得人看，0=不限",
+    ),
+    Knob(
         "baseline.std_floor_ratio",
         "标准差下限（均值比例）",
         "float",
@@ -924,6 +944,14 @@ def deviation_cap_per_entity_hour() -> int:
 
 def deviation_cap_per_hour() -> int:
     return int(_num(_BY_KEY["baseline.deviation_cap_per_hour"]))
+
+
+def asset_shift_enabled() -> bool:
+    return _flag(_BY_KEY["baseline.asset_shift_enabled"])
+
+
+def asset_deviation_cap_per_entity_hour() -> int:
+    return int(_num(_BY_KEY["baseline.asset_deviation_cap_per_entity_hour"]))
 
 
 def novelty_max_count() -> int:

@@ -386,7 +386,7 @@ class AnalysisTask(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     #: 去重键：`kind|subject_kind:subject|feature|时间桶`
     dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-    #: 线索类型：novelty 首见 / shift 自身基线偏离 / structure 结构特征 / coverage 盲区 / hit 规则命中
+    #: 线索类型：novelty 首见 / shift 自身基线偏离 / structure 结构特征 / coverage 盲区 / hit 规则命中 / hit_cluster 命中簇
     kind: Mapped[str] = mapped_column(String(16), index=True)
     #: 客观强度 0~1（`max(各分量)`，不求和 —— 求和会重演"三个弱信号≈一个强信号"）
     strength: Mapped[float] = mapped_column(Float, default=0.0)
@@ -633,6 +633,9 @@ class HitEvent(Base):
     conn_states: Mapped[list] = mapped_column(JSONB, default=list)
     log_types: Mapped[list] = mapped_column(JSONB, default=list)
     real_client_ips: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 流量方向（聚合定型时由 triage_policy.direction_of 算一次）：
+    #: out→in / in→out / in→in / out→out / unknown。判定对象限定在「监控网段内/外」
+    direction: Mapped[str] = mapped_column(String(16), default="")
     #: 样例事件的关键字段（时间/类型/URI/UA/状态码/账号…）
     evidence: Mapped[list] = mapped_column(JSONB, default=list)
     #: 已忽略：不再出现在默认列表里（行保留，可追溯、可撤回）

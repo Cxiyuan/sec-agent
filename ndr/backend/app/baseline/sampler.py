@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.iputil import is_public_ip
+from app.iputil import is_internal_ip, is_public_ip
 
 #: 单窗口最多跟踪多少个源 IP（超出后新 IP 不再计入，防代理/扫描场景撑爆内存）
 _MAX_IPS = 50000
@@ -80,10 +80,12 @@ class WindowSampler:
         src = str(getattr(entry, "src_ip", "") or "")
         if not src or src == "-":
             return
-        # 基线只学内网源（2026-10 用户口径）：给外网客户端建"连接数基线"没有处置意义，
-        # 而且它们的行为不由我们控制，学进去只会制造偏离。
-        # 但**入口 404 探测**必须统计（那正是"外部请求"里唯一有安全含义的行为）。
-        if is_public_ip(src):
+        # 基线只学**监控网段内源**（口径 C1 2026-10-29）：给网段外源（公网客户端、
+        # 未监控内网段 10.9.9.x）建"连接数基线"没有处置意义，而且它们的行为不由我们控制，
+        # 学进去只会制造偏离。但**入口 404 探测**必须统计（那正是"外部请求"里
+        # 唯一有安全含义的行为）。口径统一走 is_internal_ip()，不能用"非公网"代替 ——
+        # 未监控内网段不是我们的人，也不能当成我们的人学进基线。
+        if not is_internal_ip(src):
             is_http = str(getattr(entry, "event_type", "") or "") in ("http_request", "http_login")
             if is_http and (len(self._requests) < _MAX_PROBE_IPS or src in self._requests):
                 self._public.add(src)

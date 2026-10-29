@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,7 +26,7 @@ from sqlalchemy import select
 from app.baseline import observations, params
 from app.db.base import SessionLocal
 from app.db.models import EgressAllow, EgressBaseline
-from app.iputil import is_public_ip
+from app.iputil import is_internal_ip, is_public_ip
 from app.workers.log import get_logger
 
 UTC = timezone.utc
@@ -45,16 +44,8 @@ _allow_cache: dict[str, Any] = {"at": 0.0, "entries": []}
 _ALLOW_TTL_SECONDS = 60
 
 
-def _nets() -> list[ipaddress._BaseNetwork]:
-    from app.ingestion import scope as scope_mod
-
-    out: list[ipaddress._BaseNetwork] = []
-    for text in scope_mod.monitored_nets():
-        try:
-            out.append(ipaddress.ip_network(str(text), strict=False))
-        except ValueError:
-            continue
-    return out
+# `_nets()` 已删（E 整改 2026-10-29）：源口径统一走 `iputil.is_internal_ip()`、
+# 目的口径走 `is_public_ip()`（见 `observe_window`）；孤儿函数留着只会掩盖口径问题。
 
 
 def _normalize(kind: str, value: str) -> str:
@@ -135,11 +126,13 @@ def observe_window(
     if not params.egress_enabled():
         return {"new": 0, "rare": 0, "learned": 0}
     moment = now or datetime.now(UTC)
-    # 只处理有公网目的地的样本
+    # 只处理"监控网段内源 → 公网目的地"的外连（口径 C1 2026-10-29）：
+    # 源用 is_internal_ip() —— 未监控内网段连公网不是"我们的外连"，学进去会把
+    # 别的网段的访问当我们的基线；目的保持 is_public_ip()。
     candidates: list[tuple[str, str, str]] = []
     for sample in samples:
         src = str(sample.get("src_ip") or "")
-        if src == "":
+        if src == "" or not is_internal_ip(src):
             continue
         for dst in sample.get("egress_dsts") or ():
             if is_public_ip(dst):

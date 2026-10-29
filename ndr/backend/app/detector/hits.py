@@ -546,6 +546,8 @@ def _rows_to_dict(rows: list[HitEvent], *, detail: bool = False) -> list[dict[st
             "conn_states": list(row.conn_states or []),
             "log_types": list(row.log_types or []),
             "real_client_ips": list(row.real_client_ips or []),
+            # 方向（D1）：out→in / in→out / in→in / out→out / unknown
+            "direction": getattr(row, "direction", "") or "",
             "ignored": bool(row.ignored),
             "ignored_at": row.ignored_at.isoformat() if row.ignored_at else "",
             "ignored_reason": row.ignored_reason or "",
@@ -789,6 +791,8 @@ def save_from_digest(digest: dict[str, Any]) -> str:
                     - {""}
                 ),
                 real_client_ips=reals,
+                # 方向在聚合定型时由 runner 统一算好放进 digest（D1）：这里只落库
+                direction=str(digest.get("direction") or ""),
                 evidence=_evidence(digest),
             )
             db.add(row)
@@ -810,119 +814,12 @@ _REASON_LABELS: tuple[tuple[str, str], ...] = (
     ("认证失败突增", "认证失败激增"),
 )
 
-#: 数值基线特征 → 事件归类名
-_FEATURE_LABELS: dict[str, str] = {
-    "conn_count": "连接数异常偏离",
-    "distinct_dst_ports": "目的端口数异常偏离",
-    "distinct_dst_ips": "目的地址数异常偏离",
-}
-
 
 def _reason_label(reason: str) -> str:
     for key, label in _REASON_LABELS:
         if str(reason).startswith(key):
             return label
     return "行为基线偏离"
-
-
-def _severity_of_risk(risk: float) -> str:
-    if risk >= 0.75:
-        return "high"
-    if risk >= 0.45:
-        return "medium"
-    return "low"
-
-
-def save_baseline_deviations(digest: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
-    """把本轮**基线偏离**（画像异常 + 数值 2σ 偏离）写成命中事件，返回事件 ID 列表。
-
-    为什么要有（2026-10 用户口径）：命中事件的数据来源分三类 —— 特征匹配 / 行为分析 /
-    **基线偏离**。前两类早就在落库（规则命中），基线偏离只打进摘要标签、没有独立事件，
-    第三类在库里就是空的。这里补齐，和规则命中同一张表（`hit_events`）、同一套唯一事件 ID。
-    """
-    if not baseline:
-        return []
-    created: list[str] = []
-    first = _iso(digest.get("first_seen"))
-    last = _iso(digest.get("last_seen"))
-    try:
-        with SessionLocal() as db:
-            # ① 画像异常（账号 / 会话）
-            for item in baseline.get("profiles") or []:
-                reasons = [str(x) for x in (item.get("reasons") or [])]
-                if not reasons:
-                    continue
-                risk = float(item.get("risk") or 0.0)
-                row = HitEvent(
-                    first_seen=first,
-                    last_seen=last,
-                    rule=_reason_label(reasons[0]),
-                    cluster_id=clustering.cluster_id(
-                        _reason_label(reasons[0]),
-                        str((item.get("src_ips") or [""])[0] or ""),
-                        last,
-                    ),
-                    rule_severity=_severity_of_risk(risk),
-                    rule_source="baseline",
-                    source_kind="baseline_deviation",
-                    src_ip=str((item.get("src_ips") or [""])[0] or ""),
-                    # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
-                    # 事件类型 = 具体告警归类（如「连接数异常偏离」），不写内部码
-                    event_types=[_reason_label(reasons[0])],
-                    count=int(item.get("count") or 0),
-                    dst_ips=[str(x) for x in (item.get("dst_ips") or [])][:20],
-                    evidence=[
-                        {
-                            "实体类型": "账号" if str(item.get("kind")) == "account" else "会话",
-                            "实体": str(item.get("display") or item.get("key") or ""),
-                            "风险分": round(risk, 3),
-                            "判定理由": reasons,
-                            "历史观测次数": int(item.get("obs_count") or 0),
-                        }
-                    ],
-                )
-                db.add(row)
-                db.flush()
-                created.append(str(row.id))
-            # ② 数值基线（2σ 偏离）
-            for item in baseline.get("numeric") or []:
-                feature = str(item.get("feature") or "")
-                row = HitEvent(
-                    first_seen=first,
-                    last_seen=last,
-                    rule=_FEATURE_LABELS.get(feature, "数值基线偏离"),
-                    cluster_id=clustering.cluster_id(
-                        _FEATURE_LABELS.get(feature, "数值基线偏离"),
-                        str(item.get("src_ip") or ""),
-                        last,
-                    ),
-                    rule_severity="high",
-                    rule_source="baseline",
-                    source_kind="baseline_deviation",
-                    src_ip=str(item.get("src_ip") or ""),
-                    # 基线事件不来自日志文档，但要给「事件类型」一个值，否则界面显示"无"
-                    event_types=[_FEATURE_LABELS.get(feature, "数值基线偏离")],
-                    count=1,
-                    evidence=[
-                        {
-                            "特征": _FEATURE_LABELS.get(feature, feature),
-                            "本窗口值": item.get("value"),
-                            "历史均值": item.get("mean"),
-                            "标准差": item.get("std"),
-                            # 钳制过（原始 std 为 0 或极小）时带上原始值，证据可追溯
-                            "原始标准差": item.get("std_raw"),
-                            "偏离倍数": item.get("z"),
-                        }
-                    ],
-                )
-                db.add(row)
-                db.flush()
-                created.append(str(row.id))
-            db.commit()
-    except Exception as exc:  # noqa: BLE001 — 基线事件写失败不能挡住检测
-        log.warning("基线偏离事件落库失败：%s", exc)
-        return created
-    return created
 
 
 #: 事件类型列里出现过的**内部码**（这些才是"事件类型显示英文"的根源）。

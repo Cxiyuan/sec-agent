@@ -47,11 +47,15 @@ test('settingsView：拍成工作台用的下划线字段', () => {
 
 /* ---------- 轻量初筛（低阶模型）配置 ---------- */
 
+test('默认初筛只关 coverage（A3 整改）：novelty/observation 等 2B 小模型无权关单', () => {
+  assert.deepEqual([...DEFAULT_LIGHT_TRIAGE.kinds].sort(), ['coverage'])
+})
+
 test('mergeSettings.light：补丁只带部分字段时先合并当前值再校验（不冲掉端点/模型）', () => {
   const merged = mergeSettings(CURRENT, {
     light: {
       enabled: true,
-      baseUrl: 'http://172.16.196.77:8080/v1',
+      baseUrl: 'http://192.168.1.10:8080/v1',
       model: 'Qwen3.5-2B-Q4_K_M',
       threshold: 0.9,
     },
@@ -65,7 +69,7 @@ test('mergeSettings.light：补丁只带部分字段时先合并当前值再校�
   const again = mergeSettings(merged.settings, { light: { threshold: 0.7 } })
   assert.ok('settings' in again)
   assert.equal(again.settings.light?.threshold, 0.7)
-  assert.equal(again.settings.light?.baseUrl, 'http://172.16.196.77:8080/v1')
+  assert.equal(again.settings.light?.baseUrl, 'http://192.168.1.10:8080/v1')
   assert.equal(again.settings.light?.model, 'Qwen3.5-2B-Q4_K_M')
 })
 

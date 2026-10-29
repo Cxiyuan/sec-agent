@@ -25,6 +25,10 @@ export interface TaskResultView {
   readonly summary?: string
   readonly findings?: unknown
   readonly evidence_refs?: readonly string[]
+  /** B2：结论挂的资产锚点（复用回放用；旧 NDR 不返回）。 */
+  readonly anchors?: readonly { readonly kind?: string; readonly value?: string }[]
+  /** B6：一句话建议（NDR 已提升成一等字段；旧版本只存在于 findings）。 */
+  readonly recommendation?: string
   readonly tools_used?: number
   readonly duration_ms?: number
   readonly created_at?: string
@@ -54,6 +58,10 @@ export interface ReusePayload {
   readonly summary: string
   readonly confidence: number
   readonly findings: Record<string, unknown>
+  /** B2 回放：上次结论挂的资产（锚点），让复用行同样影响这些资产。 */
+  readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
+  /** B2 回放：上次结论的一句话建议（B6 字段）。 */
+  readonly recommendation?: string
   readonly terminal_reason: string
   readonly tools_used: number
   readonly duration_ms: number
@@ -111,6 +119,11 @@ export interface AnalystOptions {
   /** 新线索强度比上次高多少就必须重查（现象变强）。 */
   readonly taskReuseStrengthDelta?: number
   /**
+   * 复用必须带 NDR 下发的稳定身份（`hint.reuse_identity`，默认 true）。
+   * 回滚开关：旧版 NDR 不发身份时临时置 false，退回按 kind|subject|feature 拼键。
+   */
+  readonly taskReuseRequireIdentity?: boolean
+  /**
    * 会话生命周期回调（多项目）：脚本工具靠 sessionId 找「这次分析属于哪个项目」。
    * 起会话前 `start`，会话收尾后 `end`。
    */
@@ -123,6 +136,8 @@ export interface AnalystOptions {
   readonly maxTools?: number
   /** 停滞判定（分钟，0 = 不判）：超过这么久没有新事件只告警，不取消（可能只是模型慢）。 */
   readonly stallMinutes?: number
+  /** 会话探针间隔（毫秒）；默认 15 秒，测试里调小。 */
+  readonly probeIntervalMs?: number
   /** 会话进度探针（读会话日志：工具调用数 + 最后事件时间）。 */
   readonly probeSession?: (sessionId: string) => Promise<{ tools: number, lastEventAt: number } | null>
 }
@@ -262,9 +277,20 @@ export class Analyst {
       },
     })
     // 每次运行独立的状态（Analyst 实例是共享的，不能用一个字段跨任务）
-    const watch = { budgetExceeded: false, stalled: false }
+    // stalled 处置（A4 整改落地）：stallMinutes 配置此前是死配置——probe 每 15 秒
+    // 拿到 lastEventAt 却没人用。现在：超过 1× 没新事件记 WARN（只记一次），
+    // 超过 2× 仍无事件主动 cancel 会话，defer 原因写 `stalled`（可见、可统计）。
+    const stallMs = (this.options.stallMinutes ?? 0) * 60_000
+    const watch = {
+      budgetExceeded: false,
+      stalled: false,
+      startedAt: startedAt,
+      lastEventAt: startedAt,
+      stallWarned: false,
+      stallCancelled: false,
+    }
     let probeTimer: ReturnType<typeof setInterval> | null = null
-    if (this.options.probeSession !== undefined && (this.options.maxTools ?? 0) > 0) {
+    if (this.options.probeSession !== undefined && ((this.options.maxTools ?? 0) > 0 || stallMs > 0)) {
       probeTimer = setInterval(() => {
         void this.options.probeSession?.(sessionId).then(info => {
           if (info === null) return
@@ -276,8 +302,29 @@ export class Analyst {
               () => undefined,
             )
           }
+          if (info.lastEventAt > watch.lastEventAt) watch.lastEventAt = info.lastEventAt
+          if (stallMs > 0 && !watch.stallCancelled && watch.lastEventAt > 0) {
+            const idleMs = Date.now() - watch.lastEventAt
+            if (idleMs > stallMs * 2) {
+              watch.stallCancelled = true
+              console.warn(
+                `[xdr-ingest] 任务 ${task.id} 已 ${Math.round(idleMs / 60_000)} 分钟无新事件`
+                + `（超过 stallMinutes=${this.options.stallMinutes} 的 2 倍），取消会话并延期`,
+              )
+              void Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest stalled' })).catch(
+                () => undefined,
+              )
+            } else if (idleMs > stallMs && !watch.stallWarned) {
+              watch.stallWarned = true
+              watch.stalled = true
+              console.warn(
+                `[xdr-ingest] 任务 ${task.id} 已 ${Math.round(idleMs / 60_000)} 分钟无新事件`
+                + `（stallMinutes=${this.options.stallMinutes}），再拖 1 倍仍未活动就取消`,
+              )
+            }
+          }
         }).catch(() => undefined)
-      }, 15_000)
+      }, this.options.probeIntervalMs ?? 15_000)
       probeTimer.unref?.()
     }
     let timedOut = false
@@ -325,7 +372,13 @@ export class Analyst {
       // 没交回：显式延后（不算失败），把租约让出来，同时留下"为什么"
       const reason = watch.budgetExceeded
         ? 'budget_exhausted'
-        : timedOut ? 'timeout' : error ? `agent_error: ${error.slice(0, 120)}` : 'no_conclusion'
+        : watch.stallCancelled
+        ? 'stalled'
+        : timedOut
+        ? 'timeout'
+        : error
+        ? `agent_error: ${error.slice(0, 120)}`
+        : 'no_conclusion'
       try {
         await this.options.ndr.deferTask(task.id, reason)
         deferred = true
@@ -378,7 +431,9 @@ export class Analyst {
     const store = this.options.taskResults
     const ttlMs = this.options.taskReuseTtlMs ?? 0
     if (store === undefined || ttlMs <= 0) return null
-    const key = taskResultKey(task)
+    const key = taskResultKey(task, {
+      requireIdentity: this.options.taskReuseRequireIdentity ?? true,
+    })
     if (key === null) return null
     let record: TaskResultRecord | null = null
     try {
@@ -391,16 +446,30 @@ export class Analyst {
     )
     if (!decision.reuse || record === null) return null
     try {
+      // B2：复用不只回放 verdict —— findings / anchors / recommendation 一并带上，
+      // 否则 NDR 里的新结论只剩一句 summary，之前查到的结构化事实和资产归属全丢了。
+      const replayFindings: Record<string, unknown> = {
+        ...(record.findings ?? {}),
+        reused_from: record.taskId,
+        reuse_key: key,
+        reused_at: new Date(startedAt).toISOString(),
+        reused_count: record.occurrences + 1,
+      }
+      delete replayFindings['triaged_by']  // 初筛结论的标记不能漂到复用行上
+      if (record.recommendation !== undefined && record.recommendation !== '') {
+        replayFindings['recommendation'] = record.recommendation
+      }
       const reply = await this.options.ndr.completeTask(task.id, {
         verdict: record.verdict,
         summary: reuseSummary(record),
         confidence: record.confidence,
-        findings: {
-          reused_from: record.taskId,
-          reuse_key: key,
-          reused_at: new Date(startedAt).toISOString(),
-          reused_count: record.occurrences + 1,
-        },
+        findings: replayFindings,
+        ...(record.anchors !== undefined && record.anchors.length > 0
+          ? { anchors: record.anchors.map(a => ({ kind: a.kind, value: a.value })) }
+          : {}),
+        ...(record.recommendation !== undefined && record.recommendation !== ''
+          ? { recommendation: record.recommendation }
+          : {}),
         terminal_reason: 'concluded',
         // 没有真的取证：成本如实记 0，证据引用留空（上次会话的引用在这里无效）
         tools_used: 0,
@@ -420,7 +489,7 @@ export class Analyst {
         verdict: record.verdict,
         confidence: record.confidence,
         summary: reuseSummary(record),
-        findings: { reused_from: record.taskId, reuse_key: key, reused: true },
+        findings: { ...replayFindings, reused: true },
         evidenceRefs: [],
         toolsUsed: 0,
         durationMs: 0,
@@ -720,7 +789,9 @@ export class Analyst {
     const store = this.options.taskResults
     const ttlMs = this.options.taskReuseTtlMs ?? 0
     if (store === undefined || ttlMs <= 0) return
-    const key = taskResultKey(task)
+    const key = taskResultKey(task, {
+      requireIdentity: this.options.taskReuseRequireIdentity ?? true,
+    })
     if (key === null) return
     if (latest === undefined) return
     if (verdict === '') return
@@ -731,8 +802,25 @@ export class Analyst {
       // 旧记录不可读时仍保存新结论；只是累计次数从 1 重新开始。
     }
     const now = Date.now()
+    // B2：把 findings / anchors / recommendation 一起留档（下次复用原样回放）。
+    // 只留「稳定事实」：reused_* / triaged_by 是一次性的过程标记，不能进记录。
+    const recordFindings: Record<string, unknown> =
+      typeof latest.findings === 'object' && latest.findings !== null && !Array.isArray(latest.findings)
+        ? { ...(latest.findings as Record<string, unknown>) }
+        : {}
+    for (const drop of ['reused_from', 'reused_at', 'reused_count', 'reuse_key', 'triaged_by', 'reused']) {
+      delete recordFindings[drop]
+    }
+    const recordAnchors = Array.isArray(latest.anchors)
+      ? latest.anchors
+          .map(a => ({ kind: String(a?.kind ?? '').trim(), value: String(a?.value ?? '').trim() }))
+          .filter(a => a.kind !== '' && a.value !== '')
+      : []
+    const recommendation = String(latest.recommendation ?? recordFindings['recommendation'] ?? '').trim()
     const record: TaskResultRecord = {
       key,
+      // v2：本版本起记录 findings/anchors/recommendation（复用回放用）
+      version: 2,
       kind: task.kind,
       subjectKind: task.subject_kind,
       subject: task.subject,
@@ -746,6 +834,9 @@ export class Analyst {
       occurrences: (previous?.occurrences ?? 0) + 1,
       analyzedAt: new Date(now).toISOString(),
       expiresAt: new Date(now + ttlMs).toISOString(),
+      ...(Object.keys(recordFindings).length > 0 ? { findings: recordFindings } : {}),
+      ...(recordAnchors.length > 0 ? { anchors: recordAnchors } : {}),
+      ...(recommendation !== '' ? { recommendation } : {}),
     }
     try {
       const saved = await store.save(record)

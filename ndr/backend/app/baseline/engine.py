@@ -23,6 +23,7 @@ from app.baseline.asset import (
     apply_window as assets_apply_window,
     cleanup as assets_cleanup,
     finalize as assets_finalize,
+    judge_window as assets_judge_window,
     observe_entry as assets_observe_entry,
 )
 from app.baseline.poisson import bonferroni_alpha, count_p_value
@@ -580,7 +581,11 @@ class BaselineEngine:
         if not records:
             return
         buckets, dropped = assets_finalize(records)
+        # D3：先拿**旧**基线判异，再把本窗口学进去（顺序反了就变成自己跟自己比）
+        shifts = assets_judge_window(buckets)
         applied = assets_apply_window(buckets)
+        for item in shifts:
+            self._emit_asset_shift(item)
         links = max(0, len(records) - dropped)
         self.stats["asset_uids_last_round"] = links
         self.stats["asset_uids_total"] = self.stats.get("asset_uids_total", 0) + links
@@ -591,6 +596,46 @@ class BaselineEngine:
         self.stats["assets_last_round"] = len(buckets)
         if buckets and not applied:
             log.warning("被访问方基线落库未成功（下一轮重试）")
+
+    def _emit_asset_shift(self, item: dict[str, Any]) -> None:
+        """把一条资产基线偏离发成 `asset_shift` 事实（D3）。
+
+        强度：p 越小越强，基线 0.5、上限 0.7（`distinct_clients` 突增再加 0.05）——
+        与"事实在前、判断在后"一致：这里只说"比它自己平时多了多少"，不说是不是攻击。
+        """
+        p = float(item.get("p") or 1.0)
+        alpha = bonferroni_alpha(params.alpha(), 5)
+        scale = 1.0 - min(1.0, p / alpha) if alpha > 0 else 0.0
+        strength = 0.5 + 0.2 * max(0.0, min(1.0, scale))
+        if str(item.get("feature")) == "distinct_clients":
+            strength = min(0.7, strength + 0.05)
+        labels = {
+            "visits": "被访问连接数",
+            "requests": "请求数",
+            "distinct_clients": "客户端数",
+            "distinct_client_ports": "客户端端口数",
+            "distinct_targets": "被访问目标数",
+        }
+        feature = str(item.get("feature") or "")
+        emitted = observations.emit(
+            "asset_shift",
+            "asset",
+            str(item.get("asset") or ""),
+            {
+                "特征": labels.get(feature, feature),
+                "本窗口值": item.get("value"),
+                "基线均值": item.get("mean"),
+                "标准差": item.get("std"),
+                "p": item.get("p"),
+                "涉及客户端数": item.get("clients"),
+                "涉及目标数": item.get("targets"),
+                "说明": "该资产本窗口的计数高于它自己的历史基线（客观事实，不含结论）",
+            },
+            key=f"asset_shift:{feature}",
+            strength=strength,
+        )
+        if emitted:
+            self.stats["asset_shift_reported"] = self.stats.get("asset_shift_reported", 0) + 1
 
     def _publish(self) -> None:
         """把进程内计数写进 Redis，运行状态页据此判断基线是否在跑。"""
@@ -611,6 +656,8 @@ class BaselineEngine:
                     # 被访问方（源站/DNS）基线：本轮观测到多少资产 + 累计
                     "assets_last_round": int(self.stats.get("assets_last_round", 0)),
                     "assets_observed": int(self.stats.get("assets_observed", 0)),
+                    # 资产侧判异（D3）：发出多少条 asset_shift 事实（开关关着就一直是 0）
+                    "asset_shift_reported": int(self.stats.get("asset_shift_reported", 0)),
                     # 被访问方按连接（uid）算：本轮多少条连接 / 累计多少条 / 有多少条没进基线
                     "asset_uids_last_round": int(self.stats.get("asset_uids_last_round", 0)),
                     "asset_uids_total": int(self.stats.get("asset_uids_total", 0)),

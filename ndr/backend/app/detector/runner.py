@@ -300,6 +300,15 @@ def run() -> None:
 
         # 聚合窗口到期 → 摘要入投递队列（持久化，崩溃可恢复）
         for digest in agg.pop_due():
+            # 方向在**定型时算一次**（D1 整改 2026-10-29）：之前只在"常规流量跳过"那条
+            # 分支里局部算、算完也不落库 —— 下游（事件详情 / hint / 智能体）全都看不到，
+            # 每个分析会话都得自己重查反代与真实客户端。现在算一次、全链路共用。
+            if not digest.get("direction"):
+                digest["direction"] = triage_policy.direction_of(
+                    digest.get("src_ip"),
+                    digest.get("dst_ips"),
+                    real_client_ips=digest.get("real_client_ips"),
+                )
             # 命中事件落 PG（2026-10 用户要求）：每条命中一个**系统唯一事件 ID**（主键），
             # 界面详情、忽略、白名单、交智能体关联分析都用它。放在最前面 —— 限速/超龄丢弃
             # 也不该让事件从记录里消失（那正是需要被看到的）。ID 同时塞回摘要，随投递一起走。
@@ -319,23 +328,10 @@ def run() -> None:
             # 被排除的摘要不参与基线（它本来就不进分析，学进去只会污染基线）
             if not digest.get("excluded"):
                 digest["baseline"] = engine.annotate(digest)
-                # 基线偏离**不再写成命中事件**（2026-10 用户口径）：规则名 + 严重度会被当成
-                # "小结论"。现在只落成客观事实（observations），由智能体自己判断。
-                for item in (digest["baseline"] or {}).get("numeric") or []:
-                    observations.emit(
-                        "conn_shift",
-                        "asset",
-                        str(item.get("src_ip") or digest.get("src_ip") or ""),
-                        {
-                            "特征": item.get("feature"),
-                            "本窗口值": item.get("value"),
-                            "基线均值": item.get("mean"),
-                            "标准差": item.get("std"),
-                            "说明": "该资产本窗口的计数高于自身历史基线",
-                        },
-                        key=f"conn_shift:{item.get('feature')}",
-                        strength=0.2,
-                    )
+                # conn_shift 不在这里发（E 整改 2026-10-29）：窗口判异的事实只由
+                # 采样循环（observe_window → deviations）发一次；annotate 的 numeric
+                # 在 window 口径下本来就是**同一批偏离**的转发，双发只会让同一事实
+                # 出现两行（强度/时间戳还不一致）。标签仍随摘要下发，观察事实在下面统一发。
             _apply_routine_policy(digest, client, stats)
             if analysis_params.enabled():
                 # 派工模式（2026-10 改造）：摘要**不再推给智能体**，改成门铃 + 智能体按预算
@@ -549,8 +545,14 @@ def _apply_routine_policy(digest: dict[str, Any], client: Any, stats: Counter[st
     """
     if digest.get("excluded"):
         return  # 已被排除过滤器命中，不重复判定
-    direction = triage_policy.direction_of(
-        digest.get("src_ip"), digest.get("dst_ips"), digest.get("real_client_ips")
+    # 方向在定型入口已经算过（D1）：这里只取，不重算（避免两处口径/参数漂移）
+    direction = str(
+        digest.get("direction")
+        or triage_policy.direction_of(
+            digest.get("src_ip"),
+            digest.get("dst_ips"),
+            digest.get("real_client_ips"),
+        )
     )
     reason = triage_policy.internal_routine_reason(
         direction=direction,
@@ -887,6 +889,11 @@ def _analysis_round(
         if now - float(state.get("last_observation") or 0.0) >= 300:
             state["last_observation"] = now
             stats["candidate_observation"] += candidates.enqueue_observations(client)
+        # 命中簇（D2）：节拍与 observation 同步（300 秒，落在 5–10 分钟要求内）；
+        # 开关走 analysis.candidate_kinds（移除 hit_cluster 即回滚，不部署侧改动）
+        if now - float(state.get("last_hit_cluster") or 0.0) >= 300:
+            state["last_hit_cluster"] = now
+            stats["candidate_hit_cluster"] += candidates.enqueue_hit_clusters(client)
         # 冷启动期把盲区扫描降频（放大倍数可调，见 params.cold_start_scale）
         coverage_gap = 6 * 3600 * cold_start.interval_scale(client)
         if now - float(state.get("last_coverage") or 0.0) >= coverage_gap:

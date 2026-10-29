@@ -41,6 +41,8 @@ KIND_STRENGTH: dict[str, float] = {
     "login_bruteforce": 0.6,
     "path_probe": 0.45,
     "conn_shift": 0.2,
+    # D3：资产侧判异（被访问方）。0.5 起步、engine 按 p 值上调，上限 0.7
+    "asset_shift": 0.5,
 }
 
 KIND_LABELS: dict[str, str] = {
@@ -50,6 +52,7 @@ KIND_LABELS: dict[str, str] = {
     "login_bruteforce": "账号被多来源尝试登录",
     "path_probe": "客户端大量 404",
     "conn_shift": "连接数高于自身基线",
+    "asset_shift": "被访问资产访问量高于自身基线",
 }
 
 

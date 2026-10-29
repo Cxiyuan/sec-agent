@@ -112,7 +112,14 @@ def test_ftp_login_is_normalized(request: pytest.FixtureRequest) -> None:
 def test_observation_kinds_are_fact_only(request: pytest.FixtureRequest) -> None:
     obs = _ndr(request, "app.baseline.observations")
     assert set(obs.KIND_LABELS) == {
-        "egress_new", "egress_rare", "geo_jump", "login_bruteforce", "path_probe", "conn_shift",
+        "egress_new",
+        "egress_rare",
+        "geo_jump",
+        "login_bruteforce",
+        "path_probe",
+        "conn_shift",
+        # D3（2026-10-29）：资产侧基线判异（被访问方访问量高于自身基线）
+        "asset_shift",
     }
     # 事实表本身没有 severity / verdict 这类结论字段（模型定义里就不该有）
     from app.db.models import Observation

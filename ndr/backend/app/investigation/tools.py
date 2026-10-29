@@ -246,7 +246,8 @@ def _describe_data(args: dict[str, Any], ctx: ToolCtx) -> dict[str, Any]:
         "hint": (
             "时间参数用 ISO 格式；字段用 fields 里的统一字段名；未知字段会被拒绝并回传可用清单。\n"
             "查不到 ≠ 没发生：入库过滤/排除过滤会先把一部分事件挡在分析链外，"
-            "规划前先 list_filters 看一眼现状；能聚合的字段只有 agg_fields。"
+            "规划前如有 `list_filters` 权限先看一眼现状（不要在工具输出之外硬调"
+            "当前档位不存在的工具）；能聚合的字段只有 agg_fields。"
         ),
         "planning_note": (
             "docs_last_24h 为 0 说明采集或入库这一段没数据（先怀疑链路，不是怀疑没攻击）；"

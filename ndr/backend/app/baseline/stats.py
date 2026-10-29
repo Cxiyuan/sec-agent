@@ -60,6 +60,11 @@ def _state(row: Any, now: datetime) -> dict[str, Any]:
     }
 
 
+def state_of(row: Any, now: datetime | None = None) -> dict[str, Any]:
+    """单行状态（`load_stats` 与 `asset_baseline` 共用同一口径）。"""
+    return _state(row, now or datetime.now(UTC))
+
+
 def load_stats(keys: list[str], *, model: Any = BaselineStat) -> dict[str, dict[str, Any]]:
     """批量读基线；库里没有的键不出现在结果里。
 

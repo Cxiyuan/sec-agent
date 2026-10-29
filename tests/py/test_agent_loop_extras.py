@@ -37,17 +37,17 @@ def mods(request: pytest.FixtureRequest) -> dict[str, Any]:
 
 
 def test_analyst_profile_is_a_strict_subset(mods: dict[str, Any]) -> None:
-    """analyst 档必须是 full 的真子集，且明显收窄（不超过 60%）。
+    """analyst 档必须是 full 的真子集。
 
-    阈值从 50% 放宽到 60%（2026-10 MCP QA）：分析闭环需要 `relay_nodes`（方向判定）、
-    `hit_clusters`（一次扫描折成一件）、`get_rule/list_rules`（规则在抓什么）——
-    这些是只读的分析必需件，不是运维动作。真正的护栏是下面那条「禁止动作不得入档」。
+    旧版还有「不得超过 full 的 60%」这条收窄线，2026-10-29 架构整改推翻（A1）：
+    analyst 档现在**开放全部只读取证工具**（40/43 取数/上下文/过程），测试再拦比例
+    就等于拦正确性；真正的护栏是下面那条「禁止动作不得入档」+ 数量下限。
     """
     server = mods["server"]
     analyst = set(server.build_server("analyst")._tool_manager._tools)
     full = set(server.build_server("full")._tool_manager._tools)
     assert analyst < full, "analyst 必须是 full 的真子集"
-    assert len(analyst) <= len(full) * 0.6, f"analyst 收窄不足：{len(analyst)}/{len(full)}"
+    assert len(analyst) >= 40, f"analyst 档被改小了：{len(analyst)}（A1 要求 ≥40 个只读工具）"
 
 
 def test_analyst_profile_covers_whole_loop(mods: dict[str, Any]) -> None:
@@ -106,22 +106,24 @@ def test_instructions_only_mention_available_tools(mods: dict[str, Any]) -> None
 
 
 def test_analyst_profile_excludes_privileged_actions(mods: dict[str, Any]) -> None:
-    """危险/运维动作不进 analyst 档：撤销抑制、取提取件正文、改结论等。"""
+    """危险/运维动作不进 analyst 档：撤销抑制、改结论/处置、凭空添任务等。
+
+    `file_content` / `fetch_window` 是取证能力件，2026-10-29 A1 决策（用户拍板）
+    默认开放给 analyst 档：调用走 MCP 调用记录审计，涉密部署由部署侧收紧令牌档位。
+    """
     server = mods["server"]
     analyst = set(server.build_server("analyst")._tool_manager._tools)
     forbidden = {
         "revoke_suppression",
-        "file_content",
         "record_conclusion",
         "record_disposition",
-        "fetch_window",
-        "raw_evidence_deleted",
+        "add_task",
     }
     leaked = forbidden & analyst
-    # raw_evidence 是取原始文档，分析必须能用，单独确认它**允许**在 analyst 档
-    leaked.discard("raw_evidence_deleted")
     assert not leaked, f"这些动作不该出现在 analyst 档：{sorted(leaked)}"
     assert "raw_evidence" in analyst
+    assert "file_content" in analyst
+    assert "fetch_window" in analyst
 
 
 def test_unknown_profile_is_rejected(mods: dict[str, Any]) -> None:
