@@ -881,7 +881,8 @@ def test_only_recurring_subjects_become_novelty_tasks(cand: Any) -> None:
     真正值得看的新服务被挤掉（累计丢弃 1.5 万条线索）。
     """
     assert cand.is_recurring(1) is False, "只出现一次的对象不是新服务"
-    assert cand.is_recurring(2) is True, "跨窗口再现才算值得派工"
+    assert cand.is_recurring(2) is False, "两个窗口还不够：校园客户端换 IP/重连太常见"
+    assert cand.is_recurring(3) is True, "连续三个窗口才值得派工"
     assert cand.is_recurring(37) is True
     assert cand.is_recurring(0) is False
     assert cand.is_recurring("坏数据") is False
@@ -1025,3 +1026,24 @@ def test_event_conclusion_status_uses_the_verdict_vocabulary() -> None:
     src = inspect.getsource(queue_mod._mirror_event_conclusion)
     assert "verdict" in src
     assert "status_values" not in src  # 不该再另抄一份词表
+
+
+def test_novelty_asset_is_destination_only() -> None:
+    """首见资产只看**被访问方**（内网 dst）：用 src 会把新手机/客户端当成新资产。"""
+    cand = _mod("app.analysis.candidates")
+    subjects = _mod("app.analysis.subjects")
+    c = cand.Collector()
+    c.observe(SimpleNamespace(src_ip="10.1.2.9", dst_ip="172.16.1.10", dst_port=445, protocol="tcp"))
+    assert "172.16.1.10" in c.seen.get(subjects.KIND_ASSET, set())
+    assert "10.1.2.9" not in c.seen.get(subjects.KIND_ASSET, set())
+    assert "172.16.1.10:445" in c.seen.get(subjects.KIND_PORT, set())
+
+    # 公网目的（外连）不算内网资产；随机高端口不算"新服务"
+    c2 = cand.Collector()
+    c2.observe(SimpleNamespace(src_ip="10.1.2.9", dst_ip="8.8.8.8", dst_port=53, protocol="udp"))
+    assert c2.seen.get(subjects.KIND_ASSET, set()) == set()
+    assert c2.seen.get(subjects.KIND_PORT, set()) == set()
+
+    c3 = cand.Collector()
+    c3.observe(SimpleNamespace(src_ip="10.1.2.9", dst_ip="172.16.1.10", dst_port=51234, protocol="tcp"))
+    assert c3.seen.get(subjects.KIND_PORT, set()) == set(), "随机端口不派工"

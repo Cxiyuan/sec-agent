@@ -36,8 +36,9 @@ from sqlalchemy import func, select, tuple_
 from app.analysis import cold_start as cold_start_mod, feedback, params, queue, subjects
 from app.baseline import poisson
 from app.db.base import SessionLocal
-from app.db.models import AnalysisResult, HitEvent, Observation, ObservedSubject
+from app.db.models import AnalysisResult, AnalysisTask, HitEvent, Observation, ObservedSubject
 from app.detector import suppression
+from app.iputil import is_public_ip
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -46,6 +47,16 @@ from app.workers.log import get_logger
 UTC = timezone.utc
 
 log = get_logger(__name__)
+
+#: 服务端口首见只关心这些（暴露面/横向常用）：随机端口是 NAT/临时连接，不是"新服务"
+_HIGH_RISK_PORTS: frozenset[int] = frozenset({
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995,
+    1433, 1521, 2049, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9200, 11211,
+})
+
+#: 队列里 pending novelty 的上限：首见线索的价值随时间快速衰减，
+#: 堆到 500 条以上只会把 observation/hit 饿死（实测 4914 条把队占满）。
+_NOVELTY_PENDING_CAP = 500
 
 #: 每窗口最多登记多少个对象值（代理出口/扫描器场景下对端可能上千个，不封顶会无界增长）
 _MAX_PER_KIND = 5000
@@ -118,12 +129,14 @@ class Collector:
         """每条事件调用；只往 set 里塞，不做任何数据库/网络操作。"""
         src = str(entry.src_ip or "")
         dst = str(entry.dst_ip or "")
-        if src and src != "-":
-            self._add(subjects.KIND_ASSET, src)
-        port = entry.dst_port
-        if dst and dst != "-" and port:
-            # 服务 = "被谁访问的哪个端口"（新监听端口是典型的"第一次见"）
-            self._add(subjects.KIND_PORT, f"{dst}:{port}")
+        # 资产首见只看**被访问方**（内网 dst）：取 src 会把"新手机/新客户端 IP"
+        # 当成新资产，校园网一天上千条（实测 3659 条待办，97% 是客户端噪声）。
+        if dst and dst != "-" and not is_public_ip(dst):
+            self._add(subjects.KIND_ASSET, dst)
+            port = entry.dst_port
+            # 服务端口只记高危/常用端口：随机高端口（NAT/临时连接）没有暴露面含义
+            if port and int(port) in _HIGH_RISK_PORTS:
+                self._add(subjects.KIND_PORT, f"{dst}:{port}")
         if str(getattr(entry, "protocol", "") or ""):
             self._add(subjects.KIND_PROTOCOL, str(entry.protocol).lower())
         sig_id = str(getattr(entry, "signature_id", "") or "")
@@ -158,11 +171,12 @@ def is_recurring(seen_count: int) -> bool:
     """跨窗口再现才算"值得派工的对象"（纯函数，便于测）。
 
     `seen_count` 每个采集窗口出现一次 +1：首次登记是 1，第二个窗口再出现就是 2。
-    只有 1 的是**一次性对象**（代理/NAT 的临时套接字、扫描器的单次探测），
-    它们不是"新服务"，派工过去只会白烧模型调用。
+    只有 1~2 的还可能是**一次性对象**（代理/NAT 的临时套接字、扫描器的单次探测），
+    它们不是"新服务"，派工过去只会白烧模型调用。门槛从 2 提到 3：校园网里
+    客户端换 IP/重连非常频繁，2 个窗口就派工基本等于"给每个新手机发一单"。
     """
     try:
-        return int(seen_count or 0) >= 2
+        return int(seen_count or 0) >= 3
     except (TypeError, ValueError):
         return False
 
@@ -275,7 +289,7 @@ def _novelty_tasks(
 #: 事实转任务的门槛：低于它的只留在库里给 MCP 查（避免"每条事实都派一单"）
 _OBS_MIN_STRENGTH = 0.45
 _OBS_WINDOW_MINUTES = 30
-_OBS_PER_ROUND = 30
+_OBS_PER_ROUND = 5
 
 
 def _recent_rule_hits(subject: str, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -383,7 +397,20 @@ def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, 
         with SessionLocal() as db:
             recurring = _record_seen(db, rows, now)
             db.commit()
-            out["novelty"] = _novelty_tasks(db, recurring, now, client)
+            pending_novelty = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(AnalysisTask)
+                    .where(
+                        AnalysisTask.kind == "novelty",
+                        AnalysisTask.state.in_(("pending", "deferred")),
+                    )
+                )
+                or 0
+            )
+            if pending_novelty < _NOVELTY_PENDING_CAP:
+                room = _NOVELTY_PENDING_CAP - pending_novelty
+                out["novelty"] = _novelty_tasks(db, recurring[:room], now, client)
     except Exception as exc:  # noqa: BLE001 — 生成线索失败绝不能影响检测
         log.warning("线索生成（首见登记）失败：%s", exc)
         queue.bump(client, "candidate_error")
