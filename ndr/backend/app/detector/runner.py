@@ -352,6 +352,10 @@ def run() -> None:
             counts = egress.observe_window(window_samples)
             stats["observation_egress_new"] = stats.get("observation_egress_new", 0) + counts["new"]
             stats["observation_egress_rare"] = stats.get("observation_egress_rare", 0) + counts["rare"]
+            stats["observation_egress_sustained"] = (
+                stats.get("observation_egress_sustained", 0) + counts.get("sustained", 0)
+            )
+            stats["egress_capped"] = stats.get("egress_capped", 0) + counts.get("capped", 0)
             stats["egress_allow_learned"] = stats.get("egress_allow_learned", 0) + counts["learned"]
         # 连接数偏离降级（2026-10 用户口径）：不再生成派工线索，只作为低强度事实
         for item in deviations:

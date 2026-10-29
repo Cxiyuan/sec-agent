@@ -718,6 +718,11 @@ class Observation(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     dedupe_key: Mapped[str] = mapped_column(String(200), default="")
+    #: 最近一次被转成任务的时刻（D7，2026-10-29）：同一事实 6 小时内不重复派工，
+    #: 否则最强的几条事实每 5 分钟重新占位，低强度事实永远轮不到
+    last_enqueued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

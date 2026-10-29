@@ -31,7 +31,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import Text, cast, func, select, tuple_
 
 from app.analysis import cold_start as cold_start_mod, feedback, params, queue, subjects
 from app.baseline import poisson
@@ -478,11 +478,23 @@ def enqueue_hit_clusters(client: Any) -> int:
         if result in ("new", "merged"):
             made += 1
     return made
+
+
+#: 每轮最多派几条（总配额）
 _OBS_PER_ROUND = 5
+#: 每类最多派几条（D7 分类型配额）：防止 egress_new 把 login_bruteforce/asset_shift 挤掉
+_OBS_PER_KIND = 2
+#: 同一事实的派工冷却（小时）：强事实不再每 5 分钟重新占位
+_OBS_COOLDOWN_HOURS = 6
 
 
 def _recent_rule_hits(subject: str, *, limit: int = 5) -> list[dict[str, Any]]:
-    """该对象最近的规则命中（作为事实的附加证据，不参与判定）。"""
+    """该对象最近的规则命中（作为事实的附加证据，不参与判定）。
+
+    D6（2026-10-29）：之前只查 `src_ip`/`client`，内网资产被外网源**打**时（它是
+    dst）带不上任何规则证据 —— 而"这个资产被扫了"恰恰要靠这些证据。现在同时按
+    dst 匹配，并标明它是源侧还是目的侧（`as_source`/`as_destination`）。
+    """
     if subject == "":
         return []
     since = datetime.now(UTC) - timedelta(hours=24)
@@ -493,24 +505,36 @@ def _recent_rule_hits(subject: str, *, limit: int = 5) -> list[dict[str, Any]]:
                     select(HitEvent)
                     .where(
                         HitEvent.created_at >= since,
-                        (HitEvent.src_ip == subject) | (HitEvent.client == subject),
+                        (HitEvent.src_ip == subject)
+                        | (HitEvent.client == subject)
+                        # dst_ips 是 JSON 数组：用转文本包含匹配（PG/SQLite 都可用）
+                        | (cast(HitEvent.dst_ips, Text).like(f'%"{subject}"%')),
                     )
                     .order_by(HitEvent.created_at.desc())
                     .limit(max(1, min(limit, 20)))
                 ).all()
             )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读近期规则命中失败：%s", exc)
         return []
-    return [
-        {
-            "rule": row.rule,
-            "source_kind": row.source_kind,
-            "count": int(row.count or 0),
-            "last_seen": row.last_seen.isoformat() if row.last_seen else "",
-            "event_id": str(row.id),
-        }
-        for row in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        as_source = subject in (str(row.src_ip or ""), str(row.client or ""))
+        out.append(
+            {
+                "rule": row.rule,
+                "source_kind": row.source_kind,
+                "count": int(row.count or 0),
+                "last_seen": row.last_seen.isoformat() if row.last_seen else "",
+                "event_id": str(row.id),
+                "direction": str(getattr(row, "direction", "") or ""),
+                "as_source": as_source,
+                "as_destination": subject in [str(x) for x in (row.dst_ips or [])],
+            }
+        )
+    # 目的侧证据优先（"它被谁打了"通常比"它打了谁"更值得先看）
+    out.sort(key=lambda item: (not item["as_destination"], not item["as_source"]))
+    return out
 
 
 def enqueue_observations(client: Any) -> int:
@@ -519,27 +543,79 @@ def enqueue_observations(client: Any) -> int:
     为什么需要这一步：基线事实是给智能体看的，但它不会主动去翻库 ——
     必须有一条"这些事实值得你看一眼"的派工路径。重复事实由队列的去重键合并，
     同一对象同一类事实只会有一条任务。
+
+    D7（2026-10-29）：之前每轮只取"强度最高的 5 条"、还不记录派过没有 ——
+    同一条强事实每 5 分钟重新占位，低强度事实（login_bruteforce/asset_shift）
+    永远轮不到。现在：
+    - 同一事实 6 小时冷却（`last_enqueued_at`）；
+    - 分类型配额：每类最多 2 条（`ROW_NUMBER() OVER (PARTITION BY kind ...)`）；
+    - 强度 < 0.45 的（conn_shift 0.2 / egress_rare 0.35）**只可查询、不派工**，
+      文档与工具描述里如实说明，不假装会派。
     """
     if "observation" not in params.candidate_kinds():
         return 0
-    since = datetime.now(UTC) - timedelta(minutes=_OBS_WINDOW_MINUTES)
+    now = datetime.now(UTC)
+    since = now - timedelta(minutes=_OBS_WINDOW_MINUTES)
+    cutoff = now - timedelta(hours=_OBS_COOLDOWN_HOURS)
     try:
         with SessionLocal() as db:
+            ranked = (
+                select(
+                    Observation.id.label("id"),
+                    func.row_number()
+                    .over(
+                        partition_by=Observation.kind,
+                        order_by=(Observation.strength.desc(), Observation.last_seen.desc()),
+                    )
+                    .label("rn"),
+                )
+                .where(
+                    Observation.last_seen >= since,
+                    Observation.strength >= _OBS_MIN_STRENGTH,
+                    (Observation.last_enqueued_at.is_(None))
+                    | (Observation.last_enqueued_at < cutoff),
+                )
+                .subquery()
+            )
+            picked = select(ranked.c.id).where(ranked.c.rn <= _OBS_PER_KIND).subquery()
             rows = list(
                 db.scalars(
                     select(Observation)
-                    .where(
-                        Observation.last_seen >= since,
-                        Observation.strength >= _OBS_MIN_STRENGTH,
-                    )
+                    .where(Observation.id.in_(select(picked.c.id)))
                     .order_by(Observation.strength.desc(), Observation.last_seen.desc())
                     .limit(_OBS_PER_ROUND)
                 ).all()
             )
+            recent_total = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(Observation)
+                    .where(Observation.last_seen >= since)
+                )
+                or 0
+            )
+            cooling = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(Observation)
+                    .where(
+                        Observation.last_seen >= since,
+                        Observation.strength >= _OBS_MIN_STRENGTH,
+                        Observation.last_enqueued_at.is_not(None),
+                        Observation.last_enqueued_at >= cutoff,
+                    )
+                )
+                or 0
+            )
     except Exception as exc:  # noqa: BLE001 — 事实派工失败不能拖垮检测
         log.warning("读观察事实失败：%s", exc)
         return 0
+    queue.bump(client, "observation_skipped_cooldown", cooling)
+    if recent_total > len(rows) + cooling:
+        # 有事实但没进本轮配额（被同类上限/总上限挡住）：低强度事实正在挨饿
+        queue.bump(client, "observation_starved")
     made = 0
+    enqueued_ids: list[str] = []
     for row in rows:
         subject_kind = "account" if str(row.subject_kind) == "account" else "ip"
         # 规则命中只作为**附加证据**：默认不再单独派工，但对象被事实选中时把它带上，
@@ -565,12 +641,25 @@ def enqueue_observations(client: Any) -> int:
                 # "同资产外连 A/B 两条事实"会共用一条结论（实测踩过）
                 **({"reuse_identity": str(row.dedupe_key or "")} if str(row.dedupe_key or "") else {}),
                 **({"方向": direction} if direction else {}),
+                **({"direction": direction} if direction else {}),
                 **({"相关规则命中": evidence} if evidence else {}),
             },
             client=client,
         )
         if result in ("new", "merged"):
             made += 1
+            enqueued_ids.append(str(row.id))
+    if enqueued_ids:
+        try:
+            with SessionLocal() as db:
+                for obs_id in enqueued_ids:
+                    item = db.get(Observation, obs_id)
+                    if item is not None:
+                        item.last_enqueued_at = now
+                db.commit()
+        except Exception as exc:  # noqa: BLE001 — 冷却记账失败只影响频率，不影响派工
+            log.debug("观察事实冷却记账失败：%s", exc)
+    queue.bump(client, "observation_enqueued", made)
     return made
 
 def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, int]:

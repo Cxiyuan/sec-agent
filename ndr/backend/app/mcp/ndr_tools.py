@@ -1866,12 +1866,13 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _list_observations,
         "desc": (
             "查**行为基线事实**（与界面同一份）：外连目的地首次/罕见、账号异地登录、"
-            "同账号多来源爆破、客户端大量 404、连接数偏离。只有客观事实与强度，"
+            "同账号多来源爆破、客户端大量 404、连接数偏离、被访问资产访问量偏离、"
+            "账号/会话画像异常。只有客观事实与强度，"
             "没有严重度、没有结论 —— 判断权在你"
         ),
         "params": {
             "kind": "只看某类事实：egress_new / egress_rare / geo_jump / login_bruteforce / "
-            "path_probe / conn_shift / asset_shift（可省）",
+            "path_probe / conn_shift / asset_shift / profile_anomaly（可省）",
             "subject": "只看某个对象（资产 IP / 账号，可省）",
             "minutes": "回看多少分钟（默认 1440）",
             "limit": "最多几条（默认 50）",

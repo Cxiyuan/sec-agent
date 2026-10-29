@@ -40,6 +40,8 @@ _MIGRATIONS: tuple[str, ...] = (
     # 命中方向（D1，2026-10-29 架构整改）：out→in / in→out / in→in / out→out / unknown，
     # 聚合定型时算一次全链路下发（hint/事件详情/智能体都看它决定往哪个方向查）
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS direction VARCHAR(16) DEFAULT ''",
+    # 观察事实派工冷却（D7，2026-10-29）：同一事实 6 小时内不重复派工
+    "ALTER TABLE observations ADD COLUMN IF NOT EXISTS last_enqueued_at TIMESTAMPTZ",
     # 精准抑制：按「启用+到期」筛活跃条目、按命中数排序找最需要复核的条目
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_enabled_expiry ON analysis_suppressions (enabled, expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_hits ON analysis_suppressions (hits)",

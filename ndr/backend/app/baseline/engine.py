@@ -29,6 +29,7 @@ from app.baseline.asset import (
 from app.baseline.poisson import bonferroni_alpha, count_p_value
 from app.baseline.stats import apply_stats, cleanup as stats_cleanup, load_stats
 from app.config import settings
+from app.iputil import is_internal_ip
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
 
@@ -555,6 +556,7 @@ class BaselineEngine:
         result = profiles.update_profiles(observations, risks)
         anomalies = list(info.get("anomalies") or [])
         self._remember_anomalies(anomalies)
+        self._emit_profile_anomalies(anomalies)
         self.stats["flushes"] = self.stats.get("flushes", 0) + 1
         self.stats["profiles_created"] = self.stats.get("profiles_created", 0) + int(
             result.get("created") or 0
@@ -568,6 +570,64 @@ class BaselineEngine:
                 len(observations),
                 len(anomalies),
                 len(self._anomalies),
+            )
+
+    def _emit_profile_anomalies(self, anomalies: list[dict[str, Any]]) -> None:
+        """画像异常 → `profile_anomaly` 事实（D4，2026-10-29）。
+
+        口径：
+        - 异常带**监控网段内**来源 IP → 按主源 IP 发资产主体事实（"这台机器在用新 UA/
+          打新接口"）；纯外部来源不发资产主体（那不是我们的资产）；
+        - 否则按账号/会话实体发（`subject_kind=account/session`）；
+        - 与 `login_bruteforce`/`geo_jump` 去重：同一对象已有这类账号事实就不重复发；
+        - 强度 = 画像风险分（客观分，不是严重度）。
+        """
+        if not params.profile_anomaly_enabled():
+            return
+        for item in anomalies:
+            reasons = [str(x) for x in (item.get("reasons") or [])]
+            if not reasons:
+                continue
+            risk = float(item.get("risk") or 0.0)
+            src_ips = [str(x) for x in (item.get("src_ips") or [])][:10]
+            internal_srcs = [ip for ip in src_ips if is_internal_ip(ip)]
+            # reason code：判据名（冒号/全角括号前的部分），同一类异常共用一个 key
+            code = reasons[0].split("（", 1)[0].split(":", 1)[0].strip()[:40] or "画像异常"
+            facts = {
+                "画像对象": str(item.get("display") or item.get("key") or ""),
+                "对象类型": "账号" if str(item.get("kind")) == "account" else "会话",
+                "风险分": round(risk, 3),
+                "判定理由": reasons,
+                "来源地址": src_ips,
+                "历史观测次数": int(item.get("obs_count") or 0),
+                "说明": "该对象的访问画像与它自己的历史基线不一致（客观事实，不含结论）",
+            }
+            if internal_srcs:
+                for ip in internal_srcs[:3]:
+                    if observations.has_recent(ip, ("login_bruteforce", "geo_jump")):
+                        continue
+                    observations.emit(
+                        "profile_anomaly",
+                        "asset",
+                        ip,
+                        facts,
+                        key=f"profile_anomaly:{code}",
+                        strength=max(0.0, min(1.0, risk)),
+                    )
+                continue
+            subject = str(item.get("display") or item.get("key") or "").strip()
+            if not subject:
+                continue
+            if observations.has_recent(subject, ("login_bruteforce", "geo_jump")):
+                continue
+            subject_kind = "account" if str(item.get("kind")) == "account" else "session"
+            observations.emit(
+                "profile_anomaly",
+                subject_kind,
+                subject,
+                facts,
+                key=f"profile_anomaly:{code}",
+                strength=max(0.0, min(1.0, risk)),
             )
 
     def _flush_assets(self) -> None:

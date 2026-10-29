@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, func, select
 
 from app.baseline import observations, params
 from app.db.base import SessionLocal
@@ -116,15 +116,75 @@ def _tombstoned(kind: str, value: str) -> bool:
         return False
 
 
+def _fleet_counts(db: Any, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """全舰队稀有度（D5）：每个 (kind, value) 被多少台资产连过。
+
+    为什么需要：同一个"新目标"，一台机器连是可疑，几百台客户端都连的常见网站
+    是噪声。之前 egress_new 强度固定 0.6，常见站点和孤僻目标同权。
+    """
+    if not pairs:
+        return {}
+    kinds = sorted({k for k, _ in pairs})
+    values = sorted({v for _, v in pairs})
+    out: dict[tuple[str, str], int] = {}
+    rows = db.execute(
+        select(EgressBaseline.kind, EgressBaseline.value, func.count(func.distinct(EgressBaseline.src_ip)))
+        .where(EgressBaseline.kind.in_(kinds), EgressBaseline.value.in_(values))
+        .group_by(EgressBaseline.kind, EgressBaseline.value)
+    ).all()
+    for kind, value, count in rows:
+        out[(str(kind), str(value))] = int(count or 0)
+    return out
+
+
+def _learning_blocked(kind: str, value: str, now: datetime) -> bool:
+    """自动白名单护栏（D5-4）：目标有真阳性/可疑结论，或正被待办任务跟踪 → 不学习。"""
+    from app.db.models import AnalysisResult, AnalysisTask
+
+    needle = f"%{value}%"
+    try:
+        with SessionLocal() as db:
+            pending = db.scalar(
+                select(AnalysisTask.id)
+                .where(
+                    AnalysisTask.state.in_(("pending", "claimed", "deferred")),
+                    cast(AnalysisTask.hint, Text).like(needle),
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                return True
+            bad = db.scalar(
+                select(AnalysisResult.id)
+                .where(
+                    AnalysisResult.verdict.in_(("true_positive", "suspicious")),
+                    AnalysisResult.created_at >= now - timedelta(days=30),
+                    cast(AnalysisResult.findings, Text).like(needle),
+                )
+                .limit(1)
+            )
+            return bad is not None
+    except Exception:  # noqa: BLE001 — 护栏查不到时宁可不学习（安全侧）
+        return True
+
+
 def observe_window(
     samples: list[dict[str, Any]], *, now: datetime | None = None
 ) -> dict[str, int]:
-    """一个采样窗口的外连事实：判"首次/罕见"、累加计数、必要时自动入白名单。
+    """一个采样窗口的外连事实：判"首次/罕见"、持续跟踪、必要时自动入白名单。
 
-    一个窗口只打两次库（一次读基线、一次写回），不在事件热路径上。
+    一个窗口只打几次库，不在事件热路径上。
+
+    D5（2026-10-29）整改：
+    - `egress_new` 强度按**全舰队稀有度**调整（只有 1–2 台资产连的目标更强；
+      被大量资产访问的常见站点降成低价值事实）；
+    - 未判定的目标按 `egress.sustained_minutes` 持续产出 `egress_sustained`（强度≥0.45），
+      不再"首次没派到就永远静默"；
+    - 自动白名单默认关闭（`egress.auto_allow`），开启也有护栏；
+    - `MAX_PER_WINDOW` 截断时先按稀有度排序，并如实计数（`egress_capped`）。
     """
     if not params.egress_enabled():
-        return {"new": 0, "rare": 0, "learned": 0}
+        return {"new": 0, "rare": 0, "learned": 0, "sustained": 0, "capped": 0}
     moment = now or datetime.now(UTC)
     # 只处理"监控网段内源 → 公网目的地"的外连（口径 C1 2026-10-29）：
     # 源用 is_internal_ip() —— 未监控内网段连公网不是"我们的外连"，学进去会把
@@ -146,24 +206,51 @@ def observe_window(
             if value:
                 candidates.append((src, KIND_PORT, value))
     if not candidates:
-        return {"new": 0, "rare": 0, "learned": 0}
-    candidates = candidates[:MAX_PER_WINDOW]
+        return {"new": 0, "rare": 0, "learned": 0, "sustained": 0, "capped": 0}
+    # 同一窗口内同一 (src, kind, value) 只算一次，避免自造计数
+    candidates = list(dict.fromkeys(candidates))
 
     allow = _allowed_entries()
     srcs = sorted({src for src, _, _ in candidates})
+    counts = {"new": 0, "rare": 0, "learned": 0, "sustained": 0, "capped": 0}
     try:
         with SessionLocal() as db:
+            # 全舰队稀有度要在截断**之前**算：先按稀有条数排序，再截断（D5-5）
+            fleet = _fleet_counts(db, [(kind, value) for _, kind, value in candidates])
+            candidates.sort(key=lambda c: fleet.get((c[1], c[2]), 99))
+            if len(candidates) > MAX_PER_WINDOW:
+                counts["capped"] = len(candidates) - MAX_PER_WINDOW
+                log.warning(
+                    "外连窗口候选 %d 条，超过单窗口上限 %d，按全舰队稀有度保留前 %d 条",
+                    len(candidates),
+                    MAX_PER_WINDOW,
+                    MAX_PER_WINDOW,
+                )
+                candidates = candidates[:MAX_PER_WINDOW]
             rows = list(
                 db.scalars(select(EgressBaseline).where(EgressBaseline.src_ip.in_(srcs))).all()
             )
             known = {(row.src_ip, row.kind, row.value): row for row in rows}
-            counts = {"new": 0, "rare": 0, "learned": 0}
             rare_min = int(params.egress_rare_min())
             learn_days = int(params.egress_learn_days())
             learn_occurrences = int(params.egress_learn_occurrences())
+            auto_allow = params.egress_auto_allow()
+            sustained_minutes = max(15, int(params.egress_sustained_minutes()))
+            dims = {KIND_DST: "目的 IP", KIND_DOMAIN: "域名", KIND_PORT: "目的端口"}
             for src, kind, value in candidates:
                 if _is_allowed(allow, src, kind, value):
                     continue
+                fleet_n = fleet.get((kind, value), 1)
+                # 稀有度系数：只有 1–2 台资产连过 = 更值得看；很多资产都连 = 常见站点
+                if fleet_n <= 2:
+                    new_strength = 0.7
+                    rare_strength = 0.5
+                elif fleet_n >= 10:
+                    new_strength = 0.35
+                    rare_strength = 0.3
+                else:
+                    new_strength = 0.6
+                    rare_strength = 0.45
                 row = known.get((src, kind, value))
                 if row is None:
                     if _tombstoned(kind, value):
@@ -183,12 +270,14 @@ def observe_window(
                         "asset",
                         src,
                         {
-                            "维度": {KIND_DST: "目的 IP", KIND_DOMAIN: "域名", KIND_PORT: "目的端口"}[kind],
+                            "维度": dims[kind],
                             "目标": value,
+                            "全舰队访问资产数": fleet_n,
                             "说明": "该资产以前没有连过这个目标（主动外连）",
                             "首次观测": moment.isoformat(),
                         },
                         key=f"{kind}:{value}",
+                        strength=new_strength,
                         now=moment,
                     )
                     counts["new"] += 1
@@ -201,22 +290,48 @@ def observe_window(
                         "asset",
                         src,
                         {
-                            "维度": {KIND_DST: "目的 IP", KIND_DOMAIN: "域名", KIND_PORT: "目的端口"}[kind],
+                            "维度": dims[kind],
                             "目标": value,
                             "累计窗口次数": row.count,
                             "判定门槛": rare_min,
+                            "全舰队访问资产数": fleet_n,
                             "说明": "该资产连这个目标的次数仍然很少（可能是临时/异常外连）",
                         },
                         key=f"{kind}:{value}",
+                        strength=rare_strength,
                         now=moment,
                     )
                     counts["rare"] += 1
-                # 自学习：稳定出现足够久 + 足够多次 → 入白名单（墓碑不学）
+                else:
+                    # D5-2 持续跟踪：目标还没被 agent 判定前，按较低频率继续产出事实
+                    observations.emit(
+                        "egress_sustained",
+                        "asset",
+                        src,
+                        {
+                            "维度": dims[kind],
+                            "目标": value,
+                            "累计窗口次数": row.count,
+                            "全舰队访问资产数": fleet_n,
+                            "说明": "该资产在持续连这个目标；尚未有分析结论前保持可见",
+                        },
+                        key=f"{kind}:{value}",
+                        strength=max(0.45, rare_strength),
+                        cooldown_minutes=sustained_minutes,
+                        now=moment,
+                    )
+                    counts["sustained"] += 1
+                # 自学习（默认关闭）：稳定出现足够久 + 足够多次，且有护栏
                 first = row.first_seen
                 if first is not None and first.tzinfo is None:
                     first = first.replace(tzinfo=UTC)
                 age_days = (moment - first).days if first is not None else 0
-                if row.count >= learn_occurrences and age_days >= learn_days:
+                if (
+                    auto_allow
+                    and row.count >= learn_occurrences
+                    and age_days >= learn_days
+                    and not _learning_blocked(kind, value, moment)
+                ):
                     existing = db.execute(
                         select(EgressAllow.id).where(
                             EgressAllow.kind == kind,
@@ -238,7 +353,7 @@ def observe_window(
             return counts
     except Exception as exc:  # noqa: BLE001 — 外连基线失败不能影响检测
         log.warning("外连目的地基线失败：%s", exc)
-        return {"new": 0, "rare": 0, "learned": 0}
+        return {"new": 0, "rare": 0, "learned": 0, "sustained": 0, "capped": 0}
 
 
 # ------------------------------------------------------------------ 白名单管理

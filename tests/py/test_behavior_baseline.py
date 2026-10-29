@@ -120,6 +120,10 @@ def test_observation_kinds_are_fact_only(request: pytest.FixtureRequest) -> None
         "conn_shift",
         # D3（2026-10-29）：资产侧基线判异（被访问方访问量高于自身基线）
         "asset_shift",
+        # D4：账号/会话画像异常（新源 IP / 新 UA / 新路径 / 非常用时段）
+        "profile_anomaly",
+        # D5：外连目标持续跟踪（未判定前保持可见）
+        "egress_sustained",
     }
     # 事实表本身没有 severity / verdict 这类结论字段（模型定义里就不该有）
     from app.db.models import Observation

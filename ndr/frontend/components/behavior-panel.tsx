@@ -80,10 +80,13 @@ const SRC = {
 const OBSERVATION_KINDS: [string, string][] = [
   ["egress_new", "外连目的地首次出现"],
   ["egress_rare", "外连目的地罕见"],
+  ["egress_sustained", "外连目的地持续出现"],
   ["geo_jump", "账号登录地点变化"],
   ["login_bruteforce", "账号被多来源尝试登录"],
   ["path_probe", "客户端大量 404"],
   ["conn_shift", "连接数高于自身基线"],
+  ["asset_shift", "被访问资产访问量高于自身基线"],
+  ["profile_anomaly", "账号或会话画像异常"],
 ];
 
 /** 外连白名单的目标类型（与后端 `egress.py` 的 KIND_* 同源） */

@@ -321,6 +321,12 @@ class Settings(BaseSettings):
     baseline_deviation_cap_per_hour: int = 200
     # 资产侧基线判异（D3，2026-10-29）：默认只学不判，观察一周指标后再开
     baseline_asset_shift_enabled: bool = False
+    # 画像异常 → observation（D4，2026-10-29）：默认开（异常本来就在摘要标签里，
+    # 只是现在也进事实面；关掉即回滚到"只在摘要可见"）
+    baseline_profile_anomaly_enabled: bool = True
+    # 外连目的地自动进白名单（D5，2026-10-29）：**默认关**，白名单只允许人工新增；
+    # 开启也有护栏（有真阳性/可疑结论或被任务跟踪时不学习）
+    egress_auto_allow: bool = False
     # 同一资产每小时最多报几条 asset_shift（统计显著 ≠ 值得人看）
     baseline_asset_deviation_cap_per_entity_hour: int = 3
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）

@@ -41,8 +41,12 @@ KIND_STRENGTH: dict[str, float] = {
     "login_bruteforce": 0.6,
     "path_probe": 0.45,
     "conn_shift": 0.2,
+    # D5：持续跟踪（未被判定前保持可见；派工门槛要求 ≥0.45）
+    "egress_sustained": 0.45,
     # D3：资产侧判异（被访问方）。0.5 起步、engine 按 p 值上调，上限 0.7
     "asset_shift": 0.5,
+    # D4：画像异常（实际强度用 risk 传入，这里只是缺省兜底）
+    "profile_anomaly": 0.5,
 }
 
 KIND_LABELS: dict[str, str] = {
@@ -53,6 +57,8 @@ KIND_LABELS: dict[str, str] = {
     "path_probe": "客户端大量 404",
     "conn_shift": "连接数高于自身基线",
     "asset_shift": "被访问资产访问量高于自身基线",
+    "profile_anomaly": "账号或会话画像异常",
+    "egress_sustained": "外连目的地持续出现",
 }
 
 
@@ -120,6 +126,28 @@ def emit(
     except Exception as exc:  # noqa: BLE001 — 事实写失败不能拖垮检测
         log.warning("写观察事实失败（%s/%s）：%s", kind, subject, exc)
         return False
+
+
+def has_recent(subject: str, kinds: tuple[str, ...], minutes: int = 120) -> bool:
+    """该对象近期是否已有这几类事实（去重用：同一现象不重复发）。"""
+    text = str(subject or "").strip()
+    if text == "" or not kinds:
+        return False
+    since = datetime.now(UTC) - timedelta(minutes=max(1, int(minutes)))
+    try:
+        with SessionLocal() as db:
+            found = db.scalar(
+                select(Observation.id)
+                .where(
+                    Observation.subject == text,
+                    Observation.kind.in_(kinds),
+                    Observation.last_seen >= since,
+                )
+                .limit(1)
+            )
+    except Exception:  # noqa: BLE001 — 去重查询失败按"没有"处理，宁可多一条也别丢
+        return False
+    return found is not None
 
 
 def cleanup(days: int = 30) -> int:

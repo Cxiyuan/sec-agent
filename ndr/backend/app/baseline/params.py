@@ -141,6 +141,16 @@ KNOBS: tuple[Knob, ...] = (
         note="同一资产每小时最多报几条 asset_shift；统计显著不等于值得人看，0=不限",
     ),
     Knob(
+        "baseline.profile_anomaly_enabled",
+        "画像异常进事实",
+        "bool",
+        settings.baseline_profile_anomaly_enabled,
+        note=(
+            "账号/会话画像过阈值异常（新源 IP、新 UA、新路径、非常用时段）发成 profile_anomaly "
+            "事实（D4）。关掉后只在摘要标签里可见，不进入事实派工"
+        ),
+    ),
+    Knob(
         "baseline.std_floor_ratio",
         "标准差下限（均值比例）",
         "float",
@@ -471,6 +481,30 @@ KNOBS: tuple[Knob, ...] = (
         unit="次",
         note="与天数同时满足才自动入白名单",
     ),
+    Knob(
+        "egress.auto_allow",
+        "自动入白名单",
+        "bool",
+        settings.egress_auto_allow,
+        note=(
+            "稳定出现足够久/足够多次的目的地自动放行（D5，2026-10-29 起**默认关闭**）。"
+            "关闭时白名单只能人工新增；开启也有护栏：目标有真阳性/可疑结论、"
+            "或被待办任务跟踪时绝不学习"
+        ),
+    ),
+    Knob(
+        "egress.sustained_minutes",
+        "持续跟踪频率",
+        "int",
+        60,
+        low=15,
+        high=1440,
+        unit="分钟",
+        note=(
+            "未被判定的外连目标按这个频率持续产出 egress_sustained 事实（强度≥0.45），"
+            "避免首次任务漏掉后彻底静默（D5）"
+        ),
+    ),
     # ---------- 账号地理 / 爆破 / 404 ----------
     Knob(
         "profile.geo_enabled",
@@ -576,6 +610,14 @@ def egress_learn_days() -> int:
 
 def egress_learn_occurrences() -> int:
     return int(_num(_BY_KEY["egress.learn_occurrences"]))
+
+
+def egress_auto_allow() -> bool:
+    return _flag(_BY_KEY["egress.auto_allow"])
+
+
+def egress_sustained_minutes() -> int:
+    return int(_num(_BY_KEY["egress.sustained_minutes"]))
 
 
 def geo_enabled() -> bool:
@@ -952,6 +994,10 @@ def asset_shift_enabled() -> bool:
 
 def asset_deviation_cap_per_entity_hour() -> int:
     return int(_num(_BY_KEY["baseline.asset_deviation_cap_per_entity_hour"]))
+
+
+def profile_anomaly_enabled() -> bool:
+    return _flag(_BY_KEY["baseline.profile_anomaly_enabled"])
 
 
 def novelty_max_count() -> int:

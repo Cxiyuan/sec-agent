@@ -146,7 +146,9 @@ def test_egress_baseline_only_from_in_scope_sources(
             },
         ]
     )
-    assert out == {"new": 0, "rare": 0, "learned": 0}, "网段外源不得产出任何外连事实"
+    assert out == {"new": 0, "rare": 0, "learned": 0, "sustained": 0, "capped": 0}, (
+        "网段外源不得产出任何外连事实"
+    )
     # 目的不是公网（网段外私网目的地）同样不算外连
     out2 = egress.observe_window(
         [{"src_ip": "10.1.1.10", "egress_dsts": ["10.9.9.9"], "egress_domains": [], "egress_ports": []}]
