@@ -163,6 +163,41 @@ test('triage：明显 benign → 关单，不碰复用库相关动作', async ()
   assert.equal(result.model, 'Qwen3.5-2B-Q4_K_M')
   assert.ok(bodies[0]?.['temperature'] === 0, 'temperature 必须为 0')
   assert.ok(bodies[0]?.['response_format'] !== undefined, '优先带 json_object 约束')
+  // 推理型小模型必须关思考链，否则 content 恒为空（实测 qwen3.5-2b）
+  const kwargs = bodies[0]?.['chat_template_kwargs'] as Record<string, unknown> | undefined
+  assert.equal(kwargs?.['enable_thinking'], false, '必须带 enable_thinking=false')
+  const messages = bodies[0]?.['messages'] as Array<{ role: string, content: string }>
+  assert.match(messages[0]?.content ?? '', /\/no_think/u, 'system 提示要带 /no_think')
+})
+
+test('triage：服务端不认 chat_template_kwargs → 去掉再试一次', async () => {
+  const bodies: Array<Record<string, unknown>> = []
+  let n = 0
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+    n += 1
+    if (n === 1) {
+      return new Response('{"error":{"message":"unknown field chat_template_kwargs"}}', { status: 400 })
+    }
+    return new Response(okBody('{"verdict":"benign","confidence":0.9,"summary":"ok"}'), { status: 200 })
+  }
+  const result = await client(cfg(), fetchImpl).triage(task)
+  assert.equal(result.kind, 'closed')
+  assert.ok(bodies[0]?.['chat_template_kwargs'] !== undefined)
+  assert.equal(bodies[1]?.['chat_template_kwargs'], undefined, '第二次必须去掉关思考参数')
+})
+
+test('triage：只返回思考链（content 空）→ 升级并给出可操作原因', async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: '', reasoning_content: '想了很久' } }],
+    }), { status: 200 })
+  const triageClient = client(cfg(), fetchImpl)
+  const result = await triageClient.triage(task)
+  assert.equal(result.kind, 'escalate')
+  if (result.kind !== 'escalate') return
+  assert.equal(result.reason, 'http_error')
+  assert.match(String(triageClient.stats()['last_error'] ?? ''), /思考链/u)
 })
 
 test('triage：拿不准/置信不够/被抽中 → 升级并带预判', async () => {

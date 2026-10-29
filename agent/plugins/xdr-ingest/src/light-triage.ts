@@ -78,6 +78,12 @@ export interface LightTriagePort {
 const SYSTEM_PROMPT
   = '你是网络日志初筛器。只输出一个 JSON 对象：'
   + '{"verdict":"benign|false_positive|inconclusive","confidence":0,"summary":"..."}，不要任何其他文字。'
+  // 推理型小模型（Qwen3/Qwen3.5 等）默认会把预算全花在思考链上，content 直接为空；
+  // `/no_think` 是 Qwen 系列的关思考约定，非推理模型会把它当普通文本忽略。
+  + '/no_think'
+
+/** 关掉思考链（llama.cpp / vLLM 认 chat_template_kwargs.enable_thinking）。 */
+const THINKING_OFF: Record<string, unknown> = { enable_thinking: false }
 
 /**
  * 初筛 user 提示（~700 token）：只喂任务元数据，不给证据、不给工具。
@@ -220,6 +226,8 @@ export class LightTriage {
   private readonly breaker: FailureBreaker
   /** 服务端不认 response_format 时永久关掉（老版 llama.cpp 会 400）。 */
   private useResponseFormat = true
+  /** 服务端不认 chat_template_kwargs（关思考链）时永久关掉再退一次。 */
+  private useThinkingOff = true
   private readonly counters = { calls: 0, closed: 0, escalated: 0, invalid: 0, errors: 0 }
   private lastError = ''
 
@@ -309,11 +317,20 @@ export class LightTriage {
       temperature: 0,
       max_tokens: 256,
     }
-    let response = await this.post(url, body, config, this.useResponseFormat)
+    let response = await this.post(url, body, config, this.useResponseFormat, this.useThinkingOff)
+    if (
+      response.status >= 400
+      && this.useThinkingOff
+      && /chat_template_kwargs|enable_thinking|unknown.*field/iu.test(response.text)
+    ) {
+      // 老服务端不认关思考参数：去掉它再试（提示里的 /no_think 仍对 Qwen 生效）
+      this.useThinkingOff = false
+      response = await this.post(url, body, config, this.useResponseFormat, false)
+    }
     if (response.status >= 400 && this.useResponseFormat && /response_?format/iu.test(response.text)) {
       // 服务端不认识 response_format（老版 llama.cpp）：永久关掉再试一次
       this.useResponseFormat = false
-      response = await this.post(url, body, config, false)
+      response = await this.post(url, body, config, false, this.useThinkingOff)
     }
     if (response.status < 100 || response.status >= 400) {
       throw new Error(`轻量初筛 HTTP ${response.status}：${response.text.slice(0, 200)}`)
@@ -326,6 +343,7 @@ export class LightTriage {
     body: Record<string, unknown>,
     config: LightTriageConfig,
     withResponseFormat: boolean,
+    withThinkingOff: boolean,
   ): Promise<{ status: number, text: string }> {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (config.apiKey !== '') headers['authorization'] = `Bearer ${config.apiKey}`
@@ -335,9 +353,11 @@ export class LightTriage {
       const response = await this.fetchImpl(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(withResponseFormat
-          ? { ...body, response_format: { type: 'json_object' } }
-          : body),
+        body: JSON.stringify({
+          ...body,
+          ...(withResponseFormat ? { response_format: { type: 'json_object' } } : {}),
+          ...(withThinkingOff ? { chat_template_kwargs: THINKING_OFF } : {}),
+        }),
         signal: controller.signal,
       })
       const text = await response.text()
@@ -364,6 +384,13 @@ function extractContent(text: string): string {
   const content = (parsed as { choices?: Array<{ message?: { content?: unknown } }> })
     ?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || content.trim() === '') {
+    const reasoning = (parsed as { choices?: Array<{ message?: { reasoning_content?: unknown } }> })
+      .choices?.[0]?.message?.reasoning_content
+    if (typeof reasoning === 'string' && reasoning.trim() !== '') {
+      // 推理型小模型把 max_tokens 全烧在思考链上（实测 qwen3.5-2b）：这不是网络错，
+      // 而是初筛配置问题（应关思考链，见 SYSTEM_PROMPT 的 /no_think 与 THINKING_OFF）
+      throw new Error('模型只返回思考链（content 为空）：请关闭 thinking（/no_think 或 enable_thinking=false）')
+    }
     throw new Error('响应缺少 choices[0].message.content')
   }
   return content
