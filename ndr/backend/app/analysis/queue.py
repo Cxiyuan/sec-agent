@@ -542,6 +542,19 @@ def sweep(client: Any) -> dict[str, int]:
                 row.note = "租约到期自动回收"
                 row.lease_until = None
                 reclaimed += 1
+        # 首见线索单独一条更短的 TTL：它的价值随时间快速衰减（"这台机器上周是新的"
+        # 对今天的判断没有意义），而且历史积压会把 observation/hit 饿死。
+        novelty_cutoff = now - timedelta(hours=12)
+        novelty_result = db.execute(
+            update(AnalysisTask)
+            .where(
+                AnalysisTask.kind == "novelty",
+                AnalysisTask.state.in_(("pending", "deferred")),
+                AnalysisTask.created_at < novelty_cutoff,
+            )
+            .values(state="expired", note="首见线索超过 12 小时未分析，已过期", updated_at=now)
+        )
+        expired += int(getattr(novelty_result, "rowcount", 0) or 0)
         cutoff = now - timedelta(hours=params.pending_ttl_hours())
         result = db.execute(
             update(AnalysisTask)
@@ -551,7 +564,7 @@ def sweep(client: Any) -> dict[str, int]:
             )
             .values(state="expired", note="超过有效期未领取", updated_at=now)
         )
-        expired = int(getattr(result, "rowcount", 0) or 0)
+        expired += int(getattr(result, "rowcount", 0) or 0)
         db.commit()
     bump(client, "expired", expired)
     bump(client, "reclaimed", reclaimed)

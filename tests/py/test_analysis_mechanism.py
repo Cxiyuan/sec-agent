@@ -1047,3 +1047,12 @@ def test_novelty_asset_is_destination_only() -> None:
     c3 = cand.Collector()
     c3.observe(SimpleNamespace(src_ip="10.1.2.9", dst_ip="172.16.1.10", dst_port=51234, protocol="tcp"))
     assert c3.seen.get(subjects.KIND_PORT, set()) == set(), "随机端口不派工"
+
+
+def test_novelty_expires_after_12_hours() -> None:
+    """首见线索单独 12 小时 TTL：价值衰减快，且历史积压会饿死基线事实。"""
+    queue_mod = _mod("app.analysis.queue")
+    src = inspect.getsource(queue_mod.sweep)
+    assert "novelty_cutoff = now - timedelta(hours=12)" in src
+    assert 'note="首见线索超过 12 小时未分析，已过期"' in src
+    assert "AnalysisTask.kind == \"novelty\"" in src
