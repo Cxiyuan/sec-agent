@@ -327,6 +327,9 @@ class Settings(BaseSettings):
     # 外连目的地自动进白名单（D5，2026-10-29）：**默认关**，白名单只允许人工新增；
     # 开启也有护栏（有真阳性/可疑结论或被任务跟踪时不学习）
     egress_auto_allow: bool = False
+    # 结论证据硬校验（B4，2026-10-29）：非空引用必须本会话真取回、true_positive 至少 1 条。
+    # 回滚开关：置 false 临时放开（审计仍会留 MCP 调用记录）
+    mcp_require_evidence_refs: bool = True
     # 同一资产每小时最多报几条 asset_shift（统计显著 ≠ 值得人看）
     baseline_asset_deviation_cap_per_entity_hour: int = 3
     baseline_flush_seconds: int = 60  # 画像观测落库 + 判异常的节奏（秒）

@@ -1017,10 +1017,12 @@ def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
     # - 非空 refs 必须都在本会话 `valid_refs` 里（会话没取过任何证据时全部算伪造）；
     # - `true_positive` 至少 1 条有效引用（复用交回豁免：取证发生在原始那轮会话）；
     # - benign/false_positive/inconclusive 允许空引用（初筛关单就没有引用）。
+    # 回滚开关 `mcp.require_evidence_refs=false` 可临时放开这层校验（verdict 归一化仍需通过）。
     field_errors: list[dict[str, str]] = []
     if verdict_norm_error != "":
         field_errors.append({"field": "verdict", "msg": verdict_norm_error})
-    else:
+    elif settings.mcp_require_evidence_refs:
+        # 回滚开关 `mcp.require_evidence_refs=false` 可临时放开引用校验（verdict 归一化仍需通过）
         forged = [r for r in refs if r not in valid_refs] if refs else []
         if forged:
             field_errors.append(

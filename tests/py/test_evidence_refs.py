@@ -137,3 +137,22 @@ def test_bad_verdict_rejected(ndr: Any) -> None:
         _complete_args(task_id="00000000-0000-0000-0000-000000000007", verdict="随便说"),
     )
     assert "error" in out
+
+
+def test_rollback_switch_disables_ref_check(
+    ndr: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回滚开关：`mcp.require_evidence_refs=false` 时即使引用伪造也放行（verdict 仍校验）。"""
+    monkeypatch.setattr(ndr.settings, "mcp_require_evidence_refs", False)
+    out = ndr.dispatch(
+        "complete_task",
+        _complete_args(
+            task_id="00000000-0000-0000-0000-000000000008",
+            verdict="true_positive",
+            evidence_refs=["es:forged/1"],
+            _valid_refs=[],
+        ),
+    )
+    msgs = "；".join(e["msg"] for e in out.get("field_errors", []))
+    assert "没真取回过" not in msgs
+    assert "至少" not in msgs
