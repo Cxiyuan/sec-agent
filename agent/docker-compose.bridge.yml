@@ -5,7 +5,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
 #
 # 关键点：
-# - network_mode: service:agent → 与 agent 共用网络命名空间，dsh 用 127.0.0.1:41980；
+# - 独立网络 + 服务名访问（dsh 用 http://ow-bridge:41980/v1）；
+#   早先与 agent 共用 netns，但 agent 重建后 sidecar 还在旧 netns，dsh 会连不上；
 # - 镜像里自带 opencode（version pin 在 CI build-args），不依赖宿主机；
 # - 只读根文件系统 + /tmp tmpfs + 无特权；唯一可写卷是 /data；
 # - 免费额度有限：BRIDGE_MAX_REQUESTS_PER_DAY 是硬预算，超了返回 429。
@@ -13,13 +14,13 @@
 services:
   ow-bridge:
     image: ${OW_BRIDGE_IMAGE:-ghcr.io/cxiyuan/sec-agent/shentong-ow-bridge:latest}
-    network_mode: "service:agent"
     depends_on:
       - agent
     environment:
       TZ: Asia/Shanghai
       BRIDGE_PORT: "41980"
-      BRIDGE_HOST: "127.0.0.1"
+      # 只在本 compose 网络内可达；不发布到宿主机。鉴权仍靠 BRIDGE_API_KEY。
+      BRIDGE_HOST: "0.0.0.0"
       BRIDGE_API_KEY: ${OW_BRIDGE_KEY:?请在 .env 设置 OW_BRIDGE_KEY（dsh 里填同一个值）}
       BRIDGE_DATA_DIR: /data
       BRIDGE_MAX_CONCURRENCY: "2"

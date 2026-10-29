@@ -16,7 +16,7 @@ OpenCode 的免费模型**只允许从 OpenCode 客户端内部调用**，其他
 ## 结构
 
 ```
-dsh agent 容器 ──(127.0.0.1:41980, OpenAI 兼容)──> ow-bridge sidecar
+dsh agent 容器 ──(http://ow-bridge:41980/v1, OpenAI 兼容)──> ow-bridge sidecar
                                                       │ 隔离 XDG + 自带 opencode serve
                                                       └─> opencode.ai 免费模型
 ```
@@ -40,7 +40,8 @@ dsh agent 容器 ──(127.0.0.1:41980, OpenAI 兼容)──> ow-bridge sidecar
 
 ## 安全边界
 
-- 只监听 `127.0.0.1`（compose 里与 agent 共用 netns，外部不可达）；
+- 桥接容器只加入 agent 的 compose 网络（不发布宿主机端口），dsh 用服务名访问；
+- 默认只监听 `127.0.0.1`，compose 里覆盖为 `0.0.0.0`（仅容器网络可达）；
 - 必须带本地 `BRIDGE_API_KEY`，拒绝带浏览器 `Origin` 的请求；
 - 容器：非 root、根文件系统只读、`/tmp` tmpfs、`cap_drop: ALL`、无特权；
 - 唯一可写卷是 `/data`（隔离的 opencode 配置/缓存/工作目录）；
@@ -94,7 +95,7 @@ dsh agent 容器 ──(127.0.0.1:41980, OpenAI 兼容)──> ow-bridge sidecar
 5. dsh 控制台 → 系统 → 模型接入（自定义服务商）：
    - route：`oc-free`
    - 协议：`openai-completions`
-   - Base URL：`http://127.0.0.1:41980/v1`
+   - Base URL：`http://ow-bridge:41980/v1`
    - 模型：`deepseek-v4.1-flash-free`（或 `/v1/models` 里的其他 id）
    - API Key：`OW_BRIDGE_KEY`
 6. 项目组织 → 编辑项目 → 模型：

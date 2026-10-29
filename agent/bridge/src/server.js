@@ -98,10 +98,21 @@ export class Bridge {
   async refreshCatalog() {
     if (this.refreshTask !== null) return this.refreshTask
     this.refreshTask = (async () => {
-      const raw = await this.runtime.rawModels()
-      this.catalog = freeModels(raw, { includeChatOnly: this.config.includeChatOnly })
+      // 启动瞬间 /api/model 可能还是空的（目录异步加载/首次拉 models.dev）；空结果重试，
+      // 最多等 60 秒，否则桥接会带着空模型列表起来，dsh 一直 model_not_found。
+      let raw = await this.runtime.rawModels()
+      let rows = freeModels(raw, { includeChatOnly: this.config.includeChatOnly })
+      for (let attempt = 0; attempt < 60 && rows.length === 0; attempt += 1) {
+        await delay(1000)
+        raw = await this.runtime.rawModels()
+        rows = freeModels(raw, { includeChatOnly: this.config.includeChatOnly })
+      }
+      this.catalog = rows
       this.catalogAt = this.now()
-      this.log('info', 'model catalog refreshed', { count: this.catalog.length })
+      this.log('info', 'model catalog refreshed', {
+        count: this.catalog.length,
+        raw: Array.isArray(raw) ? raw.length : 0,
+      })
       return this.catalog
     })()
     try {
