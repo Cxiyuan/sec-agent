@@ -182,7 +182,9 @@ def test_iputil_single_entry_is_the_only_internal_gauge(nets: str) -> None:
     """守卫：主线模块都从 app.iputil 拿口径，不许再自造"私网=内网"。"""
     from pathlib import Path
 
-    root = Path(importlib.import_module("app.iputil").__file__).parent
+    iputil_file = importlib.import_module("app.iputil").__file__
+    assert iputil_file, "app.iputil 必须有文件路径"
+    root = Path(iputil_file).parent
     offenders: list[str] = []
     for rel in (
         "analysis/candidates.py",
