@@ -298,10 +298,13 @@ ${THEME}
           <option value="">全部事实</option>
           <option value="egress_new">外连新目标</option>
           <option value="egress_rare">外连罕见目标</option>
+          <option value="egress_sustained">外连持续出现</option>
           <option value="geo_jump">异地登录</option>
           <option value="login_bruteforce">多来源爆破</option>
           <option value="path_probe">大量 404</option>
           <option value="conn_shift">连接数偏离</option>
+          <option value="asset_shift">资产访问量偏离</option>
+          <option value="profile_anomaly">账号/会话画像异常</option>
         </select>
         <button id="ob-refresh">刷新</button>
         <span class="count" id="ob-count"></span>
@@ -598,7 +601,7 @@ ${THEME}
     <label style="display:flex;align-items:center;gap:.4rem"><input id="pj-enabled" type="checkbox" checked> 启用（校验通过才会起领取循环）</label>
     <div style="border-top:1px solid rgba(255,255,255,.08);padding-top:.55rem;display:flex;flex-direction:column;gap:.5rem">
       <label style="display:flex;align-items:center;gap:.4rem">
-        <input id="lt-enabled" type="checkbox"> 轻量初筛（自建小模型粗筛：明显 benign/误报才关单，其余升级付费模型）
+        <input id="lt-enabled" type="checkbox"> 轻量初筛（所有线索先给小模型判：明确的正常/误报才直接关单，拿不准一律升级付费模型）
       </label>
       <div class="form-grid">
         <div class="field"><label>推理服务地址（OpenAI 兼容，通常以 /v1 结尾）</label><input id="lt-url" placeholder="http://192.168.1.10:8080/v1"></div>
@@ -609,8 +612,8 @@ ${THEME}
         <div class="field"><label>置信阈值（低于它升级付费，0~1）</label><input id="lt-threshold" type="number" min="0" max="1" step="0.05"></div>
       </div>
       <div class="form-grid">
-        <div class="field"><label>适用任务种类（逗号分隔；hit/shift 等安全攸关的别加）</label><input id="lt-kinds" placeholder="novelty,observation"></div>
-        <div class="field"><label>抽检率（0~1：可关单任务里送付费复核的比例）</label><input id="lt-audit" type="number" min="0" max="1" step="0.05"></div>
+        <div class="field"><label>抽检率（0~1：可关单任务里送付费复核的比例，推荐 0.1）</label><input id="lt-audit" type="number" min="0" max="1" step="0.05"></div>
+        <div class="field"><label>覆盖范围</label><input value="全部线索类型（新面孔/基线漂移/结构异常/覆盖盲区/规则命中簇/行为事实/复测）" disabled></div>
       </div>
     </div>
     <div style="display:flex;gap:.6rem;justify-content:flex-end">
@@ -681,6 +684,29 @@ ${THEME}
 (() => {
   const BASE = ${JSON.stringify(basePath)}
   const PAGE = 20
+  // 线索类型 / 对象类型 / 判定 的中文名（界面上不再直接显示英文枚举）
+  const KIND_LABELS = {
+    novelty: '新面孔', shift: '基线漂移', structure: '结构异常', coverage: '覆盖盲区',
+    hit: '规则命中（逐条）', hit_cluster: '规则命中簇', observation: '行为事实',
+    retest: '复测', suppression: '抑制待办',
+  }
+  const SUBJECT_KIND_LABELS = {
+    ip: 'IP 地址', asset: '资产', account: '账号', service_port: '服务端口',
+    protocol: '协议', signature: '签名', session: '会话', segment: '网段', cluster: '簇',
+  }
+  const VERDICT_LABELS = {
+    true_positive: '确认威胁', false_positive: '误报', benign: '正常',
+    suspicious: '可疑', inconclusive: '不确定', pending: '待分析', done: '已完成',
+  }
+  const TERMINAL_LABELS = {
+    concluded: '已查清', budget_exhausted: '预算用尽', tool_error: '取数失败',
+    timeout: '超时', aborted: '中断',
+  }
+  const EGRESS_KIND_LABELS = { dst_ip: '目的 IP', domain: '域名', port: '端口' }
+  const kindLabel = k => KIND_LABELS[k] || (k || '—')
+  const subjectKindLabel = k => SUBJECT_KIND_LABELS[k] || (k || '—')
+  const verdictLabel = v => VERDICT_LABELS[v] || (v || '—')
+  const terminalLabel = t => TERMINAL_LABELS[t] || (t || '—')
   const VIEWS = {
     overview: { title: '运行总览', sub: '门铃 → 领工单 → 取证 → 交结论' },
     records: { title: '分析记录', sub: '智能体交回的判定，可搜索与翻页' },
@@ -772,6 +798,20 @@ ${THEME}
         ['复用被拒（过期/更强/未定性）', esc((s.task_reuse || {}).rejected ?? 0), ''],
         ['缺身份跳过复用', esc((s.task_reuse || {}).identityMissing ?? 0), ''],
       ]],
+      ['轻量初筛', (() => {
+        const projects = (s.projects && s.projects.projects) || []
+        const first = projects.length > 0 ? projects[0] : {}
+        const lt = first.light_triage || {}
+        const st = lt.stats || {}
+        return [
+          ['开关', lt.enabled ? '已启用' : '未启用', lt.enabled ? 'ok' : 'off'],
+          ['初筛调用', esc(st.calls ?? 0), ''],
+          ['初筛关单', esc(st.closed ?? 0), 'ok'],
+          ['升级付费', esc(st.escalated ?? 0), ''],
+          ['输出不合法', esc(st.invalid ?? 0), Number(st.invalid) > 0 ? 'bad' : ''],
+          ['调用失败', esc(st.errors ?? 0), Number(st.errors) > 0 ? 'bad' : ''],
+        ]
+      })()],
     ]
     let html = ''
     for (const [title, cards] of groups) {
@@ -790,8 +830,8 @@ ${THEME}
     const verdict = e.verdict || ''
     return '<tr data-id="' + esc(e.id) + '">' +
       '<td class="mono">' + esc(e.subject) + '</td>' +
-      '<td>' + esc(e.subjectKind || e.kind) + '</td>' +
-      '<td class="sev ' + esc(verdict) + '">' + esc(verdict) + '</td>' +
+      '<td>' + esc(subjectKindLabel(e.subjectKind || e.kind)) + '</td>' +
+      '<td class="sev ' + esc(verdict) + '">' + esc(verdictLabel(verdict)) + '</td>' +
       (full ? '<td>' + esc(Math.round(Number(e.confidence || 0) * 100) + '%') + '</td>' : '') +
       '<td>' + esc(e.summary) + '</td>' +
       (full
@@ -832,11 +872,11 @@ ${THEME}
     const verdict = e.verdict || ''
     document.getElementById('detail-body').innerHTML =
       '<h3 class="mono">' + esc(e.subject) + '</h3>' +
-      '<div class="kv"><span class="k">判定</span><span class="sev ' + esc(verdict) + '">' + esc(verdict) + '</span>'
+      '<div class="kv"><span class="k">判定</span><span class="sev ' + esc(verdict) + '">' + esc(verdictLabel(verdict)) + '</span>'
       + '　<span class="k">置信度</span>' + esc(Math.round(Number(e.confidence || 0) * 100) + '%') + '</div>' +
-      '<div class="kv"><span class="k">类型</span>' + esc(e.kind) + ' / ' + esc(e.subjectKind) + '</div>' +
+      '<div class="kv"><span class="k">类型</span>' + esc(kindLabel(e.kind)) + ' / ' + esc(subjectKindLabel(e.subjectKind)) + '</div>' +
       '<div class="kv"><span class="k">任务</span>' + esc(e.taskId) + '</div>' +
-      '<div class="kv"><span class="k">终态原因</span>' + esc(e.terminalReason || '—') + '</div>' +
+      '<div class="kv"><span class="k">终态原因</span>' + esc(terminalLabel(e.terminalReason)) + '</div>' +
       '<div class="kv"><span class="k">成本</span>' + (e.reused
         ? '<span class="tag">复用（未起会话，0 token）</span> '
           + '原任务 <span class="mono">' + esc(e.reusedFrom || '—') + '</span>'
@@ -869,13 +909,13 @@ ${THEME}
     pTotal = data.total || 0
     const rows = (data.items || []).map(p => '<tr data-task="' + esc(p.taskId) + '">' +
       '<td>' + esc(fmt(p.startedAt)) + '</td>' +
-      '<td><span class="mono">' + esc((p.kind || '') + ' · ' + (p.subject || '')) + '</span>' +
+      '<td><span class="mono">' + esc(kindLabel(p.kind) + ' · ' + (p.subject || '')) + '</span>' +
       '<div class="count" style="margin:0">' + esc(p.taskId) + '</div></td>' +
       '<td>' + esc(p.model || '—') + '</td>' +
       '<td>' + esc(p.toolsUsed || 0) + '</td>' +
       '<td>' + esc(duration(p.durationMs)) + '</td>' +
       '<td>' + (p.outcome === 'running' ? '<span class="tag ok">' + esc(outcomeLabel(p.outcome)) + '</span>' : esc(outcomeLabel(p.outcome))) + '</td>' +
-      '<td>' + esc(p.verdict || '—') + '</td></tr>').join('')
+      '<td>' + esc(p.verdict ? verdictLabel(p.verdict) : '—') + '</td></tr>').join('')
     document.getElementById('prows').innerHTML = rows ||
       '<tr><td colspan="7" class="empty">还没有分析过程：智能体领到任务后会在这里出现</td></tr>'
     document.getElementById('pcount').textContent = '共 ' + pTotal + ' 条'
@@ -1024,14 +1064,13 @@ ${THEME}
 
   /* 轻量初筛（低阶模型）：项目对话框里的配置块回显/取值 */
   function fillLight(light) {
-    const l = light || { enabled: false, baseUrl: '', model: '', apiKey: '', threshold: 0.85, auditRate: 0.1, kinds: ['novelty', 'observation'] }
+    const l = light || { enabled: false, baseUrl: '', model: '', apiKey: '', threshold: 0.85, auditRate: 0.1 }
     document.getElementById('lt-enabled').checked = l.enabled === true
     document.getElementById('lt-url').value = l.baseUrl || ''
     document.getElementById('lt-model').value = l.model || ''
     document.getElementById('lt-key').value = l.apiKey || ''
     document.getElementById('lt-threshold').value = (typeof l.threshold === 'number') ? l.threshold : 0.85
     document.getElementById('lt-audit').value = (typeof l.auditRate === 'number') ? l.auditRate : 0.1
-    document.getElementById('lt-kinds').value = Array.isArray(l.kinds) ? l.kinds.join(',') : 'novelty,observation'
   }
 
   function ltNum(id, def) {
@@ -1067,7 +1106,8 @@ ${THEME}
       apiKey: document.getElementById('lt-key').value.trim(),
       threshold: ltNum('lt-threshold', 0.85),
       auditRate: ltNum('lt-audit', 0.1),
-      kinds: document.getElementById('lt-kinds').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+      // 2026-10-30 起初筛接管全部类型；仍写全量列表，兼容旧版插件与配置回显
+      kinds: ['novelty', 'shift', 'structure', 'coverage', 'hit', 'hit_cluster', 'observation', 'retest'],
     }
     const rs = await fetch(BASE + '/api/settings?project=' + encodeURIComponent(body.projectId), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ light }),
@@ -1117,7 +1157,7 @@ ${THEME}
     const items = data.items || []
     document.getElementById('al-count').textContent = '共 ' + items.length + ' 条'
     document.getElementById('al-rows').innerHTML = items.map(a => '<tr>' +
-      '<td>' + esc(a.kind) + '</td>' +
+      '<td>' + esc(EGRESS_KIND_LABELS[a.kind] || a.kind) + '</td>' +
       '<td class="mono">' + esc(a.value) + '</td>' +
       '<td>' + (a.scope === 'asset' ? ('仅 ' + esc(a.asset)) : '全局') + '</td>' +
       '<td>' + (a.source === 'learned' ? '自学习' : '手工') + '</td>' +

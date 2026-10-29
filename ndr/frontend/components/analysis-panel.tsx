@@ -715,7 +715,7 @@ export function AnalysisPanel() {
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {(stats.metrics.by_subject_kind ?? []).slice(0, 5).map(row => (
                   <Badge key={row.subject_kind} variant="outline">
-                    {row.subject_kind || "unknown"} · {numText(row.count)}
+                    {subjectKindLabel(row.subject_kind)} · {numText(row.count)}
                   </Badge>
                 ))}
                 {(stats.metrics.by_subject_kind ?? []).length === 0 ? <span>—</span> : null}

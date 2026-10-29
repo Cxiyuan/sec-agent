@@ -47,8 +47,11 @@ test('settingsView：拍成工作台用的下划线字段', () => {
 
 /* ---------- 轻量初筛（低阶模型）配置 ---------- */
 
-test('默认初筛只关 coverage（A3 整改）：novelty/observation 等 2B 小模型无权关单', () => {
-  assert.deepEqual([...DEFAULT_LIGHT_TRIAGE.kinds].sort(), ['coverage'])
+test('默认初筛接管全部线索类型（2026-10-30 用户定）：不再按 kind 挑活', () => {
+  assert.deepEqual(
+    [...DEFAULT_LIGHT_TRIAGE.kinds].sort(),
+    ['coverage', 'hit', 'hit_cluster', 'novelty', 'observation', 'retest', 'shift', 'structure'],
+  )
 })
 
 test('mergeSettings.light：补丁只带部分字段时先合并当前值再校验（不冲掉端点/模型）', () => {

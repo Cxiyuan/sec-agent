@@ -34,7 +34,6 @@ export const LIGHT_PARSEABLE_VERDICTS: ReadonlySet<string> = new Set(['benign', 
 /** 升级（走付费会话）的原因，过程页/日志里用来分辨「正常升级」和「初筛故障」。 */
 export type TriageEscalateReason =
   | 'disabled'
-  | 'kind_not_eligible'
   | 'breaker_open'
   | 'timeout'
   | 'http_error'
@@ -253,10 +252,8 @@ export class LightTriage {
     if (!config.enabled || config.baseUrl.trim() === '') {
       return { kind: 'escalate', reason: 'disabled', ms: 0 }
     }
-    const kind = task.kind.trim().toLowerCase()
-    if (!config.kinds.includes(kind)) {
-      return { kind: 'escalate', reason: 'kind_not_eligible', ms: 0 }
-    }
+    // 2026-10-30（用户定）：初筛接管**全部线索类型**，先全部过一遍小模型；
+    // 只有它判不了（inconclusive/低置信）才升级付费。不再按 kind 白名单放行。
     if (this.breaker.isOpen()) {
       return { kind: 'escalate', reason: 'breaker_open', ms: 0 }
     }

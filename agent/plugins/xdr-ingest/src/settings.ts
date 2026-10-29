@@ -20,11 +20,21 @@ export interface LightTriageConfig {
   readonly threshold: number
   /** 抽检率（0~1）：可关单的任务里抽多少比例仍送付费复核（比对校准用）。 */
   readonly auditRate: number
-  /** 单次调用超时（毫秒）；超时一律升级（fail-open）。 */
+  /** 单轮超时（毫秒）；超时一律升级（fail-open）。 */
   readonly timeoutMs: number
-  /** 适用的任务种类（只这些线索类型做初筛；hit/shift 等安全攸关的默认不进）。 */
+  /**
+   * 适用的任务种类。
+   *
+   * @deprecated 2026-10-30 起初筛接管**全部类型**，本字段仅保留兼容（旧配置里可能
+   * 还是 `['coverage']`，但不再参与放行判定）。控制台也不再编辑它。
+   */
   readonly kinds: readonly string[]
 }
+
+/** 全部线索类型（初筛接管全部；此列表只用于旧配置的展示与校验）。 */
+export const ALL_TASK_KINDS = [
+  'novelty', 'shift', 'structure', 'coverage', 'hit', 'hit_cluster', 'observation', 'retest',
+] as const
 
 /** 默认初筛配置：关着，等控制台配好推理服务再打开。 */
 export const DEFAULT_LIGHT_TRIAGE: LightTriageConfig = {
@@ -35,7 +45,7 @@ export const DEFAULT_LIGHT_TRIAGE: LightTriageConfig = {
   threshold: 0.85,
   auditRate: 0.1,
   timeoutMs: 20_000,
-  kinds: ['coverage'],
+  kinds: [...ALL_TASK_KINDS],
 }
 
 /** 运行参数快照（单位与 Config 一致）。 */

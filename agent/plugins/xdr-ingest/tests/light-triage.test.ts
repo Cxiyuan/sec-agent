@@ -136,16 +136,20 @@ function client(
   return new LightTriage({ config: () => config, fetchImpl, random })
 }
 
-test('triage：关闭/种类不适用 → 直接升级，一次网络调用都不发', async () => {
+test('triage：关闭 → 不发网络；开启后任何类型都先过初筛', async () => {
   let fetched = 0
   const fetchImpl: typeof fetch = async () => {
     fetched += 1
-    return new Response('', { status: 500 })
+    return new Response(okBody('{"verdict":"inconclusive","confidence":0.4,"summary":"信息不足"}'), { status: 200 })
   }
   const off = client(cfg({ enabled: false }), fetchImpl)
   assert.equal((await off.triage(task)).kind, 'escalate')
-  assert.equal((await client(cfg(), fetchImpl).triage({ ...task, kind: 'hit' })).kind, 'escalate')
-  assert.equal(fetched, 0)
+  assert.equal(fetched, 0, '关闭时一次网络调用都不发')
+  // 2026-10-30 用户定：初筛接管全部类型，hit/hit_cluster 不再是「种类不适用」
+  await client(cfg(), fetchImpl).triage({ ...task, kind: 'hit' })
+  await client(cfg(), fetchImpl).triage({ ...task, kind: 'hit_cluster' })
+  await client(cfg(), fetchImpl).triage({ ...task, kind: 'observation' })
+  assert.equal(fetched, 3)
 })
 
 test('triage：明显 benign → 关单，不碰复用库相关动作', async () => {
