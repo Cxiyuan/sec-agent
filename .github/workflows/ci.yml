@@ -482,6 +482,24 @@ jobs:
           echo "::error::ingest endpoint did not become ready"
           exit 1
 
+      # 第三层：llm-agg 专用适配器确实被组合进 profile 且 apply 跑过。
+      # 只看镜像里有没有文件不够——bundle 补丁空操作/入口脚本漏同步时，
+      # 镜像照样起得来，但控制台里选不到 llm-agg，分析会话也发不出会话 ID。
+      - name: The llm-agg connector is wired and applied
+        run: |
+          docker exec xdr-agent sh -c 'node /opt/agent/dsh/apps/cli/lib/bin.js --profile web --dump-default-config' > /tmp/profile-dump.txt
+          if ! grep -q 'id: xdr-llm-agg' /tmp/profile-dump.txt; then
+            echo '::error::xdr-llm-agg row ABSENT from composed profile'
+            grep -n -A 12 'xdr-llm-agg' /tmp/profile-dump.txt || true
+            exit 1
+          fi
+          docker exec xdr-agent sh -c 'test -f /data/dsh/profiles/web/node_modules/@sec-agent/xdr-llm-agg/lib/index.js'
+          if ! docker logs xdr-agent 2>&1 | grep -q '\[xdr-llm-agg\] apply()'; then
+            echo '::error::xdr-llm-agg plugin never reached apply()'
+            docker logs --tail 100 xdr-agent || true
+            exit 1
+          fi
+
       - name: Dump profile wiring (only on failure)
         if: failure()
         run: |
