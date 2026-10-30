@@ -70,8 +70,15 @@ const modelSchema: z<LlmAggModel> = z.object({
   maxTokens: z.number().step(1).min(1),
 })
 
-/** 连接器配置 schema。 */
-export const Config: z<Config> = z.object({
+/**
+ * 连接器配置 schema。
+ *
+ * 刻意不写 `: z<Config>` 注解：volatile 字段的 schema 输入是普通值、输出是
+ * `Volatile<T>`，注解会把「输入类型」也钉成带引用的 Config，在
+ * strictFunctionTypes 下反而不成立。dsh 自己的适配器（llm-deepseek-api-key
+ * 等）同样只导出 schema 让类型自然推导。
+ */
+export const Config = z.object({
   displayName: z.string().default('LLM-AGG（智能路由）').volatile(),
   baseURL: z.string().default(DEFAULT_BASE_URL).volatile(),
   apiKeyEnv: z.string().role('credential-ref').default('LLM_AGG_API_KEY').volatile(),

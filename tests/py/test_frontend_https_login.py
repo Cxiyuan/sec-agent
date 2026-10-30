@@ -52,9 +52,12 @@ def test_compose_publishes_443_and_80_not_3000() -> None:
 
 
 def test_healthcheck_or_docs_mention_https() -> None:
-    """README 的访问地址要写 https（否则运维还在试 http://host:3000）。"""
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "https://" in readme, "README 应给出 https 访问方式"
+    """对接文档的访问地址要写 https（否则运维还在试 http://host:3000）。
+
+    根 README 已按产品要求移除；部署/对接入口以 `docs/api/README.md` 为准。
+    """
+    docs = (ROOT / "docs" / "api" / "README.md").read_text(encoding="utf-8")
+    assert "https://" in docs, "接口文档应给出 https 访问方式"
 
 
 def test_deploy_script_syncs_compose_and_verifies() -> None:
