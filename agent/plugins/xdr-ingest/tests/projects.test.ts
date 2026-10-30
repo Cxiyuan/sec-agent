@@ -7,12 +7,14 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { ProjectManager, SessionProjects } from '../src/projects.ts'
+import { ConcurrencyGate } from '../src/breaker.ts'
+import { ProjectManager, ProjectRuntime, SessionProjects } from '../src/projects.ts'
 import { parseSessionLog } from '../src/session-timeline.ts'
 import { buildAnalysisPrompt } from '../src/prompt.ts'
 import { DEFAULT_WORKFLOW_STAGES, resolveWorkflow } from '../src/projects.ts'
 import type { ProjectAdminStore, ProjectRuntimeConfig } from '../src/projects.ts'
-import type { WorkflowInput, WorkflowRecord } from '../src/state-store.ts'
+import type { AgentsServiceLike } from '../src/agent-port.ts'
+import type { DataStore, WorkflowInput, WorkflowRecord } from '../src/state-store.ts'
 import { MemoryStateStore } from '../src/state-store.ts'
 import type { ProjectInput, ProjectRecord, ProjectStatus } from '../src/state-store.ts'
 
@@ -327,4 +329,72 @@ test('工作流：过程索引存模版快照（模版后来改了，历史仍�
   assert.equal(row?.workflowId, 'w1')
   assert.equal(row?.workflowName, '旧模版')
   assert.deepEqual(row?.workflowStages, stages)
+})
+
+test('网络恢复后 verify 会重新起循环，而不是只把状态改回 ok', async () => {
+  const admin = new FakeAdmin([project()])
+  const sessions = new SessionProjects()
+  let online = true
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    if (!online) throw new TypeError('fetch failed')
+    const request = JSON.parse(String(init?.body ?? '{}')) as {
+      id: number
+      method: string
+      params?: { name?: string }
+    }
+    const name = request.params?.name ?? ''
+    const payload = name === 'server_info'
+      ? { auth_id: 'ZPL6QQLG', source: 'test', stable: true }
+      : name === 'claim_tasks'
+        ? { tasks: [] }
+        : name === 'list_suppressions'
+          ? { items: [] }
+          : {}
+    return new Response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: { structuredContent: { result: JSON.stringify(payload) } },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'x-ndr-auth-id': 'ZPL6QQLG' },
+    })
+  }
+  const config: ProjectRuntimeConfig = {
+    ...CONFIG,
+    breakerThreshold: 3,
+    breakerBaseMs: 1000,
+    breakerMaxMs: 60_000,
+    maxToolsPerTask: 0,
+    stallMinutes: 0,
+    alertWebhookUrl: '',
+    mcpFetch: fetchImpl,
+  }
+  const runtime = new ProjectRuntime({
+    project: project(),
+    store: {
+      loadSettings: async () => null,
+      saveSettings: async () => true,
+    } as unknown as DataStore,
+    config,
+    agents: {} as AgentsServiceLike,
+    admin,
+    sessions,
+    gate: new ConcurrencyGate(() => 8),
+  })
+  try {
+    await runtime.start()
+    assert.equal(runtime.running, true)
+
+    online = false
+    await runtime.verify()
+    assert.equal(runtime.running, false)
+    assert.equal(admin.rows.get('ZPL6QQLG')?.status, 'unreachable')
+
+    online = true
+    await runtime.verify()
+    assert.equal(runtime.running, true)
+    assert.equal(admin.rows.get('ZPL6QQLG')?.status, 'ok')
+  } finally {
+    runtime.stop()
+  }
 })

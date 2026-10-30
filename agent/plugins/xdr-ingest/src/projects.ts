@@ -57,6 +57,8 @@ export interface ProjectRuntimeConfig {
   readonly stallMinutes: number
   /** 告警 webhook（空 = 只写日志）。 */
   readonly alertWebhookUrl: string
+  /** 仅测试注入：替换控制面 MCP 的 fetch。 */
+  readonly mcpFetch?: typeof fetch
 }
 
 /** 项目表的读写面（生产实现是 PostgresStateStore；测试可注入内存实现）。 */
@@ -267,16 +269,21 @@ export class ProjectRuntime {
       token: this.record.mcpToken,
       clientName: 'xdr-ingest',
       clientVersion: '0.2.0',
+      ...(this.config.mcpFetch === undefined ? {} : { fetchImpl: this.config.mcpFetch }),
     })
     this.ndr = new NdrTaskPortAdapter(this.client)
     let info: { authId: string, source: string, stable: boolean }
     try {
       info = await this.ndr.serverInfo()
     } catch (error) {
+      // 校验失败也要清掉半成品 client/ndr：否则下一轮 verify() 看到 client 非空，
+      // 只会把状态改回 ok，却不会重新起循环（网络恢复后项目一直显示"停用"）。
+      this.stop()
       this.lastError = `绑定校验失败：${this.message(error)}`
       return this.mark('unreachable', this.lastError)
     }
     if (info.authId === '' || info.authId !== this.projectId) {
+      this.stop()
       this.lastError = `授权ID 不一致：项目 ${this.projectId} / NDR ${info.authId || '(空)'}`
       return this.mark('auth_mismatch', this.lastError)
     }
@@ -425,7 +432,9 @@ export class ProjectRuntime {
 
   /** 运行期复核（定时器/控制台手动）：不一致或不可达就停掉本项目。 */
   async verify(): Promise<ProjectRecord> {
-    if (this.client === null || this.ndr === null) {
+    // loop 为空也必须重新 start：网络中断时 start() 可能在 serverInfo 之前就建好了
+    // client，旧逻辑只判断 client/ndr，恢复后会把状态标成 ok 但循环永远起不来。
+    if (this.client === null || this.ndr === null || this.loop === null) {
       return this.start()
     }
     try {
