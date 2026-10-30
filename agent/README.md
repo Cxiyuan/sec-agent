@@ -12,12 +12,10 @@ agent/
 ├── plugins/   自研 dsh 插件（out-of-tree，与上游物理分离）
 │   ├── xdr-ingest/   NDR 门铃/摘要 + 事件分析 ID + 冷热两级缓存 + 领取分析循环
 │   └── xdr-ui/       登录鉴权的分析工作台 /xdr/ui（admin/admin123）
-├── bridge/    OpenCode 免费模型桥接（可选 sidecar，自带 opencode 二进制）
 ├── skills/    调查方法论 / 角色模板（prompt 资产）
 ├── docker/    容器入口脚本
 ├── Dockerfile         智能体镜像（多阶段，构建统一在 GitHub Actions）
 ├── docker-compose.yml 智能体线路编排
-├── docker-compose.bridge.yml  可选：免费模型桥接 sidecar
 └── .env.example       环境变量示例
 ```
 
