@@ -554,6 +554,8 @@ ${THEME}
         </div>
         <div class="notice" style="margin-top:.8rem">
           支持任意 OpenAI / Anthropic 兼容网关（预设之外的选「自定义网关」手填）；模型清单可点「刷新」从服务商在线拉取。
+          <br>选 <code>LLM-AGG（智能路由）</code> 时走本项目的专用适配器：每次模型请求自动附带会话 ID，
+          聚合网关据此把并发会话分摊到不同后端，并让同一会话粘在同一模型上。
         </div>
       </div>
 
@@ -1530,6 +1532,10 @@ ${THEME}
     // OpenCode Go：$10/月订阅，一个 key 走 OpenAI 兼容端点；模型 id 见
     // https://opencode.ai/inference/go/v1/models（点「刷新」可在线拉取）。
     'opencode-go':     { name: 'OpenCode Go',          api: 'openai-completions',   baseURL: 'https://opencode.ai/inference/go/openai/v1', models: ['glm-5.3-flash', 'glm-5.3', 'kimi-k2.7-code', 'kimi-k3', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'minimax-m3.1-flash', 'minimax-m3', 'qwen3.8-flash', 'qwen3.7-plus', 'mimo-v2.6-flash', 'claude-haiku-5-5', 'gpt-6-luna', 'grok-4.7', 'hy3', 'step-5-preview'] },
+    // 本项目聚合网关（Free-LLM-API / LLM-API-AGG）：走专用适配器 llm-agg，
+    // 每次请求自动附带会话 ID，网关据此做会话亲和与并发分摊。auto/free/cheap
+    // 是网关侧别名；也可直接填后端模型 ID（网关原样执行）。
+    'llm-agg':         { name: 'LLM-AGG（智能路由）',  api: 'openai-completions',   baseURL: 'http://host.docker.internal:8788/v1', models: ['auto', 'free', 'cheap'] },
     'custom':          { name: '自定义网关',            api: 'openai-completions',   baseURL: '',                                      models: [] },
   }
   const presetEl = document.getElementById('p-preset')

@@ -11,7 +11,8 @@ agent/
 ├── dsh/       dsh v0.2.1-rc.2 完整 monorepo（上游源码，保持原样，无 .git）
 ├── plugins/   自研 dsh 插件（out-of-tree，与上游物理分离）
 │   ├── xdr-ingest/   NDR 门铃/摘要 + 事件分析 ID + 冷热两级缓存 + 领取分析循环
-│   └── xdr-ui/       登录鉴权的分析工作台 /xdr/ui（admin/admin123）
+│   ├── xdr-ui/       登录鉴权的分析工作台 /xdr/ui（admin/admin123）
+│   └── xdr-llm-agg/  LLM-AGG 聚合网关专用模型连接器（按请求携带会话 ID）
 ├── skills/    调查方法论 / 角色模板（prompt 资产）
 ├── docker/    容器入口脚本
 ├── Dockerfile         智能体镜像（多阶段，构建统一在 GitHub Actions）
@@ -51,6 +52,13 @@ docker compose up -d --build    # 本地源码构建（开发调试）
   model / 推理强度）、模型接口地址和模型 API Key（写 dsh 凭证库，即时生效），
   并查看插件清单与 Fiber 状态；其余原生设置仍在 `/index.html`。
   `DSH_WEB_NDR_CONSOLE_URL` 设了就在菜单里出现 NDR 管理台入口。
+
+**聚合网关（LLM-AGG）**：系统页的「服务商预设」选 **LLM-AGG（智能路由）**，
+填聚合网关地址（默认 `http://host.docker.internal:8788/v1`）与池 Key，保存后
+可设为默认模型。该路由由专用适配器 `xdr-llm-agg` 承载，每次模型请求自动附带
+`x-session-id`：网关据此把并发分析会话分摊到不同后端模型，并让同一会话粘在
+同一模型上（后端不可用时网关自行重绑）。其它服务商不受影响；详见
+`plugins/xdr-llm-agg/README.md`。环境缝：`LLM_AGG_BASE_URL` / `LLM_AGG_API_KEY`。
 - 原始 dsh 会话界面：`http://<宿主机IP>:3080/index.html`（只作排障看模型工作
   轨迹；不再是默认入口，页面上有「返回控制台」角标）
 - 连通性自检：`curl -H "Authorization: Bearer $AGENT_PUSH_TOKEN" \

@@ -230,6 +230,81 @@ test('保存服务商：非法 route / URL / 协议直接拒绝', async () => {
   assert.equal((await saveProvider(ctx, { ...base, modelId: '' })).ok, false)
 })
 
+/** 带 xdr-llm-agg 数据块的设置桩：专用适配器不写 pi-ai 的 providers 字典。 */
+function fakeSettingsWithAgg(calls: Calls): unknown {
+  return {
+    describe: () => [
+      { ns: 'default-model', revision: 3, value: { provider: 'llm-agg', model: 'auto' } },
+      { ns: 'llm-pi-ai', revision: 4, value: { providers: {} } },
+      {
+        ns: 'xdr-llm-agg',
+        revision: 5,
+        value: {
+          displayName: 'LLM-AGG（智能路由）',
+          baseURL: 'http://host.docker.internal:8788/v1',
+          apiKeyEnv: 'LLM_AGG_API_KEY',
+          models: [{ id: 'auto' }, { id: 'free' }],
+        },
+      },
+    ],
+    update: async (ns: string, patch: Record<string, unknown>, revision?: number) => {
+      calls.push({ kind: 'update', args: [ns, patch, revision] })
+    },
+    mutate: async () => {},
+  }
+}
+
+test('llm-agg：快照列出专用路由，保存写 xdr-llm-agg 并设为默认', async () => {
+  const calls: Calls = []
+  const ctx = fakeContext({ settings: fakeSettingsWithAgg(calls), credentials: fakeCredentials(calls) })
+  const snap = await systemSnapshot(ctx)
+  const agg = snap.providers.find(provider => provider.route === 'llm-agg')
+  assert.equal(agg?.displayName, 'LLM-AGG（智能路由）')
+  assert.equal(agg?.baseURL, 'http://host.docker.internal:8788/v1')
+  assert.deepEqual(agg?.models, ['auto', 'free'])
+  assert.equal(agg?.configured, true)
+
+  // 专用适配器只走 OpenAI Chat 协议
+  assert.equal((await saveProvider(ctx, {
+    route: 'llm-agg',
+    api: 'anthropic-messages',
+    baseURL: 'http://127.0.0.1:8788/v1',
+    modelId: 'auto',
+  })).ok, false)
+
+  const saved = await saveProvider(ctx, {
+    route: 'llm-agg',
+    displayName: 'LLM-AGG',
+    api: 'openai-completions',
+    baseURL: 'http://127.0.0.1:8788/v1',
+    modelId: 'auto',
+    contextWindow: 131072,
+    apiKey: ' sk-pool ',
+    makeDefault: true,
+  })
+  assert.equal(saved.ok, true)
+  const aggUpdate = calls.find(call => call.kind === 'update' && call.args[0] === 'xdr-llm-agg')
+  assert.deepEqual(aggUpdate?.args, [
+    'xdr-llm-agg',
+    {
+      displayName: 'LLM-AGG',
+      baseURL: 'http://127.0.0.1:8788/v1',
+      apiKeyEnv: 'LLM_AGG_API_KEY',
+      // 本次选择的模型放首位；原有别名保留（否则保存后就不能切回 free）
+      models: [{ id: 'auto', contextWindow: 131072 }, { id: 'free' }],
+    },
+    5,
+  ])
+  assert.equal(
+    calls.some(call => call.kind === 'update' && call.args[0] === 'llm-pi-ai'),
+    false,
+    'llm-agg 不能写进 pi-ai（会与专用适配器撞车）',
+  )
+  assert.deepEqual(calls.find(call => call.kind === 'set')?.args, ['LLM_AGG_API_KEY', 'sk-pool'])
+  const modelUpdate = calls.find(call => call.kind === 'update' && call.args[0] === 'default-model')
+  assert.deepEqual(modelUpdate?.args, ['default-model', { provider: 'llm-agg', model: 'auto' }, 3])
+})
+
 type FetchStub = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
   ok: boolean
   status: number

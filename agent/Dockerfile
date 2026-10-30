@@ -59,6 +59,7 @@ USER node
 # file: 把插件快照进 profile 自带的 .pnpm store，随卷一起搬迁、自包含。
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ingest
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-ui
+RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-llm-agg
 RUN node /opt/agent/dsh/apps/cli/lib/bin.js plugin --profile web add file:/opt/agent/plugins/xdr-agent-pack
 
 # 会话检索 bundle：包本体随 apps/cli 一起装好，这里只把它加进 profile 的激活列表。

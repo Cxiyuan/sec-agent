@@ -46,6 +46,11 @@ services:
       DSH_WEB_LAUNCH_TOKEN: ${DSH_WEB_LAUNCH_TOKEN:-}
       # 控制台左侧菜单里的 NDR 管理台入口（部署时填实际地址）；留空隐藏
       DSH_WEB_NDR_CONSOLE_URL: ${DSH_WEB_NDR_CONSOLE_URL:-}
+      # 聚合网关（Free-LLM-API / LLM-API-AGG）的默认端点与池 Key 环境缝：
+      # 控制台「系统 → 服务商 → LLM-AGG」保存的配置优先（写 dsh 设置/凭证库），
+      # 这里只是首次启动的默认值与无凭证库时的兜底。同机部署走 host-gateway。
+      LLM_AGG_BASE_URL: ${LLM_AGG_BASE_URL:-http://host.docker.internal:8788/v1}
+      LLM_AGG_API_KEY: ${LLM_AGG_API_KEY:-}
     extra_hosts:
       # 让容器能解析宿主机地址（迁移脚本要读旧 NDR 的 PG）
       - "host.docker.internal:host-gateway"

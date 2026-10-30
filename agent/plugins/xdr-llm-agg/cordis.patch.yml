@@ -1,0 +1,41 @@
+# xdr-llm-agg bundle patch：把 llm-agg 专用模型连接器插进 dsh 的 Loader。
+#
+# 为什么不是 llm-pi-ai 的一条 route：pi-ai 只能给每个服务商配静态请求头，
+# 而本项目要求把 dsh 的会话 ID（GenerateOptions.sessionId）随请求发出去，
+# 供聚合网关做会话亲和路由。专用适配器才能在每次请求上写动态头。
+#
+# 行格式与 in-tree bundle 一致：insert + name，id 必须与本包 apply 导出的
+# name 一致（xdr-ui 的系统页按这个 id 找设置命名空间）。
+#
+# baseURL 指向 Free-LLM-API 聚合网关的 /v1 根路径。容器与网关同机时用
+# host.docker.internal（compose 已加 host-gateway）；同 compose 网络的
+# 部署可改成服务名。运行期也能在控制台「系统 → 添加服务商」里改：
+# 系统页会把 llm-agg 的配置写回本数据块的 volatile 字段。
+#
+# 池 Key 走 dsh 凭证库（credential-ref = apiKeyEnv），不落 profile 明文；
+# 也认同名环境变量缝，方便纯环境变量部署。
+
+- insert:
+    - id: xdr-llm-agg
+      name: '@sec-agent/xdr-llm-agg'
+      config:
+        displayName: LLM-AGG（智能路由）
+        baseURL: !!js process.env.LLM_AGG_BASE_URL ?? 'http://host.docker.internal:8788/v1'
+        apiKeyEnv: LLM_AGG_API_KEY
+        # 池里的 auto/free/cheap 是网关侧别名：auto=最稳、free=只走免费额度、
+        # cheap=最低倍率。显式模型 ID 也可直接用（网关原样执行）。
+        models:
+          - id: auto
+            name: Auto（智能路由）
+          - id: free
+            name: Free（只用免费额度）
+          - id: cheap
+            name: Cheap（最低倍率）
+        # 别名背后可能是不同后端，取一个保守上限；显式模型可在系统页覆盖。
+        defaultContextWindow: 128000
+        maxTokens: 8192
+        # 会话头名：Free-LLM-API 的池网关读 x-session-id（也认请求体
+        # session_id/metadata.session_id）。一般不需要改。
+        sessionHeader: x-session-id
+        streamIdleTimeoutMs: 300000
+        requestTimeoutMs: 900000

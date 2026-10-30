@@ -112,6 +112,17 @@ const PROTOCOLS = new Set(['openai-completions', 'anthropic-messages'])
 const ROUTE_PATTERN = /^[a-z][a-z0-9-]{1,32}$/u
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
 
+/**
+ * 聚合网关专用适配器（xdr-llm-agg）的路由与设置命名空间。
+ *
+ * 它**不是** pi-ai 的一条 route：专用适配器要按请求写会话 ID 头，而 pi-ai
+ * 只能配静态头。系统页把它的配置写进自己的 volatile 数据块，避免在
+ * llm-pi-ai 里再声明同名 route（会触发 DUPLICATE_ADAPTER）。
+ */
+const LLM_AGG_ROUTE = 'llm-agg'
+const LLM_AGG_NS = 'xdr-llm-agg'
+const LLM_AGG_DEFAULT_REF = 'LLM_AGG_API_KEY'
+
 /** 只接受短文本：这些值会写进 profile patch，不做长度上限就是给自己留坑。 */
 function textOf(value: unknown): string | null {
   if (value === undefined || value === null) return ''
@@ -281,6 +292,28 @@ async function providerRows(
       })
     }
   }
+  // 聚合网关（xdr-llm-agg）：独立适配器，配置在它自己的命名空间里，
+  // 不在 pi-ai 的 providers 字典中。路由固定为 llm-agg。
+  const aggRow = described.find(row => row.ns === LLM_AGG_NS)
+  if (aggRow !== undefined && isPlainObject(aggRow.value)) {
+    const value = aggRow.value
+    const ref = typeof value['apiKeyEnv'] === 'string' ? value['apiKeyEnv'].trim() : ''
+    const info = ref === '' || credentials === null ? null : await safeDescribe(credentials, ref)
+    rows.push({
+      route: LLM_AGG_ROUTE,
+      displayName: typeof value['displayName'] === 'string' && value['displayName'].trim() !== ''
+        ? value['displayName']
+        : 'LLM-AGG（智能路由）',
+      api: 'openai-completions',
+      baseURL: typeof value['baseURL'] === 'string' ? value['baseURL'] : '',
+      models: Array.isArray(value['models'])
+        ? value['models'].flatMap(model => (isPlainObject(model) && typeof model['id'] === 'string' ? [model['id']] : []))
+        : [],
+      apiKeyRef: ref,
+      configured: info?.configured === true,
+      writable: info?.writable === true,
+    })
+  }
   // DeepSeek 官方通道（独立适配器，不在 pi-ai 字典里）
   for (const row of described) {
     if (!isModelAdapter(row.ns)) continue
@@ -429,6 +462,62 @@ export async function saveProvider(context: unknown, patch: unknown): Promise<Sy
   } catch (error) {
     return { ok: false, error: describeWriteError(error) }
   }
+
+  // 聚合网关走专用适配器：配置写它自己的 volatile 命名空间，不写 pi-ai 的
+  // providers 字典（同名 route 会与专用适配器撞车 DUPLICATE_ADAPTER）。
+  // 专用适配器会在每次请求上附带会话 ID，网关据此做会话亲和路由。
+  if (route === LLM_AGG_ROUTE) {
+    if (api !== 'openai-completions') {
+      return { ok: false, error: 'LLM-AGG 走 OpenAI Chat 兼容协议，协议请选择 openai-completions' }
+    }
+    const aggRow = described.find(row => row.ns === LLM_AGG_NS)
+    if (aggRow === undefined) {
+      return { ok: false, error: '这台 dsh 没有启用 llm-agg 专用适配器（xdr-llm-agg），请重建/升级智能体镜像' }
+    }
+    const ref = apiKeyEnv !== null && apiKeyEnv !== '' ? apiKeyEnv : LLM_AGG_DEFAULT_REF
+    // 保留网关别名清单（auto/free/cheap）与之前保存过的显式模型，只把本次
+    // 选择的模型放到首位——否则保存一次显式模型后，别名就从选择器里消失。
+    const current = isPlainObject(aggRow.value) ? aggRow.value : {}
+    const previous = Array.isArray(current['models']) ? current['models'] : []
+    const models: Array<Record<string, unknown>> = [{
+      id: modelId,
+      ...contextWindow === undefined ? {} : { contextWindow },
+    }]
+    for (const model of previous) {
+      if (!isPlainObject(model) || typeof model['id'] !== 'string' || model['id'] === modelId) continue
+      models.push({
+        id: model['id'],
+        ...typeof model['name'] === 'string' ? { name: model['name'] } : {},
+        ...typeof model['contextWindow'] === 'number' ? { contextWindow: model['contextWindow'] } : {},
+        ...typeof model['maxTokens'] === 'number' ? { maxTokens: model['maxTokens'] } : {},
+      })
+    }
+    try {
+      await settings.update(LLM_AGG_NS, {
+        displayName: displayName === null || displayName === '' ? 'LLM-AGG（智能路由）' : displayName,
+        baseURL,
+        apiKeyEnv: ref,
+        models,
+      }, aggRow.revision)
+      if (apiKey !== '') {
+        if (credentials === null) return { ok: false, error: '服务商已保存，但 credentials 服务不在场，密钥未写入' }
+        await credentials.set(ref, apiKey)
+      }
+      if (makeDefault) {
+        const modelRow = described.find(row => {
+          const value: unknown = row.value
+          return isPlainObject(value) && typeof value['provider'] === 'string' && typeof value['model'] === 'string'
+        })
+        if (modelRow !== undefined) {
+          await settings.update(modelRow.ns, { provider: LLM_AGG_ROUTE, model: modelId }, modelRow.revision)
+        }
+      }
+      return { ok: true, snapshot: await systemSnapshot(context) }
+    } catch (error) {
+      return { ok: false, error: describeWriteError(error) }
+    }
+  }
+
   const piRow = described.find(row => row.ns === 'llm-pi-ai')
   if (piRow === undefined) return { ok: false, error: '这台 dsh 没有启用通用模型适配器（llm-pi-ai）' }
   const ref = apiKeyEnv !== null && apiKeyEnv !== ''
@@ -514,16 +603,25 @@ export async function listModels(
     } catch (error) {
       return { ok: false, error: describeWriteError(error) }
     }
-    const piRow = described.find(row => row.ns === 'llm-pi-ai')
-    const dict = piRow !== undefined && isPlainObject(piRow.value) && isPlainObject(piRow.value['providers'])
-      ? piRow.value['providers'] as Record<string, unknown>
-      : {}
-    const profile = isPlainObject(dict[route]) ? dict[route] as Record<string, unknown> : undefined
-    if (profile !== undefined) {
-      if (baseURL === '') baseURL = typeof profile['baseURL'] === 'string' ? profile['baseURL'] : ''
-      if (typeof profile['apiKeyEnv'] === 'string') savedRef = profile['apiKeyEnv']
-      if (patch['api'] === undefined && typeof profile['api'] === 'string') {
-        if (!PROTOCOLS.has(profile['api'])) return { ok: false, error: '已保存的路由协议不认识，请重新保存该服务商' }
+    if (route === LLM_AGG_ROUTE) {
+      // 专用适配器的配置不在 pi-ai 字典里，从它自己的命名空间取。
+      const aggRow = described.find(row => row.ns === LLM_AGG_NS)
+      if (aggRow !== undefined && isPlainObject(aggRow.value)) {
+        if (baseURL === '') baseURL = typeof aggRow.value['baseURL'] === 'string' ? aggRow.value['baseURL'] : ''
+        if (typeof aggRow.value['apiKeyEnv'] === 'string') savedRef = aggRow.value['apiKeyEnv']
+      }
+    } else {
+      const piRow = described.find(row => row.ns === 'llm-pi-ai')
+      const dict = piRow !== undefined && isPlainObject(piRow.value) && isPlainObject(piRow.value['providers'])
+        ? piRow.value['providers'] as Record<string, unknown>
+        : {}
+      const profile = isPlainObject(dict[route]) ? dict[route] as Record<string, unknown> : undefined
+      if (profile !== undefined) {
+        if (baseURL === '') baseURL = typeof profile['baseURL'] === 'string' ? profile['baseURL'] : ''
+        if (typeof profile['apiKeyEnv'] === 'string') savedRef = profile['apiKeyEnv']
+        if (patch['api'] === undefined && typeof profile['api'] === 'string') {
+          if (!PROTOCOLS.has(profile['api'])) return { ok: false, error: '已保存的路由协议不认识，请重新保存该服务商' }
+        }
       }
     }
   }

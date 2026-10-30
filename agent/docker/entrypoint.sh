@@ -94,6 +94,7 @@ install_checked() {
 }
 install_checked @sec-agent/xdr-ingest /opt/agent/plugins/xdr-ingest
 install_checked @sec-agent/xdr-ui /opt/agent/plugins/xdr-ui
+install_checked @sec-agent/xdr-llm-agg /opt/agent/plugins/xdr-llm-agg
 
 # 组装启动命令。dsh web 默认自动绑定容器内第一块非内部 IPv4（LAN 默认）；
 # DSH_WEB_HOST 可显式覆盖。

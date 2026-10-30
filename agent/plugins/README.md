@@ -32,4 +32,7 @@
   `ctx.reflect.provide('xdrIngest', …)` 供出数据面，本插件可选读取。详见其 README。
 - **`xdr-agent-pack/` 已落地**：纯声明 bundle，把本项目启用的第一方 dsh 能力
   集中成一层可审阅的 patch（`dsh-time-context`、`dsh-tool-schedule`）；没有运行逻辑。
+- **`xdr-llm-agg/` 已落地**：LLM-AGG 聚合网关专用模型连接器。声明 `llm-agg`
+  路由，按请求把 dsh 会话 ID 写成 `x-session-id`，供网关做会话亲和与并发分摊；
+  只影响选择该路由的模型调用，其它服务商不经手。详见其 README。
 - 规划中：`xdr-memory`（案件记忆域）、`xdr-triage`（定时分诊）。
