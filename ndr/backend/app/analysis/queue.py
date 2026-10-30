@@ -345,23 +345,35 @@ def _scope_payload() -> dict[str, Any]:
 # ---------- 交回 / 延后 ----------
 
 
-def _event_id_of(task: AnalysisTask) -> str:
-    """任务对应的**命中事件 ID**（hint 里带的；只有 hit 线索有）。"""
+def _event_ids_of(task: AnalysisTask) -> list[str]:
+    """任务对应的**命中事件 ID 列表**（hint 里带的；只有 hit/hit_cluster 线索有）。
+
+    `hit` 是单个 ID；`hit_cluster` 是数组（一次扫描折成一件，hint 里带簇内事件 ID）。
+    这里必须保留数组语义：以前统一 `str()` 会把数组写成 `"['uuid']"`，事件中心按
+    `hit_events.id` 精确匹配时永远对不上，列表里的智能体结论就一直是空的。
+    """
     hint = task.hint if isinstance(task.hint, dict) else {}
-    return str(hint.get("事件ID") or hint.get("event_id") or "").strip()[:64]
+    raw = hint.get("事件ID") or hint.get("event_id")
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    out: list[str] = []
+    for item in values:
+        value = str(item or "").strip()[:64]
+        if value and value not in out:
+            out.append(value)
+    return out
 
 
 def _mirror_event_conclusion(
     db: Any,
     task: AnalysisTask,
     *,
-    event_id: str,
+    event_ids: list[str],
     verdict: str,
     summary: str,
     findings: dict[str, Any] | None,
     confidence: float,
     terminal_reason: str,
-) -> bool:
+) -> int:
     """任务级结论 → **事件级结论镜像**（事件列表的 `agent_*` 字段靠它）。
 
     为什么需要：智能体只调 `complete_task`（analyst 档没有 `record_conclusion`），
@@ -369,18 +381,14 @@ def _mirror_event_conclusion(
     没有这份镜像，界面上永远看不到"这条事件智能体已经判过了" —— 判定权转移只落在
     任务队列里，事件列表还是空的。
 
+    `hit_cluster` 会带多个事件 ID：每个事件都要写一条镜像，否则列表只命中一部分。
     失败只告警，不影响任务完成（交回是硬要求，镜像是展示）。
     """
-    if event_id == "" or summary.strip() == "":
-        return False
+    ids = [str(item)[:64] for item in event_ids if str(item).strip() != ""]
+    if not ids or summary.strip() == "":
+        return 0
     try:
         now = datetime.now(UTC)
-        rec = db.execute(
-            select(ConclusionRecord).where(ConclusionRecord.dedup_key == event_id)
-        ).scalar_one_or_none()
-        if rec is None:
-            rec = ConclusionRecord(dedup_key=event_id, created_at=now)
-            db.add(rec)
         detail: dict[str, Any] = dict(findings or {}) if isinstance(findings, dict) else {}
         detail.update(
             {
@@ -389,19 +397,28 @@ def _mirror_event_conclusion(
                 "terminal_reason": str(terminal_reason or ""),
             }
         )
-        rec.event_id = event_id
-        rec.status = str(verdict or "")[:32]
-        # 任务级结论没有"严重度"这一维（智能体不编严重度）：留空，界面回退看结论态
-        rec.severity = ""
-        rec.summary = str(summary)[:4000]
-        rec.detail = detail
-        rec.updated_at = now
+        written = 0
+        for event_id in ids:
+            rec = db.execute(
+                select(ConclusionRecord).where(ConclusionRecord.dedup_key == event_id)
+            ).scalar_one_or_none()
+            if rec is None:
+                rec = ConclusionRecord(dedup_key=event_id, created_at=now)
+                db.add(rec)
+            rec.event_id = event_id
+            rec.status = str(verdict or "")[:32]
+            # 任务级结论没有"严重度"这一维（智能体不编严重度）：留空，界面回退看结论态
+            rec.severity = ""
+            rec.summary = str(summary)[:4000]
+            rec.detail = detail
+            rec.updated_at = now
+            written += 1
         db.commit()
-        return True
+        return written
     except Exception as exc:  # noqa: BLE001 — 镜像失败不能影响任务交回
         db.rollback()
-        log.warning("写事件级结论镜像失败（任务 %s / 事件 %s）：%s", task.id, event_id, exc)
-        return False
+        log.warning("写事件级结论镜像失败（任务 %s / 事件 %s）：%s", task.id, ids, exc)
+        return 0
 
 
 def complete_task(
@@ -473,7 +490,7 @@ def complete_task(
                 task_id=str(row.id),
                 pairs=anchor_pairs,
             )
-        event_id = _event_id_of(row)
+        event_ids = _event_ids_of(row)
         row.state = "done"
         row.lease_until = None
         row.updated_at = now
@@ -490,7 +507,7 @@ def complete_task(
         _mirror_event_conclusion(
             db,
             row,
-            event_id=event_id,
+            event_ids=event_ids,
             verdict=verdict,
             summary=str(summary or ""),
             findings=findings,

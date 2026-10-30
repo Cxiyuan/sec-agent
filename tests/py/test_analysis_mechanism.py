@@ -1017,7 +1017,7 @@ def test_complete_task_mirrors_event_conclusion(queue_mod: Any) -> None:
     """
     src = inspect.getsource(queue_mod.complete_task)
     assert "_mirror_event_conclusion" in src
-    assert '"事件ID"' in src or "事件ID" in inspect.getsource(queue_mod._event_id_of)
+    assert '"事件ID"' in src or "事件ID" in inspect.getsource(queue_mod._event_ids_of)
     mirror = inspect.getsource(queue_mod._mirror_event_conclusion)
     assert "ConclusionRecord" in mirror
     assert "dedup_key" in mirror
@@ -1025,6 +1025,18 @@ def test_complete_task_mirrors_event_conclusion(queue_mod: Any) -> None:
     assert "except Exception" in mirror
     # 任务级结论没有严重度这一维：不能瞎编
     assert 'rec.severity = ""' in mirror
+
+
+def test_hit_cluster_event_ids_are_expanded(queue_mod: Any) -> None:
+    """`hit_cluster` 的 hint 里是事件 ID 数组，必须逐个镜像，不能拼成 `"['uuid']"`。
+
+    否则 `conclusion_records.dedup_key` 与 `hit_events.id` 对不上，事件中心
+    即使有可疑/威胁结论也显示为空。
+    """
+    task = SimpleNamespace(hint={"事件ID": ["ev-1", "ev-2", "ev-1"]})
+    assert queue_mod._event_ids_of(task) == ["ev-1", "ev-2"]
+    single = SimpleNamespace(hint={"事件ID": "ev-3"})
+    assert queue_mod._event_ids_of(single) == ["ev-3"]
 
 
 def test_event_conclusion_status_uses_the_verdict_vocabulary() -> None:
