@@ -140,7 +140,15 @@ export class LlmAggAdapter extends LlmAdapter {
   }
 
   async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
-    const config = this.options.config()
+    let config: ResolvedLlmAggConfig
+    try {
+      config = this.options.config()
+    } catch (error) {
+      // 控制台写坏了端点/头名时，请求这里失败要带稳定失败码（否则只会得到
+      // 一个无法路由的通用错误）。修复配置后下一轮立即恢复。
+      const message = error instanceof Error ? error.message : String(error)
+      throw new LlmError(`llm-agg: 配置不可用：${message}`, 'INVALID_CONFIG', { cause: error })
+    }
     const apiKey = await this.options.resolveApiKey(config.apiKeyEnv)
     const { messages, tools } = toChatRequest(options)
     const body = {

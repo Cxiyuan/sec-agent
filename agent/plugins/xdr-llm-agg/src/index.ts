@@ -17,7 +17,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { assertUsableApiKey, LlmError } from '@deepseek-ai/dsh-llm'
 import { LlmAggAdapter } from './adapter.ts'
-import { Config, PROVIDER, resolveConfig, SETTINGS_NS } from './config.ts'
+import { Config, DEFAULT_MODELS, PROVIDER, resolveConfig, SETTINGS_NS } from './config.ts'
+import type { ResolvedLlmAggConfig } from './config.ts'
 
 export { Config, DEFAULT_BASE_URL, DEFAULT_MODELS, PROVIDER, resolveConfig, SETTINGS_NS } from './config.ts'
 export type { LlmAggModel, ResolvedLlmAggConfig } from './config.ts'
@@ -64,10 +65,39 @@ function credentialsOf(ctx: Context): CredentialsLike | undefined {
     : undefined
 }
 
+/**
+ * 加载期读取配置：非法值只告警、不拒绝加载。
+ *
+ * 如果这里抛错，插件会变成 inactive，控制台的 `xdr-llm-agg` 设置条目也跟着
+ * 消失——用户就再也没法在界面里把写坏的地址改回来（只能手改 profile）。
+ * 所以路由照常注册：元数据查询走容错读取，真正的请求在 `stream()` 里带
+ * `INVALID_CONFIG` 失败，控制台保存合法值后下一轮立即恢复。
+ */
+function initialConfig(config: Config): ResolvedLlmAggConfig {
+  try {
+    return resolveConfig(config)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[xdr-llm-agg] 配置暂不可用，路由仍注册以便控制台修复：${message}`)
+    const models = config.models.get()
+    return {
+      displayName: config.displayName.get().trim() || 'LLM-AGG',
+      baseURL: config.baseURL.get().trim(),
+      apiKeyEnv: config.apiKeyEnv.get().trim(),
+      models: models.length === 0 ? [...DEFAULT_MODELS] : models,
+      defaultContextWindow: config.defaultContextWindow.get(),
+      maxTokens: config.maxTokens.get(),
+      sessionHeader: config.sessionHeader.get().trim(),
+      streamIdleTimeoutMs: config.streamIdleTimeoutMs.get(),
+      requestTimeoutMs: config.requestTimeoutMs.get(),
+    }
+  }
+}
+
 /** 注册 llm-agg 适配器与可配置服务商目录项。 */
 export function apply(ctx: Context, config: Config): void {
-  // fail fast：端点/头名/模型清单非法时在加载期报错，而不是等第一次分析。
-  const initial = resolveConfig(config)
+  // 加载期只求「能加载」：非法值由请求路径带 INVALID_CONFIG 失败（见 initialConfig）。
+  const initial = initialConfig(config)
 
   const resolveApiKey = async (ref: string): Promise<string | undefined> => {
     if (ref === '') return undefined
