@@ -79,17 +79,25 @@ function textOf(blocks: readonly ContentBlock[]): string {
   return text
 }
 
-/** 一条消息的文本内容；图片未 offload 时失败，其余扩展块忽略。 */
+/**
+ * 一条消息的文本内容；未 offload 的图片失败，已 offload 的图片以占位文本
+ * 保留（与 pi-ai 的「省略也要让模型知道这里曾有图」一致），其余扩展块忽略。
+ */
 function textOfStrict(blocks: readonly ContentBlock[], role: string): string {
+  let text = ''
   for (const block of blocks) {
-    if (block.type === 'image' && block.offloaded !== true) {
-      throw new WireError(
-        `llm-agg: 不支持 ${role} 消息里的图片输入；请改用文本描述或换用支持视觉的服务商`,
-        'UNSUPPORTED_CONTENT',
-      )
+    if (block.type === 'text') text += block.text
+    else if (block.type === 'image') {
+      if (block.offloaded !== true) {
+        throw new WireError(
+          `llm-agg: 不支持 ${role} 消息里的图片输入；请改用文本描述或换用支持视觉的服务商`,
+          'UNSUPPORTED_CONTENT',
+        )
+      }
+      text += '\n[图片已按上下文预算省略]\n'
     }
   }
-  return textOf(blocks)
+  return text
 }
 
 /** 把 assistant 历史里的文本与工具调用投影成一条 OpenAI assistant 消息。 */

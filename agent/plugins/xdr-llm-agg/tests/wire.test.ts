@@ -92,6 +92,15 @@ test('toChatRequest 拒绝未 offload 的图片输入', () => {
   )
 })
 
+test('已 offload 的图片保留占位文本，不静默丢内容', () => {
+  const request = toChatRequest({
+    provider: 'llm-agg',
+    model: 'auto',
+    messages: [user([{ type: 'image', attachment: { attachmentId: 'a1' }, offloaded: true }])],
+  })
+  assert.deepEqual(request.messages, [{ role: 'user', content: '\n[图片已按上下文预算省略]\n' }])
+})
+
 test('空文本消息不产生空行；developer 文本按 system 下发', () => {
   const request = toChatRequest({
     provider: 'llm-agg',
