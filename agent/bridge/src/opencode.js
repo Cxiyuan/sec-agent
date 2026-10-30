@@ -54,6 +54,24 @@ export class OpenCodeRuntime {
 
   /** 启动进程（或连接测试注入的地址）并等到 /api/info 就绪。 */
   async start() {
+    if (this.config.opencodePasswordFile !== '') {
+      try {
+        const raw = await fs.readFile(this.config.opencodePasswordFile, 'utf8')
+        let password = ''
+        try {
+          password = String(JSON.parse(raw).password ?? '')
+        } catch {
+          password = raw.trim()
+        }
+        if (password !== '') this.password = password
+      } catch (error) {
+        throw new OpenCodeError(
+          `读取 OpenCode 服务密码失败：${String(error?.message ?? error).slice(0, 160)}`,
+          502,
+          'opencode_auth',
+        )
+      }
+    }
     if (this.config.opencodeUrl !== '') {
       this.baseUrl = this.config.opencodeUrl.replace(/\/+$/u, '')
       const info = await this.info()
@@ -183,10 +201,24 @@ export class OpenCodeRuntime {
   }
 
   async createSession() {
+    // 权限策略（2026-10-30 实测）：
+    // - `deny` 会被上游当成自动化流量，免费模型直接 429；
+    // - `ask` 可用，原生动作会挂起，桥接层在 complete() 里立刻拒绝；
+    // - `none` 不声明权限（仅诊断用）。
+    const perms = this.config.opencodePermissions
+    const permissions = perms === 'deny'
+      ? [{ action: '*', resource: '*', effect: 'deny' }]
+      : perms === 'ask'
+        ? [{ action: '*', resource: '*', effect: 'ask' }]
+        : []
     const result = await this.request(
       '/api/session',
       'POST',
-      { title: 'xdr-bridge', agent: 'xdr-bridge' },
+      {
+        title: 'xdr-bridge',
+        ...(this.config.opencodeAgent === '' ? {} : { agent: this.config.opencodeAgent }),
+        ...(permissions.length === 0 ? {} : { permissions }),
+      },
       20_000,
     )
     const id = result?.data?.id ?? result?.id

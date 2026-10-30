@@ -37,6 +37,15 @@ export function loadConfig(env = process.env) {
     // 容器内固定路径；测试可通过 BRIDGE_OPENCODE_URL 注入假服务
     opencodeBin: textEnv(env, 'BRIDGE_OPENCODE_BIN', '/opt/opencode/opencode'),
     opencodeUrl: textEnv(env, 'BRIDGE_OPENCODE_URL'),
+    /** 外部 OpenCode 服务用哪个 agent；空 = 用对方默认 agent（自建运行时必须用 xdr-bridge）。 */
+    opencodeAgent: textEnv(env, 'BRIDGE_OPENCODE_AGENT', 'xdr-bridge'),
+    /**
+     * 会话级权限：`ask`（默认，宿主机模式用；原生动作会挂起，桥接层立刻拒绝）、
+     * `none`（不带权限声明）、`deny`（全拒绝 —— **实测会触发免费层 429**，别用）。
+     */
+    opencodePermissions: textEnv(env, 'BRIDGE_OPENCODE_PERMISSIONS', 'ask'),
+    /** 从 JSON 文件读取外部 OpenCode 的服务密码（宿主机 service.json）。 */
+    opencodePasswordFile: textEnv(env, 'BRIDGE_OPENCODE_PASSWORD_FILE'),
     opencodeUsername: textEnv(env, 'BRIDGE_OPENCODE_USERNAME', 'opencode'),
     opencodePassword: textEnv(env, 'BRIDGE_OPENCODE_PASSWORD'),
     expectedVersion: textEnv(env, 'BRIDGE_OPENCODE_VERSION', ''),
