@@ -68,11 +68,12 @@ function credentialsOf(ctx: Context): CredentialsLike | undefined {
 export function apply(ctx: Context, config: Config): void {
   // fail fast：端点/头名/模型清单非法时在加载期报错，而不是等第一次分析。
   const initial = resolveConfig(config)
-  const credentials = credentialsOf(ctx)
 
   const resolveApiKey = async (ref: string): Promise<string | undefined> => {
     if (ref === '') return undefined
-    // 每次请求现解析：控制台换 Key 后下一轮立即生效，不缓存。
+    // 凭证服务每次请求现取：服务可能晚于本插件激活（apply 期读取会永久
+    // 记住 undefined），而且控制台换 Key 后下一轮就要生效。
+    const credentials = credentialsOf(ctx)
     const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
     const value = hit !== undefined && hit.value.length > 0 ? hit.value : process.env[ref]
     if (value !== undefined && value.trim() !== '') return assertUsableApiKey(value, 'llm-agg', ref)
@@ -99,7 +100,7 @@ export function apply(ctx: Context, config: Config): void {
     `[xdr-llm-agg] apply(): route "${PROVIDER}" → ${initial.baseURL}`
     + `（会话头 ${initial.sessionHeader}，模型 ${initial.models.map(model => model.id).join('/')}）`,
   )
-  if (credentials === undefined) {
-    console.warn('[xdr-llm-agg] credentials 服务不在场：池 Key 只从环境变量读取。')
+  if (credentialsOf(ctx) === undefined) {
+    console.warn('[xdr-llm-agg] credentials 服务当前不在场：池 Key 先走环境变量，服务到位后自动改读凭证库。')
   }
 }
