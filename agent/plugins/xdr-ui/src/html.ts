@@ -464,6 +464,7 @@ ${THEME}
               <option value="">跟随默认</option><option value="off">off</option>
               <option value="low">low</option><option value="high">high</option><option value="max">max</option>
             </select>
+            <small>llm-agg 路由不透传推理强度（由网关与后端默认决定）</small>
           </div>
         </div>
         <div class="form-actions">
