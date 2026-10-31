@@ -285,6 +285,19 @@ export class Analyst {
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
       },
+      // 每个分析会话只处理派给它的那条任务：把 claim_tasks 从工具面里拿掉。
+      // 否则模型会自己去领别的任务、把别人的任务做完，而本任务一直是 claimed，
+      // Analyst 回查时判定「未交回」并延后。
+      setup: (agentCtx) => {
+        try {
+          agentCtx.tools?.restrict?.({ deny: ['mcp__ndr__claim_tasks'] })
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法禁用 claim_tasks 工具，仅靠提示词约束：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+      },
     })
     // 每次运行独立的状态（Analyst 实例是共享的，不能用一个字段跨任务）
     // stalled 处置（A4 整改落地）：stallMinutes 配置此前是死配置——probe 每 15 秒

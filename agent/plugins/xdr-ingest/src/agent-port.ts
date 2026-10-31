@@ -31,9 +31,19 @@ export interface AgentHandleLike {
   dispose(): void | Promise<void>
 }
 
+/** The scoped context dsh hands to `setup` before the agent is published. */
+export interface AgentScopedContext {
+  readonly tools?: {
+    /** Per-agent visibility mask over global tools (dsh ToolRuntime.restrict). */
+    restrict?(filter: { readonly allow?: readonly string[]; readonly deny?: readonly string[] }): unknown
+  }
+}
+
 export interface AgentCreateOptions {
   readonly sessionId: string
   readonly agentOptions?: { readonly provider?: string; readonly model?: string }
+  /** Creation-time composition of the agent's scoped world (dsh AgentCreateOptions.setup). */
+  readonly setup?: (agentCtx: AgentScopedContext) => void | Promise<void>
 }
 
 export interface AgentsServiceLike {

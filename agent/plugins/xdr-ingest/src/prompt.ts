@@ -58,6 +58,17 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     JSON.stringify(facts, null, 2),
     '</task>',
     '',
+    '<critical>',
+    `本会话只分析上面这一条任务（task_id=${task.id}）。`,
+    '禁止调用 `claim_tasks` 领取其它任务，也不要分析其它 task_id。',
+    '分析结束后必须对这条 task_id 调用 `complete_task` 交回；对其它任务调用不算交回。',
+    '</critical>',
+    '',
+    '## 收尾硬约束',
+    '本会话工具预算约 20 次、时间预算约 8 分钟。达到任一上限时必须停止取证，',
+    '用现有证据给出 verdict（证据不足用 inconclusive + terminal_reason=budget_exhausted），',
+    `并立即调用 \`complete_task\`（task_id=${task.id}）。不交回等于任务失败。`,
+    '',
     ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0
       ? [
           '<workflow>',
@@ -84,7 +95,7 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '',
     '## 分析对象与方向（固定口径）',
     '分析对象以 NDR **监控网段内**的 IP 资产为主：先调 `list_networks` 确认网段（'
-    + '`claim_tasks` 回执里的 `scope` 也有）；外部 IP 只作为对端/线索，'
+    + '任务回执/NDR 的 `scope` 也有）；外部 IP 只作为对端/线索，'
     + '网段外的私网不是"我们的资产"。任务回执自带 `direction` / `principal_asset` / '
     + '`affected_assets` / `peers`，`hint` 里也有一份；方向不明时才自己按网段判断。',
     '',

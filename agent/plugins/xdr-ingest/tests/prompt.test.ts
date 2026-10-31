@@ -40,6 +40,20 @@ test('prompt tells the agent to confirm networks first', () => {
   assert.match(text, /list_networks/)
 })
 
+test('prompt pins the session to its assigned task and a wrap-up budget', () => {
+  const text = buildAnalysisPrompt({
+    id: 'task-9',
+    kind: 'observation',
+    strength: 0.7,
+    subject_kind: 'asset',
+    subject: '10.1.1.40',
+  })
+  assert.match(text, /task_id=task-9/)
+  assert.match(text, /禁止调用 `claim_tasks`/)
+  assert.match(text, /工具预算约 20 次/)
+  assert.match(text, /不交回等于任务失败/)
+})
+
 test('prompt states the evidence rule', () => {
   const text = buildAnalysisPrompt({
     id: 'task-3',
