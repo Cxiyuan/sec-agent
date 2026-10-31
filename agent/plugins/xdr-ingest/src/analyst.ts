@@ -311,12 +311,14 @@ export class Analyst {
       lastEventAt: startedAt,
       stallWarned: false,
       stallCancelled: false,
+      tools: 0,
     }
     let probeTimer: ReturnType<typeof setInterval> | null = null
     if (this.options.probeSession !== undefined && ((this.options.maxTools ?? 0) > 0 || stallMs > 0)) {
       probeTimer = setInterval(() => {
         void this.options.probeSession?.(sessionId).then(info => {
           if (info === null) return
+          watch.tools = info.tools
           const max = this.options.maxTools ?? 0
           if (max > 0 && info.tools > max && !watch.budgetExceeded) {
             watch.budgetExceeded = true
@@ -375,9 +377,89 @@ export class Analyst {
     }
 
     // 会话结束不等于任务完成：必须回查 NDR 侧状态
-    const reply = await this.readTask(task.id)
-    const state = stateOf(reply)
-    const completed = state === 'done'
+    let reply = await this.readTask(task.id)
+    let state = stateOf(reply)
+    let completed = state === 'done'
+    // 预算/超时/停滞被强制取消时，模型往往来不及自己交回。会话已经结束，
+    // 再延期只是把租约还回去（下次仍会重演）。这里由插件代交一条
+    // inconclusive：结论质量降级，但闭环、可见、不再占着队列。
+    let forced = false
+    if (!completed && (watch.budgetExceeded || watch.stallCancelled || timedOut)) {
+      const terminalReason = watch.budgetExceeded
+        ? 'budget_exhausted'
+        : timedOut
+        ? 'timeout'
+        : 'aborted'
+      const summary = watch.budgetExceeded
+        ? `分析在工具调用 ${watch.tools} 次后达到预算上限，会话被取消；现有证据不足以给出确定判定。`
+        : timedOut
+        ? '分析超时，会话被取消；现有证据不足以给出确定判定。'
+        : '分析因长时间无新事件被判定停滞并取消；现有证据不足以给出确定判定。'
+      const forcedPayload: ReusePayload = {
+        verdict: 'inconclusive',
+        summary,
+        confidence: 0,
+        findings: {
+          forced_completion: true,
+          reason: terminalReason,
+          tools_used: watch.tools,
+        },
+        terminal_reason: terminalReason,
+        tools_used: watch.tools,
+        duration_ms: Date.now() - startedAt,
+      }
+      try {
+        const receipt = await this.options.ndr.completeTask(task.id, forcedPayload)
+        const receiptState = String(receipt.task_state ?? receipt.state ?? '')
+        const accepted = (typeof receipt.error !== 'string' || receipt.error === '')
+          && (receipt.ok === true || receiptState === 'done')
+        if (accepted) {
+          forced = true
+          completed = true
+          state = 'done'
+          // `task_state` 可能还没读到刚写入的结论；先用回执载荷补齐，
+          // 复用入库/抽检比对仍能拿到 verdict。
+          reply = {
+            ...reply,
+            results: [{
+              verdict: 'inconclusive',
+              terminal_reason: terminalReason,
+              confidence: 0,
+              summary,
+              findings: forcedPayload.findings,
+              evidence_refs: [],
+              tools_used: watch.tools,
+              duration_ms: forcedPayload.duration_ms,
+            }],
+          }
+          await this.archiveConclusion(task, {
+            verdict: 'inconclusive',
+            confidence: 0,
+            summary,
+            findings: forcedPayload.findings,
+            evidenceRefs: [],
+            toolsUsed: watch.tools,
+            durationMs: forcedPayload.duration_ms,
+            terminalReason,
+            reused: false,
+            reusedFrom: '',
+          })
+          console.warn(
+            `[xdr-ingest] 任务 ${task.id} 已由插件代交 inconclusive（${terminalReason}，工具 ${watch.tools} 次）`,
+          )
+        } else {
+          console.warn(
+            `[xdr-ingest] 任务 ${task.id} 代交 inconclusive 未被接受：`
+            + `${String(receipt.error ?? receiptState ?? 'unknown').slice(0, 240)}`,
+          )
+        }
+      } catch (exc) {
+        console.warn(
+          `[xdr-ingest] 任务 ${task.id} 代交 inconclusive 异常：`
+          + `${exc instanceof Error ? exc.message : String(exc)}`.slice(0, 240),
+        )
+      }
+    }
     if (completed) {
       // 结论入库供下次复用；失败只告警，不要让一条已交回的任务看起来失败
       await this.remember(task, reply)
@@ -418,19 +500,20 @@ export class Analyst {
         note: [
           auditNote,
           completed
-            ? ''
+            ? (forced ? '插件代交 inconclusive（预算/超时/停滞）' : '')
             : watch.budgetExceeded
               ? '工具调用超过预算，已取消并延后'
               : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
         ].filter(text => text !== '').join('；'),
       },
     )
-    // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型
-    if (completed) {
+    // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型。
+    // 插件代交（forced）不算"模型自己收尾成功"，预算/超时同样触发换备用。
+    if (completed && !forced) {
       this.preferFallback = false
     } else if (
       this.options.fallbackModel !== undefined
-      && (timedOut || /429|rate limit|quota|timeout|overloaded|context window/i.test(error ?? ''))
+      && (timedOut || watch.budgetExceeded || /429|rate limit|quota|timeout|overloaded|context window/i.test(error ?? ''))
     ) {
       this.preferFallback = true
     }
