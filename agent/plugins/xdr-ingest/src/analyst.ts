@@ -367,6 +367,29 @@ export class Analyst {
         await Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest timeout' })).catch(
           () => undefined,
         )
+      } else if (!watch.budgetExceeded && !watch.stallCancelled && watch.tools === 0) {
+        // 第一轮一次工具都没调：模型常把 dsh 随后注入的 runtime-context 当成
+        // 唯一请求（"没有任务，请告诉我做什么"），把任务提示当成了背景。
+        // 同一任务再发一次——这一轮它排在上下文之后，模型不会再漏看。
+        // 只在零工具时重发：正常分析不会被重复派活。
+        console.warn(
+          `[xdr-ingest] 任务 ${task.id} 第一轮未调用任何工具（模型可能只看到 runtime context），重发任务提示`,
+        )
+        await Promise.resolve(handle.agent.followup({
+          content: [{
+            type: 'text',
+            text: '上一轮没有开始执行任务（没有调用任何 NDR 工具）。现在请立即执行下面的任务，'
+              + '完成后调用 `complete_task` 交回：\n\n' + buildAnalysisPrompt(task, workflow),
+          }],
+          source: { kind: this.options.source ?? 'xdr-ingest' },
+        }))
+        const second = await this.raceTimeout(handle.agent.whenIdle())
+        if (second === 'timeout') {
+          timedOut = true
+          await Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest timeout' })).catch(
+            () => undefined,
+          )
+        }
       }
     } catch (exc) {
       error = exc instanceof Error ? exc.message : String(exc)
