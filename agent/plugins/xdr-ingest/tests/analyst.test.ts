@@ -3,8 +3,8 @@
  *
  * 三种结局都要钉住：
  * 1. 交回了（task_state=done）→ 不 defer；
- * 2. 没交回 → defer 并说明原因（别让任务挂到租约被回收）；
- * 3. 超时 → 先 cancel 再 defer('timeout')，且不占着并发槽。
+ * 2. 没交回、也没到硬上限 → 先重发一次任务提示；仍没交回再 defer 并说明原因；
+ * 3. 超时/预算/停滞 → 先 cancel，再由插件代交 inconclusive（不再只延后）。
  */
 
 import { strict as assert } from 'node:assert'
@@ -163,7 +163,7 @@ test('unknown state is treated as not completed (fail safe)', async () => {
   assert.equal(outcome.deferred, true, '查不到状态时宁可 defer（代价小），也不能当完成')
 })
 
-test('timeout cancels the session and defers with reason timeout', async () => {
+test('timeout cancels the session and the plugin submits an inconclusive conclusion', async () => {
   const rec = recorder()
   const analyst = new Analyst({
     agents: fakeAgents(rec, () => new Promise(() => undefined)), // 永不空闲
@@ -171,9 +171,63 @@ test('timeout cancels the session and defers with reason timeout', async () => {
     timeoutMs: 20,
   })
   const outcome = await analyst.run(task)
-  assert.equal(outcome.completed, false)
+  assert.equal(outcome.completed, true, '超时后由插件代交，避免任务只延后不闭环')
   assert.equal(rec.cancelled, 1, '超时必须 cancel，否则会话一直占着并发槽')
-  assert.deepEqual(rec.deferred.map(d => d.reason), ['timeout'])
+  assert.deepEqual(rec.deferred, [], '代交成功后不再 defer')
+  assert.equal(rec.completed.length, 1)
+  assert.equal(rec.completed[0]?.verdict, 'inconclusive')
+  assert.equal(rec.completed[0]?.terminal_reason, 'timeout')
+})
+
+test('首轮未交回会重发一次任务提示；第二轮交回按完成处理', async () => {
+  const rec = recorder()
+  let stateChecks = 0
+  const agents: AgentsServiceLike = {
+    async create(): Promise<AgentHandleLike> {
+      return {
+        agent: {
+          followup(input) {
+            rec.prompts.push(input.content.map(p => p.text).join(''))
+          },
+          whenIdle: async () => undefined,
+          cancel() {
+            rec.cancelled += 1
+          },
+        },
+        dispose() {
+          rec.disposed += 1
+        },
+      }
+    },
+  }
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() {
+      stateChecks += 1
+      if (stateChecks === 1) return { state: 'claimed' }
+      return {
+        state: 'done',
+        results: [{ verdict: 'benign', terminal_reason: 'concluded', confidence: 0.8, summary: '第二轮交回' }],
+      }
+    },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) { rec.deferred.push({ id, reason }) },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr,
+    timeoutMs: 1000,
+    probeSession: async () => ({ tools: 1, lastEventAt: Date.now() }),
+    probeIntervalMs: 1000,
+  })
+  const outcome = await analyst.run(task)
+  assert.equal(rec.prompts.length, 2, '首轮结束未交回要再发一次')
+  assert.match(rec.prompts[1] ?? '', /未交回/u)
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.deferred.length, 0)
 })
 
 // ---------- stall：会话停滞（A4：stallMinutes 不能是死配置） ----------
@@ -204,6 +258,8 @@ test('stallMinutes 1×: warn once, keep session alive if it resumes', async () =
       stallMinutes: 1 / 300,
       probeIntervalMs: 25,
       probeSession: async () => ({ tools: 0, lastEventAt: 0 }),
+      // 这一条只测 1× 告警：关掉"未交回重发"，否则第二轮会把时间推过 2×
+      retryUnfinishedTurn: false,
     })
     const outcome = await analyst.run(task)
     assert.equal(outcome.completed, false)
@@ -247,9 +303,11 @@ test('stallMinutes 2×: cancel the session and defer with reason stalled', async
   })
   const outcome = await analyst.run(task)
   assert.equal(rec.cancelled, 1, '过 2× 没有任何事件必须 cancel')
-  assert.equal(outcome.completed, false)
-  assert.equal(outcome.deferred, true)
-  assert.deepEqual(rec.deferred.map(d => d.reason), ['stalled'])
+  assert.equal(outcome.completed, true, '停滞后由插件代交，避免任务只延后不闭环')
+  assert.deepEqual(rec.deferred, [], '代交成功后不再 defer')
+  assert.equal(rec.completed.length, 1)
+  assert.equal(rec.completed[0]?.verdict, 'inconclusive')
+  assert.equal(rec.completed[0]?.terminal_reason, 'aborted')
 })
 
 test('stallMinutes=0 keeps the probe idle-only (no stall supervision)', async () => {

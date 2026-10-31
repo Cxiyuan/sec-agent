@@ -140,6 +140,11 @@ export interface AnalystOptions {
   readonly probeIntervalMs?: number
   /** 会话进度探针（读会话日志：工具调用数 + 最后事件时间）。 */
   readonly probeSession?: (sessionId: string) => Promise<{ tools: number, lastEventAt: number } | null>
+  /**
+   * 首轮会话结束但任务未交回时，是否重发一次任务提示（默认 true）。
+   * 关掉 = 保持旧行为（直接回查/延后），测试与严格部署可用。
+   */
+  readonly retryUnfinishedTurn?: boolean
 }
 
 export interface AnalystOutcome {
@@ -368,7 +373,8 @@ export class Analyst {
           () => undefined,
         )
       } else if (
-        this.options.probeSession !== undefined
+        this.options.retryUnfinishedTurn !== false
+        && this.options.probeSession !== undefined
         && !watch.budgetExceeded
         && !watch.stallCancelled
       ) {
