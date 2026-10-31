@@ -183,3 +183,21 @@ test('configure：热更新领取条数与并发，立刻影响下一轮', async
   await loop.tick()
   assert.deepEqual(limits, [5])
 })
+
+test('configure：热更新轮询间隔后按新间隔重排定时器', async () => {
+  let polls = 0
+  const loop = new ClaimLoop(base(
+    async () => undefined,
+    async () => {
+      polls += 1
+      return { tasks: [] }
+    },
+  ))
+  loop.start()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(polls, 1, 'start() 必须先领一次')
+  loop.configure({ pollSeconds: 0.05 })
+  await new Promise(resolve => setTimeout(resolve, 180))
+  loop.stop()
+  assert.ok(polls >= 2, `新间隔应触发再次轮询，实际 ${polls} 次`)
+})

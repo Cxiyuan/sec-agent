@@ -225,7 +225,7 @@ export class ClaimLoop {
   private schedule(delayMs: number): void {
     if (this.stopped) return
     if (this.timer !== null) clearTimeout(this.timer)
-    const baseMs = delayMs > 0 ? delayMs : this.options.pollSeconds * 1000
+    const baseMs = delayMs > 0 ? delayMs : this.settings.pollSeconds * 1000
     const waitMs = Math.max(baseMs, this.backoffMs)
     this.timer = setTimeout(() => {
       this.timer = null
