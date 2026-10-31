@@ -45,6 +45,11 @@
         maxConcurrent: 2
         claimLimit: 2
         analysisTimeoutSeconds: 1200
+        # 会话硬预算：模型不会自己守预算。超过工具数/无事件时长就取消会话，
+        # 由插件代交 inconclusive（terminal_reason=budget_exhausted），
+        # 避免"只延后、不闭环"——任务会一次次被领回、一次次跑不完。
+        maxToolsPerTask: 25
+        stallMinutes: 10
         doorbellDebounceMs: 3000
         backoffMaxMs: 300000
         # 留空 = 用 dsh 部署已配置的默认模型
