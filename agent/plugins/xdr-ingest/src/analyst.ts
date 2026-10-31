@@ -367,7 +367,12 @@ export class Analyst {
         await Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest timeout' })).catch(
           () => undefined,
         )
-      } else if (!watch.budgetExceeded && !watch.stallCancelled && watch.tools === 0) {
+      } else if (
+        this.options.probeSession !== undefined
+        && !watch.budgetExceeded
+        && !watch.stallCancelled
+        && watch.tools === 0
+      ) {
         // 第一轮一次工具都没调：模型常把 dsh 随后注入的 runtime-context 当成
         // 唯一请求（"没有任务，请告诉我做什么"），把任务提示当成了背景。
         // 同一任务再发一次——这一轮它排在上下文之后，模型不会再漏看。
