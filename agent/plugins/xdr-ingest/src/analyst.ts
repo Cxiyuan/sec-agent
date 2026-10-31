@@ -371,29 +371,33 @@ export class Analyst {
         this.options.probeSession !== undefined
         && !watch.budgetExceeded
         && !watch.stallCancelled
-        && watch.tools === 0
       ) {
-        // 第一轮一次工具都没调：模型常把 dsh 随后注入的 runtime-context 当成
-        // 唯一请求（"没有任务，请告诉我做什么"），把任务提示当成了背景。
-        // 同一任务再发一次——这一轮它排在上下文之后，模型不会再漏看。
-        // 只在零工具时重发：正常分析不会被重复派活。
-        console.warn(
-          `[xdr-ingest] 任务 ${task.id} 第一轮未调用任何工具（模型可能只看到 runtime context），重发任务提示`,
-        )
-        await Promise.resolve(handle.agent.followup({
-          content: [{
-            type: 'text',
-            text: '上一轮没有开始执行任务（没有调用任何 NDR 工具）。现在请立即执行下面的任务，'
-              + '完成后调用 `complete_task` 交回：\n\n' + buildAnalysisPrompt(task, workflow),
-          }],
-          source: { kind: this.options.source ?? 'xdr-ingest' },
-        }))
-        const second = await this.raceTimeout(handle.agent.whenIdle())
-        if (second === 'timeout') {
-          timedOut = true
-          await Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest timeout' })).catch(
-            () => undefined,
+        // 第一轮结束了但任务没交回：常见原因是模型把 dsh 注入的 runtime-context
+        // 当成了唯一请求（"没有任务，请告诉我做什么"），或者只做了些元数据查询就收尾。
+        // 同一任务再发一次——这一次它排在运行时上下文之后，且明确要求交回。
+        // 已交回（state=done）的不重发，避免把正常收尾变成重复派活。
+        const firstState = stateOf(await this.readTask(task.id))
+        if (firstState !== 'done') {
+          console.warn(
+            `[xdr-ingest] 任务 ${task.id} 第一轮结束但未交回（state=${firstState || 'unknown'}，`
+            + `工具 ${watch.tools} 次），重发任务提示`,
           )
+          await Promise.resolve(handle.agent.followup({
+            content: [{
+              type: 'text',
+              text: '上一轮结束时任务仍未交回。请立即继续执行下面的任务，'
+                + '完成后调用 `complete_task` 交回；证据够就收尾，不要再做与任务无关的元数据查询：\n\n'
+                + buildAnalysisPrompt(task, workflow),
+            }],
+            source: { kind: this.options.source ?? 'xdr-ingest' },
+          }))
+          const second = await this.raceTimeout(handle.agent.whenIdle())
+          if (second === 'timeout') {
+            timedOut = true
+            await Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest timeout' })).catch(
+              () => undefined,
+            )
+          }
         }
       }
     } catch (exc) {
