@@ -358,6 +358,7 @@ export class Analyst {
       probeTimer.unref?.()
     }
     let timedOut = false
+    let nudged = false
     let error: string | undefined
     try {
       const followup = handle.agent.followup({
@@ -384,6 +385,7 @@ export class Analyst {
         // 已交回（state=done）的不重发，避免把正常收尾变成重复派活。
         const firstState = stateOf(await this.readTask(task.id))
         if (firstState !== 'done') {
+          nudged = true
           console.warn(
             `[xdr-ingest] 任务 ${task.id} 第一轮结束但未交回（state=${firstState || 'unknown'}，`
             + `工具 ${watch.tools} 次），重发任务提示`,
@@ -422,7 +424,7 @@ export class Analyst {
     // 再延期只是把租约还回去（下次仍会重演）。这里由插件代交一条
     // inconclusive：结论质量降级，但闭环、可见、不再占着队列。
     let forced = false
-    if (!completed && (watch.budgetExceeded || watch.stallCancelled || timedOut)) {
+    if (!completed && (watch.budgetExceeded || watch.stallCancelled || timedOut || nudged)) {
       const terminalReason = watch.budgetExceeded
         ? 'budget_exhausted'
         : timedOut
@@ -432,7 +434,9 @@ export class Analyst {
         ? `分析在工具调用 ${watch.tools} 次后达到预算上限，会话被取消；现有证据不足以给出确定判定。`
         : timedOut
         ? '分析超时，会话被取消；现有证据不足以给出确定判定。'
-        : '分析因长时间无新事件被判定停滞并取消；现有证据不足以给出确定判定。'
+        : watch.stallCancelled
+        ? '分析因长时间无新事件被判定停滞并取消；现有证据不足以给出确定判定。'
+        : '模型在重发任务提示后仍未调用 `complete_task` 交回；由插件代交 inconclusive（aborted）。'
       const forcedPayload: ReusePayload = {
         verdict: 'inconclusive',
         summary,
