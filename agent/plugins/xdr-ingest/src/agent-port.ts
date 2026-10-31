@@ -37,6 +37,26 @@ export interface AgentScopedContext {
     /** Per-agent visibility mask over global tools (dsh ToolRuntime.restrict). */
     restrict?(filter: { readonly allow?: readonly string[]; readonly deny?: readonly string[] }): unknown
   }
+  /**
+   * Per-agent prompt composition (dsh system-prompt registry). A scoped
+   * section is part of the system prompt; a scoped context is materialized as
+   * a durable user-role snapshot, ordered with the runtime-context snapshots.
+   */
+  readonly systemPrompt?: {
+    section?(section: {
+      readonly name: string
+      readonly order: number
+      readonly text: string
+      readonly interpolate?: boolean
+    }): unknown
+    context?(context: {
+      readonly name: string
+      readonly order: number
+      readonly text: string
+      readonly interpolate?: boolean
+      readonly required?: boolean
+    }): unknown
+  }
 }
 
 export interface AgentCreateOptions {

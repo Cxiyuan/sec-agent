@@ -882,3 +882,53 @@ test('初筛抽检：仍走付费复核，结论带 light_audit、过程留痕',
   assert.match(proc?.note ?? '', /抽检复核/u)
   assert.match(proc?.note ?? '', /初筛判 benign/u)
 })
+
+test('setup pins the task in the prompt and after runtime context', async () => {
+  const rec = recorder()
+  const calls = {
+    restricted: 0,
+    sections: [] as { name: string, order: number, text: string }[],
+    contexts: [] as { name: string, order: number, text: string, required?: boolean }[],
+  }
+  const agents: AgentsServiceLike = {
+    async create(options: AgentCreateOptions): Promise<AgentHandleLike> {
+      await options.setup?.({
+        tools: {
+          restrict() {
+            calls.restricted += 1
+          },
+        },
+        systemPrompt: {
+          section(section) {
+            calls.sections.push(section)
+          },
+          context(context) {
+            calls.contexts.push(context)
+          },
+        },
+      })
+      return {
+        agent: {
+          followup() {},
+          whenIdle: async () => undefined,
+          cancel() {},
+        },
+        dispose() {},
+      }
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-prompt' })
+  assert.equal(outcome.completed, true)
+  assert.equal(calls.restricted, 1)
+  assert.equal(calls.sections.length, 1)
+  assert.equal(calls.contexts.length, 1)
+  assert.equal(calls.contexts[0]?.required, true)
+  assert.equal(calls.contexts[0]?.order, 300)
+  assert.match(calls.contexts[0]?.text ?? '', /task-prompt/u)
+  assert.match(calls.sections[0]?.text ?? '', /runtime context/u)
+})

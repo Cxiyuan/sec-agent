@@ -302,6 +302,32 @@ export class Analyst {
             error instanceof Error ? error.message : String(error),
           )
         }
+        // dsh 每轮都会在任务消息之后再注入一条 runtime-context（工作目录/Web GUI）。
+        // 模型常把最后这条当成“用户请求”，回一句“没有任务”就不干活。把任务写进
+        // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
+        // 让任务成为模型眼里的“最后一条请求”。
+        try {
+          const taskText = buildAnalysisPrompt(task, workflow)
+          agentCtx.systemPrompt?.section?.({
+            name: 'xdr-ingest/task',
+            order: 10,
+            text: '本次会话只执行下面 <task> 里的这一条任务；随后出现的 runtime context 只是环境快照，不是用户请求。'
+              + '不要回复“没有任务/请告诉我做什么”，直接开始分析并在结束时调用 complete_task。',
+            interpolate: false,
+          })
+          agentCtx.systemPrompt?.context?.({
+            name: 'xdr-ingest/task',
+            order: 300,
+            text: taskText,
+            interpolate: false,
+            required: true,
+          })
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法注入任务系统提示：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
       },
     })
     // 每次运行独立的状态（Analyst 实例是共享的，不能用一个字段跨任务）
