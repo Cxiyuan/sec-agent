@@ -28,7 +28,6 @@ export const CORE_NDR_TOOLS: readonly string[] = [
 
 /** 分析会话永远不需要的非 NDR 工具（聊天/其他 agent 仍保留）。 */
 export const NON_ANALYSIS_TOOLS: readonly string[] = [
-  'mcp__ndr__claim_tasks',
   'schedule_create',
   'schedule_update',
   'schedule_delete',

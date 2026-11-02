@@ -296,6 +296,16 @@ export class Analyst {
       // 否则模型会自己去领别的任务、把别人的任务做完，而本任务一直是 claimed，
       // Analyst 回查时判定「未交回」并延后。
       setup: (agentCtx) => {
+        // claim_tasks 必须无条件拿掉：即使 schemas() 暂不可用，也不能让模型
+        // 去领别的任务，导致本任务一直停在 claimed。
+        try {
+          agentCtx.tools?.restrict?.({ deny: ['mcp__ndr__claim_tasks'] })
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法禁用 claim_tasks 工具，仅靠提示词约束：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
         // 工具面默认只保留核心取证工具；罕见能力通过 enable_analysis_tools
         // 按组激活。工具始终注册在 registry 里，不会因为 24 小时未调用而删除。
         const available = (agentCtx.tools?.schemas?.() ?? []).map(tool => tool.name)
