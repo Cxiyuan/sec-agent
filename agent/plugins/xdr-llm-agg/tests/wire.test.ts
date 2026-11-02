@@ -308,3 +308,11 @@ test('toChatRequest 对超长工具结果应用默认预算', () => {
   assert.ok(String(tool?.content).length < 13_000)
   assert.match(String(tool?.content), /chars pruned by llm-agg/u)
 })
+
+
+test('compactToolResult 不重写含 64 位数字的 JSON，避免精度丢失', () => {
+  const raw = `{"event_id":12345678901234567890,"items":[${Array.from({ length: 400 }, (_, i) => `{"i":${i}}`).join(',')}]}`
+  const compacted = compactToolResult(raw, { maxChars: 1_000, headChars: 700, tailChars: 200 })
+  assert.match(compacted, /chars pruned by llm-agg/u)
+  assert.ok(compacted.includes('12345678901234567890'))
+})

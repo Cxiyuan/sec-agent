@@ -159,14 +159,19 @@ export function compactToolResult(
 ): string {
   const resolved = resolveLimits(limits)
   if (text.length <= resolved.maxChars) return text
-  try {
-    const parsed: unknown = JSON.parse(text)
-    const compacted = JSON.stringify(compactJsonValue(parsed, 0)) ?? ''
-    if (compacted.length <= resolved.maxChars) {
-      return `[tool output compacted by llm-agg; original ${text.length} chars]\n${compacted}`
+  // JSON.parse in JS rounds integers beyond 2^53. Event IDs and byte counters
+  // can be 64-bit; rewriting them would corrupt evidence. When such digits are
+  // present, use the byte-preserving head/tail path instead of the JSON one.
+  if (!/\d{16,}/u.test(text)) {
+    try {
+      const parsed: unknown = JSON.parse(text)
+      const compacted = JSON.stringify(compactJsonValue(parsed, 0)) ?? ''
+      if (compacted.length <= resolved.maxChars) {
+        return `[tool output compacted by llm-agg; original ${text.length} chars]\n${compacted}`
+      }
+    } catch {
+      // Not JSON (CSV/YAML/plain text): fall through to head/tail clipping.
     }
-  } catch {
-    // Not JSON (CSV/YAML/plain text): fall through to head/tail clipping.
   }
   return clipString(
     text,
