@@ -112,9 +112,16 @@ services:
     command:
       - |
         while true; do
-          pg_dump -h postgres -U shentong -d shentong -f "/backup/agent-$$(date +%Y%m%d%H%M).sql" &&
-          find /backup -name 'agent-*.sql' -mtime +7 -delete;
-          sleep 86400;
+          out="/backup/agent-$$(date +%Y%m%d%H%M).sql"
+          if pg_dump -h postgres -U shentong -d shentong -f "$$out.tmp"; then
+            mv "$$out.tmp" "$$out";
+            find /backup -name 'agent-*.sql' -mtime +7 -delete;
+            sleep 86400;
+          else
+            rm -f "$$out.tmp";
+            echo "pg_dump failed; retrying in 300s" >&2;
+            sleep 300;
+          fi;
         done
     restart: unless-stopped
     logging:
