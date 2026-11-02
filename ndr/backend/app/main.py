@@ -45,6 +45,23 @@ _MIGRATIONS: tuple[str, ...] = (
     # 精准抑制：按「启用+到期」筛活跃条目、按命中数排序找最需要复核的条目
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_enabled_expiry ON analysis_suppressions (enabled, expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_hits ON analysis_suppressions (hits)",
+    # 精准抑制双层模型（2026-11）：event = 规则命中事件级；task = novelty/observation/
+    # structure/coverage 等任务级。task scope 按稳定 reuse_identity 在 queue.enqueue 前拦截。
+    "ALTER TABLE analysis_suppressions ADD COLUMN IF NOT EXISTS scope VARCHAR(8) NOT NULL DEFAULT 'event'",
+    "ALTER TABLE analysis_suppressions ADD COLUMN IF NOT EXISTS reuse_identity VARCHAR(200) NOT NULL DEFAULT ''",
+    "ALTER TABLE analysis_suppressions ADD COLUMN IF NOT EXISTS task_kind VARCHAR(16) NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_task_identity ON analysis_suppressions (scope, enabled, expires_at, reuse_identity)",
+    # 历史迁移：以前从 novelty/structure 等非规则命中任务提交的抑制，事件级永远不会命中；
+    # 改为 task scope，使用来源任务的稳定 reuse_identity。hit/hit_cluster 保持 event。
+    (
+        "UPDATE analysis_suppressions s "
+        "SET scope='task', reuse_identity=COALESCE(t.hint->>'reuse_identity',''), task_kind=t.kind "
+        "FROM analysis_tasks t "
+        "WHERE s.scope='event' AND s.source_task_id<>'' AND t.id::text=s.source_task_id "
+        "AND t.kind NOT IN ('hit','hit_cluster') "
+        "AND s.hits = 0 "
+        "AND COALESCE(t.hint->>'reuse_identity','') <> ''"
+    ),
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(24) DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS ix_hit_events_cluster_id ON hit_events (cluster_id)",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",

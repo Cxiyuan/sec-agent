@@ -47,6 +47,7 @@ from app.baseline import (
 )
 from app.db.base import SessionLocal as session_factory
 from app.db.models import (
+    AnalysisTask,
     ConclusionRecord,
     ExclusionFilter,
     IngestFilter,
@@ -81,6 +82,7 @@ __all__ = [
     "analysis_status_values",
     "analysis_subjects",
     "analysis_task_state",
+    "analysis_task_suppression_context",
     "analysis_terminal_reasons",
     "analysis_verdict_values",
     "asset_context_by_ips",
@@ -350,6 +352,26 @@ def list_analysis_results(
 def analysis_task_state(task_id: str) -> dict[str, Any]:
     """单条任务的当前状态与结论（会话结束后用来判断"到底交回没有"）。"""
     return analysis_queue.task_detail(task_id)
+
+
+def analysis_task_suppression_context(task_id: str) -> dict[str, Any] | None:
+    """任务级抑制需要的稳定身份；MCP 不直接触达 models。"""
+    if str(task_id or "").strip() == "":
+        return None
+    try:
+        with session_factory() as db:
+            row = db.get(AnalysisTask, str(task_id).strip())
+            if row is None:
+                return None
+            hint = dict(row.hint or {})
+            return {
+                "kind": str(row.kind or ""),
+                "reuse_identity": str(hint.get("reuse_identity") or "").strip(),
+                "subject_kind": str(row.subject_kind or ""),
+                "subject": str(row.subject or ""),
+            }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读取任务失败：{exc}"[:300]}
 
 
 def analysis_log_step(

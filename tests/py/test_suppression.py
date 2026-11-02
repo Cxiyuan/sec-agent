@@ -123,6 +123,84 @@ def test_two_dimensions_are_accepted(sup: ModuleType) -> None:
     assert any("独立匹配维度" in e["msg"] for e in errors)
 
 
+def test_common_llm_wrappers_are_normalized(sup: ModuleType) -> None:
+    """模型常见的 rules:{item:[...]} / items 包装要能归一，不能当成空字段。"""
+    for rules in (
+        {"item": [{"field": "src_ip", "op": "eq", "value": "10.1.2.3"},
+                  {"field": "dst_port", "op": "eq", "value": 80}]},
+        {"items": [{"field": "src_ip", "op": "eq", "value": "10.1.2.3"},
+                   {"field": "dst_port", "op": "eq", "value": 80}]},
+    ):
+        assert sup.validate_match({"logic": "and", "rules": rules}) == []
+
+
+def test_task_scope_requires_identity_and_skips_event_match(sup: ModuleType) -> None:
+    body = _body()
+    body["scope"] = "task"
+    body["reuse_identity"] = "novelty|asset:10.1.2.3"
+    body["reason_code"] = "known_service"
+    body.pop("match", None)
+    assert sup.validate_item(body) == []
+    missing = dict(body)
+    missing["reuse_identity"] = ""
+    errors = sup.validate_item(missing)
+    assert any(e["field"] == "reuse_identity" for e in errors)
+
+
+def test_decide_task_matches_only_stable_identity(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    row = _Row(
+        scope="task",
+        reuse_identity="novelty|asset:10.1.2.3",
+        task_kind="novelty",
+        mode=sup.MODE_SUPPRESS,
+    )
+    monkeypatch.setattr(sup, "enabled", lambda: True)
+    monkeypatch.setattr(sup, "_active_rows", lambda: (row,))
+    hit = sup.decide_task(kind="novelty", reuse_identity="novelty|asset:10.1.2.3")
+    assert hit is not None and hit.id == "s1"
+    assert sup.decide_task(kind="novelty", reuse_identity="novelty|asset:10.1.2.4") is None
+    assert sup.decide_task(kind="structure", reuse_identity="novelty|asset:10.1.2.3") is None
+
+
+def test_task_scope_create_item_bypasses_event_trial(
+    sup: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _body()
+    body["scope"] = "task"
+    body["reuse_identity"] = "novelty|asset:10.1.2.3"
+    body["reason_code"] = "known_service"
+    body.pop("match", None)
+    monkeypatch.setattr(sup, "SessionLocal", _FakeSession)
+    out = sup.create_item(body, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
+    assert out["scope"] == "task"
+    assert out["reuse_identity"] == "novelty|asset:10.1.2.3"
+    assert out["mode"] == sup.MODE_SUPPRESS
+    assert out["dims"] == 0
+
+
+def test_queue_enqueue_checks_task_suppression_before_db(
+    sup: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """task scope 必须在入队前拦截；不能先写任务再靠 event match 补救。"""
+    from app.analysis import queue as q
+
+    monkeypatch.setattr(q, "suppression", sup)
+    monkeypatch.setattr(sup, "enabled", lambda: True)
+    monkeypatch.setattr(sup, "_active_rows", lambda: (_Row(scope="task", reuse_identity="novelty|asset:10.1.2.3", task_kind="novelty", mode="suppress"),))
+    monkeypatch.setattr(q.params, "enabled", lambda: True)
+    monkeypatch.setattr(q.params, "candidate_kinds", lambda: {"novelty"})
+    # 不应触达 SessionLocal：一旦被抑制，直接在入队前返回。
+    monkeypatch.setattr(q, "SessionLocal", lambda: (_ for _ in ()).throw(AssertionError("不应打开数据库")))
+    assert q.enqueue(
+        kind="novelty",
+        subject_kind="asset",
+        subject="10.1.2.3",
+        strength=0.8,
+        feature="first:asset",
+        hint={"reuse_identity": "novelty|asset:10.1.2.3"},
+    ) == "suppressed"
+
+
 def test_min_dims_floor_is_two(sup: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     """参数被调低到 1 也不给单维抑制（下限是硬编码的 max(2, …)）。"""
     monkeypatch.setattr(sup, "rc_get", lambda key, default=None: 1)
@@ -239,6 +317,9 @@ class _Row:
         self.id = kw.get("id", "s1")
         self.name = kw.get("name", "")
         self.match = kw.get("match", {})
+        self.scope = kw.get("scope", "event")
+        self.reuse_identity = kw.get("reuse_identity", "")
+        self.task_kind = kw.get("task_kind", "")
         self.mode = kw.get("mode", "")
         self.trial = kw.get("trial", {})
         self.reason_code = kw.get("reason_code", "")

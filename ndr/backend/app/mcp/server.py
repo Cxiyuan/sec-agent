@@ -18,10 +18,11 @@ import json
 import time
 from collections.abc import Collection
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -37,6 +38,21 @@ _current_token: ContextVar[str] = ContextVar("mcp_token_name", default="?")
 _current_token_id: ContextVar[str] = ContextVar("mcp_token_id", default="")
 
 _HTTP_UNAUTHORIZED = 401
+
+
+class SuppressionRule(BaseModel):
+    """事件级抑制的一条结构化条件；`rules` 必须是数组，不再是自由 JSON。"""
+
+    field: str = Field(description="匹配字段，见 submit_suppression 的 allowed_fields")
+    op: str = Field(default="eq", description="比较操作：eq / contains / regex / gt / lt 等")
+    value: Any = Field(description="比较值")
+
+
+class SuppressionMatch(BaseModel):
+    """事件级抑制条件树：只用于 hit / hit_cluster 任务。"""
+
+    logic: Literal["and", "or"] = "and"
+    rules: list[SuppressionRule] = Field(default_factory=list)
 
 # ---------- 工具上下文（按令牌会话复用） ----------
 #
@@ -521,7 +537,7 @@ def coverage_report(days: int = 0, kind: str = "", limit: int = 0, by: str = "")
 
 
 def submit_suppression(
-    match: dict[str, Any] | None = None,
+    match: SuppressionMatch | None = None,
     reason_code: str = "",
     evidence_refs: list[str] | None = None,
     confidence: float = 0.0,
@@ -530,13 +546,19 @@ def submit_suppression(
     ttl_days: int = 0,
     task_id: str = "",
 ) -> str:
-    """申请自动抑制（证据够硬就不再派工、不再生成该类事件）。"""
+    """申请自动抑制（证据够硬就不再派工、不再生成该类事件/任务）。
+
+    hit / hit_cluster 任务使用 typed `match`；novelty/observation/structure/
+    coverage/shift/retest 任务只传 task_id，服务端按任务 reuse_identity 建任务级抑制，
+    不需要也不接受自由 match。
+    """
+    match_payload = match.model_dump(exclude_none=True) if match is not None else None
     return _run(
         "submit_suppression",
         _with_ctx(
             "submit_suppression",
             _clean(
-                match=match,
+                match=match_payload,
                 reason_code=reason_code,
                 evidence_refs=evidence_refs,
                 confidence=confidence,

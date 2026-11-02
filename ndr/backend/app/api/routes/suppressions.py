@@ -41,7 +41,11 @@ class SuppressionIn(BaseModel):
     """新建/修改的字段。`match` 是条件树，字段清单见 `GET /api/suppressions/config`。"""
 
     name: str = Field(default="", max_length=128)
-    #: `{"logic": "and", "rules": [{"field": "signature_id", "op": "eq", "value": "9110004"}, ...]}`
+    #: event scope：`{"logic": "and", "rules": [...]}`；task scope：match 为空，
+    #: 由 reuse_identity + task_kind 匹配（仅智能体从任务提交时使用）。
+    scope: str = Field(default="event", max_length=8)
+    reuse_identity: str = Field(default="", max_length=200)
+    task_kind: str = Field(default="", max_length=16)
     match: dict[str, Any] = Field(default_factory=dict)
     reason_code: str = Field(default="", max_length=32)
     note: str = Field(default="", max_length=500)
@@ -219,6 +223,9 @@ def update_suppression(
         raise HTTPException(status_code=404, detail=existing["error"])
     merged: dict[str, Any] = {
         "name": existing.get("name") or "",
+        "scope": existing.get("scope") or "event",
+        "reuse_identity": existing.get("reuse_identity") or "",
+        "task_kind": existing.get("task_kind") or "",
         "match": existing.get("match") or {},
         "reason_code": existing.get("reason_code") or "",
         "evidence_refs": existing.get("evidence_refs") or [],

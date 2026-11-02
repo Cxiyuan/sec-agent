@@ -15,6 +15,7 @@ test('planToolGroups 只返回实际存在的工具，并保留按需分组', ()
     `${prefix}coverage_report`,
     `${prefix}file_content`,
     `${prefix}task_stats`,
+    `${prefix}list_suppressions`,
     `${prefix}claim_tasks`,
     `${prefix}new_capability`,
     'schedule_create',
@@ -28,6 +29,8 @@ test('planToolGroups 只返回实际存在的工具，并保留按需分组', ()
   assert.deepEqual(planned.groups.identity, [`${prefix}coverage_report`])
   assert.deepEqual(planned.groups.evidence, [`${prefix}file_content`])
   assert.deepEqual(planned.groups.task, [`${prefix}task_stats`])
+  assert.deepEqual(planned.groups.suppression, [`${prefix}list_suppressions`])
+  assert.ok(planned.core.includes(`${prefix}submit_suppression`))
   assert.deepEqual(planned.groups.history, ['session_search'])
   assert.deepEqual(planned.groups.schedule, ['schedule_create'])
   assert.deepEqual(planned.groups.deliverable, ['present'])
@@ -44,6 +47,6 @@ test('planToolGroups 对缺失工具不报错，也不产生未知名字', () =>
 
 test('工具组名覆盖加载工具的参数枚举', () => {
   assert.deepEqual(TOOL_GROUP_NAMES, [
-    'network', 'identity', 'evidence', 'task', 'history', 'schedule', 'deliverable', 'other', 'all',
+    'network', 'identity', 'evidence', 'task', 'suppression', 'history', 'schedule', 'deliverable', 'other', 'all',
   ])
 })

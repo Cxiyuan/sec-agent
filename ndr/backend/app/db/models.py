@@ -104,6 +104,13 @@ class AnalysisSuppression(Base):
     __table_args__ = (
         Index("ix_analysis_suppressions_enabled_expiry", "enabled", "expires_at"),
         Index("ix_analysis_suppressions_hits", "hits"),
+        Index(
+            "ix_analysis_suppressions_task_identity",
+            "scope",
+            "enabled",
+            "expires_at",
+            "reuse_identity",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -114,6 +121,14 @@ class AnalysisSuppression(Base):
     #: 就要改表 + 改求值；直接用 `evaluate_conditions` 则与排除过滤/规则同一种语法，
     #: 一份引擎、一套校验、一个求值顺序。
     match: Mapped[dict] = mapped_column(JSON, default=dict)
+    #: event = 规则命中事件级抑制；task = 任务级抑制（novelty/observation/structure/
+    #: coverage/shift/retest 等非规则命中任务）。任务级抑制直接按稳定 reuse_identity
+    #: 在入队前拦截，不要求模型生成事件条件树。
+    scope: Mapped[str] = mapped_column(String(8), default="event", index=True)
+    #: task scope 的稳定身份，来自任务 hint.reuse_identity（所有候选类型都下发）。
+    reuse_identity: Mapped[str] = mapped_column(String(200), default="", index=True)
+    #: task scope 的来源任务类型，用于审计/统计；event scope 为空。
+    task_kind: Mapped[str] = mapped_column(String(16), default="")
 
     #: 宽域保护降级用：影响面积过大时不静默，改为「仍生成事件、但不派工不推送」
     mode: Mapped[str] = mapped_column(String(16), default="suppress")  # suppress | record_only

@@ -29,6 +29,7 @@ from app.db.models import (
     HitEvent,
     Observation,
 )
+from app.detector import suppression
 from app.workers.log import get_logger
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
@@ -123,7 +124,7 @@ def enqueue(
     client: Any = None,
     force: bool = False,
 ) -> str:
-    """线索入队。返回状态串（`new` / `merged` / `superseded` / `dropped` / `skipped` / `error`）。
+    """线索入队。返回状态串（`new` / `merged` / `superseded` / `dropped` / `skipped` / `suppressed` / `error`）。
 
     满了怎么办：新线索强度**高于**队列里最低强度的 pending 就把那条挤出去（标 `expired`
     + `superseded` 计数），否则合并到同族或计数丢弃 —— 三条路都留痕。
@@ -138,6 +139,16 @@ def enqueue(
         strength = max(0.0, min(1.0, float(strength)))
     except (TypeError, ValueError):
         strength = 0.0  # 脏强度按最低处理（宁可排后面，也不要抛异常丢掉线索）
+    # 任务级抑制：novelty/observation/structure/coverage/shift/retest 没有规则命中的
+    # event 入口，必须在入队前按稳定 reuse_identity 拦截。force=True 是运维待办
+    # （例如“抑制收窄后重提”），绕过任务抑制，避免把修复入口自己挡掉。
+    identity = str((hint or {}).get("reuse_identity") or "").strip()
+    if identity and not force:
+        blocked = suppression.decide_task(kind=kind, reuse_identity=identity)
+        if blocked is not None:
+            suppression.note_hit(blocked.id)
+            bump(client, "task_suppressed")
+            return "suppressed"
     key = dedupe_key(kind, subject_kind, subject, feature)
     now = datetime.now(UTC)
     try:
@@ -293,7 +304,38 @@ def claim_tasks(
             if not taken:
                 db.rollback()
                 return {"tasks": [], "reason": "queue_empty"}
-            ids = [str(t.id) for t in taken]
+            # 任务级抑制在选取后、领取前再检查一次：抑制可能在任务入队之后才创建，
+            # 只靠 enqueue 时拦截不够；已存在的 pending 任务也必须在这里清掉，
+            # 否则它们会被领取并重新进入完整分析。
+            active: list[AnalysisTask] = []
+            suppressed_ids: list[str] = []
+            for task in taken:
+                identity = str((task.hint or {}).get("reuse_identity") or "").strip()
+                blocked = (
+                    suppression.decide_task(kind=str(task.kind or ""), reuse_identity=identity)
+                    if identity
+                    else None
+                )
+                if blocked is not None:
+                    suppression.note_hit(blocked.id)
+                    suppressed_ids.append(str(task.id))
+                else:
+                    active.append(task)
+            if suppressed_ids:
+                db.execute(
+                    update(AnalysisTask)
+                    .where(AnalysisTask.id.in_(suppressed_ids))
+                    .values(
+                        state="done",
+                        note="已命中任务级精准抑制，跳过分析",
+                        updated_at=now,
+                    )
+                )
+                bump(client, "task_suppressed", len(suppressed_ids))
+            if not active:
+                db.commit()
+                return {"tasks": [], "reason": "suppressed"}
+            ids = [str(t.id) for t in active]
             db.execute(
                 update(AnalysisTask)
                 .where(AnalysisTask.id.in_(ids))
@@ -309,12 +351,12 @@ def claim_tasks(
             # 回执在会话内拍平：commit 后 ORM 属性过期，会话内访问会自动刷新，
             # 但出了 with 块就是 detached 实例，一访问就崩（线上 claim_tasks
             # 每领必抛 "Instance not bound to a Session"、闭环整条挂掉，就是这里）。
-            out = [_task_dict(t, claimed=True) for t in taken]
+            out = [_task_dict(t, claimed=True) for t in active]
     except Exception as exc:  # noqa: BLE001
         log.warning("领取任务失败：%s", exc)
         return {"error": f"领取失败：{str(exc)[:160]}"}
 
-    bump(client, "claimed", len(taken))
+    bump(client, "claimed", len(active))
 
     return {"tasks": out, "watermark": now.isoformat(), "scope": _scope_payload()}
 

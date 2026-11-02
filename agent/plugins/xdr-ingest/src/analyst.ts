@@ -323,8 +323,9 @@ export class Analyst {
               '默认工具面只含常用取证工具。需要扩展能力时调用本工具：'
               + 'group=network（DNS/TLS/代理/观测/资产地图/基线）、'
               + 'identity（server_info/覆盖率）、evidence（文件内容）、'
-              + 'task（任务状态/统计/延迟/规则/轨迹）、history（历史会话检索）、'
-              + 'schedule（定时任务）、deliverable（交付物）、other（未分组的新工具）、'
+              + 'task（任务状态/统计/延迟/规则/轨迹）、suppression（已有抑制清单）、'
+              + 'history（历史会话检索）、schedule（定时任务）、deliverable（交付物）、'
+              + 'other（未分组的新工具）、'
               + 'all（全部）。激活后下一轮工具列表生效；不确定时用 all。'
               + '不要因为当前列表看不到某个 NDR 工具就放弃取证。',
             parameters: {

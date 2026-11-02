@@ -24,6 +24,8 @@ export const CORE_NDR_TOOLS: readonly string[] = [
   'raw_evidence',
   'get_event_detail',
   'complete_task',
+  // 抑制是分析闭环的一部分，必须默认可见；否则误报结论无处交回。
+  'submit_suppression',
 ]
 
 /** 分析会话永久禁用的工具：只能处理派给自己的那条任务。 */
@@ -72,6 +74,8 @@ export const NDR_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
     'list_rules',
     'get_trace',
   ],
+  // 抑制清单结果可能很大，放按需组；提交工具本身在 core。
+  suppression: ['list_suppressions'],
 }
 
 export interface PlannedToolGroups {
@@ -128,6 +132,7 @@ export const TOOL_GROUP_NAMES: readonly string[] = [
   'identity',
   'evidence',
   'task',
+  'suppression',
   'history',
   'schedule',
   'deliverable',

@@ -32,6 +32,7 @@ from app.mcpapi import (
     analysis_status_values,
     analysis_subjects,
     analysis_task_state,
+    analysis_task_suppression_context,
     asset_context_by_ips,
     asset_records,
     build_networks,
@@ -65,6 +66,10 @@ from app.mcpapi import (
 
 #: 抑制允许的匹配字段（唯一来源是 `detector.suppression.ALLOWED_FIELDS`，不另抄一份）
 ALLOWED_SUPPRESSION_FIELDS = suppression.ALLOWED_FIELDS
+
+#: 只有规则命中类任务走 event scope；其余任务没有事件条件树可匹配，
+#: 必须走 task scope（按任务 hint.reuse_identity 精确拦截）。
+EVENT_SCOPE_TASK_KINDS = frozenset({"hit", "hit_cluster"})
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
 #: 免得按旧语法解析的静态检查工具报「unknown import symbol」。
@@ -1100,11 +1105,62 @@ def _apply_suppression(
 ) -> dict[str, Any]:
     """提交抑制的统一实现（`complete_task` 内联与独立工具共用一份）。
 
+    先按来源任务类型确定作用域（根治点）：
+    - hit / hit_cluster：事件级，必须带条件树 match；
+    - novelty / observation / structure / coverage / shift / retest：任务级，
+      服务端从任务 hint.reuse_identity 派生，不需要也不接受模型编造 match。
+
     三道额外核验在这里做（`suppression.validate_item` 只管字段与维度）：
     - 引用必须**本会话真取回过**（`valid_refs`）—— 编造引用换不到一条抑制；
     - 证据要来自**至少 2 种取数工具**（`tool_usage`）—— 只看一段正文下结论不算数；
     - 置信度、理由码、新现象保护期在 `create_item` 里统一判。
     """
+    task_id = str(body.get("source_task_id") or body.get("task_id") or "").strip()
+    if task_id != "":
+        context = analysis_task_suppression_context(task_id)
+        if context is None:
+            return {"error": f"任务不存在：{task_id}，不能从任务提交抑制"}
+        if "error" in context:
+            return {"error": context["error"]}
+        task_kind = str(context.get("kind") or "")
+        body["task_kind"] = task_kind
+        if task_kind in EVENT_SCOPE_TASK_KINDS:
+            body["scope"] = "event"
+            if not isinstance(body.get("match"), dict) or not body.get("match"):
+                return {
+                    "error": "hit/hit_cluster 任务提交抑制必须带 match 条件树",
+                    "field": "match",
+                    "allowed_fields": dict(ALLOWED_SUPPRESSION_FIELDS),
+                    "example": {
+                        "match": {
+                            "logic": "and",
+                            "rules": [
+                                {"field": "src_ip", "op": "eq", "value": "10.1.2.3"},
+                                {"field": "dst_port", "op": "eq", "value": 80},
+                            ],
+                        }
+                    },
+                }
+        else:
+            identity = str(context.get("reuse_identity") or "").strip()
+            if identity == "":
+                return {
+                    "error": "该任务没有稳定的 reuse_identity，无法建立任务级抑制；请先把这条结论作为 findings 记录，等待任务身份补齐",
+                    "field": "reuse_identity",
+                    "task_kind": task_kind,
+                }
+            body["scope"] = "task"
+            body["reuse_identity"] = identity
+            # task scope 不使用事件条件树；明确清掉，避免把模型生成的错误结构入库。
+            body.pop("match", None)
+    else:
+        body["scope"] = "event"
+        if not isinstance(body.get("match"), dict) or not body.get("match"):
+            return {
+                "error": "没有 task_id 时提交抑制必须带 match 条件树（事件级）",
+                "field": "match",
+                "allowed_fields": dict(ALLOWED_SUPPRESSION_FIELDS),
+            }
     forged = [r for r in refs if valid_refs and r not in valid_refs]
     if forged:
         return {
@@ -1345,21 +1401,17 @@ def _submit_suppression(args: dict[str, Any]) -> dict[str, Any]:
     再叠爆炸半径试算：影响面过大自动降级为 `record_only`（事件仍生成、只不派工）。
     """
     match = args.get("match")
-    if not isinstance(match, dict) or not match:
-        return {
-            "error": "要 match（条件树：{logic, rules:[{field, op, value}]}）",
-            "allowed_fields": dict(ALLOWED_SUPPRESSION_FIELDS),
-        }
     refs = [str(x) for x in (args.get("evidence_refs") or [])][:20]
+    task_id = str(args.get("task_id") or "").strip()
     body = {
         "name": str(args.get("name") or f"agent-{int(time.time())}"),
-        "match": match,
+        "match": match if isinstance(match, dict) else {},
         "reason_code": str(args.get("reason_code") or ""),
         "note": str(args.get("note") or ""),
         "evidence_refs": refs,
         "confidence": float(args.get("confidence") or 0),
         "ttl_days": args.get("ttl_days"),
-        "source_task_id": str(args.get("task_id") or ""),
+        "source_task_id": task_id,
     }
     return _apply_suppression(
         body,
@@ -1771,9 +1823,10 @@ TOOLS: dict[str, dict[str, Any]] = {
             "只该在确认是误报时提交 —— 抑制会挡住后续同类事件"
         ),
         "params": {
-            "match": "条件树：{logic: 'and', rules: [{field, op, value}]}；字段见 allowed_fields"
-                     "（src_ip/dst_ip/dst_port/segment/protocol/rule/signature_id/http.uri/"
-                     "http.hostname/user_agent/ja3/fuid），至少 2 个不同字段",
+            "match": "仅 hit/hit_cluster 任务使用：条件树 {logic: 'and', rules: [{field, op, value}]}；"
+                     "rules 必须是数组（不能写成 {item:[...]}），字段见 allowed_fields，至少 2 个不同字段。"
+                     "novelty/observation/structure/coverage/shift/retest 不要传 match，只传 task_id，"
+                     "服务端按任务 reuse_identity 建任务级抑制",
             "reason_code": "理由码：known_service / internal_scanner / vendor_heartbeat / "
                            "business_normal / duplicate_of_task / repeated_after_analysis",
             "evidence_refs": "证据引用数组（必须是本会话真取回过的 es:/ev: 引用，至少 3 条）",
@@ -1816,8 +1869,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "findings": "对象：结构化发现（任意键值）",
             "evidence_refs": "支撑结论的证据引用（必须是本会话真取回过的 es:/ev: 引用）",
             "next_tasks": "数组：还要追加哪些活，每项 {kind, subject_kind, subject, feature, strength, hint}",
-            "suppression": "对象：{match, reason_code, note, ttl_days} —— match 是条件树，"
-            "reason_code 只认白名单码，只在 false_positive 时允许",
+            "suppression": "对象：{reason_code, note, ttl_days}；hit/hit_cluster 另带 typed match，"
+            "其他任务类型只带 task_id（自动 task scope）。reason_code 只认白名单码，只在 false_positive 时允许",
             "anchors": "数组：这条结论影响哪些资产，每项 {kind, value}；"
             "kind 只认 ip / host / domain / endpoint / service（最多 50 个）。"
             "一条「这台是反向代理」要挂到它后面的后端主机上，否则下次分析还得从头查",

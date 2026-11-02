@@ -40,10 +40,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.db.base import SessionLocal
-from app.db.models import AnalysisSuppression, HitEvent
+from app.db.models import AnalysisSuppression, AnalysisTask, HitEvent
 from app.rules.engine import evaluate_conditions
 from app.runtime_config import get as rc_get, invalidate, overrides
 from app.schemas import UnifiedLog
@@ -84,8 +84,14 @@ REASON_CODES: dict[str, str] = {
     "manual": "人工创建（界面）",
 }
 
-MODE_SUPPRESS = "suppress"  # 连事件都不生成
+MODE_SUPPRESS = "suppress"  # 连事件都不生成 / 任务直接不入队
 MODE_RECORD_ONLY = "record_only"  # 事件仍生成，只是不派工不推送
+
+#: 抑制作用域：
+#: - event：规则命中事件级，在 detector.runner 的规则命中处求值；
+#: - task：任务级，在 analysis.queue.enqueue 入队前按稳定 reuse_identity 求值。
+SCOPE_EVENT = "event"
+SCOPE_TASK = "task"
 
 ORIGIN_AGENT = "agent"
 ORIGIN_UI = "ui"
@@ -399,6 +405,30 @@ def field_values(entry: UnifiedLog, extra: dict[str, Any] | None = None) -> dict
 # ---------- 条件树校验 ----------
 
 
+def normalize_match(match: Any) -> Any:
+    """把常见的模型/Pydantic 包装归一成规则引擎认识的条件树。
+
+    兼容 `rules: {item:[...]}`、`rules: {items:[...]}`、单条 rule 对象；
+    这是旧调用/旧条目的兼容层，新的 event 契约仍由 typed schema 校验。
+    """
+    if not isinstance(match, dict):
+        return match
+    out = dict(match)
+    rules = out.get("rules")
+    if isinstance(rules, dict):
+        if "item" in rules:
+            rules = rules.get("item")
+        elif "items" in rules:
+            rules = rules.get("items")
+        elif "field" in rules:
+            rules = [rules]
+    if isinstance(rules, list):
+        out["rules"] = [normalize_match(item) for item in rules]
+    elif isinstance(rules, dict):
+        out["rules"] = normalize_match(rules)
+    return out
+
+
 def _walk_rules(node: Any, out: list[dict[str, Any]]) -> None:
     if isinstance(node, list):
         for item in node:
@@ -407,7 +437,18 @@ def _walk_rules(node: Any, out: list[dict[str, Any]]) -> None:
     if not isinstance(node, dict):
         return
     if "rules" in node:
-        _walk_rules(node.get("rules"), out)
+        rules = node.get("rules")
+        if isinstance(rules, dict):
+            if "item" in rules:
+                rules = rules.get("item")
+            elif "items" in rules:
+                rules = rules.get("items")
+            elif "field" in rules:
+                rules = [rules]
+        _walk_rules(rules, out)
+        return
+    if "field" not in node and ("item" in node or "items" in node):
+        _walk_rules(node.get("item") if "item" in node else node.get("items"), out)
         return
     out.append(node)
 
@@ -436,6 +477,7 @@ def _is_broad(leaf: dict[str, Any]) -> bool:
 
 def validate_match(match: Any) -> list[dict[str, str]]:
     """校验条件树（结构化、字段白名单、维度数、宽域条件）。"""
+    match = normalize_match(match)
     errors: list[dict[str, str]] = []
     if not isinstance(match, dict) or not match.get("rules"):
         return [
@@ -516,6 +558,7 @@ def _src_ips_of(match: dict[str, Any]) -> list[str]:
     为什么不能只看第一个：试算要的是"这条抑制真实覆盖多大面"。
     只按第一个源试算，等于让"加一个 src_ip"就能绕过网段护栏。
     """
+    match = normalize_match(match)
     values: list[str] = []
 
     def walk(node: Any) -> None:
@@ -845,7 +888,10 @@ def decide(entry: UnifiedLog, *, rule: str = "") -> Matched | None:
     extra = {"hit_rule": rule} if rule else None
     values = field_values(entry, extra)
     for row in rows:
-        match = row.match or {}
+        # task scope 由 queue.enqueue 按 reuse_identity 判定，不参与事件条件树求值。
+        if str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT) != SCOPE_EVENT:
+            continue
+        match = normalize_match(row.match or {})
         if not match:
             continue
         if not evaluate_conditions(match, entry, extra=values):
@@ -854,6 +900,28 @@ def decide(entry: UnifiedLog, *, rule: str = "") -> Matched | None:
         if mode == MODE_SUPPRESS and not auto_apply():
             mode = MODE_RECORD_ONLY
         return Matched(id=str(row.id), name=str(row.name or ""), mode=mode)
+    return None
+
+
+def decide_task(*, kind: str, reuse_identity: str) -> Matched | None:
+    """任务级抑制：在 queue.enqueue 入队前按稳定 reuse_identity 精确匹配。
+
+    这是 novelty / observation / structure / coverage / shift / retest 的根治路径：
+    这些任务没有规则命中事件，event-level 条件树永远不可能匹配；任务级抑制直接
+    拦住同一个稳定身份，不再让模型为它们编造 event match。
+    """
+    identity = str(reuse_identity or "").strip()
+    if not enabled() or not identity:
+        return None
+    for row in _active_rows():
+        if str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT) != SCOPE_TASK:
+            continue
+        if str(getattr(row, "reuse_identity", "") or "") != identity:
+            continue
+        task_kind = str(getattr(row, "task_kind", "") or "")
+        if task_kind and task_kind != str(kind or ""):
+            continue
+        return Matched(id=str(row.id), name=str(row.name or ""), mode=MODE_SUPPRESS)
     return None
 
 
@@ -979,6 +1047,9 @@ def _item(row: AnalysisSuppression) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "name": row.name,
+        "scope": str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT),
+        "reuse_identity": str(getattr(row, "reuse_identity", "") or ""),
+        "task_kind": str(getattr(row, "task_kind", "") or ""),
         "match": dict(row.match or {}),
         "fields": match_fields(row.match or {}),
         "dims": len(match_fields(row.match or {})),
@@ -1028,7 +1099,22 @@ def validate_item(body: dict[str, Any], *, name: str = "") -> list[dict[str, str
     label = str(body.get("name") or name or "").strip()
     if not label or len(label) > 128:
         errors.append({"field": "name", "msg": "名称必填，且不超过 128 字符"})
-    errors.extend(validate_match(body.get("match")))
+    scope = str(body.get("scope") or SCOPE_EVENT).strip()
+    if scope not in (SCOPE_EVENT, SCOPE_TASK):
+        errors.append({"field": "scope", "msg": "scope 只能是 event 或 task"})
+    elif scope == SCOPE_TASK:
+        identity = str(body.get("reuse_identity") or "").strip()
+        if not identity:
+            errors.append(
+                {
+                    "field": "reuse_identity",
+                    "msg": "task scope 必须带 reuse_identity（由任务 hint 自动注入，不要手填）",
+                }
+            )
+        elif len(identity) > 200:
+            errors.append({"field": "reuse_identity", "msg": "reuse_identity 不能超过 200 字符"})
+    else:
+        errors.extend(validate_match(body.get("match")))
     reason = str(body.get("reason_code") or "").strip()
     if reason not in REASON_CODES:
         errors.append({"field": "reason_code", "msg": f"理由码只认：{'、'.join(REASON_CODES)}"})
@@ -1056,6 +1142,28 @@ def validate_item(body: dict[str, Any], *, name: str = "") -> list[dict[str, str
     return errors
 
 
+def _retire_pending_task_duplicates(reuse_identity: str) -> None:
+    """任务级抑制建立后，把已排队的同身份任务直接收口，避免先建抑制、旧任务仍被领走。"""
+    identity = str(reuse_identity or "").strip()
+    if identity == "":
+        return
+    try:
+        with SessionLocal() as db:
+            result = db.execute(
+                update(AnalysisTask)
+                .where(
+                    AnalysisTask.state.in_(("pending", "deferred")),
+                    AnalysisTask.hint["reuse_identity"].astext == identity,
+                )
+                .values(state="done", note="已命中任务级精准抑制，跳过分析")
+            )
+            db.commit()
+            if int(result.rowcount or 0) > 0:
+                log.info("任务级抑制收口 %d 条已排队任务：%s", int(result.rowcount), identity[:80])
+    except Exception as exc:  # noqa: BLE001 — 收口失败不能阻止抑制本身
+        log.warning("任务级抑制收口失败（%s）：%s", identity[:80], exc)
+
+
 def create_item(
     body: dict[str, Any],
     *,
@@ -1064,12 +1172,21 @@ def create_item(
     tool_hits: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """新建抑制条目：校验（含 G1~G6）→ 试算 → 定 mode → 落库。"""
+    scope = str(body.get("scope") or SCOPE_EVENT).strip()
+    if scope not in (SCOPE_EVENT, SCOPE_TASK):
+        raise ValueError("scope 只能是 event 或 task")
     raw_match = body.get("match")
-    match: dict[str, Any] = raw_match if isinstance(raw_match, dict) else {}
+    match: dict[str, Any] = normalize_match(raw_match) if isinstance(raw_match, dict) else {}
     refs = [str(x)[:200] for x in (body.get("evidence_refs") or [])][:20]
     tools_used = evidence_tools_of(refs, tool_hits)
     confidence = float(body.get("confidence") or 0.0)
     is_agent = origin != ORIGIN_UI
+    is_task = scope == SCOPE_TASK
+    reuse_identity = str(body.get("reuse_identity") or "").strip()[:200]
+    task_kind = str(body.get("task_kind") or "").strip()[:16]
+
+    if is_task and not reuse_identity:
+        raise ValueError("task scope 必须带 reuse_identity（由任务 hint 自动注入）")
 
     if is_agent:
         # G4/G5 只对智能体自动提交生效；界面人工创建由人负责（但仍要 2 维 + 白名单）
@@ -1079,14 +1196,29 @@ def create_item(
             )
         if confidence < min_confidence():
             raise ValueError(f"置信度 {confidence:.2f} 低于门槛 {min_confidence():.2f}，不自动生效")
-        age = phenomenon_age_hours(match)
-        if age is not None and age < newcomer_hours():
-            raise ValueError(
-                f"该现象首见仅 {age:.1f} 小时，未满保护期 {newcomer_hours()} 小时，先积累观测"
-            )
-    trial = estimate_trial(match)
-    mode = choose_mode(trial)
-    downgrade = mode_downgrade(trial)
+        if not is_task:
+            age = phenomenon_age_hours(match)
+            if age is not None and age < newcomer_hours():
+                raise ValueError(
+                    f"该现象首见仅 {age:.1f} 小时，未满保护期 {newcomer_hours()} 小时，先积累观测"
+                )
+    if is_task:
+        trial = {
+            "scope": SCOPE_TASK,
+            "reuse_identity": reuse_identity,
+            "task_kind": task_kind,
+            "events": 0,
+            "scanned_rows": 0,
+            "matched_rows": 0,
+            "srcs": 0,
+            "segments": 0,
+        }
+        mode = MODE_SUPPRESS
+        downgrade = None
+    else:
+        trial = estimate_trial(match)
+        mode = choose_mode(trial)
+        downgrade = mode_downgrade(trial)
     # **拦得住才叫抑制**：条件树在近 N 天的命中事件上一条都匹配不到，说明
     # 字段写错了（常见：拿良性流量的 UA/URI 去写，而噪声那条规则的命中事件
     # 根本没有这些字段 —— 实测「TLS 握手失败风暴」的命中事件里没有 UA）。
@@ -1095,6 +1227,7 @@ def create_item(
     # 只卡智能体自动提交：人工在界面建条目时自己负责（人知道自己在拦什么）。
     if (
         is_agent
+        and not is_task
         and int(trial.get("scanned_rows") or 0) > 0
         and int(trial.get("matched_rows") or 0) == 0
         and not _src_ips_of(match)
@@ -1119,6 +1252,9 @@ def create_item(
         ).first() if name else None
         if existing is not None:
             existing.match = match
+            existing.scope = scope
+            existing.reuse_identity = reuse_identity
+            existing.task_kind = task_kind
             existing.mode = mode
             existing.trial = trial
             existing.reason_code = str(body.get("reason_code") or "").strip()[:32]
@@ -1140,6 +1276,8 @@ def create_item(
             out["replaced"] = True
             out["downgrade"] = downgrade
             invalidate_cache()
+            if is_task:
+                _retire_pending_task_duplicates(reuse_identity)
             log.info(
                 "更新精准抑制（同名覆盖）：%s（%s 维 mode=%s 试算 %s 条/%s 源/%s 网段，到期 %s）",
                 out["name"],
@@ -1174,6 +1312,9 @@ def create_item(
         row = AnalysisSuppression(
             name=str(body.get("name") or "").strip()[:128],
             match=match,
+            scope=scope,
+            reuse_identity=reuse_identity,
+            task_kind=task_kind,
             mode=mode,
             trial=trial,
             reason_code=str(body.get("reason_code") or "").strip()[:32],
@@ -1194,6 +1335,8 @@ def create_item(
         out["replaced"] = False
         out["downgrade"] = downgrade
     invalidate_cache()
+    if is_task:
+        _retire_pending_task_duplicates(reuse_identity)
     log.info(
         "新增精准抑制：%s（%s 维 mode=%s 试算 %s 条/%s 源/%s 网段，到期 %s）",
         out["name"],
@@ -1352,8 +1495,14 @@ def update_item(item_id: str, body: dict[str, Any]) -> dict[str, Any]:
         row = db.get(AnalysisSuppression, str(item_id or "").strip())
         if row is None:
             return {"error": "抑制条目不存在"}
+        scope = str(body.get("scope", getattr(row, "scope", SCOPE_EVENT)) or SCOPE_EVENT)
         merged = {
             "name": body.get("name", row.name),
+            "scope": scope,
+            "reuse_identity": body.get(
+                "reuse_identity", getattr(row, "reuse_identity", "")
+            ),
+            "task_kind": body.get("task_kind", getattr(row, "task_kind", "")),
             "match": body.get("match", row.match),
             "reason_code": body.get("reason_code", row.reason_code),
             "evidence_refs": body.get("evidence_refs", row.evidence_refs),
@@ -1363,12 +1512,29 @@ def update_item(item_id: str, body: dict[str, Any]) -> dict[str, Any]:
         errors = validate_item(merged, name=str(row.name))
         if errors:
             return {"field_errors": errors}
+        row.scope = scope
+        row.reuse_identity = str(merged["reuse_identity"] or "").strip()[:200]
+        row.task_kind = str(merged["task_kind"] or "").strip()[:16]
         row.match = merged["match"] if isinstance(merged["match"], dict) else row.match
         row.reason_code = str(merged["reason_code"] or "").strip()[:32]
         row.evidence_refs = [str(x)[:200] for x in (merged["evidence_refs"] or [])][:20]
-        trial = estimate_trial(row.match or {})
-        row.trial = trial
-        row.mode = choose_mode(trial)
+        if scope == SCOPE_TASK:
+            trial = {
+                "scope": SCOPE_TASK,
+                "reuse_identity": row.reuse_identity,
+                "task_kind": row.task_kind,
+                "events": 0,
+                "scanned_rows": 0,
+                "matched_rows": 0,
+                "srcs": 0,
+                "segments": 0,
+            }
+            row.trial = trial
+            row.mode = MODE_SUPPRESS
+        else:
+            trial = estimate_trial(row.match or {})
+            row.trial = trial
+            row.mode = choose_mode(trial)
         ttl = merged.get("ttl_days")
         if ttl not in (None, ""):
             row.expires_at = datetime.now(UTC) + timedelta(days=max(1, min(30, int(ttl))))
@@ -1376,6 +1542,8 @@ def update_item(item_id: str, body: dict[str, Any]) -> dict[str, Any]:
         db.refresh(row)
         out = _item(row)
     invalidate_cache()
+    if scope == SCOPE_TASK:
+        _retire_pending_task_duplicates(row.reuse_identity)
     return out
 
 
