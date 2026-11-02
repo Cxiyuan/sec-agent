@@ -106,12 +106,7 @@ export const Config = z.object({
   toolResultMaxChars: z.number().step(1).min(1_000).default(12_000).volatile(),
   toolResultHeadChars: z.number().step(1).min(0).default(9_000).volatile(),
   toolResultTailChars: z.number().step(1).min(0).default(2_000).volatile(),
-  retryPolicy: RetryPolicySchema.default({
-    mode: 'normal',
-    maxRetries: 2,
-    retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
-    backoff: { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 },
-  }).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
 
 /** 一次请求读到的一份配置快照（已去掉 volatile 引用）。 */
@@ -144,6 +139,14 @@ function resolveToolResultLimits(
     Math.max(0, maxChars - headChars - 200),
   )
   return { toolResultMaxChars: maxChars, toolResultHeadChars: headChars, toolResultTailChars: tailChars }
+}
+
+/** 默认重试比 dsh 通用 5 次更保守：每次重试都会重发整段上下文。 */
+export const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
+  mode: 'normal',
+  maxRetries: 2,
+  retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
+  backoff: { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 },
 }
 
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
@@ -195,6 +198,6 @@ export function resolveConfig(config: Config): ResolvedLlmAggConfig {
     streamIdleTimeoutMs: config.streamIdleTimeoutMs.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
     ...resolveToolResultLimits(config),
-    retryPolicy: resolveRetryPolicy(config.retryPolicy.get(), 'xdr-llm-agg: retryPolicy'),
+    retryPolicy: resolveRetryPolicy(config.retryPolicy.get() ?? DEFAULT_RETRY_POLICY, 'xdr-llm-agg: retryPolicy'),
   })
 }
