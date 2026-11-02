@@ -180,9 +180,9 @@ def test_task_scope_create_item_bypasses_event_trial(
 
 def test_invalidate_cache_marks_cache_stale(sup: ModuleType) -> None:
     """失效后必须重新读库，不能把“空表”当成刚缓存的有效结果。"""
-    sup._cache = (123.0, (object(),))
+    sup.__dict__["_cache"] = (123.0, (object(),))
     sup.invalidate_cache()
-    assert sup._cache == (0.0, ())
+    assert sup.__dict__["_cache"] == (0.0, ())
 
 
 def test_queue_enqueue_checks_task_suppression_before_db(
