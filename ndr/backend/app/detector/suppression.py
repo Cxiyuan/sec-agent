@@ -867,12 +867,17 @@ def _reset_cache(
     rows: tuple[AnalysisSuppression, ...] | None = None, at: float | None = None
 ) -> None:
     global _cache
-    _cache = (time.monotonic() if at is None else at, () if rows is None else rows)
+    if rows is None:
+        # 失效缓存要把时间戳归零：只把 rows 清空、时间戳仍算“刚缓存过”，
+        # 会让 `_active_rows()` 在 TTL 内直接返回空表，抑制反而晚生效。
+        _cache = (0.0, ())
+        return
+    _cache = (time.monotonic() if at is None else at, rows)
 
 
 def invalidate_cache() -> None:
     """新增/撤销/改条件后立刻生效（不等缓存 TTL）。"""
-    _reset_cache(())
+    _reset_cache(None)
 
 
 def decide(entry: UnifiedLog, *, rule: str = "") -> Matched | None:
@@ -1055,9 +1060,13 @@ def _item(row: AnalysisSuppression) -> dict[str, Any]:
         "dims": len(match_fields(row.match or {})),
         "mode": row.mode or MODE_SUPPRESS,
         "mode_label": (
-            "完全不生成事件"
-            if (row.mode or MODE_SUPPRESS) == MODE_SUPPRESS
-            else "只不派工（事件保留）"
+            "不再分析同类任务"
+            if str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT) == SCOPE_TASK
+            else (
+                "完全不生成事件"
+                if (row.mode or MODE_SUPPRESS) == MODE_SUPPRESS
+                else "只不派工（事件保留）"
+            )
         ),
         "trial": trial,
         "reason_code": row.reason_code,

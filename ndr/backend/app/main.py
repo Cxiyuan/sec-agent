@@ -62,6 +62,19 @@ _MIGRATIONS: tuple[str, ...] = (
         "AND s.hits = 0 "
         "AND COALESCE(t.hint->>'reuse_identity','') <> ''"
     ),
+    # 更老的任务没有 hint.reuse_identity，无法转成 task scope；这些条目事件级 0 命中，
+    # 继续启用只会在未来误匹配别的命中事件。停用并留审计原因，等重新分析后再提。
+    (
+        "UPDATE analysis_suppressions s "
+        "SET enabled=false, revoked_at=now(), "
+        "revoke_reason='历史任务级抑制缺少稳定 reuse_identity，升级后停用，等重新分析', "
+        "updated_at=now() "
+        "FROM analysis_tasks t "
+        "WHERE s.scope='event' AND s.origin='agent' AND s.enabled "
+        "AND s.source_task_id<>'' AND t.id::text=s.source_task_id "
+        "AND t.kind NOT IN ('hit','hit_cluster') AND s.hits=0 "
+        "AND COALESCE(t.hint->>'reuse_identity','')=''"
+    ),
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(24) DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS ix_hit_events_cluster_id ON hit_events (cluster_id)",
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS error_count INTEGER NOT NULL DEFAULT 0",
