@@ -12,7 +12,7 @@
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
-import type { RetryPolicyConfig, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+import type { NormalRetryPolicyConfig, RetryPolicyConfig, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
 /** 本插件拥有的唯一 provider 路由。 */
@@ -142,7 +142,7 @@ function resolveToolResultLimits(
 }
 
 /** 默认重试比 dsh 通用 5 次更保守：每次重试都会重发整段上下文。 */
-const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
+const DEFAULT_RETRY_POLICY: NormalRetryPolicyConfig = {
   mode: 'normal',
   maxRetries: 2,
   retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
@@ -155,9 +155,25 @@ const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
  */
 export function resolveRetryPolicyConfig(config: Config): ResolvedRetryPolicy {
   const raw = config.retryPolicy.get()
-  const policy = raw === undefined
-    ? DEFAULT_RETRY_POLICY
+  const policy: RetryPolicyConfig = raw === undefined
+    ? {
+        ...DEFAULT_RETRY_POLICY,
+        backoff: { ...(DEFAULT_RETRY_POLICY.backoff ?? {}) },
+      } as RetryPolicyConfig
     : JSON.parse(JSON.stringify(raw)) as RetryPolicyConfig
+  if (policy.mode === 'normal' && (policy.maxRetries ?? 2) > 2) {
+    // 配置层可能把 schema 的通用默认值（5 次）materialize 出来；本适配器
+    // 明确把重试上限压到 2 次，避免多步会话反复重发整段上下文。
+    policy.maxRetries = 2
+  }
+  const backoff = policy.backoff
+  if (backoff
+    && backoff.initialDelayMs === 500
+    && backoff.maxDelayMs === 10_000
+    && backoff.jitterRatio === 0.1) {
+    // 未显式配置退避时，把 dsh 通用默认换成更宽的 1–8 秒。
+    policy.backoff = { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 }
+  }
   return resolveRetryPolicy(policy, 'xdr-llm-agg: retryPolicy')
 }
 
