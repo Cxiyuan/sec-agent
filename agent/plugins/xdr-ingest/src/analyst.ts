@@ -314,24 +314,12 @@ export class Analyst {
           )
         }
 
+        let loaderReady = false
         try {
-          // 核心工具一个都没匹配上时不要隐藏任何 MCP 工具：宁可多花
-          // schema，也不能让会话在首轮没有可用取证能力。
-          if (planned.core.length > 0) {
-            for (const [group, tools] of Object.entries(planned.groups)) {
-              const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
-              if (dispose !== undefined) groupDisposers.set(group, dispose)
-            }
+          if (typeof agentCtx.tools?.register !== 'function') {
+            throw new Error('agent tools.register 不可用')
           }
-        } catch (error) {
-          console.warn(
-            '[xdr-ingest] 无法按组隐藏工具，罕见能力保持可见：',
-            error instanceof Error ? error.message : String(error),
-          )
-        }
-
-        try {
-          agentCtx.tools?.register?.(defineTool({
+          agentCtx.tools.register(defineTool({
             name: 'enable_analysis_tools',
             description:
               '默认工具面只含常用取证工具。需要扩展能力时调用本工具：'
@@ -370,11 +358,27 @@ export class Analyst {
               return `已激活 ${group} 组：${activated.join(', ')}。下一轮请求会带上这些工具，继续取证即可。`
             },
           }))
+          loaderReady = true
         } catch (error) {
           console.warn(
             '[xdr-ingest] 无法注册 enable_analysis_tools，工具面不会按需扩展：',
             error instanceof Error ? error.message : String(error),
           )
+        }
+        // 只有加载工具确实注册成功才隐藏罕见工具组；否则宁可多带 schema，
+        // 也不能让模型看得见“按需激活”的说明却没有任何恢复入口。
+        if (loaderReady && planned.core.length > 0) {
+          try {
+            for (const [group, tools] of Object.entries(planned.groups)) {
+              const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
+              if (dispose !== undefined) groupDisposers.set(group, dispose)
+            }
+          } catch (error) {
+            console.warn(
+              '[xdr-ingest] 无法按组隐藏工具，罕见能力保持可见：',
+              error instanceof Error ? error.message : String(error),
+            )
+          }
         }
         // dsh 每轮都会在任务消息之后再注入一条 runtime-context（工作目录/Web GUI）。
         // 模型常把最后这条当成“用户请求”，回一句“没有任务”就不干活。把任务写进
