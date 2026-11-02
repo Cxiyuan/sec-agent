@@ -1157,11 +1157,15 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     egressDays: number, taskSeenDays: number,
   }): Promise<Record<string, number>> {
     if (!await this.usable()) return {}
-    const job = async (sql: string, days: number): Promise<number> => {
+    const job = async (sql: string, days: number, optional = false): Promise<number> => {
       try {
         const { rowCount } = await this.pool.query(sql, [Math.max(1, Math.floor(days))])
         return rowCount ?? 0
       } catch (error) {
+        // NDR baseline/egress tables are optional in current deployments and
+        // are created by the NDR side when that feature is enabled. Their
+        // absence must not produce a maintenance error every tick.
+        if (optional && (error as { code?: string }).code === '42P01') return 0
         console.error(`${LOG_PREFIX} maintenance failed:`, this.message(error))
         return 0
       }
@@ -1178,10 +1182,12 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       observations: await job(
         "DELETE FROM xdr_ingest_observation WHERE last_seen < now() - ($1 || ' days')::interval",
         policy.observationsDays,
+        true,
       ),
       egress: await job(
         "DELETE FROM xdr_ingest_egress_baseline WHERE last_seen < now() - ($1 || ' days')::interval",
         policy.egressDays,
+        true,
       ),
       task_seen: await job(
         "DELETE FROM xdr_ingest_task_seen WHERE updated_at < now() - ($1 || ' days')::interval",
