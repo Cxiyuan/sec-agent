@@ -15,9 +15,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { assertUsableApiKey, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { assertUsableApiKey, LlmError } from '@deepseek-ai/dsh-llm'
 import { LlmAggAdapter } from './adapter.ts'
-import { Config, DEFAULT_MODELS, DEFAULT_RETRY_POLICY, PROVIDER, resolveConfig, SETTINGS_NS } from './config.ts'
+import { Config, DEFAULT_MODELS, PROVIDER, resolveConfig, resolveRetryPolicyConfig, SETTINGS_NS } from './config.ts'
 import type { ResolvedLlmAggConfig } from './config.ts'
 
 export { Config, DEFAULT_BASE_URL, DEFAULT_MODELS, PROVIDER, resolveConfig, SETTINGS_NS } from './config.ts'
@@ -95,10 +95,7 @@ function initialConfig(config: Config): ResolvedLlmAggConfig {
       toolResultMaxChars: Math.max(1_000, config.toolResultMaxChars.get()),
       toolResultHeadChars: config.toolResultHeadChars.get(),
       toolResultTailChars: config.toolResultTailChars.get(),
-      retryPolicy: resolveRetryPolicy(
-        config.retryPolicy.get() ?? DEFAULT_RETRY_POLICY,
-        'xdr-llm-agg: retryPolicy',
-      ),
+      retryPolicy: resolveRetryPolicyConfig(config),
     }
   }
 }

@@ -142,11 +142,23 @@ function resolveToolResultLimits(
 }
 
 /** 默认重试比 dsh 通用 5 次更保守：每次重试都会重发整段上下文。 */
-export const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
+const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
   mode: 'normal',
   maxRetries: 2,
   retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
   backoff: { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 },
+}
+
+/**
+ * Volatile 暴露的是只读快照，而 retry 解析器接收可变配置。
+ * 复制成普通对象，避免 readonly 数组/字段的类型不兼容。
+ */
+export function resolveRetryPolicyConfig(config: Config): ResolvedRetryPolicy {
+  const raw = config.retryPolicy.get()
+  const policy = raw === undefined
+    ? DEFAULT_RETRY_POLICY
+    : JSON.parse(JSON.stringify(raw)) as RetryPolicyConfig
+  return resolveRetryPolicy(policy, 'xdr-llm-agg: retryPolicy')
 }
 
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
@@ -198,6 +210,6 @@ export function resolveConfig(config: Config): ResolvedLlmAggConfig {
     streamIdleTimeoutMs: config.streamIdleTimeoutMs.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
     ...resolveToolResultLimits(config),
-    retryPolicy: resolveRetryPolicy(config.retryPolicy.get() ?? DEFAULT_RETRY_POLICY, 'xdr-llm-agg: retryPolicy'),
+    retryPolicy: resolveRetryPolicyConfig(config),
   })
 }
