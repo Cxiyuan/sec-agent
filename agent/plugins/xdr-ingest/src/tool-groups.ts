@@ -1,0 +1,119 @@
+/**
+ * 分析会话的按需工具分组。
+ *
+ * 默认只把常用取证工具放进模型工具面，罕见能力（文件内容、规则、任务统计、
+ * 覆盖率、轨迹等）按组交给 `enable_analysis_tools` 激活。工具本身始终注册在
+ * registry 里，只是先被 `tools.restrict` 从当前 agent 的工具面隐藏；因此不会
+ * 因为“最近没调用”丢掉未来场景需要的能力。
+ */
+
+/** 默认直接暴露的分析工具（MCP 原始名，不含 mcp__ndr__ 前缀）。 */
+export const CORE_NDR_TOOLS: readonly string[] = [
+  'search_events',
+  'aggregate_events',
+  'search_hits',
+  'prior_findings',
+  'asset_context',
+  'list_networks',
+  'describe_data',
+  'timeline',
+  'net_flows',
+  'web_requests',
+  'hit_clusters',
+  'entity_profile',
+  'raw_evidence',
+  'get_event_detail',
+  'complete_task',
+]
+
+/** 分析会话永远不需要的非 NDR 工具（聊天/其他 agent 仍保留）。 */
+export const NON_ANALYSIS_TOOLS: readonly string[] = [
+  'mcp__ndr__claim_tasks',
+  'schedule_create',
+  'schedule_update',
+  'schedule_delete',
+  'session_search',
+  'session_event_search',
+  'session_event_trace',
+  'session_event_read',
+  'session_trace',
+]
+
+/** 按场景分组的罕见工具；未列出的 MCP 工具归入 other。 */
+export const NDR_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  network: [
+    'dns_queries',
+    'tls_fingerprints',
+    'relay_nodes',
+    'list_observations',
+    'asset_map',
+    'baseline_lookup',
+    'egress_baseline',
+  ],
+  identity: [
+    'server_info',
+    'coverage_report',
+  ],
+  evidence: [
+    'file_content',
+  ],
+  task: [
+    'task_state',
+    'task_stats',
+    'defer_task',
+    'log_step',
+    'list_rules',
+    'get_trace',
+  ],
+}
+
+export interface PlannedToolGroups {
+  /** 当前实际存在的核心工具（带 mcp__ndr__ 前缀）。 */
+  readonly core: readonly string[]
+  /** 当前实际存在、需要按需激活的组；组名 → 带前缀的工具名。 */
+  readonly groups: Readonly<Record<string, readonly string[]>>
+}
+
+const PREFIX = 'mcp__ndr__'
+
+function withPrefix(name: string): string {
+  return name.startsWith(PREFIX) ? name : `${PREFIX}${name}`
+}
+
+/**
+ * 按当前 registry 中真实存在的工具名规划分组。
+ *
+ * 只返回实际存在的名字，避免 `tools.restrict` 因未知工具整体失败；
+ * `other` 收容未显式分组的新 MCP 工具，保证以后新增能力可通过 `all` 激活。
+ */
+export function planToolGroups(available: readonly string[]): PlannedToolGroups {
+  const existing = new Set(available)
+  const core = CORE_NDR_TOOLS.map(withPrefix).filter(name => existing.has(name))
+  const assigned = new Set(core)
+  const groups: Record<string, string[]> = {}
+
+  for (const [group, names] of Object.entries(NDR_TOOL_GROUPS)) {
+    const tools = names.map(withPrefix).filter(name => existing.has(name) && !assigned.has(name))
+    if (tools.length > 0) {
+      groups[group] = tools
+      for (const name of tools) assigned.add(name)
+    }
+  }
+
+  const other = available.filter(
+    name => name.startsWith(PREFIX) && name !== `${PREFIX}claim_tasks` && !assigned.has(name),
+  )
+  if (other.length > 0) groups.other = other
+
+  return { core, groups }
+}
+
+/** `enable_analysis_tools` 的参数可选值。 */
+export const TOOL_GROUP_NAMES: readonly string[] = [
+  'network',
+  'identity',
+  'evidence',
+  'task',
+  'other',
+  'all',
+]

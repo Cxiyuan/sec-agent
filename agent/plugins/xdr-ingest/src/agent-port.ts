@@ -35,7 +35,11 @@ export interface AgentHandleLike {
 export interface AgentScopedContext {
   readonly tools?: {
     /** Per-agent visibility mask over global tools (dsh ToolRuntime.restrict). */
-    restrict?(filter: { readonly allow?: readonly string[]; readonly deny?: readonly string[] }): unknown
+    restrict?(filter: { readonly allow?: readonly string[]; readonly deny?: readonly string[] }): (() => void) | undefined
+    /** Current agent-scoped tool schemas; used to avoid naming unknown tools. */
+    schemas?(): readonly { readonly name: string }[]
+    /** Register a scoped tool (defineTool result). */
+    register?(definition: unknown): unknown
   }
   /**
    * Per-agent prompt composition (dsh system-prompt registry). A scoped

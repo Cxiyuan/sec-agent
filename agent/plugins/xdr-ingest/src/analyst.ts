@@ -7,11 +7,13 @@
  * 最后进 `stuck`（表面上"智能体在跑"，实际什么都没交）。
  */
 
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { AgentsServiceLike } from './agent-port.ts'
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
+import { NON_ANALYSIS_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
 import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
@@ -294,11 +296,83 @@ export class Analyst {
       // 否则模型会自己去领别的任务、把别人的任务做完，而本任务一直是 claimed，
       // Analyst 回查时判定「未交回」并延后。
       setup: (agentCtx) => {
+        // 工具面默认只保留核心取证工具；罕见能力通过 enable_analysis_tools
+        // 按组激活。工具始终注册在 registry 里，不会因为 24 小时未调用而删除。
+        const available = (agentCtx.tools?.schemas?.() ?? []).map(tool => tool.name)
+        const planned = planToolGroups(available)
+        const groupDisposers = new Map<string, () => void>()
+
         try {
-          agentCtx.tools?.restrict?.({ deny: ['mcp__ndr__claim_tasks'] })
+          const nonAnalysis = NON_ANALYSIS_TOOLS.filter(name => available.includes(name))
+          if (nonAnalysis.length > 0) {
+            agentCtx.tools?.restrict?.({ deny: nonAnalysis })
+          }
         } catch (error) {
           console.warn(
-            '[xdr-ingest] 无法禁用 claim_tasks 工具，仅靠提示词约束：',
+            '[xdr-ingest] 无法裁剪非分析工具，仅靠提示词约束：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+
+        try {
+          // 核心工具一个都没匹配上时不要隐藏任何 MCP 工具：宁可多花
+          // schema，也不能让会话在首轮没有可用取证能力。
+          if (planned.core.length > 0) {
+            for (const [group, tools] of Object.entries(planned.groups)) {
+              const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
+              if (dispose !== undefined) groupDisposers.set(group, dispose)
+            }
+          }
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法按组隐藏工具，罕见能力保持可见：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+
+        try {
+          agentCtx.tools?.register?.(defineTool({
+            name: 'enable_analysis_tools',
+            description:
+              '默认工具面只含常用取证工具。需要扩展能力时调用本工具：'
+              + 'group=network（DNS/TLS/代理/观测/资产地图/基线）、'
+              + 'identity（server_info/覆盖率）、evidence（文件内容）、'
+              + 'task（任务状态/统计/延迟/规则/轨迹）、other（未分组的新工具）、'
+              + 'all（全部）。激活后下一轮工具列表生效；不确定时用 all。'
+              + '不要因为当前列表看不到某个 NDR 工具就放弃取证。',
+            parameters: {
+              group: {
+                type: 'string',
+                enum: TOOL_GROUP_NAMES,
+                required: true,
+                description: '要激活的工具组；不确定时选 all。',
+              },
+            },
+            output: {
+              schema: { type: 'string' as const },
+              render: (_args, value) => [{ type: 'text' as const, text: value }],
+            },
+            execute: async ({ group }) => {
+              const requested = group === 'all'
+                ? [...groupDisposers.keys()]
+                : [group]
+              const activated: string[] = []
+              for (const name of requested) {
+                const dispose = groupDisposers.get(name)
+                if (dispose === undefined) continue
+                dispose()
+                groupDisposers.delete(name)
+                activated.push(...(planned.groups[name] ?? []))
+              }
+              if (activated.length === 0) {
+                return `没有可激活的工具组「${group}」。当前可用组：${[...groupDisposers.keys()].join(', ') || '无'}。`
+              }
+              return `已激活 ${group} 组：${activated.join(', ')}。下一轮请求会带上这些工具，继续取证即可。`
+            },
+          }))
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法注册 enable_analysis_tools，工具面不会按需扩展：',
             error instanceof Error ? error.message : String(error),
           )
         }
