@@ -161,18 +161,19 @@ export function resolveRetryPolicyConfig(config: Config): ResolvedRetryPolicy {
         backoff: { ...(DEFAULT_RETRY_POLICY.backoff ?? {}) },
       } as RetryPolicyConfig
     : JSON.parse(JSON.stringify(raw)) as RetryPolicyConfig
-  if (policy.mode === 'normal' && (policy.maxRetries ?? 2) > 2) {
-    // 配置层可能把 schema 的通用默认值（5 次）materialize 出来；本适配器
-    // 明确把重试上限压到 2 次，避免多步会话反复重发整段上下文。
-    policy.maxRetries = 2
-  }
-  const backoff = policy.backoff
-  if (backoff
-    && backoff.initialDelayMs === 500
-    && backoff.maxDelayMs === 10_000
-    && backoff.jitterRatio === 0.1) {
-    // 未显式配置退避时，把 dsh 通用默认换成更宽的 1–8 秒。
-    policy.backoff = { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 }
+  if (policy.mode === 'normal') {
+    const backoff = policy.backoff
+    // 配置层可能把 schema 的通用默认值（5 次、500ms/10s/0.1）materialize
+    // 出来。只有完全命中这组默认值时才改成 2 次/1–8 秒；显式配置保留，
+    // 便于运维按需调高。
+    if ((policy.maxRetries ?? 5) === 5
+      && backoff !== undefined
+      && backoff.initialDelayMs === 500
+      && backoff.maxDelayMs === 10_000
+      && backoff.jitterRatio === 0.1) {
+      policy.maxRetries = 2
+      policy.backoff = { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 }
+    }
   }
   return resolveRetryPolicy(policy, 'xdr-llm-agg: retryPolicy')
 }
