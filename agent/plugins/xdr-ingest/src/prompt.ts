@@ -117,7 +117,7 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '- 首轮取证先小范围：`search_events` 用 `limit=20`，`search_hits` 指定 `source_kind` 且 `limit=20`，',
     '  `timeline` 用 20–50 条；证据不够再扩大，不要第一轮拉超大窗口。',
     '- 默认工具面只含常用取证工具。需要文件内容、规则、任务统计、覆盖率、轨迹等罕见能力时，',
-    '  先调用 `enable_analysis_tools`（group=network/identity/evidence/task/all），下一轮即可调用；',
+    '  先调用 `enable_analysis_tools`（group=network/identity/evidence/task/history/schedule/deliverable/all），下一轮即可调用；',
     '  不要因为当前工具列表里没有某个 NDR 工具就放弃取证。',
     '',
     '## 复用与工具脚本（省预算的两件事）',

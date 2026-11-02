@@ -18,6 +18,8 @@ test('planToolGroups 只返回实际存在的工具，并保留按需分组', ()
     `${prefix}claim_tasks`,
     `${prefix}new_capability`,
     'schedule_create',
+    'session_search',
+    'present',
   ]
   const planned = planToolGroups(available)
   assert.ok(planned.core.includes(`${prefix}search_events`))
@@ -26,10 +28,12 @@ test('planToolGroups 只返回实际存在的工具，并保留按需分组', ()
   assert.deepEqual(planned.groups.identity, [`${prefix}coverage_report`])
   assert.deepEqual(planned.groups.evidence, [`${prefix}file_content`])
   assert.deepEqual(planned.groups.task, [`${prefix}task_stats`])
+  assert.deepEqual(planned.groups.history, ['session_search'])
+  assert.deepEqual(planned.groups.schedule, ['schedule_create'])
+  assert.deepEqual(planned.groups.deliverable, ['present'])
   // 未分组的新能力进入 other；claim_tasks 永远不进入可激活组。
   assert.deepEqual(planned.groups.other, [`${prefix}new_capability`])
   assert.ok(!JSON.stringify(planned).includes('claim_tasks'))
-  assert.ok(!JSON.stringify(planned).includes('schedule_create'))
 })
 
 test('planToolGroups 对缺失工具不报错，也不产生未知名字', () => {
@@ -39,5 +43,7 @@ test('planToolGroups 对缺失工具不报错，也不产生未知名字', () =>
 })
 
 test('工具组名覆盖加载工具的参数枚举', () => {
-  assert.deepEqual(TOOL_GROUP_NAMES, ['network', 'identity', 'evidence', 'task', 'other', 'all'])
+  assert.deepEqual(TOOL_GROUP_NAMES, [
+    'network', 'identity', 'evidence', 'task', 'history', 'schedule', 'deliverable', 'other', 'all',
+  ])
 })

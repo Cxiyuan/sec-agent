@@ -13,7 +13,7 @@ import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
-import { NON_ANALYSIS_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
+import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
 import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
@@ -299,7 +299,7 @@ export class Analyst {
         // claim_tasks 必须无条件拿掉：即使 schemas() 暂不可用，也不能让模型
         // 去领别的任务，导致本任务一直停在 claimed。
         try {
-          agentCtx.tools?.restrict?.({ deny: ['mcp__ndr__claim_tasks'] })
+          agentCtx.tools?.restrict?.({ deny: [...ALWAYS_DENY_TOOLS] })
         } catch (error) {
           console.warn(
             '[xdr-ingest] 无法禁用 claim_tasks 工具，仅靠提示词约束：',
@@ -312,18 +312,6 @@ export class Analyst {
         const planned = planToolGroups(available)
         const groupDisposers = new Map<string, () => void>()
 
-        try {
-          const nonAnalysis = NON_ANALYSIS_TOOLS.filter(name => available.includes(name))
-          if (nonAnalysis.length > 0) {
-            agentCtx.tools?.restrict?.({ deny: nonAnalysis })
-          }
-        } catch (error) {
-          console.warn(
-            '[xdr-ingest] 无法裁剪非分析工具，仅靠提示词约束：',
-            error instanceof Error ? error.message : String(error),
-          )
-        }
-
         let loaderReady = false
         try {
           if (typeof agentCtx.tools?.register !== 'function') {
@@ -335,7 +323,8 @@ export class Analyst {
               '默认工具面只含常用取证工具。需要扩展能力时调用本工具：'
               + 'group=network（DNS/TLS/代理/观测/资产地图/基线）、'
               + 'identity（server_info/覆盖率）、evidence（文件内容）、'
-              + 'task（任务状态/统计/延迟/规则/轨迹）、other（未分组的新工具）、'
+              + 'task（任务状态/统计/延迟/规则/轨迹）、history（历史会话检索）、'
+              + 'schedule（定时任务）、deliverable（交付物）、other（未分组的新工具）、'
               + 'all（全部）。激活后下一轮工具列表生效；不确定时用 all。'
               + '不要因为当前列表看不到某个 NDR 工具就放弃取证。',
             parameters: {

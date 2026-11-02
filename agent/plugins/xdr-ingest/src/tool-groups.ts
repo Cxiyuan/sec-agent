@@ -26,17 +26,25 @@ export const CORE_NDR_TOOLS: readonly string[] = [
   'complete_task',
 ]
 
-/** 分析会话永远不需要的非 NDR 工具（聊天/其他 agent 仍保留）。 */
-export const NON_ANALYSIS_TOOLS: readonly string[] = [
-  'schedule_create',
-  'schedule_update',
-  'schedule_delete',
-  'session_search',
-  'session_event_search',
-  'session_event_trace',
-  'session_event_read',
-  'session_trace',
-]
+/** 分析会话永久禁用的工具：只能处理派给自己的那条任务。 */
+export const ALWAYS_DENY_TOOLS: readonly string[] = ['mcp__ndr__claim_tasks']
+
+/** 非 NDR 的按需能力组；与 MCP 组一样可通过 enable_analysis_tools 激活。 */
+export const NON_NDR_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  history: [
+    'session_search',
+    'session_event_search',
+    'session_event_trace',
+    'session_event_read',
+    'session_trace',
+  ],
+  schedule: [
+    'schedule_create',
+    'schedule_update',
+    'schedule_delete',
+  ],
+  deliverable: ['present'],
+}
 
 /** 按场景分组的罕见工具；未列出的 MCP 工具归入 other。 */
 export const NDR_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
@@ -98,6 +106,13 @@ export function planToolGroups(available: readonly string[]): PlannedToolGroups 
       for (const name of tools) assigned.add(name)
     }
   }
+  for (const [group, names] of Object.entries(NON_NDR_GROUPS)) {
+    const tools = names.filter(name => existing.has(name) && !assigned.has(name))
+    if (tools.length > 0) {
+      groups[group] = tools
+      for (const name of tools) assigned.add(name)
+    }
+  }
 
   const other = available.filter(
     name => name.startsWith(PREFIX) && name !== `${PREFIX}claim_tasks` && !assigned.has(name),
@@ -113,6 +128,9 @@ export const TOOL_GROUP_NAMES: readonly string[] = [
   'identity',
   'evidence',
   'task',
+  'history',
+  'schedule',
+  'deliverable',
   'other',
   'all',
 ]
