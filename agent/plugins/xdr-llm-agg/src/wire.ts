@@ -161,7 +161,7 @@ export function compactToolResult(
   if (text.length <= resolved.maxChars) return text
   try {
     const parsed: unknown = JSON.parse(text)
-    const compacted = JSON.stringify(compactJsonValue(parsed, 0))
+    const compacted = JSON.stringify(compactJsonValue(parsed, 0)) ?? ''
     if (compacted.length <= resolved.maxChars) {
       return `[tool output compacted by llm-agg; original ${text.length} chars]\n${compacted}`
     }

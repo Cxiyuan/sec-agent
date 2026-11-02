@@ -195,6 +195,6 @@ export function resolveConfig(config: Config): ResolvedLlmAggConfig {
     streamIdleTimeoutMs: config.streamIdleTimeoutMs.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
     ...resolveToolResultLimits(config),
-    retryPolicy: resolveRetryPolicy(config.retryPolicy, 'xdr-llm-agg: retryPolicy'),
+    retryPolicy: resolveRetryPolicy(config.retryPolicy.get(), 'xdr-llm-agg: retryPolicy'),
   })
 }
