@@ -1158,8 +1158,9 @@ def _retire_pending_task_duplicates(reuse_identity: str) -> None:
                 .values(state="done", note="已命中任务级精准抑制，跳过分析")
             )
             db.commit()
-            if int(result.rowcount or 0) > 0:
-                log.info("任务级抑制收口 %d 条已排队任务：%s", int(result.rowcount), identity[:80])
+            retired = int(getattr(result, "rowcount", 0) or 0)
+            if retired > 0:
+                log.info("任务级抑制收口 %d 条已排队任务：%s", retired, identity[:80])
     except Exception as exc:  # noqa: BLE001 — 收口失败不能阻止抑制本身
         log.warning("任务级抑制收口失败（%s）：%s", identity[:80], exc)
 
