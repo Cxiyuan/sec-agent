@@ -240,6 +240,9 @@ export function SuppressionsPanel() {
   // 新建/编辑抽屉
   const [formOpen, setFormOpen] = React.useState(false);
   const [editId, setEditId] = React.useState("");
+  const [editScope, setEditScope] = React.useState("event");
+  const [editTaskKind, setEditTaskKind] = React.useState("");
+  const [editReuseIdentity, setEditReuseIdentity] = React.useState("");
   const [name, setName] = React.useState("");
   const [matchLogic, setMatchLogic] = React.useState("and");
   const [conds, setConds] = React.useState<SuppressionCond[]>([{ field: "signature_id", op: "eq", value: "" }]);
@@ -429,6 +432,9 @@ export function SuppressionsPanel() {
 
   function resetForm() {
     setEditId("");
+    setEditScope("event");
+    setEditTaskKind("");
+    setEditReuseIdentity("");
     setName("");
     setMatchLogic("and");
     setConds([{ field: "signature_id", op: "eq", value: "" }]);
@@ -460,6 +466,9 @@ export function SuppressionsPanel() {
     const parsed = matchToConds(item.match);
     setMismatch(null);
     setEditId(item.id);
+    setEditScope(item.scope || "event");
+    setEditTaskKind(item.task_kind || "");
+    setEditReuseIdentity(item.reuse_identity || "");
     setName(item.name);
     setMatchLogic(parsed.logic);
     setConds(
@@ -505,6 +514,8 @@ export function SuppressionsPanel() {
   }
 
   async function submitForm() {
+    // 任务级抑制按 reuse_identity 匹配，事件条件表单不适用；界面不提供保存。
+    if (editScope === "task") return;
     // 试算在途：按钮是加载态（不是 disabled），但不应重复发请求
     if (trialState === "trialing") return;
     setFormMsg("");
@@ -973,19 +984,39 @@ export function SuppressionsPanel() {
                           </Badge>
                         </TableCell>
                         <TableCell className="min-w-0">
-                          <span
-                            className="block truncate font-mono text-xs text-muted-foreground"
-                            title={JSON.stringify(item.match)}
-                          >
-                            {matchSummary(item.match)}
-                          </span>
-                          <Badge
-                            variant={item.dims < minDims ? "medium" : "outline"}
-                            className="mt-0.5"
-                            title={`至少 ${minDims} 个独立维度（match 的维度门槛）`}
-                          >
-                            {item.dims} 维
-                          </Badge>
+                          {item.scope === "task" ? (
+                            <>
+                              <span
+                                className="block truncate font-mono text-xs text-muted-foreground"
+                                title={item.reuse_identity || "缺少任务身份"}
+                              >
+                                {item.reuse_identity || "（缺少任务身份）"}
+                              </span>
+                              <Badge
+                                variant="outline"
+                                className="mt-0.5"
+                                title="任务级抑制：按稳定 reuse_identity 匹配，不需要事件条件树"
+                              >
+                                任务级 · {item.task_kind || "未知类型"}
+                              </Badge>
+                            </>
+                          ) : (
+                            <>
+                              <span
+                                className="block truncate font-mono text-xs text-muted-foreground"
+                                title={JSON.stringify(item.match)}
+                              >
+                                {matchSummary(item.match)}
+                              </span>
+                              <Badge
+                                variant={item.dims < minDims ? "medium" : "outline"}
+                                className="mt-0.5"
+                                title={`至少 ${minDims} 个独立维度（match 的维度门槛）`}
+                              >
+                                {item.dims} 维
+                              </Badge>
+                            </>
+                          )}
                         </TableCell>
                         <TableCell
                           className={cn("tabular-nums", hot ? "text-sev-medium-fg" : undefined)}
@@ -1150,10 +1181,11 @@ export function SuppressionsPanel() {
         footer={
           <>
             <Button size="sm" variant="outline" onClick={() => setFormOpen(false)}>
-              {mismatch ? "接受并关闭" : "取消"}
+              {editScope === "task" ? "关闭" : mismatch ? "接受并关闭" : "取消"}
             </Button>
-            {/* 档位不符时把提交按钮摘掉：条目已经写进去了，再点一次「保存」会重复建一条 */}
-            {mismatch ? null : (
+            {/* 档位不符时把提交按钮摘掉：条目已经写进去了，再点一次「保存」会重复建一条；
+                任务级抑制不走事件条件表单，界面不提供保存。 */}
+            {mismatch || editScope === "task" ? null : (
               <Button
                 size="sm"
                 aria-disabled={saveDisabled || saving || undefined}
@@ -1225,6 +1257,32 @@ export function SuppressionsPanel() {
             </div>
           ) : null}
 
+          {editScope === "task" ? (
+            <Section
+              title="任务级抑制（按任务身份匹配）"
+              description="这类抑制没有事件条件树：它按任务的稳定 reuse_identity 拦截，下一轮同类任务直接不入队。"
+              divided={false}
+            >
+              <div className="space-y-3">
+                <p className="rounded-xs bg-surface-1 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  界面上“条件”为空是正常的。任务级抑制由 NDR 在入队/领取时按身份判断，不匹配原始日志字段。
+                  如需调整范围，请撤销后由智能体重新分析提交；这里不提供条件编辑和保存。
+                </p>
+                <Field label="任务类型">
+                  <Input readOnly value={editTaskKind || "—"} />
+                </Field>
+                <Field label="稳定身份（reuse_identity）">
+                  <textarea
+                    readOnly
+                    rows={3}
+                    value={editReuseIdentity || "—"}
+                    className="w-full rounded-sm border border-input bg-surface-2 px-3 py-2 font-mono text-xs text-muted-foreground focus-visible:outline-none"
+                  />
+                </Field>
+              </div>
+            </Section>
+          ) : (
+            <>
           {nestedWarning ? (
             <p className="rounded-xs border border-sev-medium-bd bg-sev-medium-bg px-3 py-2 text-xs text-sev-medium-fg">
               这条抑制含嵌套条件组：界面只展示顶层条件，保存会把嵌套组丢掉。要保留原结构请用 MCP 或先简化条件。
@@ -1562,6 +1620,8 @@ export function SuppressionsPanel() {
               {formMsg}
             </p>
           ) : null}
+            </>
+          )}
         </div>
       </Drawer>
 

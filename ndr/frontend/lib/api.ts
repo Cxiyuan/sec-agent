@@ -1611,7 +1611,7 @@ export type SuppressionMatch = RuleConditions;
 export type SuppressionMode = "suppress" | "record_only";
 
 /**
- * 抑制条目（**26 字段**，`detector/suppression.py::_item`）。
+ * 抑制条目（**29 字段**，`detector/suppression.py::_item`）。
  *
  * 要点：界面建抑制（`origin="ui"`）**不受**证据条数/工具种类/置信度/新现象保护期门槛约束；
  * `hits` 是内存攒批、每 30 秒才落库 → 命中数最多滞后约 30 秒，别标"实时"。
@@ -1619,6 +1619,12 @@ export type SuppressionMode = "suppress" | "record_only";
 export interface SuppressionItem {
   id: string;
   name: string;
+  /** `event` = 规则命中事件级；`task` = 任务级（match 为空，按 reuse_identity 匹配） */
+  scope: string;
+  /** task scope 的稳定任务身份；event scope 为空 */
+  reuse_identity: string;
+  /** task scope 的来源任务类型；event scope 为空 */
+  task_kind: string;
   match: SuppressionMatch;
   /** 条件树里出现的字段（去重保序） */
   fields: string[];
