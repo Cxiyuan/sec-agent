@@ -34,6 +34,10 @@ profile 的 `cordis.patch.yml` 已插好默认数据块（`id: xdr-llm-agg`）�
 | `sessionHeader` | `x-session-id` | 会话标识头名（网关读这个） |
 | `streamIdleTimeoutMs` | `300000` | 两帧之间的空闲超时 |
 | `requestTimeoutMs` | `900000` | 单次请求总时长上限 |
+| `toolResultMaxChars` | `12000` | 单条工具结果进模型前的字符预算；超出时压缩 |
+| `toolResultHeadChars` | `9000` | 非 JSON 文本兜底裁剪保留的头部字符 |
+| `toolResultTailChars` | `2000` | 非 JSON 文本兜底裁剪保留的尾部字符 |
+| `retryPolicy` | 2 次、1–8 秒退避 | 模型请求重试策略；每次重试都会重发整段上下文 |
 
 字段全部 **volatile**：控制台（`/xdr/ui` → 系统）保存后下一轮请求立即生效，
 无需重启。池 Key 只从 dsh credentials 服务（或同名环境变量）解析，不落
@@ -56,6 +60,15 @@ profile 明文、不写日志。
   空响应→`EMPTY_RESPONSE`（这些码与 dsh 默认重试策略对齐）。
 - **推理强度**：本路由不透传 `reasoning_effort`——`auto` 背后可能是不同
   后端，交给网关与后端默认值更稳。
+- **工具结果预算**：工具结果会进入后续每一步请求。单条超过
+  `toolResultMaxChars` 时，JSON 结果保留全部字段、数组计数与首尾样本，
+  中间插入 `_pruned_items` 说明；非 JSON 文本保留首尾并标注裁剪字符数。
+  完整原始结果仍在 dsh 会话日志里，需要中间细节时模型可用更精确的过滤
+  条件重查。
+- **重试预算**：默认只对 `EMPTY_RESPONSE` / `RATE_LIMIT` / `SERVER` /
+  `TIMEOUT` / `TRANSPORT` 重试 2 次（退避 1–8 秒）。dsh 通用默认是 5 次；
+  在多步分析里，每次重试都会把整段上下文再发一次，降到 2 次能显著减少
+  重复 token 和任务时延。
 
 ## 控制台
 

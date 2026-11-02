@@ -9,6 +9,7 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import {
   ChatStreamTranslator,
+  compactToolResult,
   SseDecoder,
   finishReasonOf,
   providerFailure,
@@ -256,4 +257,54 @@ test('providerFailure 按状态与错误文本分类', () => {
     'QUOTA',
   )
   assert.match(providerFailure(400, '{"error":{"message":"invalid tools"}}').message, /invalid tools/u)
+})
+
+
+test('compactToolResult 按 JSON 结构保留计数与首尾项', () => {
+  const items = Array.from({ length: 100 }, (_, index) => ({
+    index,
+    ref: `es:item-${index}`,
+    text: 'x'.repeat(120),
+  }))
+  const raw = JSON.stringify({ total: 100, items })
+  const compacted = compactToolResult(raw, { maxChars: 4_000, headChars: 3_000, tailChars: 800 })
+  assert.ok(compacted.length <= 4_000, `compacted length ${compacted.length}`)
+  const parsed = JSON.parse(compacted.replace(/^\[tool output compacted[^\n]*\]\n/u, ''))
+  assert.equal(parsed.total, 100)
+  assert.equal(parsed.items[0].index, 0)
+  assert.equal(parsed.items.at(-1).index, 99)
+  assert.equal(parsed.items.find((item: any) => item._pruned_items !== undefined)._pruned_items, 76)
+})
+
+test('compactToolResult 对非 JSON 文本保留首尾并标注裁剪', () => {
+  const raw = 'A'.repeat(10_000) + 'MIDDLE' + 'B'.repeat(10_000)
+  const compacted = compactToolResult(raw, { maxChars: 2_000, headChars: 1_400, tailChars: 400 })
+  assert.ok(compacted.length <= 2_100, `compacted length ${compacted.length}`)
+  assert.match(compacted, /chars pruned by llm-agg/u)
+  assert.ok(compacted.startsWith('A'))
+  assert.ok(compacted.endsWith('B'))
+})
+
+test('toChatRequest 对超长工具结果应用默认预算', () => {
+  const text = 'R'.repeat(30_000)
+  const request = toChatRequest({
+    provider: 'llm-agg',
+    model: 'auto',
+    messages: [
+      user([{ type: 'text', text: '查一下' }]),
+      assistant([{ type: 'tool-call', id: 'call_big', name: 'lookup', arguments: '{}' }]),
+      {
+        id: 'm-tool',
+        role: 'tool',
+        source: { kind: 'tool', callId: 'call_big' },
+        toolCallId: 'call_big',
+        content: [{ type: 'text', text }],
+        isError: false,
+      },
+    ],
+  })
+  const tool = request.messages.at(-1)
+  assert.equal(tool?.role, 'tool')
+  assert.ok(String(tool?.content).length < 13_000)
+  assert.match(String(tool?.content), /chars pruned by llm-agg/u)
 })

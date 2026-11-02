@@ -113,6 +113,18 @@ export class LlmAggAdapter extends LlmAdapter {
     return { id: provider, name: this.peek()?.displayName ?? 'LLM-AGG' }
   }
 
+  /**
+   * 每次重试都会重发整段上下文。默认策略只重试 2 次、退避 1–8 秒，
+   * 避免多步分析在网关短时不可用时反复放大 token 成本。
+   */
+  override providerRetryPolicy(_provider: string) {
+    try {
+      return this.options.config().retryPolicy
+    } catch {
+      return undefined
+    }
+  }
+
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     return Promise.resolve(this.peek()?.models.map(model => ({
       provider,
@@ -150,7 +162,11 @@ export class LlmAggAdapter extends LlmAdapter {
       throw new LlmError(`llm-agg: 配置不可用：${message}`, 'INVALID_CONFIG', { cause: error })
     }
     const apiKey = await this.options.resolveApiKey(config.apiKeyEnv)
-    const { messages, tools } = toChatRequest(options)
+    const { messages, tools } = toChatRequest(options, {
+      maxChars: config.toolResultMaxChars,
+      headChars: config.toolResultHeadChars,
+      tailChars: config.toolResultTailChars,
+    })
     const body = {
       model: options.model,
       messages,

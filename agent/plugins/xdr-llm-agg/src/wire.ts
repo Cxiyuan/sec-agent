@@ -70,6 +70,112 @@ export interface ChatRequest {
   tools?: ChatTool[]
 }
 
+/** 工具结果送进模型前的字符预算。 */
+export interface ToolResultLimits {
+  /** 单个工具结果的最大字符数（含裁剪标记）。 */
+  maxChars: number
+  /** 纯文本兜底裁剪保留的头部字符数。 */
+  headChars: number
+  /** 纯文本兜底裁剪保留的尾部字符数。 */
+  tailChars: number
+}
+
+const DEFAULT_TOOL_RESULT_LIMITS: ToolResultLimits = {
+  maxChars: 12_000,
+  headChars: 9_000,
+  tailChars: 2_000,
+}
+
+/** JSON 数组超过这个长度时只保留首尾若干项，并插入一条裁剪说明。 */
+const COMPACT_ARRAY_KEEP_HEAD = 16
+const COMPACT_ARRAY_KEEP_TAIL = 8
+/** JSON 字符串值超过这个长度时做首尾裁剪。 */
+const COMPACT_STRING_MAX = 2_000
+const COMPACT_DEPTH_MAX = 8
+
+function resolveLimits(limits?: Partial<ToolResultLimits>): ToolResultLimits {
+  const maxChars = Math.max(1_000, Math.floor(limits?.maxChars ?? DEFAULT_TOOL_RESULT_LIMITS.maxChars))
+  const headChars = Math.min(
+    Math.max(0, Math.floor(limits?.headChars ?? DEFAULT_TOOL_RESULT_LIMITS.headChars)),
+    Math.max(0, maxChars - 300),
+  )
+  const tailChars = Math.min(
+    Math.max(0, Math.floor(limits?.tailChars ?? DEFAULT_TOOL_RESULT_LIMITS.tailChars)),
+    Math.max(0, maxChars - headChars - 200),
+  )
+  return { maxChars, headChars, tailChars }
+}
+
+function clipString(value: string, head: number, tail: number, marker: string): string {
+  if (value.length <= head + tail + marker.length) return value
+  return value.slice(0, head) + marker + value.slice(-tail)
+}
+
+function compactJsonString(value: string): string {
+  if (value.length <= COMPACT_STRING_MAX) return value
+  const head = Math.floor(COMPACT_STRING_MAX * 0.65)
+  const tail = COMPACT_STRING_MAX - head
+  return clipString(
+    value,
+    head,
+    tail,
+    `…[${value.length - head - tail} chars pruned]…`,
+  )
+}
+
+function compactJsonValue(value: unknown, depth: number): unknown {
+  if (depth > COMPACT_DEPTH_MAX) return '[depth limit]'
+  if (typeof value === 'string') return compactJsonString(value)
+  if (Array.isArray(value)) {
+    if (value.length > COMPACT_ARRAY_KEEP_HEAD + COMPACT_ARRAY_KEEP_TAIL) {
+      const head = value.slice(0, COMPACT_ARRAY_KEEP_HEAD).map(item => compactJsonValue(item, depth + 1))
+      const tail = value.slice(-COMPACT_ARRAY_KEEP_TAIL).map(item => compactJsonValue(item, depth + 1))
+      const omitted = value.length - COMPACT_ARRAY_KEEP_HEAD - COMPACT_ARRAY_KEEP_TAIL
+      return [...head, { _pruned_items: omitted }, ...tail]
+    }
+    return value.map(item => compactJsonValue(item, depth + 1))
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      result[key] = compactJsonValue(item, depth + 1)
+    }
+    return result
+  }
+  return value
+}
+
+/**
+ * 压缩一条工具结果，保留结构、计数与首尾样本。
+ *
+ * 工具结果会进入后续每一轮请求；原始 50k 字符的结果在 6 步会话里会被重复
+ * 发送几十万字符。这里优先按 JSON 结构压缩（保留所有字段和首尾数组项），
+ * 非 JSON 文本再按首尾裁剪。裁剪标记会让模型知道可以换更精确的条件重查；
+ * 完整的原始结果仍保存在 dsh 会话日志里，不丢证据。
+ */
+export function compactToolResult(
+  text: string,
+  limits?: Partial<ToolResultLimits>,
+): string {
+  const resolved = resolveLimits(limits)
+  if (text.length <= resolved.maxChars) return text
+  try {
+    const parsed: unknown = JSON.parse(text)
+    const compacted = JSON.stringify(compactJsonValue(parsed, 0))
+    if (compacted.length <= resolved.maxChars) {
+      return `[tool output compacted by llm-agg; original ${text.length} chars]\n${compacted}`
+    }
+  } catch {
+    // Not JSON (CSV/YAML/plain text): fall through to head/tail clipping.
+  }
+  return clipString(
+    text,
+    resolved.headChars,
+    resolved.tailChars,
+    `\n\n[... ${text.length - resolved.headChars - resolved.tailChars} chars pruned by llm-agg; original ${text.length} chars ...]\n\n`,
+  )
+}
+
 /** 消息里所有 text 块按原顺序拼接。 */
 function textOf(blocks: readonly ContentBlock[]): string {
   let text = ''
@@ -125,7 +231,7 @@ function assistantOf(message: RequestMessage): ChatMessage | undefined {
 }
 
 /** 把一条 dsh 消息转换成零条或多条 OpenAI 消息。 */
-function convertMessage(message: RequestMessage): ChatMessage[] {
+function convertMessage(message: RequestMessage, limits: ToolResultLimits): ChatMessage[] {
   switch (message.role) {
     case 'system': {
       const text = textOfStrict(message.content, 'system')
@@ -147,7 +253,11 @@ function convertMessage(message: RequestMessage): ChatMessage[] {
     }
     case 'tool': {
       const text = textOf(message.content)
-      return [{ role: 'tool', tool_call_id: message.toolCallId, content: text === '' ? '(no output)' : text }]
+      return [{
+        role: 'tool',
+        tool_call_id: message.toolCallId,
+        content: compactToolResult(text === '' ? '(no output)' : text, limits),
+      }]
     }
     default:
       return []
@@ -162,7 +272,11 @@ function convertMessage(message: RequestMessage): ChatMessage[] {
  * @param options - 已组装的请求。
  * @returns OpenAI 消息与工具声明。
  */
-export function toChatRequest(options: GenerateOptions): ChatRequest {
+export function toChatRequest(
+  options: GenerateOptions,
+  toolResultLimits?: Partial<ToolResultLimits>,
+): ChatRequest {
+  const limits = resolveLimits(toolResultLimits)
   const leading: string[] = []
   if (options.system !== undefined && options.system !== '') leading.push(options.system)
   let start = 0
@@ -173,7 +287,7 @@ export function toChatRequest(options: GenerateOptions): ChatRequest {
   }
   const messages: ChatMessage[] = []
   if (leading.length > 0) messages.push({ role: 'system', content: leading.join('\n\n') })
-  for (const message of options.messages.slice(start)) messages.push(...convertMessage(message))
+  for (const message of options.messages.slice(start)) messages.push(...convertMessage(message, limits))
   const tools = toChatTools(options.tools)
   return { messages, ...tools === undefined ? {} : { tools } }
 }

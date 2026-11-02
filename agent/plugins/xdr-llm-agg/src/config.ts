@@ -11,6 +11,8 @@
  */
 
 import type { Volatile } from '@deepseek-ai/cordis'
+import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
+import type { RetryPolicyConfig, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
 /** 本插件拥有的唯一 provider 路由。 */
@@ -61,6 +63,17 @@ export interface Config {
   streamIdleTimeoutMs: Volatile<number>
   /** 单次请求总时长上限（毫秒）。 */
   requestTimeoutMs: Volatile<number>
+  /** 工具结果送入模型前的字符预算；超出时按结构化/首尾裁剪。 */
+  toolResultMaxChars: Volatile<number>
+  /** 文本裁剪时保留的头部字符数。 */
+  toolResultHeadChars: Volatile<number>
+  /** 文本裁剪时保留的尾部字符数。 */
+  toolResultTailChars: Volatile<number>
+  /**
+   * 模型请求重试策略。默认比 dsh 通用策略更保守：每次重试都会重发整段
+   * 上下文，5 次重试在多步会话里代价很高。
+   */
+  retryPolicy: Volatile<RetryPolicyConfig | undefined>
 }
 
 const modelSchema: z<LlmAggModel> = z.object({
@@ -88,6 +101,17 @@ export const Config = z.object({
   sessionHeader: z.string().default('x-session-id').volatile(),
   streamIdleTimeoutMs: z.number().step(1).min(1_000).default(300_000).volatile(),
   requestTimeoutMs: z.number().step(1).min(1_000).default(900_000).volatile(),
+  // 工具结果会随历史进入后续每一步请求；50k 字符的原始结果在 6 步会话里
+  // 会被重复发送几十万字符。默认 12k 预算，保留首尾，中间给出明确裁剪标记。
+  toolResultMaxChars: z.number().step(1).min(1_000).default(12_000).volatile(),
+  toolResultHeadChars: z.number().step(1).min(0).default(9_000).volatile(),
+  toolResultTailChars: z.number().step(1).min(0).default(2_000).volatile(),
+  retryPolicy: RetryPolicySchema.default({
+    mode: 'normal',
+    maxRetries: 2,
+    retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
+    backoff: { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 },
+  }).volatile(),
 })
 
 /** 一次请求读到的一份配置快照（已去掉 volatile 引用）。 */
@@ -101,6 +125,25 @@ export interface ResolvedLlmAggConfig {
   readonly sessionHeader: string
   readonly streamIdleTimeoutMs: number
   readonly requestTimeoutMs: number
+  readonly toolResultMaxChars: number
+  readonly toolResultHeadChars: number
+  readonly toolResultTailChars: number
+  readonly retryPolicy: ResolvedRetryPolicy
+}
+
+function resolveToolResultLimits(
+  config: Config,
+): Pick<ResolvedLlmAggConfig, 'toolResultMaxChars' | 'toolResultHeadChars' | 'toolResultTailChars'> {
+  const maxChars = Math.max(1_000, Math.floor(Number(config.toolResultMaxChars.get())))
+  const headChars = Math.min(
+    Math.max(0, Math.floor(Number(config.toolResultHeadChars.get()))),
+    Math.max(0, maxChars - 300),
+  )
+  const tailChars = Math.min(
+    Math.max(0, Math.floor(Number(config.toolResultTailChars.get()))),
+    Math.max(0, maxChars - headChars - 200),
+  )
+  return { toolResultMaxChars: maxChars, toolResultHeadChars: headChars, toolResultTailChars: tailChars }
 }
 
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
@@ -151,5 +194,7 @@ export function resolveConfig(config: Config): ResolvedLlmAggConfig {
     sessionHeader,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
+    ...resolveToolResultLimits(config),
+    retryPolicy: resolveRetryPolicy(config.retryPolicy, 'xdr-llm-agg: retryPolicy'),
   })
 }

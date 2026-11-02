@@ -39,3 +39,17 @@
         sessionHeader: x-session-id
         streamIdleTimeoutMs: 300000
         requestTimeoutMs: 900000
+        # 工具结果预算：单条超过 12k 字符时保留结构/计数与首尾样本，
+        # 中间裁剪并标注；原始结果仍在 dsh 会话日志里可回查。
+        toolResultMaxChars: 12000
+        toolResultHeadChars: 9000
+        toolResultTailChars: 2000
+        # 每次重试都会重发整段上下文：默认只重试 2 次，退避 1–8 秒。
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+          retryableCodes: [EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT]
+          backoff:
+            initialDelayMs: 1000
+            maxDelayMs: 8000
+            jitterRatio: 0.2

@@ -26,6 +26,7 @@ export { LlmAggAdapter } from './adapter.ts'
 export type { LlmAggAdapterOptions } from './adapter.ts'
 export {
   ChatStreamTranslator,
+  compactToolResult,
   SseDecoder,
   finishReasonOf,
   providerFailure,
@@ -40,6 +41,7 @@ export type {
   ChatRequest,
   ChatTool,
   ChatToolCall,
+  ToolResultLimits,
   ProviderFailure,
   WireChunk,
   WireUsage,

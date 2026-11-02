@@ -65,3 +65,18 @@ test('prompt states the evidence rule', () => {
   assert.match(text, /evidence_refs/)
   assert.match(text, /本会话/)
 })
+
+
+test('prompt tells the agent to protect the context budget', () => {
+  const text = buildAnalysisPrompt({
+    id: 'task-budget',
+    kind: 'observation',
+    strength: 0.5,
+    subject_kind: 'asset',
+    subject: '10.1.2.10',
+  })
+  assert.match(text, /上下文预算/)
+  assert.match(text, /aggregate_events/)
+  assert.match(text, /12k 字符/)
+  assert.match(text, /不要每步重复拉取/)
+})
