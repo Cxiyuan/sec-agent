@@ -591,13 +591,24 @@ class BaselineEngine:
             risk = float(item.get("risk") or 0.0)
             src_ips = [str(x) for x in (item.get("src_ips") or [])][:10]
             internal_srcs = [ip for ip in src_ips if is_internal_ip(ip)]
-            # reason code：判据名（冒号/全角括号前的部分），同一类异常共用一个 key
-            code = reasons[0].split("（", 1)[0].split(":", 1)[0].strip()[:40] or "画像异常"
+            # 稳定的机器信号码（cross_ip / new_path / ...）。以前从 reasons[0]
+            # 里截字符串，路径里的时间戳、跨 IP 计数都会变成新 code，导致
+            # 同一设备同一现象被拆成几十个身份、复用/抑制永远打不中。
+            codes = sorted(
+                {str(x).strip() for x in (item.get("codes") or []) if str(x).strip()}
+            )
+            code = "+".join(codes)[:40] or "画像异常"
+            # 复用身份按「异常实体 + 信号码集合」生成，不再按源 IP / 具体路径值。
+            # 实体 key 是会话/账号的稳定标识；源 IP 只留在 facts 里当证据。
+            entity_kind = str(item.get("kind") or "").strip()
+            entity_key = str(item.get("key") or item.get("display") or "").strip()
+            reuse_identity = _profile_anomaly_reuse_identity(entity_kind, entity_key, codes)
             facts = {
                 "画像对象": str(item.get("display") or item.get("key") or ""),
                 "对象类型": "账号" if str(item.get("kind")) == "account" else "会话",
                 "风险分": round(risk, 3),
                 "判定理由": reasons,
+                "信号码": codes,
                 "来源地址": src_ips,
                 "历史观测次数": int(item.get("obs_count") or 0),
                 "说明": "该对象的访问画像与它自己的历史基线不一致（客观事实，不含结论）",
@@ -613,6 +624,7 @@ class BaselineEngine:
                         facts,
                         key=f"profile_anomaly:{code}",
                         strength=max(0.0, min(1.0, risk)),
+                        reuse_identity=reuse_identity,
                     )
                 continue
             subject = str(item.get("display") or item.get("key") or "").strip()
@@ -628,6 +640,7 @@ class BaselineEngine:
                 facts,
                 key=f"profile_anomaly:{code}",
                 strength=max(0.0, min(1.0, risk)),
+                reuse_identity=reuse_identity,
             )
 
     def _flush_assets(self) -> None:
@@ -734,3 +747,17 @@ class BaselineEngine:
             self._client.hdel(settings.baseline_stats_key, "anomalies", "numeric_keys")
         except Exception as exc:  # noqa: BLE001
             log.debug("基线计数写入 Redis 失败: %s", exc)
+
+
+def _profile_anomaly_reuse_identity(
+    entity_kind: str, entity_key: str, codes: list[str]
+) -> str:
+    """画像异常的跨时间窗稳定身份：实体 + 信号码集合。
+
+    为什么不用 subject：`_emit_profile_anomalies` 会按内网源 IP 发事实，
+    同一设备换一个 IP 就是新 subject。复用/抑制要跟的是**会话/设备实体**，
+    不是它这一轮的出口 IP；源 IP 仍保留在 facts 里作为取证线索。
+    """
+    entity = f"{entity_kind}:{entity_key}".strip(":") or "unknown"
+    signal = ",".join(sorted({str(code).strip() for code in codes if str(code).strip()}))
+    return f"profile_anomaly|entity:{entity}|codes:{signal or 'unspecified'}"[:200]

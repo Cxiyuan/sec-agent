@@ -53,6 +53,7 @@ def _anomaly(**over: Any) -> dict[str, Any]:
         "display": "alice@corp",
         "risk": 0.86,
         "reasons": ["新源 IP：1.1.1.1（占本窗口来源地址 80%）", "新 User-Agent：curl/8"],
+        "codes": ["new_src_ip", "new_ua"],
         "obs_count": 30,
         "src_ips": ["1.1.1.1"],
         "dst_ips": [],
@@ -83,6 +84,42 @@ def test_internal_source_emits_asset_fact(engine: Any, monkeypatch: pytest.Monke
     assert row["facts"]["判定理由"][0].startswith("新源 IP")
     assert row["facts"]["来源地址"] == ["10.1.1.20", "1.1.1.1"]
     assert row["key"].startswith("profile_anomaly:")
+    assert row["reuse_identity"] == (
+        "profile_anomaly|entity:account:alice|codes:new_src_ip,new_ua"
+    )
+
+
+def test_reuse_identity_is_stable_across_source_ips_and_reason_order(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一实体的 profile_anomaly 换源 IP / 换理由顺序，复用身份不能变。"""
+    calls = _capture(monkeypatch, engine)
+    engine.BaselineEngine._emit_profile_anomalies(
+        _fake_self(),
+        [
+            _anomaly(
+                src_ips=["10.1.1.20"],
+                reasons=["新源 IP：10.1.1.20（占本窗口来源地址 80%）", "新 User-Agent：curl/8"],
+            ),
+            _anomaly(
+                src_ips=["10.1.1.21"],
+                reasons=["新 User-Agent：curl/9", "新源 IP：10.1.1.21（占本窗口来源地址 80%）"],
+            ),
+        ],
+    )
+    assert len(calls) == 2
+    assert calls[0]["subject"] != calls[1]["subject"]
+    assert calls[0]["reuse_identity"] == calls[1]["reuse_identity"]
+    assert calls[0]["reuse_identity"].startswith("profile_anomaly|entity:account:alice|")
+
+    # 信号码变了（例如多了错误突增）必须重新分析。
+    calls.clear()
+    engine.BaselineEngine._emit_profile_anomalies(
+        _fake_self(), [_anomaly(codes=["new_src_ip", "error_surge"])]
+    )
+    assert calls[0]["reuse_identity"] != (
+        "profile_anomaly|entity:account:alice|codes:new_src_ip,new_ua"
+    )
 
 
 def test_external_only_source_keeps_account_subject(

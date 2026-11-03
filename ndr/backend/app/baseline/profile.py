@@ -172,6 +172,46 @@ def api_path(path: str) -> bool:
     return not (exclude is not None and exclude.search(text))
 
 
+#: 路径里的动态段：UUID、长十六进制、纯数字 ID、长 base64url/token。
+#: 这些值每次请求都可能变，但它们是同一个接口模板，不能算「新接口路径」。
+_PATH_UUID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+# 纯数字是 ID；十六进制必须至少含一个字母，否则时间戳会先被当成 hex。
+_PATH_HEX = re.compile(r"^(?=.*[a-fA-F])[0-9a-fA-F]{8,}$")
+_PATH_NUMBER = re.compile(r"^\d{4,}$")
+_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+
+
+def normalize_path_template(path: str) -> str:
+    """把动态路径段归一成占位符，得到稳定的「接口模板」。
+
+    为什么必须做：画像的 `new_path` 只看路径字符串。`/upgrade/linux_virdb_v2/
+    1793585230/upgrade` 里的时间戳每换一次就是一条「新接口路径」，实测一天能
+    因此产生几十条同模板任务。这里只替换**明确是动态值**的段（UUID、长十六进制、
+    4 位以上纯数字、20 位以上 token），不做模糊匹配，避免把真实路由差异吞掉。
+    """
+    text = (path or "").strip().split("?", 1)[0].split("#", 1)[0]
+    if not text:
+        return ""
+    parts = text.split("/")
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            out.append(part)
+        elif _PATH_UUID.match(part):
+            out.append("{uuid}")
+        elif _PATH_HEX.match(part):
+            out.append("{hex}")
+        elif _PATH_NUMBER.match(part):
+            out.append("{id}")
+        elif _PATH_TOKEN.match(part):
+            out.append("{token}")
+        else:
+            out.append(part)
+    return "/".join(out)
+
+
 # 认证失败突增的分档权重（用户 2026-10 定的口径）。
 # 为什么要分档：原来固定 +0.25，而异常阈值是 0.6 —— **单条永远到不了阈值**，
 # 真爆破只要没伴随新 IP/新 UA（同台机器、同一 UA 一直试）就报不出来（漏报）。
@@ -460,9 +500,10 @@ def _accumulate(bucket: dict[str, Any], entry: UnifiedLog) -> None:
         bucket["dst_ips"][str(entry.dst_ip)] += 1
     if entry.user_agent:
         bucket["user_agents"][entry.user_agent[:128]] += 1
-    # 路径只收接口形态（静态资源会让 30 条上限满掉，见 api_path 的说明）
+    # 路径只收接口形态（静态资源会让 30 条上限满掉，见 api_path 的说明）；
+    # 动态段先归一成模板，避免时间戳/ID 每变一次就算一条新接口路径。
     if entry.uri_path and api_path(entry.uri_path):
-        bucket["paths"][entry.uri_path[:128]] += 1
+        bucket["paths"][normalize_path_template(entry.uri_path)[:128]] += 1
     bucket["hours"][str(beijing_hour(entry.ts))] += 1
     if entry.status_code:
         if entry.status_code in (401, 403):
@@ -916,6 +957,9 @@ def recall_from_observations(observations: dict[str, dict[str, Any]]) -> dict[st
                 "posterior": round(float(detection.get("posterior") or 0.0), 6),
                 "alerted": bool(detection.get("alerted")),
                 "reasons": detection["reasons"],
+                # 稳定信号码（cross_ip / new_path / ...）：派工身份用它，
+                # 不再从人类可读 reasons[0] 里猜，避免路径时间戳/计数把身份拆碎。
+                "codes": list(detection.get("codes") or []),
                 "obs_count": _safe_int(profile.obs_count) if profile else 0,
                 "src_ips": sorted(obs["src_ips"].keys())[:5],
                 "dst_ips": sorted(obs["dst_ips"].keys())[:5],
@@ -946,7 +990,15 @@ def _kept_paths(paths: Any) -> dict[str, int]:
     不含 `/api/` 的旧值：.css/.png/页面）。合并前先剔掉，否则 30 条上限永远被它们占着，
     新口径等于没生效。（不需要额外的数据迁移：每个画像被再次观测时就自愈一次。）
     """
-    return {k: _safe_int(v) for k, v in dict(paths or {}).items() if api_path(k)}
+    kept: dict[str, int] = {}
+    for key, value in dict(paths or {}).items():
+        if not api_path(key):
+            continue
+        normalized = normalize_path_template(key)
+        if not normalized:
+            continue
+        kept[normalized] = kept.get(normalized, 0) + _safe_int(value)
+    return kept
 
 
 

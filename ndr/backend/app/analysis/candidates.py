@@ -639,10 +639,14 @@ def enqueue_observations(client: Any) -> int:
                 "出现次数": int(row.count or 0),
                 "首次观测": row.first_seen.isoformat() if row.first_seen else "",
                 "最近观测": row.last_seen.isoformat() if row.last_seen else "",
-                # B1：复用身份 = 观察事实的稳定去重键（含事实 key，如同一资产的不同
-                # 外连目标各有各的身份）—— 之前 agent 只能拿 kind 拼键，
-                # "同资产外连 A/B 两条事实"会共用一条结论（实测踩过）
-                **({"reuse_identity": str(row.dedupe_key or "")} if str(row.dedupe_key or "") else {}),
+                # B1：复用身份优先用观察事实的稳定身份（2026-11：profile_anomaly
+                # 按「实体+信号码」生成，跨源 IP 稳定）；旧数据/其他 kind 仍回退
+                # dedupe_key，避免不同外连目标误共用结论。
+                **(
+                    {"reuse_identity": str(row.reuse_identity or row.dedupe_key or "")}
+                    if str(row.reuse_identity or row.dedupe_key or "")
+                    else {}
+                ),
                 **({"方向": direction} if direction else {}),
                 **({"direction": direction} if direction else {}),
                 **({"相关规则命中": evidence} if evidence else {}),

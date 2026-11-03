@@ -39,7 +39,13 @@ class FakeQueue:
         self.bumps.append((field, count))
 
 
-def _obs(kind: str, subject: str = ASSET, strength: float = 0.6, idx: str = "o1") -> Any:
+def _obs(
+    kind: str,
+    subject: str = ASSET,
+    strength: float = 0.6,
+    idx: str = "o1",
+    reuse_identity: str = "",
+) -> Any:
     return SimpleNamespace(
         id=idx,
         kind=kind,
@@ -51,6 +57,7 @@ def _obs(kind: str, subject: str = ASSET, strength: float = 0.6, idx: str = "o1"
         first_seen=NOW,
         last_seen=NOW,
         dedupe_key=f"{kind}:asset:{subject}:dst_ip:8.8.8.8",
+        reuse_identity=reuse_identity,
         last_enqueued_at=None,
     )
 
@@ -112,6 +119,26 @@ def test_dispatch_marks_cooldown_and_counts(cand: Any, monkeypatch: pytest.Monke
     kinds = {c["hint"]["事实类型"] for c in fake_queue.calls}
     assert kinds == {"asset_shift", "login_bruteforce"}
     assert all(c["hint"]["reuse_identity"].startswith(c["hint"]["事实类型"]) for c in fake_queue.calls)
+
+
+def test_dispatch_prefers_observation_canonical_identity(
+    cand: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有 canonical 身份时用它派工；没有时回退 dedupe_key（兼容旧数据）。"""
+    canonical = "profile_anomaly|entity:session:dde03ed6|codes:cross_ip"
+    rows = [
+        _obs("profile_anomaly", idx="o1", reuse_identity=canonical),
+        _obs("profile_anomaly", idx="o2", reuse_identity=""),
+    ]
+    db = FakeDB(rows, scalar_values=[2, 0])
+    monkeypatch.setattr(cand, "SessionLocal", lambda: db)
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(cand, "queue", fake_queue)
+    monkeypatch.setattr(cand.params, "candidate_kinds", lambda: {"observation"})
+    monkeypatch.setattr(cand, "_recent_rule_hits", lambda *_a, **_k: [])
+    cand.enqueue_observations(client=SimpleNamespace())
+    assert fake_queue.calls[0]["hint"]["reuse_identity"] == canonical
+    assert fake_queue.calls[1]["hint"]["reuse_identity"].startswith("profile_anomaly:")
 
 
 def test_starved_counter_when_quota_blocks(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:

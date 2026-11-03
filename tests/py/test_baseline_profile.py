@@ -245,6 +245,44 @@ def test_api_path_keeps_interfaces_drops_static(profiles: ModuleType) -> None:
         assert profiles.api_path(path) is False, path
 
 
+def test_normalize_path_template_collapses_dynamic_segments(profiles: ModuleType) -> None:
+    """时间戳/UUID/长 ID 不能算「新接口路径」，否则同一接口每天都是新现象。"""
+    assert profiles.normalize_path_template(
+        "/upgrade/linux_virdb_v2/1793585230/upgrade"
+    ) == "/upgrade/linux_virdb_v2/{id}/upgrade"
+    assert profiles.normalize_path_template(
+        "/api/v1/users/550e8400-e29b-41d4-a716-446655440000/profile"
+    ) == "/api/v1/users/{uuid}/profile"
+    assert profiles.normalize_path_template("/sched2/0B12204E5316E56DFFC3158/run") == (
+        "/sched2/{hex}/run"
+    )
+    assert profiles.normalize_path_template("/api/v2/users?page=2") == "/api/v2/users"
+    assert profiles.normalize_path_template("/api/v2/users") == "/api/v2/users"
+
+
+def test_observe_records_normalized_paths(profiles: ModuleType) -> None:
+    """采集时就归一动态段，画像里只留稳定的接口模板。"""
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        account="zhangsan",
+        user="",
+        cookie="",
+        real_client_ip="",
+        src_ip="10.0.0.9",
+        dst_ip="10.0.0.80",
+        user_agent="UA/1.0",
+        uri_path="/upgrade/linux_virdb_v2/1793585230/upgrade",
+        ts=datetime(2026, 10, 4, 15, 0, tzinfo=UTC),
+        status_code=200,
+    )
+    buckets: dict[str, Any] = {}
+    profiles.observe_entry(buckets, entry)
+    assert dict(buckets["account|zhangsan"]["paths"]) == {
+        "/upgrade/linux_virdb_v2/{id}/upgrade": 1
+    }
+
+
 def test_observe_records_only_api_paths(profiles: ModuleType) -> None:
     """采集侧就过滤：静态资源不占 30 条上限。"""
     from types import SimpleNamespace

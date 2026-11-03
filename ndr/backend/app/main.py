@@ -42,6 +42,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS direction VARCHAR(16) DEFAULT ''",
     # 观察事实派工冷却（D7，2026-10-29）：同一事实 6 小时内不重复派工
     "ALTER TABLE observations ADD COLUMN IF NOT EXISTS last_enqueued_at TIMESTAMPTZ",
+    # 观察事实的跨时间窗稳定身份（2026-11）：profile_anomaly 按「实体+信号码」
+    # 复用，不再让同一设备换源 IP / 换时间戳路径就变成新任务
+    "ALTER TABLE observations ADD COLUMN IF NOT EXISTS reuse_identity VARCHAR(200) NOT NULL DEFAULT ''",
     # 精准抑制：按「启用+到期」筛活跃条目、按命中数排序找最需要复核的条目
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_enabled_expiry ON analysis_suppressions (enabled, expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_analysis_suppressions_hits ON analysis_suppressions (hits)",
@@ -94,6 +97,12 @@ _MIGRATIONS: tuple[str, ...] = (
     (
         "CREATE INDEX IF NOT EXISTS ix_analysis_tasks_lease_open "
         "ON analysis_tasks (lease_until) WHERE state = 'claimed'"
+    ),
+    # 同一 canonical reuse_identity 的活跃任务只保留一条（入队时合并）
+    (
+        "CREATE INDEX IF NOT EXISTS ix_analysis_tasks_reuse_identity "
+        "ON analysis_tasks ((hint->>'reuse_identity')) "
+        "WHERE state IN ('pending','deferred','claimed')"
     ),
     # 盲区清单只扫"见过但没分析过 / 分析过但很久"的行
     (

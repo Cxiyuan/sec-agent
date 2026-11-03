@@ -93,6 +93,13 @@ export interface TaskIdentity {
   readonly subjectKind: string
   readonly subject: string
   readonly feature: string
+  /**
+   * NDR 下发的 canonical `reuse_identity`。
+   *
+   * 有它时它就是跨任务的主键：同一个设备换源 IP、换动态路径，subject 会变，
+   * 但身份不变。没有它才回退到 `kind|subjectKind|subject|feature` 四元组。
+   */
+  readonly reuseIdentity?: string
 }
 
 /** 见过的一个任务（身份 + 判定）。 */
@@ -111,11 +118,17 @@ export interface SuppressedTask extends TaskIdentity {
 
 /** 任务 → 现象身份（抑制记忆与复用共用同一套口径）。 */
 export function taskIdentity(task: ClaimedTask): TaskIdentity {
+  const hint = task.hint
+  const reuseIdentity =
+    typeof hint === 'object' && hint !== null && !Array.isArray(hint)
+      ? String((hint as Record<string, unknown>)['reuse_identity'] ?? '').trim()
+      : ''
   return {
     kind: String(task.kind ?? ''),
     subjectKind: String(task.subject_kind ?? ''),
     subject: String(task.subject ?? ''),
     feature: String(task.feature ?? '').trim(),
+    ...(reuseIdentity !== '' ? { reuseIdentity } : {}),
   }
 }
 
@@ -184,7 +197,10 @@ export function taskResultKey(
   const requireIdentity = opts.requireIdentity ?? true
   if (hintIdentity === '' && requireIdentity) return null
   if (hintIdentity !== '') {
-    const base = JSON.stringify([task.kind, task.subject_kind, subject, hintIdentity])
+    // NDR 的 canonical identity 已经包含实体/规则/目标等区分维度；
+    // 再拼 subject 会把「同一设备换源 IP」拆成新键，复用永远打不中。
+    // subject 只在没有 identity 的旧兜底路径里参与。
+    const base = JSON.stringify([task.kind, task.subject_kind, hintIdentity])
     return TASK_RESULT_PREFIX + createHash('sha256').update(base, 'utf8').digest('hex').slice(0, 32)
   }
   const feature = (task.feature ?? '').trim()

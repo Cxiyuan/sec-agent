@@ -741,3 +741,62 @@ def test_no_match_is_rejected_for_agent(sup: ModuleType, monkeypatch: pytest.Mon
     ok = _body(match=_tree(("src_ip", "eq", "10.1.2.3"), ("dst_port", "eq", 22346)))
     out = sup.create_item(ok, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
     assert out["mode"] in (sup.MODE_SUPPRESS, sup.MODE_RECORD_ONLY)
+
+
+def test_queue_enqueue_merges_same_canonical_identity(
+    sup: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一 canonical identity 的活跃任务只留一条（跨源 IP 不再重复派工）。"""
+    from app.analysis import queue as q
+
+    canonical = "profile_anomaly|entity:session:dde03ed6|codes:cross_ip"
+    row = SimpleNamespace(coalesced=1, strength=0.5, priority=50, updated_at=None)
+    bumps: list[tuple[str, int]] = []
+
+    class _Result:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        def first(self) -> Any:
+            return self.value
+
+    class _DB:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.commits = 0
+
+        def scalars(self, _stmt: Any) -> _Result:
+            self.calls += 1
+            return _Result(None if self.calls == 1 else row)
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    db = _DB()
+    monkeypatch.setattr(q, "suppression", sup)
+    monkeypatch.setattr(sup, "decide_task", lambda **_kw: None)
+    monkeypatch.setattr(q.params, "enabled", lambda: True)
+    monkeypatch.setattr(q.params, "candidate_kinds", lambda: {"observation"})
+    monkeypatch.setattr(q, "SessionLocal", lambda: db)
+    monkeypatch.setattr(q, "bump", lambda _client, field, count=1: bumps.append((field, count)))
+
+    result = q.enqueue(
+        kind="observation",
+        subject_kind="asset",
+        subject="10.1.1.21",
+        strength=0.8,
+        feature="profile_anomaly",
+        hint={"reuse_identity": canonical},
+    )
+    assert result == "merged"
+    assert row.coalesced == 2
+    assert row.strength == 0.8
+    assert row.priority == 80
+    assert db.commits == 1
+    assert ("merged_identity", 1) in bumps

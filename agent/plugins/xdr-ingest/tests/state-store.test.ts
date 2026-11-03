@@ -100,6 +100,27 @@ test('抑制记忆：记身份 → 标记被抑制 → 按身份查到', async (
   assert.equal(hit?.verdict, 'false_positive')
 })
 
+test('抑制记忆：canonical identity 跨 subject 命中', async () => {
+  const store = new MemoryStateStore()
+  const base = {
+    kind: 'observation',
+    subjectKind: 'asset',
+    subject: '10.0.0.5',
+    feature: 'profile_anomaly',
+    reuseIdentity: 'profile_anomaly|entity:session:dde03ed6|codes:cross_ip',
+  }
+  await store.recordTaskSeen({ ...base, taskId: 'task-1', verdict: 'false_positive' })
+  await store.markSuppressed('task-1', '共享会话换 IP 是噪声')
+  // 同一实体换了一个源 IP：subject 变了，但 canonical identity 没变，必须命中。
+  const hit = await store.findSuppressed({ ...base, subject: '10.0.0.6' })
+  assert.equal(hit?.suppressedBy, '共享会话换 IP 是噪声')
+  // 没有 canonical identity 的旧四元组仍按 subject 隔离，不能误伤别的对象。
+  const legacy = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1' }
+  await store.recordTaskSeen({ ...legacy, taskId: 'task-2', verdict: 'false_positive' })
+  await store.markSuppressed('task-2', '旧身份')
+  assert.equal(await store.findSuppressed({ ...legacy, subject: '10.0.0.6' }), null)
+})
+
 test('抑制记忆：没见过的任务 id 标不上；按身份可以补标', async () => {
   const store = new MemoryStateStore()
   const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.9', feature: 'sid:2' }

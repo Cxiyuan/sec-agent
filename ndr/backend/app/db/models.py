@@ -733,6 +733,12 @@ class Observation(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     dedupe_key: Mapped[str] = mapped_column(String(200), default="")
+    #: 跨时间窗稳定的现象身份（复用/抑制用）。
+    #:
+    #: 与 `dedupe_key` 分开：`dedupe_key` 含 subject（同一设备换源 IP 就是新行），
+    #: 只适合做事实行去重；这里放「实体 + 信号码」的规范身份，让同一设备的
+    #: profile_anomaly 在换源 IP、换时间戳路径后仍能复用同一结论。
+    reuse_identity: Mapped[str] = mapped_column(String(200), default="")
     #: 最近一次被转成任务的时刻（D7，2026-10-29）：同一事实 6 小时内不重复派工，
     #: 否则最强的几条事实每 5 分钟重新占位，低强度事实永远轮不到
     last_enqueued_at: Mapped[datetime | None] = mapped_column(

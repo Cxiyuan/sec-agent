@@ -660,8 +660,15 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
   }
 }
 
-/** 现象身份的记忆键（与复用键同一套四元组，字段顺序固定）。 */
+/**
+ * 现象身份的记忆键。
+ *
+ * 有 NDR canonical `reuse_identity` 时只认它：同一设备换源 IP 仍应命中同一条
+ * 抑制记忆。没有时才回退旧四元组（老 NDR / 人工按条件树反推的身份）。
+ */
 export function seenKey(identity: TaskIdentity): string {
+  const reuseIdentity = (identity.reuseIdentity ?? '').trim()
+  if (reuseIdentity !== '') return JSON.stringify(['identity', reuseIdentity])
   return JSON.stringify([
     identity.kind ?? '',
     identity.subjectKind ?? '',

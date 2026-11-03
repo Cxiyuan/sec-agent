@@ -391,6 +391,23 @@ test('reuses a fresh same-phenomenon conclusion without starting a session', asy
   assert.equal(analyst.reuseStats.reused, 1)
 })
 
+test('canonical identity reuses a conclusion when only the subject changed', async () => {
+  const rec = recorder()
+  const store = new MemoryStateStore()
+  const key = await seed(store, 'false_positive')
+  const analyst = new Analyst({
+    agents: fakeAgents(rec, async () => undefined),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    taskResults: store,
+    taskReuseTtlMs: 86_400_000,
+  })
+  const outcome = await analyst.run({ ...reusable, id: 'task-3', subject: '10.0.0.10' })
+  assert.equal(outcome.reused, true)
+  assert.equal(rec.prompts.length, 0, '同一实体换源 IP 不应重新起会话')
+  assert.equal((await store.load(key))?.occurrences, 3)
+})
+
 test('same-phenomenon tasks serialize so the second task sees the first result', async () => {
   const rec = recorder()
   const store = new MemoryStateStore()
@@ -624,7 +641,14 @@ test('a completed analysis is stored for the next occurrence', async () => {
 test('命中抑制记忆：不起会话、不取数，直接交回', async () => {
   const rec = recorder()
   const store = new MemoryStateStore()
-  const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1' }
+  const identity = {
+    kind: 'hit',
+    subjectKind: 'ip',
+    subject: '10.0.0.5',
+    feature: 'sid:1',
+    // 任务 fixture 的 NDR canonical identity；抑制记忆现在按它匹配。
+    reuseIdentity: 'shift|ip:10.0.0.5|conn_count',
+  }
   await store.recordTaskSeen({ ...identity, taskId: 'task-old', verdict: 'false_positive' })
   await store.markSuppressed('task-old', '已知扫描器噪声')
 
@@ -651,6 +675,7 @@ test('没有被抑制的现象照常分析（抑制记忆不误伤）', async ()
   const store = new MemoryStateStore()
   await store.recordTaskSeen({
     kind: 'hit', subjectKind: 'ip', subject: '10.0.0.5', feature: 'sid:1',
+    reuseIdentity: 'shift|ip:10.0.0.5|conn_count_other',
     taskId: 'task-old', verdict: 'false_positive',
   })
   await store.markSuppressed('task-old', '别的现象')

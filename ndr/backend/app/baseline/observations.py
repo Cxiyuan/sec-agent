@@ -72,11 +72,16 @@ def emit(
     strength: float | None = None,
     cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
     now: datetime | None = None,
+    reuse_identity: str = "",
 ) -> bool:
     """写一条事实（冷却期内合并）。失败只告警，**绝不影响检测热路径**。
 
     `key` 用来区分同一对象的多个事实（例如同一台服务器的不同目的地）；
     不传就用 `facts` 的键集合当签名 —— 调用方最好显式传。
+
+    `reuse_identity` 是跨时间窗稳定的现象身份，和 `dedupe_key` 分开：
+    后者含 subject（同一设备换源 IP 就是新行），前者可以按「实体+信号码」复用。
+    不传时保持旧行为（任务侧回退用 dedupe_key）。
     """
     subject = str(subject or "").strip()[:128]
     if subject == "" or kind == "":
@@ -84,6 +89,7 @@ def emit(
     moment = now or datetime.now(UTC)
     fingerprint = key or ",".join(sorted(str(k) for k in facts))
     dedupe = f"{kind}:{subject_kind}:{subject}:{fingerprint}"[:200]
+    stable_identity = str(reuse_identity or "").strip()[:200]
     value = KIND_STRENGTH.get(kind, 0.3) if strength is None else max(0.0, min(1.0, strength))
     try:
         with SessionLocal() as db:
@@ -99,6 +105,8 @@ def emit(
                     row.last_seen = moment
                     row.strength = max(float(row.strength or 0), value)
                     row.facts = facts
+                    if stable_identity:
+                        row.reuse_identity = stable_identity
                     db.commit()
                     return True
                 # 冷却期过了：复用同一行（保留 first_seen，刷新内容与计数起点）
@@ -106,6 +114,8 @@ def emit(
                 row.facts = facts
                 row.strength = value
                 row.last_seen = moment
+                if stable_identity:
+                    row.reuse_identity = stable_identity
                 db.commit()
                 return True
             db.add(
@@ -119,6 +129,7 @@ def emit(
                     first_seen=moment,
                     last_seen=moment,
                     dedupe_key=dedupe,
+                    reuse_identity=stable_identity,
                 )
             )
             db.commit()

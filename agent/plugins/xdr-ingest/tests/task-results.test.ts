@@ -51,7 +51,9 @@ test('identity prefers the NDR-issued reuse_identity', () => {
   assert.ok(key !== null)
   assert.ok(key.startsWith(TASK_RESULT_PREFIX))
   assert.equal(taskResultKey({ ...task }), key)
-  assert.notEqual(taskResultKey({ ...task, subject: '10.0.0.10' }), key)
+  // canonical identity 已经包含实体；同一实体换 subject（例如同一设备换源 IP）
+  // 必须复用同一条结论，不能因为 subject 变了就重新分析。
+  assert.equal(taskResultKey({ ...task, subject: '10.0.0.10' }), key)
   assert.notEqual(taskResultKey({ ...task, hint: { reuse_identity: 'content-b' } }), key)
   // B1：有了 NDR 下发的稳定身份，本地 feature 不再参与（同一事实跨窗口复用）
   assert.equal(taskResultKey({ ...task, feature: 'sid:1000002' }), key)

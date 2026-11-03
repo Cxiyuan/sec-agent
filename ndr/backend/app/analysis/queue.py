@@ -177,6 +177,32 @@ def enqueue(
                 bump(client, "merged")
                 return "merged"
 
+            # 同一 canonical 现象身份只保留一条活跃任务。
+            # 这是 2026-11 的关键修复：profile_anomaly 会按内网源 IP 发多条事实，
+            # dedupe_key 因 subject 不同而不同；如果只看 dedupe_key，同一设备换一个
+            # IP 就会重复入队。这里按 hint.reuse_identity 合并，保证同一实体+信号码
+            # 在 pending/deferred/claimed 期间只有一条任务。
+            if identity and not force:
+                same_identity = db.scalars(
+                    select(AnalysisTask)
+                    .where(
+                        AnalysisTask.kind == kind,
+                        AnalysisTask.state.in_(("pending", "deferred", "claimed")),
+                        AnalysisTask.hint["reuse_identity"].astext == identity,
+                    )
+                    .order_by(AnalysisTask.created_at.asc())
+                    .limit(1)
+                ).first()
+                if same_identity is not None:
+                    same_identity.coalesced = int(same_identity.coalesced or 0) + 1
+                    if strength > float(same_identity.strength or 0):
+                        same_identity.strength = strength
+                        same_identity.priority = round(strength * 100)
+                    same_identity.updated_at = now
+                    db.commit()
+                    bump(client, "merged_identity")
+                    return "merged"
+
             pending = int(
                 db.scalar(
                     select(func.count())
