@@ -125,7 +125,10 @@ def _write_backup(out_dir: Path, inventory: dict[str, Any]) -> str:
             "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in serialized) + ("\n" if serialized else ""),
             encoding="utf-8",
         )
-    raw = json.dumps(manifest, ensure_ascii=False, sort_keys=True, default=str).encode()
+    # 哈希只覆盖删除对象本身（task_ids + rows），不覆盖导出时间/路径；
+    # 否则 dry-run 与 apply 两次写 manifest 永远不一致。
+    stable = {"task_ids": manifest["task_ids"], "rows": manifest["rows"]}
+    raw = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str).encode()
     digest = hashlib.sha256(raw).hexdigest()
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (out_dir / "manifest.sha256").write_text(digest + "\n", encoding="utf-8")

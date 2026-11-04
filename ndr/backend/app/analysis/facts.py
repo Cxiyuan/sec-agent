@@ -13,14 +13,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, select
 
 from app.analysis import domain_intel
 from app.db.base import SessionLocal
-from app.db.models import AnalysisResult, AnalysisTask, AssetRecord, HitEvent
+from app.db.models import AnalysisAnchor, AnalysisResult, AnalysisTask, AssetRecord, HitEvent
 from app.detector import suppression
 
 _FACTS_VERSION = 1
@@ -118,19 +119,45 @@ def _history(task: AnalysisTask, domains: list[str]) -> list[dict[str, Any]]:
             .order_by(AnalysisResult.created_at.desc())
             .limit(10)
         ).all()
-    out = [
+        domain_rows: list[AnalysisResult] = []
+        if domains:
+            result_ids = list(
+                db.scalars(
+                    select(AnalysisAnchor.result_id).where(
+                        AnalysisAnchor.asset_kind == "domain",
+                        AnalysisAnchor.asset_value.in_(domains),
+                    )
+                ).all()
+            )
+            if result_ids:
+                domain_rows = list(
+                    db.scalars(
+                        select(AnalysisResult)
+                        .where(cast(AnalysisResult.id, String).in_([str(x) for x in result_ids]))
+                        .order_by(AnalysisResult.created_at.desc())
+                        .limit(10)
+                    ).all()
+                )
+
+    def _rows(values: Sequence[AnalysisResult]) -> list[dict[str, Any]]:
+        return [
+            {
+                "task_id": str(row.task_id),
+                "verdict": str(row.verdict or ""),
+                "confidence": float(row.confidence or 0),
+                "summary": str(row.summary or "")[:500],
+                "created_at": row.created_at.isoformat() if row.created_at else "",
+            }
+            for row in values
+        ]
+
+    return [
         {
-            "task_id": str(row.task_id),
-            "verdict": str(row.verdict or ""),
-            "confidence": float(row.confidence or 0),
-            "summary": str(row.summary or "")[:500],
-            "created_at": row.created_at.isoformat() if row.created_at else "",
+            "query_domains": domains,
+            "same_subject": _rows(rows),
+            "same_domain": _rows(domain_rows),
         }
-        for row in rows
     ]
-    # 域名历史由 domain anchors / findings 逐步完善；这里先给出当前任务域列表，
-    # 避免把“同一客户端没有历史”误当成“这个域名没有历史”。
-    return [{"query_domains": domains, "same_subject": out}]
 
 
 def build_task_facts(task_id: str) -> dict[str, Any]:
