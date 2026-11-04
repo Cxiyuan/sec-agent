@@ -809,30 +809,51 @@ def _auto_suppress_event_false_positive(
                 continue
             if raw_verdict.strip().lower() not in ("false_positive", "benign"):
                 continue
-        src_ips = sorted(
-            {
-                str(event.src_ip or "").strip()
-                for event in rule_events
-                if str(event.src_ip or "").strip()
-            }
-        )
-        if not src_ips:
-            continue
-        if len(src_ips) == 1:
-            scopes: list[tuple[str, str]] = [("src_ip", src_ips[0])]
+        scopes: list[tuple[str, str, str]] = []
+        if "dns" in rule.lower():
+            # DNS 隧道签名只看"长随机子域"，CDN/云厂商的合法域名同样长这样。
+            # 只按规则+网段压会把整条 DNS 隧道检测关掉，必须收敛到具体域名。
+            queries = sorted(
+                {
+                    query
+                    for event in rule_events
+                    for sample in (getattr(event, "evidence", None) or [])
+                    if (query := suppression.dns_query_from_sample(sample))
+                }
+            )
+            suffix = _common_dns_suffix(queries)
+            if not suffix:
+                log.info(
+                    "自动事件抑制跳过（任务 %s / 规则 %s）：DNS 规则没有可收敛的公共域名",
+                    task_id, rule,
+                )
+                continue
+            scopes = [("dns.query", "contains", suffix)]
         else:
-            segments = sorted({net_of(ip) for ip in src_ips} - {""})
-            scopes = [("segment", segment) for segment in segments[:8]]
-        for field, value in scopes:
+            src_ips = sorted(
+                {
+                    str(event.src_ip or "").strip()
+                    for event in rule_events
+                    if str(event.src_ip or "").strip()
+                }
+            )
+            if not src_ips:
+                continue
+            if len(src_ips) == 1:
+                scopes = [("src_ip", "eq", src_ips[0])]
+            else:
+                segments = sorted({net_of(ip) for ip in src_ips} - {""})
+                scopes = [("segment", "eq", segment) for segment in segments[:8]]
+        for field, op, value in scopes:
             match = {
                 "logic": "and",
                 "rules": [
                     {"field": "rule", "op": "eq", "value": rule},
-                    {"field": field, "op": "eq", "value": value},
+                    {"field": field, "op": op, "value": value},
                 ],
             }
             digest = hashlib.sha256(
-                f"{task_id}|{rule}|{field}|{value}".encode()
+                f"{task_id}|{rule}|{field}|{op}|{value}".encode()
             ).hexdigest()[:12]
             body = {
                 "name": f"agent-{task_id[:8]}-{digest}",
@@ -872,6 +893,34 @@ def _auto_suppress_event_false_positive(
             ",".join(created), task_kind, task_id,
         )
     return ",".join(created)
+
+
+def _common_dns_suffix(queries: list[str]) -> str:
+    """取同组 DNS 查询名的公共后缀（按标签从右往左对齐）。
+
+    例如一组查询都是 ``<随机>.<随机>.v.smtcdns.com`` 时得到
+    ``v.smtcdns.com``；只有单条时取最后三段，避免把随机子域写进抑制条件。
+    公共后缀不足两段（例如只剩 ``com``）说明混杂了多个域，放弃自动抑制。
+    """
+    labels = [
+        [part for part in str(query or "").strip().strip(".").lower().split(".") if part]
+        for query in queries
+    ]
+    labels = [parts for parts in labels if len(parts) >= 2]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        suffix = labels[0][-3:]
+    else:
+        suffix = list(reversed(labels[0]))
+        for parts in labels[1:]:
+            rev = list(reversed(parts))
+            same = 0
+            while same < min(len(suffix), len(rev)) and suffix[same] == rev[same]:
+                same += 1
+            suffix = suffix[:same]
+        suffix = list(reversed(suffix))
+    return ".".join(suffix) if len(suffix) >= 2 else ""
 
 
 def _event_ids_of_hint(hint: dict[str, Any]) -> list[str]:

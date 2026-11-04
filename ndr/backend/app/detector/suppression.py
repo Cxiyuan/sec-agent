@@ -68,6 +68,7 @@ ALLOWED_FIELDS: dict[str, str] = {
     "signature_id": "签名 SID（精确）",
     "http.uri": "HTTP 请求 URI（含 contains/regex）",
     "http.hostname": "HTTP Host / DNS 名",
+    "dns.query": "DNS 查询名（含 contains/regex，按域名收敛）",
     "user_agent": "User-Agent",
     "ja3": "TLS 客户端指纹",
     "fuid": "文件 id（fuid）",
@@ -396,6 +397,7 @@ def field_values(entry: UnifiedLog, extra: dict[str, Any] | None = None) -> dict
         "signature_id": str(entry.signature_id or ""),
         "http.uri": str(entry.query or entry.uri_path or ""),
         "http.hostname": str(entry.hostname or ""),
+        "dns.query": str(entry.query or ""),
         "user_agent": str(entry.user_agent or ""),
         "ja3": str(entry.ja3 or ""),
         "fuid": str(entry.fuid or ""),
@@ -581,6 +583,34 @@ def _src_ips_of(match: dict[str, Any]) -> list[str]:
     return values
 
 
+_DNS_QNAME_RE = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", re.IGNORECASE
+)
+
+
+def dns_query_from_sample(sample: Any) -> str:
+    """从命中事件样例里取 DNS 查询名。
+
+    结构化事件直接有 `query`；Suricata 的 `payload_printable` 只有原文
+    （如 ``... aafd....v.smtcdns.com.....``），从载荷里按域名形态提取。
+    `HitEvent.evidence` 在落库时已裁剪，不能指望保留完整 DNS 报文。
+    """
+    if not isinstance(sample, dict):
+        return ""
+    for key in ("query", "dns_query", "qname", "dns.qname"):
+        value = sample.get(key)
+        if isinstance(value, str) and "." in value:
+            return value.strip().strip(".").lower()
+    for key in ("payload_printable", "payload", "raw"):
+        text = sample.get(key)
+        if not isinstance(text, str):
+            continue
+        found = _DNS_QNAME_RE.findall(text)
+        if found:
+            return max(found, key=lambda item: (item.count("."), len(item))).strip(".").lower()
+    return ""
+
+
 def _hit_event_matches(row: HitEvent, match: dict[str, Any]) -> bool:
     """这条**命中事件**是否落在条件树里（用落库的样例事件求值）。
 
@@ -603,7 +633,7 @@ def _hit_event_matches(row: HitEvent, match: dict[str, Any]) -> bool:
             dst_port=_as_port(sample.get("dst_port") or (row.dst_ports or ["0"])[0] or 0),
             protocol=str(sample.get("protocol") or ""),
             signature_id=str(sample.get("signature_id") or ""),
-            query=str(sample.get("query") or ""),
+            query=dns_query_from_sample(sample),
             uri_path=str(sample.get("uri_path") or ""),
             hostname=str(sample.get("hostname") or ""),
             user_agent=str(sample.get("user_agent") or ""),

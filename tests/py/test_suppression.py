@@ -244,6 +244,7 @@ def test_allowed_fields_covers_plan_whitelist(sup: ModuleType) -> None:
         "signature_id",
         "http.uri",
         "http.hostname",
+        "dns.query",
         "user_agent",
         "ja3",
         "fuid",
@@ -901,3 +902,119 @@ def test_auto_event_suppression_derives_match_from_real_events(
         task_hint={"事件ID": ["e1", "e2"]},
         findings={"mixed_two_distinct_events": True},
     ) == ""
+
+
+def test_dns_query_extracted_from_suricata_payload(sup: ModuleType) -> None:
+    """Suricata 命中证据只有 payload_printable 时也要能取出查询名。"""
+    assert (
+        sup.dns_query_from_sample(
+            {
+                "payload_printable": (
+                    "W........... aafd8cefac83e7667d4b1020157fd6db.v.smtcdns.com....."
+                )
+            }
+        )
+        == "aafd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"
+    )
+    assert sup.dns_query_from_sample({"query": "Foo.Example.COM."}) == "foo.example.com"
+
+
+def test_auto_event_suppression_dns_scopes_to_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS 误报只能按具体域名收敛，不能退化成 rule + 网段关掉整条检测。"""
+    from app.analysis import queue as q
+
+    events = [
+        SimpleNamespace(
+            id="e1",
+            rule="DNS 隧道通信",
+            src_ip="172.16.158.176",
+            evidence=[{"query": "aafd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"}],
+        ),
+        SimpleNamespace(
+            id="e2",
+            rule="DNS 隧道通信",
+            src_ip="172.16.158.176",
+            evidence=[{"query": "bbfd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"}],
+        ),
+    ]
+
+    class _DB:
+        def scalars(self, _stmt: Any) -> Any:
+            return SimpleNamespace(all=lambda: events)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(q, "SessionLocal", lambda: _DB())
+    monkeypatch.setattr(q, "bump", lambda *_a, **_k: None)
+    monkeypatch.setattr(q.suppression, "enabled", lambda: True)
+    monkeypatch.setattr(q.suppression, "min_confidence", lambda: 0.8)
+    monkeypatch.setattr(q.suppression, "min_refs", lambda: 3)
+    monkeypatch.setattr(
+        q.suppression,
+        "create_item",
+        lambda body, **kw: calls.append({**body, **kw}) or {"name": body["name"]},
+    )
+    q._auto_suppress_event_false_positive(
+        task_id="abc12345-0000-0000-0000-000000000000",
+        task_kind="hit_cluster",
+        confidence=0.93,
+        evidence_refs=["es:idx/1", "es:idx/2", "es:idx/3"],
+        reused_from="",
+        task_hint={"事件ID": ["e1", "e2"]},
+        findings={},
+    )
+    assert len(calls) == 1
+    assert calls[0]["match"]["rules"] == [
+        {"field": "rule", "op": "eq", "value": "DNS 隧道通信"},
+        {"field": "dns.query", "op": "contains", "value": "v.smtcdns.com"},
+    ]
+
+
+def test_auto_event_suppression_dns_without_domain_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS 规则没有查询名可收敛时宁可跳过，也不能生成宽泛抑制。"""
+    from app.analysis import queue as q
+
+    events = [
+        SimpleNamespace(id="e1", rule="DNS 隧道通信", src_ip="172.16.158.176", evidence=[]),
+    ]
+
+    class _DB:
+        def scalars(self, _stmt: Any) -> Any:
+            return SimpleNamespace(all=lambda: events)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(q, "SessionLocal", lambda: _DB())
+    monkeypatch.setattr(q.suppression, "enabled", lambda: True)
+    monkeypatch.setattr(q.suppression, "min_confidence", lambda: 0.8)
+    monkeypatch.setattr(q.suppression, "min_refs", lambda: 3)
+    monkeypatch.setattr(
+        q.suppression,
+        "create_item",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不应创建")),
+    )
+    assert (
+        q._auto_suppress_event_false_positive(
+            task_id="abc12345-0000-0000-0000-000000000000",
+            task_kind="hit_cluster",
+            confidence=0.93,
+            evidence_refs=["es:idx/1", "es:idx/2", "es:idx/3"],
+            reused_from="",
+            task_hint={"事件ID": ["e1"]},
+            findings={},
+        )
+        == ""
+    )
