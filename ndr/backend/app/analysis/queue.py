@@ -831,7 +831,12 @@ def complete_task(
     if not reused_from and not light_triaged:
         # 初筛关单同理：2B 小模型只看 hint，它的 benign/false_positive 不是取证结论，
         # 不许拿来训练反馈系数（否则一次初筛误判就会机床化后续的派工强度）。
-        rebound = int(feedback.note_verdict(task_kind, task_subject, verdict).get("rebound") or 0)
+        rebound = int(
+            feedback.note_verdict(
+                task_kind, task_subject, verdict, identity=task_identity
+            ).get("rebound")
+            or 0
+        )
     if rebound:
         bump(client, "suppression_rebound", rebound)
     return {

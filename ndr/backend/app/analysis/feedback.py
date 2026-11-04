@@ -90,6 +90,7 @@ def _load(days: int) -> dict[tuple[str, str], float]:
                 select(
                     AnalysisResult.subject,
                     AnalysisResult.kind,
+                    AnalysisResult.reuse_identity,
                     func.count().filter(AnalysisResult.verdict == "false_positive"),
                     func.count().filter(AnalysisResult.verdict == "true_positive"),
                     func.max(AnalysisResult.created_at).filter(
@@ -97,19 +98,29 @@ def _load(days: int) -> dict[tuple[str, str], float]:
                     ),
                 )
                 .where(AnalysisResult.created_at >= since)
-                .group_by(AnalysisResult.subject, AnalysisResult.kind)
+                .group_by(
+                    AnalysisResult.subject,
+                    AnalysisResult.kind,
+                    AnalysisResult.reuse_identity,
+                )
             ).all()
     except Exception as exc:  # noqa: BLE001 — 读不到就按"无历史"处理，不影响派工
         log.debug("读反馈历史失败（本次不加系数）: %s", exc)
         return out
     now = datetime.now(UTC)
-    for subject, kind, fp, tp, last_fp in rows:
+    for subject, kind, identity, fp, tp, last_fp in rows:
         key = (str(subject or ""), str(kind or ""))
         age_days: float | None = None
         if isinstance(last_fp, datetime):
             when = last_fp if last_fp.tzinfo else last_fp.replace(tzinfo=UTC)
             age_days = max(0.0, (now - when).total_seconds() / 86400.0)
-        out[key] = _factor(int(fp or 0), int(tp or 0), age_days)
+        factor = _factor(int(fp or 0), int(tp or 0), age_days)
+        # subject 维度的旧行为保留；同时写 canonical identity 维度，
+        # 让 hit_cluster 优先按 actor/rule/domain 学习，而不是按受害者学习。
+        out[key] = factor
+        identity_text = str(identity or "").strip()
+        if identity_text:
+            out[(identity_text, str(kind or ""))] = factor
     return out
 
 
@@ -136,13 +147,25 @@ def reset_cache() -> None:
 
 
 def apply(
-    strength: float, kind: str, subject: str, table: dict[tuple[str, str], float] | None = None
+    strength: float,
+    kind: str,
+    subject: str,
+    table: dict[tuple[str, str], float] | None = None,
+    *,
+    identity: str = "",
 ):
-    """给一条客观强度套上反馈系数（越界一律夹回区间）。"""
+    """给一条客观强度套上反馈系数（越界一律夹回区间）。
+
+    有 canonical identity 时优先按它学习；没有才回落到 subject。
+    """
     if not params.feedback_enabled():
         return round(max(0.0, min(1.0, float(strength))), 3)
     mapping = factors() if table is None else table
-    factor = mapping.get((str(subject or ""), str(kind or "")), 1.0)
+    identity_text = str(identity or "").strip()
+    factor = mapping.get(
+        (identity_text, str(kind or "")),
+        mapping.get((str(subject or ""), str(kind or "")), 1.0),
+    )
     value = float(strength) * float(factor)
     return round(max(0.0, min(1.0, value)), 3)
 
@@ -164,7 +187,7 @@ def verdict_counts(subject: str) -> dict[str, int]:
     return {str(v or ""): int(c or 0) for v, c in rows}
 
 
-def note_verdict(kind: str, subject: str, verdict: str) -> dict[str, int]:
+def note_verdict(kind: str, subject: str, verdict: str, identity: str = "") -> dict[str, int]:
     """交回结论后记一笔，并触发误抑制回弹判定。
 
     回弹条件：本次判为 `true_positive`，且该对象身上还挂着**生效中的**精准抑制 ——

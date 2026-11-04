@@ -444,7 +444,7 @@ def enqueue_hit_clusters(client: Any) -> int:
         if cid:
             clusters.setdefault(cid, []).append(row)
 
-    def _objective_strength(events: list[Any], principal: str) -> float:
+    def _objective_strength(events: list[Any], principal: str, identity: str = "") -> float:
         distinct_assets = len(
             {str(x) for ev in events for x in (ev.dst_ips or []) if is_internal_ip(str(x))}
         )
@@ -456,6 +456,7 @@ def enqueue_hit_clusters(client: Any) -> int:
             ),
             "hit_cluster",
             principal,
+            identity=identity,
         )
 
     scored: list[tuple[float, str, str, list[Any], str, list[str], list[str]]] = []
@@ -496,7 +497,7 @@ def enqueue_hit_clusters(client: Any) -> int:
             continue  # 24h 观察护栏：这个簇族 24h 内已经派过工
         scored.append(
             (
-                _objective_strength(events, principal),
+                _objective_strength(events, principal, family),
                 principal,
                 principal_role,
                 events,
