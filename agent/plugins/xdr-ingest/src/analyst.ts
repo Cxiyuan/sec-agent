@@ -75,7 +75,8 @@ export interface NdrTaskPort extends NdrPort {
   completeTask(taskId: string, payload: ReusePayload): Promise<CompleteReply>
   deferTask(taskId: string, reason: string): Promise<unknown>
   /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
-  listSuppressions?(): Promise<readonly SuppressionView[]>
+  /** null = 本次同步失败（不要据此清空本地抑制记忆）。 */
+  listSuppressions?(): Promise<readonly SuppressionView[] | null>
   /** 本 NDR 的授权ID（`server_info`）：项目组织绑定校验用；不实现 = 跳过校验。 */
   serverInfo?(): Promise<{ readonly authId: string, readonly source: string, readonly stable: boolean }>
 }
@@ -89,6 +90,10 @@ export interface SuppressionView {
   readonly enabled: boolean
   /** 提交这条抑制的那个任务（智能体自己提交时才有）。 */
   readonly sourceTaskId: string
+  /** 任务级抑制的 canonical identity（事件级为空）。 */
+  readonly reuseIdentity?: string
+  /** 任务级抑制对应的 task kind（事件级为空）。 */
+  readonly taskKind?: string
   /** 条件树（用来按对象粗匹配没有任务 id 的抑制）。 */
   readonly match: unknown
 }
@@ -741,6 +746,8 @@ export class Analyst {
       if (reply.ok !== true && state !== 'done') return null
       if (state !== '' && state !== 'done') return null
       await store.bump(key, new Date().toISOString(), task.id).catch(() => false)
+      // 复用路径没有模型会话，但抑制同步仍要能靠 source_task_id 找到这条身份。
+      await this.rememberIdentity(task, record.verdict)
       await this.archiveConclusion(task, {
         verdict: record.verdict,
         confidence: record.confidence,

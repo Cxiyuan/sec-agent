@@ -271,6 +271,8 @@ export interface TaskSeenStore {
   markSuppressedByIdentity(identity: TaskIdentity, name: string): Promise<number>
   /** 查这个现象是不是已被抑制。 */
   findSuppressed(identity: TaskIdentity): Promise<SuppressedTask | null>
+  /** 清掉名单里已经不存在/已撤销的抑制标记；返回清理条数。 */
+  clearSuppressedExcept(activeNames: ReadonlySet<string>): Promise<number>
 }
 
 /* ------------------------------------------------------------------ */
@@ -502,6 +504,17 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       verdict: row.verdict,
       suppressedBy: row.suppressedBy,
     }
+  }
+
+  async clearSuppressedExcept(activeNames: ReadonlySet<string>): Promise<number> {
+    let cleared = 0
+    for (const [key, row] of this.seen) {
+      if (row.suppressedBy !== '' && !activeNames.has(row.suppressedBy)) {
+        this.seen.set(key, { ...row, suppressedBy: '' })
+        cleared += 1
+      }
+    }
+    return cleared
   }
 
   /* ---------- 结论留档 ---------- */

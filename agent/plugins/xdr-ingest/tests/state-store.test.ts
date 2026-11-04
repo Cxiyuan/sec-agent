@@ -121,6 +121,19 @@ test('抑制记忆：canonical identity 跨 subject 命中', async () => {
   assert.equal(await store.findSuppressed({ ...legacy, subject: '10.0.0.6' }), null)
 })
 
+test('抑制记忆：撤销/过期后清掉本地陈旧标记', async () => {
+  const store = new MemoryStateStore()
+  const keep = { kind: 'observation', subjectKind: 'asset', subject: '10.0.0.5', feature: 'profile_anomaly', reuseIdentity: 'profile_anomaly|entity:session:keep|codes:cross_ip' }
+  const stale = { kind: 'observation', subjectKind: 'asset', subject: '10.0.0.6', feature: 'profile_anomaly', reuseIdentity: 'profile_anomaly|entity:session:stale|codes:cross_ip' }
+  await store.recordTaskSeen({ ...keep, taskId: 'task-keep', verdict: 'false_positive' })
+  await store.recordTaskSeen({ ...stale, taskId: 'task-stale', verdict: 'false_positive' })
+  await store.markSuppressed('task-keep', '当前仍有效')
+  await store.markSuppressed('task-stale', '已经撤销')
+  assert.equal(await store.clearSuppressedExcept(new Set(['当前仍有效'])), 1)
+  assert.equal((await store.findSuppressed(keep))?.suppressedBy, '当前仍有效')
+  assert.equal(await store.findSuppressed(stale), null)
+})
+
 test('抑制记忆：没见过的任务 id 标不上；按身份可以补标', async () => {
   const store = new MemoryStateStore()
   const identity = { kind: 'hit', subjectKind: 'ip', subject: '10.0.0.9', feature: 'sid:2' }

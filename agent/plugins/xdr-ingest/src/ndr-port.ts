@@ -210,23 +210,28 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
    * 为什么智能体要自己拉一遍：NDR 侧拦的是"规则命中"这条路径，同一个现象
    * 还会从别的线索类型冒出来；智能体自己记一份，才能在起会话之前就跳过。
    */
-  async listSuppressions(): Promise<readonly SuppressionView[]> {
+  async listSuppressions(): Promise<readonly SuppressionView[] | null> {
     try {
-      const reply = await this.caller.callTool('list_suppressions', { enabled_only: true, limit: 200 })
+      const reply = await this.caller.callTool('list_suppressions', { enabled_only: true, limit: 500 })
+      if (typeof reply['error'] === 'string' && reply['error'] !== '') return null
       const items = reply['items']
-      if (!Array.isArray(items)) return []
+      if (!Array.isArray(items)) return null
       const out: SuppressionView[] = []
       for (const item of items) {
         if (typeof item !== 'object' || item === null) continue
         const row = item as Record<string, unknown>
         const id = String(row['id'] ?? '').trim()
         if (id === '') continue
+        const reuseIdentity = String(row['reuse_identity'] ?? '').trim()
+        const taskKind = String(row['task_kind'] ?? '').trim()
         out.push({
           id,
           name: String(row['name'] ?? ''),
           mode: String(row['mode'] ?? ''),
           enabled: row['enabled'] === true,
           sourceTaskId: String(row['source_task_id'] ?? ''),
+          ...(reuseIdentity !== '' ? { reuseIdentity } : {}),
+          ...(taskKind !== '' ? { taskKind } : {}),
           match: row['match'] ?? null,
         })
       }
@@ -236,7 +241,7 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
         '[xdr-ingest] list_suppressions 失败：',
         error instanceof Error ? error.message : String(error),
       )
-      return []
+      return null
     }
   }
 }

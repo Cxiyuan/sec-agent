@@ -912,6 +912,23 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     }
   }
 
+  async clearSuppressedExcept(activeNames: ReadonlySet<string>): Promise<number> {
+    if (!await this.usable()) return 0
+    try {
+      const { rowCount } = await this.pool.query(
+        `UPDATE xdr_ingest_task_seen
+         SET suppressed_by = '', updated_at = now()
+         WHERE project_id = $1 AND suppressed_by <> ''
+           AND NOT (suppressed_by = ANY($2::text[]))`,
+        [this.projectId, [...activeNames]],
+      )
+      return rowCount ?? 0
+    } catch (error) {
+      console.error(`${LOG_PREFIX} suppression clear failed:`, this.message(error))
+      return 0
+    }
+  }
+
   /* ---------- 结论留档 ---------- */
 
   async saveConclusion(record: ConclusionRecord): Promise<void> {

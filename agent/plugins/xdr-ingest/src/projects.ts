@@ -335,18 +335,44 @@ export class ProjectRuntime {
     const ndr = this.ndr
     this.syncSuppressions = async (): Promise<void> => {
       const items = await ndr.listSuppressions()
+      // 拉取失败与“NDR 当前确实没有抑制”必须区分：前者不能清空本地记忆。
+      if (items === null) return
+      const activeNames = new Set(items.filter(item => item.enabled && item.name !== '').map(item => item.name))
       let marked = 0
       for (const item of items) {
         if (!item.enabled) continue
         if (item.sourceTaskId !== '') {
           if (await this.store.markSuppressed(item.sourceTaskId, item.name)) marked += 1
         }
+        // 任务级抑制的 match 为空，必须用 canonical reuse_identity 记忆；
+        // 旧实现只看 match，导致自动补出来的 canonical 抑制压根没进本地记忆。
+        if (item.reuseIdentity !== undefined && item.reuseIdentity !== '') {
+          const identity = {
+            kind: item.taskKind ?? '',
+            subjectKind: '',
+            subject: '',
+            feature: '',
+            reuseIdentity: item.reuseIdentity,
+          }
+          await this.store.recordTaskSeen({
+            ...identity,
+            taskId: item.sourceTaskId,
+            verdict: 'false_positive',
+          })
+          marked += await this.store.markSuppressedByIdentity(identity, item.name)
+          continue
+        }
         const identity = identityOfMatch(item.match)
         if (identity === null) continue
         marked += await this.store.markSuppressedByIdentity(identity, item.name)
       }
-      if (marked > 0) {
-        console.log(`[xdr-ingest] ${this.projectId} 抑制记忆已同步：${marked} 条现象标记为不再分析`)
+      // 撤销/过期/停用的抑制不能继续留在本地记忆里；否则 NDR 已重新派工，
+      // agent 仍会按旧记忆直接交回 false_positive，形成静默失效。
+      const cleared = await this.store.clearSuppressedExcept(activeNames)
+      if (marked > 0 || cleared > 0) {
+        console.log(
+          `[xdr-ingest] ${this.projectId} 抑制记忆已同步：${marked} 条标记，${cleared} 条清除`,
+        )
       }
     }
     const loop = new ClaimLoop({
