@@ -10,7 +10,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 const CACHE_TTL_MS = 60 * 60 * 1000
-const TIMEOUT_MS = 6_000
+const TIMEOUT_MS = 12_000
 const MULTI_SUFFIXES = new Set([
   'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn',
   'co.uk', 'org.uk', 'ac.uk', 'co.jp', 'com.au', 'net.au',
