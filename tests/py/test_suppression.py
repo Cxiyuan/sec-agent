@@ -929,13 +929,13 @@ def test_auto_event_suppression_dns_scopes_to_domain(
         SimpleNamespace(
             id="e1",
             rule="DNS 隧道通信",
-            src_ip="172.16.158.176",
+            src_ip="10.1.2.3",
             evidence=[{"query": "aafd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"}],
         ),
         SimpleNamespace(
             id="e2",
             rule="DNS 隧道通信",
-            src_ip="172.16.158.176",
+            src_ip="10.1.2.3",
             evidence=[{"query": "bbfd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"}],
         ),
     ]
@@ -984,7 +984,7 @@ def test_auto_event_suppression_dns_without_domain_is_skipped(
     from app.analysis import queue as q
 
     events = [
-        SimpleNamespace(id="e1", rule="DNS 隧道通信", src_ip="172.16.158.176", evidence=[]),
+        SimpleNamespace(id="e1", rule="DNS 隧道通信", src_ip="10.1.2.3", evidence=[]),
     ]
 
     class _DB:
