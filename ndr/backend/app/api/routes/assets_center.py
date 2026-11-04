@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -33,6 +34,17 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
 CRITICALITY = ("core", "high", "normal", "test")
+ROLES = (
+    "server",
+    "workstation",
+    "network_device",
+    "security_appliance",
+    "scanner",
+    "overlay_vpn",
+    "other",
+    "unknown",
+)
+AUTHORIZATIONS = ("authorized", "unauthorized", "unknown")
 
 #: 端口 → 应用名（与可视化流量同一份口径，避免两处各写一套）
 #: `shard_problem` 同样复用：ES 分片报错时会安静地返回 0 桶，必须显式说出来
@@ -170,6 +182,10 @@ class AssetIn(BaseModel):
     criticality: str = "normal"
     tags: str = ""
     note: str = ""
+    role: str = "unknown"
+    authorization: str = "unknown"
+    authorization_note: str = ""
+    expected_scan: bool = False
 
 
 class AssetPatch(BaseModel):
@@ -179,6 +195,10 @@ class AssetPatch(BaseModel):
     criticality: str | None = None
     tags: str | None = None
     note: str | None = None
+    role: str | None = None
+    authorization: str | None = None
+    authorization_note: str | None = None
+    expected_scan: bool | None = None
 
 
 def _asset_dict(row: AssetRecord, groups: dict[str, str]) -> dict[str, Any]:
@@ -192,6 +212,12 @@ def _asset_dict(row: AssetRecord, groups: dict[str, str]) -> dict[str, Any]:
         "criticality": row.criticality or "normal",
         "tags": [t.strip() for t in (row.tags or "").split(",") if t.strip()],
         "note": row.note or "",
+        "role": row.role or "unknown",
+        "authorization": row.authorization or "unknown",
+        "authorization_note": row.authorization_note or "",
+        "authorized_by": row.authorized_by or "",
+        "authorized_at": row.authorized_at.isoformat() if row.authorized_at else "",
+        "expected_scan": bool(row.expected_scan),
         "created_at": row.created_at.isoformat() if row.created_at else "",
         "updated_at": row.updated_at.isoformat() if row.updated_at else "",
     }
@@ -284,6 +310,10 @@ def create_record(
             criticality=criticality,
             tags=payload.tags or "",
             note=payload.note or "",
+            role=payload.role if payload.role in ROLES else "unknown",
+            authorization=payload.authorization if payload.authorization in AUTHORIZATIONS else "unknown",
+            authorization_note=payload.authorization_note or "",
+            expected_scan=bool(payload.expected_scan),
         )
         db.add(row)
         db.commit()
@@ -294,7 +324,7 @@ def create_record(
 
 @router.patch("/records/{record_id}")
 def update_record(
-    record_id: str, payload: AssetPatch, _: Annotated[User, Depends(get_current_user)]
+    record_id: str, payload: AssetPatch, user: Annotated[User, Depends(get_current_user)]
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         row = db.get(AssetRecord, record_id)
@@ -312,6 +342,17 @@ def update_record(
             row.tags = payload.tags
         if payload.note is not None:
             row.note = payload.note
+        if payload.role is not None and payload.role in ROLES:
+            row.role = payload.role
+        if payload.authorization is not None and payload.authorization in AUTHORIZATIONS:
+            if payload.authorization != row.authorization:
+                row.authorized_by = str(getattr(user, "username", "") or "")
+                row.authorized_at = datetime.now(UTC)
+            row.authorization = payload.authorization
+        if payload.authorization_note is not None:
+            row.authorization_note = payload.authorization_note
+        if payload.expected_scan is not None:
+            row.expected_scan = bool(payload.expected_scan)
         db.commit()
         db.refresh(row)
         return _asset_dict(row, _groups_map(db))

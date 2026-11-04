@@ -136,7 +136,7 @@ function client(
   return new LightTriage({ config: () => config, fetchImpl, random })
 }
 
-test('triage：关闭 → 不发网络；开启后任何类型都先过初筛', async () => {
+test('triage：关闭 → 不发网络；只允许低风险类型，高风险类型必须升级', async () => {
   let fetched = 0
   const fetchImpl: typeof fetch = async () => {
     fetched += 1
@@ -145,11 +145,16 @@ test('triage：关闭 → 不发网络；开启后任何类型都先过初筛', 
   const off = client(cfg({ enabled: false }), fetchImpl)
   assert.equal((await off.triage(task)).kind, 'escalate')
   assert.equal(fetched, 0, '关闭时一次网络调用都不发')
-  // 2026-10-30 用户定：初筛接管全部类型，hit/hit_cluster 不再是「种类不适用」
-  await client(cfg(), fetchImpl).triage({ ...task, kind: 'hit' })
-  await client(cfg(), fetchImpl).triage({ ...task, kind: 'hit_cluster' })
-  await client(cfg(), fetchImpl).triage({ ...task, kind: 'observation' })
-  assert.equal(fetched, 3)
+  // 低风险：coverage/novelty 可以交给初筛
+  await client(cfg(), fetchImpl).triage({ ...task, kind: 'novelty' })
+  await client(cfg(), fetchImpl).triage({ ...task, kind: 'coverage' })
+  assert.equal(fetched, 2)
+  // hit/hit_cluster/observation 没有事实包，不能用 hint-only 小模型关单
+  for (const kind of ['hit', 'hit_cluster', 'observation']) {
+    const result = await client(cfg(), fetchImpl).triage({ ...task, kind })
+    assert.equal(result.kind, 'escalate')
+  }
+  assert.equal(fetched, 2, '高风险类型不得发网络')
 })
 
 test('triage：明显 benign → 关单，不碰复用库相关动作', async () => {

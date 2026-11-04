@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,7 +20,13 @@ from typing import Any
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.analysis import anchors as anchors_mod, digests as digests_mod, feedback, params
+from app.analysis import (
+    anchors as anchors_mod,
+    digests as digests_mod,
+    facts as facts_mod,
+    feedback,
+    params,
+)
 from app.analysis.verdicts import VERDICT_VALUES, clean_terminal_reason, clean_verdict
 from app.db.base import SessionLocal
 from app.db.models import (
@@ -111,6 +118,51 @@ def read_stats(client: Any) -> dict[str, int]:
 # ---------- 入队 ----------
 
 
+def merge_task_hint(old: dict[str, Any] | None, new: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    """合并同族任务的 hint，避免复用第一次的旧事件/域名。
+
+    只合并“事实型”列表字段；不覆盖主体/身份，避免把另一个 actor 混进来。
+    """
+    out = dict(old or {})
+    incoming = dict(new or {})
+    changed = False
+    for key in ("事件ID", "受影响资产", "affected_assets", "对端", "peer", "dns_domains"):
+        def _norm(value: Any) -> list[Any]:
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            if not isinstance(value, list):
+                return []
+            result: list[Any] = []
+            seen: set[str] = set()
+            for item in value:
+                if isinstance(item, dict):
+                    item = {"kind": str(item.get("kind") or ""), "value": str(item.get("value") or "")}
+                    marker = json.dumps(item, sort_keys=True, ensure_ascii=False)
+                else:
+                    item = str(item)
+                    marker = item
+                if marker and marker not in seen:
+                    seen.add(marker)
+                    result.append(item)
+            return result
+
+        before = _norm(out.get(key))
+        merged = list(before)
+        seen = {json.dumps(x, sort_keys=True, ensure_ascii=False) if isinstance(x, dict) else str(x) for x in before}
+        for item in _norm(incoming.get(key)):
+            marker = json.dumps(item, sort_keys=True, ensure_ascii=False) if isinstance(item, dict) else str(item)
+            if marker not in seen:
+                seen.add(marker)
+                merged.append(item)
+        if merged != before:
+            out[key] = merged
+            changed = True
+    if changed:
+        out["hint_revision"] = int(out.get("hint_revision") or 0) + 1
+        out["hint_updated_at"] = datetime.now(UTC).isoformat()
+    return out, changed
+
+
 def enqueue(
     *,
     kind: str,
@@ -169,6 +221,16 @@ def enqueue(
             if existing is not None:
                 # 同族合并：不新增行，累加计数并把强度抬到两者较大者（现象变强要能升级）
                 existing.coalesced = int(existing.coalesced or 0) + 1
+                old_hint = getattr(existing, "hint", None)
+                existing.hint, _ = merge_task_hint(
+                    old_hint if isinstance(old_hint, dict) else {}, hint
+                )
+                old_start = getattr(existing, "window_start", None)
+                old_end = getattr(existing, "window_end", None)
+                if old_start is None or (window_start and window_start < old_start):
+                    existing.window_start = window_start
+                if old_end is None or (window_end and window_end > old_end):
+                    existing.window_end = window_end
                 if strength > float(existing.strength or 0):
                     existing.strength = strength
                     existing.priority = round(strength * 100)
@@ -205,6 +267,16 @@ def enqueue(
                 ).first()
                 if same_identity is not None:
                     same_identity.coalesced = int(same_identity.coalesced or 0) + 1
+                    old_hint = getattr(same_identity, "hint", None)
+                    same_identity.hint, _ = merge_task_hint(
+                        old_hint if isinstance(old_hint, dict) else {}, hint
+                    )
+                    old_start = getattr(same_identity, "window_start", None)
+                    old_end = getattr(same_identity, "window_end", None)
+                    if old_start is None or (window_start and window_start < old_start):
+                        same_identity.window_start = window_start
+                    if old_end is None or (window_end and window_end > old_end):
+                        same_identity.window_end = window_end
                     if strength > float(same_identity.strength or 0):
                         same_identity.strength = strength
                         same_identity.priority = round(strength * 100)
@@ -503,6 +575,66 @@ def _mirror_event_conclusion(
         return 0
 
 
+def _contract_violations(
+    *,
+    verdict: str,
+    basis: dict[str, Any],
+    evidence_refs: list[str] | None,
+    facts: dict[str, Any] | None,
+) -> list[str]:
+    """检查 verdict_basis 是否足以支撑结论（不自动改 verdict）。"""
+    violations: list[str] = []
+    categories = {
+        str(x).strip().lower()
+        for x in (basis.get("evidence_categories") or [])
+        if str(x).strip()
+    }
+    malicious = any(
+        category.startswith(("malicious_", "exploit_", "data_exfiltration", "lateral_success", "credential_"))
+        for category in categories
+    )
+    benign = bool(categories & {
+        "known_benign_infrastructure",
+        "authorized_scanner",
+        "authorized_overlay",
+        "business_normal",
+        "noise_only",
+    })
+    if verdict == "true_positive":
+        if not malicious:
+            violations.append("true_positive 缺少恶意证据类别（malicious_* / exploit_success / data_exfiltration）")
+        if not evidence_refs:
+            violations.append("true_positive 缺少真实 evidence_refs")
+        if not basis.get("contradictions_checked"):
+            violations.append("true_positive 未记录域名/资产/历史冲突检查")
+        if facts:
+            dns = facts.get("dns") or {}
+            qtypes = {
+                str(x).lower()
+                for x in (dns.get("qtypes") or {})
+            }
+            if (
+                dns.get("registrable_domains")
+                and not (qtypes & {"16", "10", "txt", "null"})
+                and basis.get("domain_owner")
+                and not malicious
+            ):
+                # 只有 A/AAAA/HTTPS 的已知厂商长随机子域，不应被直接判成隧道；
+                # 这不是自动改 verdict，而是要求补充 TXT/NULL/频次/回包依据。
+                violations.append("DNS 只有 A/AAAA/HTTPS 且无恶意证据，不能直接判 TP")
+            for asset in (facts.get("assets") or {}).values():
+                if (
+                    isinstance(asset, dict)
+                    and asset.get("authorization") == "authorized"
+                    and asset.get("role") in ("scanner", "security_appliance", "overlay_vpn")
+                    and not malicious
+                ):
+                    violations.append("已授权扫描器/安全设备/overlay 的扫描行为不能无恶意证据判 TP")
+    elif verdict in ("false_positive", "benign") and not benign and not basis.get("benign_explanation_checked"):
+        violations.append(f"{verdict} 缺少良性基础设施/授权/业务正常依据")
+    return violations
+
+
 def complete_task(
     client: Any,
     task_id: str,
@@ -511,6 +643,7 @@ def complete_task(
     summary: str = "",
     confidence: float = 0.0,
     findings: dict[str, Any] | None = None,
+    verdict_basis: dict[str, Any] | None = None,
     evidence_refs: list[str] | None = None,
     tools_used: int = 0,
     duration_ms: int = 0,
@@ -532,40 +665,69 @@ def complete_task(
     if verdict_error:
         return {"error": verdict_error, "field": "verdict"}
     verdict = normalized
+    if verdict == "inconclusive" and not str(terminal_reason or "").strip():
+        return {
+            "error": "verdict=inconclusive 必须写 terminal_reason（区分没证据/预算用尽/取数失败）",
+            "field": "terminal_reason",
+        }
     reason, reason_error = clean_terminal_reason(terminal_reason)
     if reason_error:
         return {"error": reason_error, "field": "terminal_reason"}
     anchor_pairs, anchor_errors = anchors_mod.clean_anchors(anchors)
     if anchor_errors:
         return {"error": "；".join(anchor_errors[:5]), "field": "anchors", "field_errors": anchor_errors}
+    basis = dict(verdict_basis or (findings or {}).get("verdict_basis") or {})
+    contract_mode = params.contract_mode()
+    contract_violations: list[str] = []
+    facts: dict[str, Any] | None = None
+    if contract_mode != "off":
+        try:
+            facts = facts_mod.build_task_facts(str(task_id or "").strip())
+        except Exception:  # noqa: BLE001 — 事实构建失败不能阻断交回；enforce 下缺 facts 也不放行
+            facts = None
+        contract_violations = _contract_violations(
+            verdict=verdict,
+            basis=basis,
+            evidence_refs=evidence_refs,
+            facts=facts,
+        )
+        if contract_mode == "enforce" and contract_violations:
+            return {
+                "error": "结论证据契约未通过：" + "；".join(contract_violations),
+                "field": "verdict_basis",
+                "field_errors": [{"field": "verdict_basis", "msg": x} for x in contract_violations],
+            }
+        if contract_violations:
+            findings = dict(findings or {})
+            findings["contract_violations"] = contract_violations
+    facts_hash = str((facts or {}).get("facts_hash") or "")
     with SessionLocal() as db:
         row = db.get(AnalysisTask, str(task_id or "").strip())
         if row is None:
             return {"error": "任务不存在"}
         now = datetime.now(UTC)
-        db.add(
-            AnalysisResult(
-                task_id=str(row.id),
-                kind=row.kind,
-                subject_kind=row.subject_kind,
-                subject=row.subject,
-                verdict=verdict,
-                confidence=max(0.0, min(1.0, float(confidence or 0))),
-                summary=str(summary or "")[:4000],
-                findings=findings or {},
-                evidence_refs=[str(x)[:200] for x in (evidence_refs or [])][:20],
-                tools_used=max(0, int(tools_used or 0)),
-                duration_ms=max(0, int(duration_ms or 0)),
-                terminal_reason=reason,
-                claimed_by=(token or row.claimed_by or "")[:64],
-            )
+        result_row = AnalysisResult(
+            task_id=str(row.id),
+            kind=row.kind,
+            subject_kind=row.subject_kind,
+            subject=row.subject,
+            verdict=verdict,
+            confidence=max(0.0, min(1.0, float(confidence or 0))),
+            summary=str(summary or "")[:4000],
+            findings=findings or {},
+            verdict_basis=basis,
+            facts_hash=facts_hash,
+            reuse_identity=str((row.hint or {}).get("reuse_identity") or ""),
+            evidence_refs=[str(x)[:200] for x in (evidence_refs or [])][:20],
+            tools_used=max(0, int(tools_used or 0)),
+            duration_ms=max(0, int(duration_ms or 0)),
+            terminal_reason=reason,
+            claimed_by=(token or row.claimed_by or "")[:64],
         )
-        db.flush()  # 先拿到新结论行的主键，锚点要挂在它上面
-        result_row = db.scalars(
-            select(AnalysisResult).order_by(AnalysisResult.created_at.desc()).limit(1)
-        ).first()
+        db.add(result_row)
+        db.flush()  # 先拿到新结论行的主键；直接持对象，避免并发时锚到别人的结果
         anchored = 0
-        if result_row is not None and anchor_pairs:
+        if anchor_pairs:
             anchored = anchors_mod.write_anchors(
                 db,
                 result_id=str(result_row.id),
@@ -674,7 +836,8 @@ def _auto_suppress_false_positive(
     """
     if verdict != "false_positive" or terminal_reason != "concluded":
         return ""
-    if light_triaged:
+    # 复用/初筛不是新证据：不能把旧结论再次变成抑制，否则一次错判会永久放大。
+    if light_triaged or reused_from:
         return ""
     # hit/hit_cluster 没有任务级 identity 可用；必须从**真实 HitEvent** 反推
     # 事件级 match，而不是退化成 task scope。这样才能真正拦住后续事件。
@@ -755,6 +918,9 @@ def _auto_suppress_event_false_positive(
     if confidence < suppression.min_confidence():
         return ""
     if not suppression.enabled():
+        return ""
+    # 复用/初筛不是新证据，不能自动建事件级抑制。
+    if reused_from:
         return ""
     if bool(findings.get("mixed_two_distinct_events")):
         log.info("自动事件抑制跳过（任务 %s）：结论标记为混合簇，不能整体压制", task_id)
@@ -1083,6 +1249,8 @@ def _task_dict(row: AnalysisTask, *, claimed: bool = False) -> dict[str, Any]:
         "affected_assets": affected,
         "direction": str(hint.get("方向") or ""),
         "peers": peers,
+        # 智能体侧复用/抑制身份：此前只藏在 hint 里，适配层容易丢。
+        "reuse_identity": str(hint.get("reuse_identity") or ""),
         # 现象特征（命中=规则名、偏移=指标名……）：智能体侧的同类结论复用靠它
         # 区分"同一台机器上的不同规则"，不参与任何判定。
         "feature": _feature_of(
@@ -1312,6 +1480,8 @@ def task_detail(task_id: str) -> dict[str, Any]:
                 # 智能体侧要留档一份结论（控制台不再直连各 NDR 的 PG），
                 # 所以把 findings / 证据引用 / 锚点一并回给它；都是它自己交回来的内容。
                 "findings": dict(r.findings or {}),
+                "verdict_basis": dict(r.verdict_basis or {}),
+                "facts_hash": str(r.facts_hash or ""),
                 "evidence_refs": list(r.evidence_refs or []),
                 "anchors": anchors_of.get(str(r.id), []),
                 "tools_used": r.tools_used,
@@ -1606,6 +1776,8 @@ def _result_dict(row: AnalysisResult, *, with_detail: bool = False) -> dict[str,
         "tools_used": row.tools_used,
         "duration_ms": row.duration_ms,
         "terminal_reason": str(row.terminal_reason or ""),
+        "verdict_basis": dict(row.verdict_basis or {}),
+        "facts_hash": str(row.facts_hash or ""),
         "claimed_by": row.claimed_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

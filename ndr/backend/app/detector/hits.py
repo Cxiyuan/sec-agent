@@ -53,6 +53,9 @@ _EVIDENCE_FIELDS = (
     "session_id",
     "query",
     "qtype",
+    "rcode",
+    "answers",
+    "fuid",
     "conn_state",
     "protocol",
     "community_id",
@@ -123,7 +126,7 @@ _TRUNCATE_FIELDS = ("body", "resp_body", "req_headers", "query_string", "payload
 #: 单个长文本最多留多少字符（够判断，又不会把界面撑爆）
 _MAX_TEXT = 400
 #: 嵌套块里要提上来的字段（Suricata EVE 把 http/tls 信息放在子对象里）
-_NESTED_BLOCKS = ("http", "tls")
+_NESTED_BLOCKS = ("http", "tls", "dns")
 
 
 def _iso(value: Any) -> datetime | None:

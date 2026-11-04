@@ -25,6 +25,7 @@ from app.mcpapi import (
     Rule,
     analysis_anchors,
     analysis_domain_intel,
+    analysis_facts,
     analysis_get_trace,
     analysis_log_step,
     analysis_params,
@@ -896,6 +897,14 @@ def _domain_intel(args: dict[str, Any]) -> dict[str, Any]:
     return analysis_domain_intel.lookup_domain(value)
 
 
+def _task_facts(args: dict[str, Any]) -> dict[str, Any]:
+    """一次性返回任务事实包（方向/actor/victim/资产授权/DNS/证据/历史）。"""
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return {"error": "要 task_id"}
+    return analysis_facts.build_task_facts(task_id)
+
+
 def _prior_findings(args: dict[str, Any]) -> dict[str, Any]:
     """某个对象的既往结论（智能体开工前的"看过没有"检查）。
 
@@ -1032,6 +1041,8 @@ def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
     refs = [str(x) for x in (args.get("evidence_refs") or [])][:20]
     raw_findings = args.get("findings")
     findings_arg: dict[str, Any] = dict(raw_findings) if isinstance(raw_findings, dict) else {}
+    raw_basis = args.get("verdict_basis")
+    basis_arg: dict[str, Any] = dict(raw_basis) if isinstance(raw_basis, dict) else {}
     # verdict 先归一化再校验（中文别名「真阳性」要能命中同一条规则，与 queue 的收口一致；
     # `clean_verdict` 走 queue 模块属性，不直接 import —— MCP 依赖门面约束见
     # test_analysis_mechanism.py 的 boundary guard）
@@ -1084,6 +1095,7 @@ def _complete_task(args: dict[str, Any]) -> dict[str, Any]:
         summary=str(args.get("summary") or ""),
         confidence=_bounded_float(args.get("confidence"), default=0.0, lo=0.0, hi=1.0),
         findings=findings_arg,
+        verdict_basis=basis_arg,
         evidence_refs=refs,
         tools_used=_bounded_int(args.get("tools_used"), default=0, lo=0, hi=100000),
         duration_ms=_bounded_int(args.get("duration_ms"), default=0, lo=0, hi=10**9),
@@ -1699,6 +1711,14 @@ TOOLS: dict[str, dict[str, Any]] = {
         "desc": "取单条命中事件的**完整内容**：事件类型、三类来源、源/客户端/中继、目的 IP:端口、证据、簇 ID，并附带这条事件已有的结论",
         "params": {"event_id": "事件 ID（从 search_hits 结果里拿）"},
     },
+    "task_facts": {
+        "run": _task_facts,
+        "desc": (
+            "取当前任务的客观事实包：主体/actor/victim、资产角色与授权、方向、"
+            "DNS qname/qtype/rcode/频次、成功状态、证据状态、历史结论。先读它再分析，不要从 hint 猜"
+        ),
+        "params": {"task_id": "当前分析任务 ID（claim_tasks 返回的 id）"},
+    },
     "domain_intel": {
         "run": _domain_intel,
         "desc": (
@@ -1897,6 +1917,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "summary": "结论正文（给人看，说清依据）",
             "confidence": "你自己的置信度 0~1",
             "findings": "对象：结构化发现（任意键值）",
+            "verdict_basis": "对象：判断依据 {hypothesis, evidence_categories, benign_explanation_checked, "
+            "contradictions_checked, asset_authorization_basis, domain_owner}；"
+            "TP 必须含恶意类别，FP/benign 必须含良性/授权依据",
             "evidence_refs": "支撑结论的证据引用（必须是本会话真取回过的 es:/ev: 引用）",
             "next_tasks": "数组：还要追加哪些活，每项 {kind, subject_kind, subject, feature, strength, hint}",
             "suppression": "对象：{reason_code, note, ttl_days}；hit/hit_cluster 另带 typed match，"

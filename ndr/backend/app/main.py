@@ -35,6 +35,13 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE entity_profiles ADD COLUMN IF NOT EXISTS dst_ips JSONB NOT NULL DEFAULT '{}'::jsonb",
     # 被访问方资产的归属（口径 C，2026-10）：internal（内网，异常判定只看它）/ external（公网目标）
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
+    # 资产角色/授权：由资产中心界面确认，不按 IP 硬编码。
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorization VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorization_note TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorized_by VARCHAR(128) NOT NULL DEFAULT ''",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorized_at TIMESTAMPTZ",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS expected_scan BOOLEAN NOT NULL DEFAULT false",
     # 命中事件来源类别（特征匹配 / 行为分析 / 基线偏离）
     "ALTER TABLE hit_events ADD COLUMN IF NOT EXISTS source_kind VARCHAR(24) DEFAULT 'behavior_analysis'",
     # 命中方向（D1，2026-10-29 架构整改）：out→in / in→out / in→in / out→out / unknown，
@@ -119,6 +126,10 @@ _MIGRATIONS: tuple[str, ...] = (
     # ---- 2026-10 智能体闭环（锚点 / 冷摘要 / 过程轨迹 / 终态原因）----
     # 结论的“为什么结束”：只有 verdict 时 inconclusive 分不清“没查到”还是“超时”
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS terminal_reason VARCHAR(24) DEFAULT ''",
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS verdict_basis JSONB NOT NULL DEFAULT '{}'::jsonb",
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS facts_hash VARCHAR(64) NOT NULL DEFAULT ''",
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS reuse_identity VARCHAR(200) NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_results_reuse_identity ON analysis_results (reuse_identity)",
     # 冷摘要回标：非空 = 明细已进 analysis_digests（行本身永不删除）
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ",
     # 2026-10 行为基线改造：账号上次成功登录的地理位置（国家/省），用于"异地登录"事实。

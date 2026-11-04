@@ -459,6 +459,12 @@ class AnalysisResult(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     summary: Mapped[str] = mapped_column(Text, default="")
     findings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    #: 结论依据（hypothesis/evidence_categories/contradictions），供契约审计与质量看板。
+    verdict_basis: Mapped[dict] = mapped_column(JSONB, default=dict)
+    #: 本次判断使用的任务事实快照哈希；复用/合同校验用它比较事实是否变化。
+    facts_hash: Mapped[str] = mapped_column(String(64), default="")
+    #: NDR 下发的 canonical 现象身份（便于按 actor/domain/身份学习，而不是 victim subject）。
+    reuse_identity: Mapped[str] = mapped_column(String(200), default="", index=True)
     evidence_refs: Mapped[list] = mapped_column(JSONB, default=list)
     #: 成本口径（预算调优的依据）：本任务用了多少次工具调用、跑了多久
     tools_used: Mapped[int] = mapped_column(Integer, default=0)
@@ -695,6 +701,13 @@ class AssetRecord(Base):
     criticality: Mapped[str] = mapped_column(String(16), default="normal")
     tags: Mapped[str] = mapped_column(String(255), default="")  # 逗号分隔
     note: Mapped[str] = mapped_column(Text, default="")
+    #: 资产角色与授权：由用户在资产中心确认，不允许代码按 IP 硬编码。
+    role: Mapped[str] = mapped_column(String(32), default="unknown")
+    authorization: Mapped[str] = mapped_column(String(16), default="unknown")
+    authorization_note: Mapped[str] = mapped_column(Text, default="")
+    authorized_by: Mapped[str] = mapped_column(String(128), default="")
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expected_scan: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

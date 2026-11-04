@@ -42,6 +42,7 @@ function record(over: Partial<TaskResultRecord> = {}): TaskResultRecord {
     occurrences: 2,
     analyzedAt: '2026-10-26T12:00:00.000Z',
     expiresAt: '2026-10-27T12:00:00.000Z',
+    evidenceRefs: ['es:idx/1'],
     ...over,
   }
 }

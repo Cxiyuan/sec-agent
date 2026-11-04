@@ -159,10 +159,10 @@ export function compactToolResult(
 ): string {
   const resolved = resolveLimits(limits)
   if (text.length <= resolved.maxChars) return text
-  // JSON.parse in JS rounds integers beyond 2^53. Event IDs and byte counters
-  // can be 64-bit; rewriting them would corrupt evidence. When such digits are
-  // present, use the byte-preserving head/tail path instead of the JSON one.
-  if (!/\d{16,}/u.test(text)) {
+  // JSON.parse in JS rounds integers beyond 2^53. Only numeric JSON values
+  // (not quoted UUID/event-ID strings) need the byte-preserving path; strings
+  // with 16+ digits are safe and must not force whole-result byte clipping.
+  if (!/:\s*-?\d{16,}/u.test(text)) {
     try {
       const parsed: unknown = JSON.parse(text)
       const compacted = JSON.stringify(compactJsonValue(parsed, 0)) ?? ''

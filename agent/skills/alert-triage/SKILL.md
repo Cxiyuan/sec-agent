@@ -10,6 +10,11 @@ whenToUse: 拿到一条线索（hit_cluster/observation/novelty/shift/coverage/r
 
 NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空间）；下文写裸名，指同一批工具。
 
+## 零、先读事实包
+
+先调用 `task_facts(task_id)`，不要从 hint 猜方向、资产角色或 DNS 类型。事实包给出 actor/victim、
+资产 role/authorization、qtype/rcode/频次、成功状态、证据缺口和历史；结论必须引用其中的事实。
+
 ## 一、先建立三个坐标
 
 1. **资产**：源和目的是谁（`asset_context` / `asset_map`）。主体以 `principal_asset`（监控网段内）为准，
@@ -82,6 +87,13 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 - `benign`：行为真实但无危害（如已授权的扫描器、健康检查）。
 - `inconclusive`：数据不足/采集盲区导致无法判断——**必须写清缺什么**，并给 `defer_task` 或 `next_tasks`。
   没有 raw_evidence/事件详情时，不要把“规则命中 + 历史共识”包装成 true_positive。
+
+交回时必须填 `verdict_basis`：
+- `hypothesis`：benign_infrastructure / authorized_scanner / malicious_c2 / malicious_exfil ...
+- `evidence_categories`：known_benign_infrastructure / qtype_a_only / authorized_scanner /
+  malicious_c2 / exploit_success / data_exfiltration / lateral_success ...
+- `benign_explanation_checked`、`contradictions_checked`、`domain_owner`、`asset_authorization_basis`。
+TP 没有恶意类别、没有真实 evidence_refs、没有冲突检查会被拒绝；FP/benign 没有良性/授权依据也会被拒绝。
 
 置信度参考：证据链闭合 0.8+；只有单侧日志 0.4~0.6；仅有规则命中 0.2~0.4。
 

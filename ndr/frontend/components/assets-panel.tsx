@@ -96,6 +96,10 @@ interface RecordRow {
   criticality: string;
   tags: string[];
   note: string;
+  role: string;
+  authorization: string;
+  authorized_by: string;
+  authorized_at: string;
   updated_at: string;
 }
 
@@ -106,6 +110,23 @@ const CRITICALITY_LABEL: Record<string, string> = {
   test: "测试",
 };
 
+const ROLE_LABEL: Record<string, string> = {
+  server: "服务器",
+  workstation: "办公终端",
+  network_device: "网络设备",
+  security_appliance: "安全设备",
+  scanner: "扫描器",
+  overlay_vpn: "Overlay VPN",
+  other: "其他",
+  unknown: "未知",
+};
+
+const AUTH_LABEL: Record<string, string> = {
+  authorized: "已授权",
+  unauthorized: "未授权",
+  unknown: "待确认",
+};
+
 const EMPTY_ASSET = {
   ip: "",
   hostname: "",
@@ -114,6 +135,10 @@ const EMPTY_ASSET = {
   criticality: "normal",
   tags: "",
   note: "",
+  role: "unknown",
+  authorization: "unknown",
+  authorization_note: "",
+  expected_scan: false,
 };
 
 export function AssetsPanel({ mode }: { mode: Mode }) {
@@ -260,6 +285,19 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
       void loadRecords();
     }
   }, [form, loadRecords]);
+
+  const patchRecord = React.useCallback(
+    async (id: string, body: Record<string, unknown>) => {
+      const ok = await apiFetch(`/api/assets/records/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) void loadRecords();
+    },
+    [loadRecords],
+  );
 
   const createGroup = React.useCallback(async () => {
     if (!groupForm.name.trim()) return;
@@ -691,6 +729,39 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                   </select>
                 </label>
                 <label className="text-xs text-muted-foreground">
+                  资产角色
+                  <select
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-13 text-foreground"
+                  >
+                    {Object.entries(ROLE_LABEL).map(([k, label]) => (
+                      <option key={k} value={k}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  授权状态
+                  <select
+                    value={form.authorization}
+                    onChange={(e) => setForm({ ...form, authorization: e.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-13 text-foreground"
+                  >
+                    {Object.entries(AUTH_LABEL).map(([k, label]) => (
+                      <option key={k} value={k}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  授权说明
+                  <Input
+                    value={form.authorization_note}
+                    onChange={(e) => setForm({ ...form, authorization_note: e.target.value })}
+                    placeholder="谁确认、授权范围"
+                    className="mt-1"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
                   责任人
                   <Input
                     value={form.owner}
@@ -789,6 +860,8 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                         <TableHead>主机名</TableHead>
                         <TableHead>分组</TableHead>
                         <TableHead>级别</TableHead>
+                        <TableHead>角色</TableHead>
+                        <TableHead>授权</TableHead>
                         <TableHead>责任人</TableHead>
                         <TableHead>标签</TableHead>
                         <TableHead>更新时间</TableHead>
@@ -808,6 +881,35 @@ export function AssetsPanel({ mode }: { mode: Mode }) {
                             <Badge variant={row.criticality === "core" ? "critical" : "secondary"}>
                               {CRITICALITY_LABEL[row.criticality] ?? row.criticality}
                             </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <select
+                              aria-label={`设置 ${row.ip} 的资产角色`}
+                              value={row.role || "unknown"}
+                              onChange={(e) => void patchRecord(row.id, { role: e.target.value })}
+                              className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
+                            >
+                              {Object.entries(ROLE_LABEL).map(([k, label]) => (
+                                <option key={k} value={k}>{label}</option>
+                              ))}
+                            </select>
+                          </TableCell>
+                          <TableCell>
+                            <select
+                              aria-label={`设置 ${row.ip} 的授权状态`}
+                              value={row.authorization || "unknown"}
+                              onChange={(e) => void patchRecord(row.id, { authorization: e.target.value })}
+                              className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
+                            >
+                              {Object.entries(AUTH_LABEL).map(([k, label]) => (
+                                <option key={k} value={k}>{label}</option>
+                              ))}
+                            </select>
+                            {row.authorized_by ? (
+                              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                                {row.authorized_by}
+                              </div>
+                            ) : null}
                           </TableCell>
                           <TableCell>{row.owner || "-"}</TableCell>
                           <TableCell className="text-muted-foreground">

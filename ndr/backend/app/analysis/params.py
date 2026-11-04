@@ -64,6 +64,8 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.subject_retention_days", "首见登记表保留期", "int", 90,
          low=1, high=3650, unit="天",
          note="observed_subjects 按 last_seen_at 清理（表不许只增不减）"),
+    Knob("analysis.contract_mode", "结论证据契约", "text", "shadow",
+         note="off=不校验；shadow=记录违规但接受；enforce=拒绝无依据/无证据的结论"),
     Knob("analysis.feedback_enabled", "反馈学习", "bool", True,
          note="用智能体交回的结论调整客观强度（连续误报衰减、判真过加权），并触发误抑制回弹"),
     Knob("analysis.feedback_days", "反馈回看天数", "int", 14,
@@ -319,6 +321,11 @@ def reset(db: Any, keys: list[str] | None = None) -> int:
     db.commit()
     invalidate()
     return removed
+
+
+def contract_mode() -> str:
+    value = _text(_BY_KEY["analysis.contract_mode"]).strip().lower() or "shadow"
+    return value if value in ("off", "shadow", "enforce") else "shadow"
 
 
 def feedback_enabled() -> bool:

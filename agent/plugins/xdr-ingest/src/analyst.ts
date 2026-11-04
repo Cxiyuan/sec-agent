@@ -26,6 +26,8 @@ export interface TaskResultView {
   readonly confidence?: number
   readonly summary?: string
   readonly findings?: unknown
+  readonly verdict_basis?: Record<string, unknown>
+  readonly facts_hash?: string
   readonly evidence_refs?: readonly string[]
   /** B2：结论挂的资产锚点（复用回放用；旧 NDR 不返回）。 */
   readonly anchors?: readonly { readonly kind?: string; readonly value?: string }[]
@@ -60,6 +62,8 @@ export interface ReusePayload {
   readonly summary: string
   readonly confidence: number
   readonly findings: Record<string, unknown>
+  /** 结构化判断依据（hypothesis/evidence_categories/contradictions）。 */
+  readonly verdict_basis?: Record<string, unknown>
   /** B2 回放：上次结论挂的资产（锚点），让复用行同样影响这些资产。 */
   readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
   /** B2 回放：上次结论的一句话建议（B6 字段）。 */
@@ -725,6 +729,10 @@ export class Analyst {
         summary: reuseSummary(record),
         confidence: record.confidence,
         findings: replayFindings,
+        ...(typeof record.findings?.['verdict_basis'] === 'object'
+          && record.findings['verdict_basis'] !== null
+          ? { verdict_basis: record.findings['verdict_basis'] as Record<string, unknown> }
+          : {}),
         ...(record.anchors !== undefined && record.anchors.length > 0
           ? { anchors: record.anchors.map(a => ({ kind: a.kind, value: a.value })) }
           : {}),
@@ -803,7 +811,14 @@ export class Analyst {
         findings: {
           suppressed_by: hit.suppressedBy,
           suppressed_task: hit.taskId,
+          reused_from: hit.taskId,
           skipped_reason: '已被精准抑制覆盖',
+        },
+        verdict_basis: {
+          hypothesis: 'known_benign_infrastructure',
+          evidence_categories: ['known_benign_infrastructure'],
+          benign_explanation_checked: true,
+          contradictions_checked: ['suppression_memory'],
         },
         terminal_reason: 'concluded',
         // 没有真的取证：成本如实记 0
@@ -881,6 +896,12 @@ export class Analyst {
         triaged_by: 'light',
         light_model: result.model,
         light_confidence: result.confidence,
+      },
+      verdict_basis: {
+        hypothesis: 'light_triage',
+        evidence_categories: [result.verdict === 'benign' ? 'business_normal' : 'noise_only'],
+        benign_explanation_checked: true,
+        contradictions_checked: ['hint_only'],
       },
       terminal_reason: 'concluded',
       // 没有真的取证：成本如实记 0，证据引用留空
@@ -1074,6 +1095,12 @@ export class Analyst {
     for (const drop of ['reused_from', 'reused_at', 'reused_count', 'reuse_key', 'triaged_by', 'reused']) {
       delete recordFindings[drop]
     }
+    if (typeof latest.verdict_basis === 'object' && latest.verdict_basis !== null) {
+      recordFindings['verdict_basis'] = latest.verdict_basis
+    }
+    if (typeof latest.facts_hash === 'string' && latest.facts_hash !== '') {
+      recordFindings['facts_hash'] = latest.facts_hash
+    }
     const recordAnchors = Array.isArray(latest.anchors)
       ? latest.anchors
           .map(a => ({ kind: String(a?.kind ?? '').trim(), value: String(a?.value ?? '').trim() }))
@@ -1099,6 +1126,9 @@ export class Analyst {
       expiresAt: new Date(now + ttlMs).toISOString(),
       ...(Object.keys(recordFindings).length > 0 ? { findings: recordFindings } : {}),
       ...(recordAnchors.length > 0 ? { anchors: recordAnchors } : {}),
+      ...(Array.isArray(latest.evidence_refs)
+        ? { evidenceRefs: latest.evidence_refs.map(String).filter(value => value !== '') }
+        : {}),
       ...(recommendation !== '' ? { recommendation } : {}),
     }
     try {

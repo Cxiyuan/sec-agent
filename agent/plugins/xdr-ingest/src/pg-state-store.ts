@@ -378,6 +378,9 @@ function toRecord(row: TaskRow): TaskResultRecord {
         .filter(a => a.kind !== '' && a.value !== '')
     : []
   const recommendation = String(row.recommendation ?? '')
+  const evidenceRefs = Array.isArray(payload['evidenceRefs'])
+    ? (payload['evidenceRefs'] as unknown[]).map(String).filter(value => value !== '')
+    : []
   return {
     key: row.reuse_key,
     kind: row.kind,
@@ -396,6 +399,7 @@ function toRecord(row: TaskRow): TaskResultRecord {
     version: Number(row.version ?? 1),
     ...(findings !== undefined && Object.keys(findings).length > 0 ? { findings } : {}),
     ...(anchors.length > 0 ? { anchors } : {}),
+    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
     ...(recommendation !== '' ? { recommendation } : {}),
   }
 }
@@ -585,6 +589,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
           JSON.stringify({
             findings: record.findings ?? {},
             anchors: record.anchors ?? [],
+            evidenceRefs: record.evidenceRefs ?? [],
           }),
           record.version ?? 1,
         ],

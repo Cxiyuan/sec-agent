@@ -41,6 +41,7 @@ export type TriageEscalateReason =
   | 'uncertain'
   | 'low_confidence'
   | 'audit_sample'
+  | 'unsafe_kind'
 
 /** 初筛判定（已通过全部硬约束）。 */
 export interface LightVerdict {
@@ -252,8 +253,12 @@ export class LightTriage {
     if (!config.enabled || config.baseUrl.trim() === '') {
       return { kind: 'escalate', reason: 'disabled', ms: 0 }
     }
-    // 2026-10-30（用户定）：初筛接管**全部线索类型**，先全部过一遍小模型；
-    // 只有它判不了（inconclusive/低置信）才升级付费。不再按 kind 白名单放行。
+    // 只让初筛处理低风险类型。hit/hit_cluster/DNS/资产授权/扫描类必须由
+    // 有工具、有证据的付费会话判断；hint-only 小模型没有事实包，不能关单。
+    const LIGHT_SAFE_KINDS = new Set(['coverage', 'novelty'])
+    if (!LIGHT_SAFE_KINDS.has(task.kind)) {
+      return { kind: 'escalate', reason: 'unsafe_kind', ms: 0 }
+    }
     if (this.breaker.isOpen()) {
       return { kind: 'escalate', reason: 'breaker_open', ms: 0 }
     }

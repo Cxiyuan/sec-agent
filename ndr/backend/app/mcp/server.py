@@ -426,6 +426,7 @@ def complete_task(
     summary: str = "",
     confidence: float = 0.0,
     findings: dict[str, Any] | None = None,
+    verdict_basis: dict[str, Any] | None = None,
     evidence_refs: list[str] | None = None,
     next_tasks: list[dict[str, Any]] | None = None,
     suppression: dict[str, Any] | None = None,
@@ -453,6 +454,7 @@ def complete_task(
                 summary=summary,
                 confidence=confidence,
                 findings=findings,
+                verdict_basis=verdict_basis,
                 evidence_refs=evidence_refs,
                 next_tasks=next_tasks,
                 suppression=suppression,
@@ -591,6 +593,11 @@ def search_hits(
 def get_event_detail(event_id: str = "") -> str:
     """取单条事件完整内容（含证据、三类来源、簇 ID 与已有结论）。"""
     return _run("get_event_detail", _clean(event_id=event_id), native=True)
+
+
+def task_facts(task_id: str = "") -> str:
+    """取当前任务的客观事实包（方向/资产授权/DNS/证据/历史）。"""
+    return _run("task_facts", _clean(task_id=task_id), native=True)
 
 
 def domain_intel(qname: str = "") -> str:
@@ -771,6 +778,7 @@ _NDR_TOOL_FUNCS = (
     coverage_report,
     search_hits,
     get_event_detail,
+    task_facts,
     domain_intel,
     prior_findings,
     list_suppressions,
@@ -822,6 +830,7 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         # 事件面与历史
         "search_hits",
         "get_event_detail",
+        "task_facts",
         "domain_intel",
         "prior_findings",
         # 规则面：命中线索的 hint 只有规则名，看不到规则的匹配条件就会把
@@ -912,6 +921,11 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         parts.append(claim_line)
 
     history: list[str] = []
+    if has("task_facts"):
+        history.append(
+            "task_facts(task_id) 取客观事实包：actor/victim、资产授权、DNS qtype/rcode/频次、"
+            "成功状态、证据与历史；先用事实再下结论"
+        )
     if has("domain_intel"):
         history.append(
             "domain_intel(qname) 查域名归属/用途"

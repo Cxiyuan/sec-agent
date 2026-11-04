@@ -38,6 +38,27 @@ function asTasks(value: unknown): ClaimedTask[] {
       hint: row['hint'] ?? null,
       coalesced: Number(row['coalesced'] ?? 0),
       attempts: Number(row['attempts'] ?? 0),
+      // NDR 把这些作为一等字段下发；不要在适配层丢掉，否则 prompt 只能看到 null。
+      ...(typeof row['reuse_identity'] === 'string' && row['reuse_identity'] !== ''
+        ? { reuse_identity: row['reuse_identity'] }
+        : {}),
+      ...(typeof row['direction'] === 'string' && row['direction'] !== ''
+        ? { direction: row['direction'] }
+        : {}),
+      ...(typeof row['principal_asset'] === 'string' && row['principal_asset'] !== ''
+        ? { principal_asset: row['principal_asset'] }
+        : {}),
+      ...(Array.isArray(row['affected_assets'])
+        ? {
+            affected_assets: (row['affected_assets'] as unknown[])
+              .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+              .map(item => ({ kind: String(item['kind'] ?? ''), value: String(item['value'] ?? '') }))
+              .filter(item => item.value !== ''),
+          }
+        : {}),
+      ...(Array.isArray(row['peers'])
+        ? { peers: (row['peers'] as unknown[]).map(String).filter(value => value !== '') }
+        : {}),
     })
   }
   return out
@@ -121,6 +142,18 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
           ...(typeof item['confidence'] === 'number' ? { confidence: item['confidence'] } : {}),
           ...(typeof item['summary'] === 'string' ? { summary: item['summary'] } : {}),
           ...(typeof item['created_at'] === 'string' ? { created_at: item['created_at'] } : {}),
+          ...(typeof item['verdict_basis'] === 'object' && item['verdict_basis'] !== null
+            ? { verdict_basis: item['verdict_basis'] as Record<string, unknown> }
+            : {}),
+          ...(typeof item['facts_hash'] === 'string' && item['facts_hash'] !== ''
+            ? { facts_hash: item['facts_hash'] }
+            : {}),
+          // 结论归档/复用要保留证据和成本，不能只留 verdict/summary。
+          ...(Array.isArray(item['evidence_refs'])
+            ? { evidence_refs: (item['evidence_refs'] as unknown[]).map(String) }
+            : {}),
+          ...(typeof item['tools_used'] === 'number' ? { tools_used: item['tools_used'] } : {}),
+          ...(typeof item['duration_ms'] === 'number' ? { duration_ms: item['duration_ms'] } : {}),
           // B2：复用要回放结构化的东西，这几个不能丢
           ...(typeof item['findings'] === 'object' && item['findings'] !== null
             && !Array.isArray(item['findings'])
@@ -151,6 +184,7 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
       readonly summary: string
       readonly confidence: number
       readonly findings: Record<string, unknown>
+      readonly verdict_basis?: Record<string, unknown>
       /** B2 回放：上次结论的资产锚点/建议（缺省 = 不复用这两项） */
       readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
       readonly recommendation?: string

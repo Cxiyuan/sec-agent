@@ -60,6 +60,8 @@ export interface TaskResultRecord {
   readonly findings?: Readonly<Record<string, unknown>>
   /** B2 回放：上次结论挂的资产锚点（NDR `task_detail.results[].anchors`）。 */
   readonly anchors?: readonly { readonly kind: string; readonly value: string }[]
+  /** 上次结论的真实证据引用；没有证据的 TP 不允许被复用。 */
+  readonly evidenceRefs?: readonly string[]
   /** B2 回放：上次结论的一句话建议（B6 字段）。 */
   readonly recommendation?: string
   /** 上次分析时的客观强度（新线索更强就必须重查）。 */
@@ -145,6 +147,7 @@ export function taskIdentity(task: ClaimedTask): TaskIdentity {
 export function identityOfMatch(match: unknown): TaskIdentity | null {
   const subjects: string[] = []
   const features: string[] = []
+  const extra: string[] = []
   const walk = (node: unknown): void => {
     if (Array.isArray(node)) {
       for (const item of node) walk(item)
@@ -160,13 +163,14 @@ export function identityOfMatch(match: unknown): TaskIdentity | null {
     const value = String(row['value'] ?? '').trim()
     if (value === '') return
     if (field === 'src_ip' || field === 'dst_ip') subjects.push(value)
-    if (field === 'rule') features.push(value)
+    else if (field === 'rule') features.push(value)
+    else extra.push(field)
   }
   walk(match)
-  const subject = subjects[0] ?? ''
-  const feature = features[0] ?? ''
-  if (subject === '' || feature === '') return null
-  return { kind: 'hit', subjectKind: 'ip', subject, feature }
+  // 条件树里还有其他维度时不能降成 src+rule：否则本地会按比 NDR 更宽的条件
+  // 跳过后续任务（例如「src + rule + 端口 + UA」被收窄成「src + rule」）。
+  if (extra.length > 0 || subjects.length !== 1 || features.length !== 1) return null
+  return { kind: 'hit', subjectKind: 'ip', subject: subjects[0] ?? '', feature: features[0] ?? '' }
 }
 
 /**
@@ -236,6 +240,10 @@ export function reuseDecision(
   if (!REUSABLE_VERDICTS.has(record.verdict)) return { reuse: false, reason: `verdict:${record.verdict}` }
   if (record.terminalReason !== 'concluded') {
     return { reuse: false, reason: `terminal:${record.terminalReason || 'unknown'}` }
+  }
+  // 没有真证据的结论不能跨任务复用；宁可重查，也不能把规则命中/旧叙事复制成新结论。
+  if ((record.evidenceRefs?.length ?? 0) === 0) {
+    return { reuse: false, reason: 'no_evidence' }
   }
   // 现象变强（合并后 strength 抬升）意味着上次的结论可能不够用了。
   const currentStrength = Number(task.strength)

@@ -681,7 +681,11 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
  */
 export function seenKey(identity: TaskIdentity): string {
   const reuseIdentity = (identity.reuseIdentity ?? '').trim()
-  if (reuseIdentity !== '') return JSON.stringify(['identity', reuseIdentity])
+  if (reuseIdentity !== '') {
+    // kind 必须参与：同一 identity 字符串在 hit 与 observation 下语义不同，
+    // 不加 kind 会让一个任务类型的抑制记忆误挡另一个类型。
+    return JSON.stringify(['identity', identity.kind ?? '', reuseIdentity])
+  }
   return JSON.stringify([
     identity.kind ?? '',
     identity.subjectKind ?? '',

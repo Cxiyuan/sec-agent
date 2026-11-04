@@ -363,6 +363,7 @@ async function seed(
     occurrences: 2,
     analyzedAt: new Date(now - 3_600_000).toISOString(),
     expiresAt: new Date(now + 23 * 3_600_000).toISOString(),
+    evidenceRefs: ['es:idx/1'],
   })
   return key
 }
@@ -432,7 +433,10 @@ test('same-phenomenon tasks serialize so the second task sees the first result',
     async taskState() {
       return {
         state: 'done',
-        results: [{ verdict: 'benign', terminal_reason: 'concluded', confidence: 0.8, summary: '已分析' }],
+        results: [{
+          verdict: 'benign', terminal_reason: 'concluded', confidence: 0.8,
+          summary: '已分析', evidence_refs: ['es:idx/1'],
+        }],
       }
     },
     async completeTask() {
@@ -738,6 +742,7 @@ test('复用命中：过程 reused、结论留档标 reused 与来源任务', as
     confidence: 0.8, summary: '旧结论', strength: 1, occurrences: 1,
     analyzedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    evidenceRefs: ['es:idx/1'],
   })
   const analyst = new Analyst({
     agents: fakeAgents(rec, async () => undefined),
