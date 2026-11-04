@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "ndr" / "backend"))
+for candidate in (ROOT / "ndr" / "backend", ROOT, Path("/app")):
+    if (candidate / "app").is_dir():
+        sys.path.insert(0, str(candidate))
+        break
 
 from app.db.base import SessionLocal
 from app.db.models import (
