@@ -95,7 +95,7 @@ def _success_state(events: list[HitEvent]) -> dict[str, Any]:
         for sample in (ev.evidence or [])
         if isinstance(sample, dict) and str(sample.get("status_code") or "").isdigit()
     }
-    established = bool(states & {"SF", "S1", "S2", "S3", "RSTO", "RSTR"})
+    established = bool(states & {"SF", "S1", "S2", "S3"})
     http_ok = any(200 <= code < 400 for code in statuses)
     if established or http_ok:
         value = "success"

@@ -37,7 +37,7 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE asset_stats ADD COLUMN IF NOT EXISTS scope VARCHAR(16) DEFAULT ''",
     # 资产角色/授权：由资产中心界面确认，不按 IP 硬编码。
     "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'unknown'",
-    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorization VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS \"authorization\" VARCHAR(16) NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorization_note TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorized_by VARCHAR(128) NOT NULL DEFAULT ''",
     "ALTER TABLE asset_records ADD COLUMN IF NOT EXISTS authorized_at TIMESTAMPTZ",

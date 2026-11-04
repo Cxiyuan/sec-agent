@@ -31,7 +31,7 @@ from app.db.models import (
     AnalysisTrace,
     ConclusionRecord,
 )
-from sqlalchemy import delete, select
+from sqlalchemy import String, cast, delete, select
 
 DEFAULT_TASKS = (
     "29dcf864-078f-43c5-909c-9d62f67b00eb",
@@ -75,13 +75,17 @@ def _inventory(db: Any, task_ids: set[str]) -> dict[str, Any]:
             )
         ).all()
     ) if result_ids else list(db.scalars(select(AnalysisAnchor).where(AnalysisAnchor.task_id.in_(task_ids))).all())
-    conclusions = list(
-        db.scalars(
+    # detail 是通用 JSON 列（不是 JSONB），用文本包含匹配 task_id；
+    # 之后在 Python 里再按 detail 精确过滤，避免把同前缀的其它任务误删。
+    conclusions = [
+        row
+        for row in db.scalars(
             select(ConclusionRecord).where(
-                ConclusionRecord.detail["task_id"].astext.in_(task_ids)
+                cast(ConclusionRecord.detail, String).contains('"task_id"')
             )
         ).all()
-    )
+        if str((row.detail or {}).get("task_id") or "") in task_ids
+    ]
     suppressions = list(
         db.scalars(
             select(AnalysisSuppression).where(AnalysisSuppression.source_task_id.in_(task_ids))
@@ -116,11 +120,15 @@ def _write_backup(out_dir: Path, inventory: dict[str, Any]) -> str:
     manifest: dict[str, Any] = {
         "created_at": datetime.now(UTC).isoformat(),
         "task_ids": inventory["task_ids"],
-        "counts": {key: len(value) for key, value in inventory.items() if isinstance(value, list)},
+        "counts": {
+            key: len(value)
+            for key, value in inventory.items()
+            if key != "task_ids" and isinstance(value, list)
+        },
         "rows": {},
     }
     for key, rows in inventory.items():
-        if not isinstance(rows, list):
+        if key == "task_ids" or not isinstance(rows, list):
             continue
         serialized = [_row_dict(row) for row in rows]
         manifest["rows"][key] = serialized
