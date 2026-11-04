@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -30,6 +31,7 @@ from app.db.models import (
     Observation,
 )
 from app.detector import suppression
+from app.detector.clustering import net_of
 from app.workers.log import get_logger
 
 #: 等价于 3.11 的 `datetime.UTC`（本仓库 requires-python >=3.11）；用别名写法
@@ -588,7 +590,8 @@ def complete_task(
         done_id = str(row.id)
         task_kind = str(row.kind or "")
         task_subject = str(row.subject or "")
-        task_identity = str((row.hint or {}).get("reuse_identity") or "").strip()
+        task_hint = dict(row.hint or {})
+        task_identity = str(task_hint.get("reuse_identity") or "").strip()
     # 反馈学习（会话已关，不占事务）：
     # - 新分析结论一进库就作废系数缓存；真阳性会触发误抑制回弹；
     # - 复用结论只是把旧判断写到新任务作审计，**不是新证据**，不能再次训练反馈，
@@ -608,6 +611,8 @@ def complete_task(
         evidence_refs=evidence_refs,
         reused_from=reused_from,
         light_triaged=light_triaged,
+        task_hint=task_hint,
+        findings=findings,
         client=client,
     )
     rebound = 0
@@ -640,6 +645,8 @@ def _auto_suppress_false_positive(
     evidence_refs: list[str] | None,
     reused_from: str,
     light_triaged: bool,
+    task_hint: dict[str, Any] | None = None,
+    findings: dict[str, Any] | None = None,
     client: Any = None,
 ) -> str:
     """false_positive 自动补任务级抑制（返回抑制名；没创建返回空串）。
@@ -655,7 +662,22 @@ def _auto_suppress_false_positive(
     """
     if verdict != "false_positive" or terminal_reason != "concluded":
         return ""
-    if light_triaged or not identity or task_kind in ("hit", "hit_cluster"):
+    if light_triaged:
+        return ""
+    # hit/hit_cluster 没有任务级 identity 可用；必须从**真实 HitEvent** 反推
+    # 事件级 match，而不是退化成 task scope。这样才能真正拦住后续事件。
+    if task_kind in ("hit", "hit_cluster"):
+        return _auto_suppress_event_false_positive(
+            task_id=task_id,
+            task_kind=task_kind,
+            confidence=confidence,
+            evidence_refs=evidence_refs,
+            reused_from=reused_from,
+            task_hint=task_hint or {},
+            findings=findings or {},
+            client=client,
+        )
+    if not identity:
         return ""
     if not suppression.enabled():
         return ""
@@ -699,6 +721,159 @@ def _auto_suppress_false_positive(
         bump(client, "auto_suppressed")
         log.info("自动补抑制：%s（%s / %s）", name, task_kind, identity[:100])
     return name
+
+
+def _auto_suppress_event_false_positive(
+    *,
+    task_id: str,
+    task_kind: str,
+    confidence: float,
+    evidence_refs: list[str] | None,
+    reused_from: str,
+    task_hint: dict[str, Any],
+    findings: dict[str, Any],
+    client: Any = None,
+) -> str:
+    """从真实 HitEvent 反推事件级 match，自动补 hit/hit_cluster 的抑制。
+
+    这不是“任务级兜底”：抑制作用域仍是 event，条件从该任务实际关联的
+    `事件ID` 所对应的事件里推导（规则 + 源 IP/源网段）。推导出的条件必须
+    能在历史命中事件上匹配到东西，否则 `create_item` 会拒绝。
+    """
+    if confidence < suppression.min_confidence():
+        return ""
+    if not suppression.enabled():
+        return ""
+    if bool(findings.get("mixed_two_distinct_events")):
+        log.info("自动事件抑制跳过（任务 %s）：结论标记为混合簇，不能整体压制", task_id)
+        return ""
+    verdict_for_rule = findings.get("verdict_for_rule")
+    if isinstance(verdict_for_rule, str):
+        normalized = verdict_for_rule.strip().lower()
+        if normalized not in ("false_positive", "benign"):
+            return ""
+    event_ids = _event_ids_of_hint(task_hint)
+    if not event_ids:
+        return ""
+    try:
+        with SessionLocal() as db:
+            events = list(
+                db.scalars(
+                    select(HitEvent).where(HitEvent.id.in_(event_ids[:50]))
+                ).all()
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("自动事件抑制读取事件失败（任务 %s）：%s", task_id, str(exc)[:200])
+        return ""
+    if not events:
+        return ""
+    refs = _suppression_evidence_refs(evidence_refs, reused_from)
+    if len(refs) < suppression.min_refs():
+        log.info(
+            "自动事件抑制跳过（任务 %s）：证据引用 %d 条，低于下限 %d",
+            task_id, len(refs), suppression.min_refs(),
+        )
+        return ""
+
+    by_rule: dict[str, list[Any]] = {}
+    for event in events:
+        rule = str(event.rule or "").strip()
+        if rule:
+            by_rule.setdefault(rule, []).append(event)
+    if not by_rule:
+        return ""
+    # 多规则簇只有在模型给出逐规则判定且明确可关单时才自动建；
+    # 否则整簇 FP 可能把同簇的真实规则一起压掉。
+    per_rule = verdict_for_rule if isinstance(verdict_for_rule, dict) else None
+    if len(by_rule) > 1 and per_rule is None:
+        log.info("自动事件抑制跳过（任务 %s）：多规则簇缺少逐规则判定", task_id)
+        return ""
+
+    created: list[str] = []
+    for rule, rule_events in by_rule.items():
+        if per_rule is not None:
+            raw_verdict = per_rule.get(rule)
+            if not isinstance(raw_verdict, str):
+                continue
+            if raw_verdict.strip().lower() not in ("false_positive", "benign"):
+                continue
+        src_ips = sorted(
+            {
+                str(event.src_ip or "").strip()
+                for event in rule_events
+                if str(event.src_ip or "").strip()
+            }
+        )
+        if not src_ips:
+            continue
+        if len(src_ips) == 1:
+            scopes: list[tuple[str, str]] = [("src_ip", src_ips[0])]
+        else:
+            segments = sorted({net_of(ip) for ip in src_ips} - {""})
+            scopes = [("segment", segment) for segment in segments[:8]]
+        for field, value in scopes:
+            match = {
+                "logic": "and",
+                "rules": [
+                    {"field": "rule", "op": "eq", "value": rule},
+                    {"field": field, "op": "eq", "value": value},
+                ],
+            }
+            digest = hashlib.sha256(
+                f"{task_id}|{rule}|{field}|{value}".encode()
+            ).hexdigest()[:12]
+            body = {
+                "name": f"agent-{task_id[:8]}-{digest}",
+                "scope": suppression.SCOPE_EVENT,
+                "task_kind": task_kind,
+                "match": match,
+                "reason_code": (
+                    "repeated_after_analysis" if reused_from else "business_normal"
+                ),
+                "note": (
+                    "false_positive 自动补事件级抑制"
+                    + (f"（复用来源 {reused_from}）" if reused_from else "")
+                ),
+                "evidence_refs": refs,
+                "confidence": confidence,
+                "source_task_id": task_id,
+            }
+            try:
+                out = suppression.create_item(
+                    body,
+                    created_by="xdr-ingest:auto",
+                    origin=suppression.ORIGIN_AGENT,
+                )
+            except Exception as exc:  # noqa: BLE001 — 条件不成立时只跳过，不影响交回
+                log.info(
+                    "自动事件抑制跳过（任务 %s / %s / %s %s）：%s",
+                    task_id, rule, field, value, str(exc)[:240],
+                )
+                continue
+            name = str(out.get("name") or "")
+            if name:
+                created.append(name)
+    if created:
+        bump(client, "auto_suppressed")
+        log.info(
+            "自动事件抑制：%s（%s / %s）",
+            ",".join(created), task_kind, task_id,
+        )
+    return ",".join(created)
+
+
+def _event_ids_of_hint(hint: dict[str, Any]) -> list[str]:
+    raw = hint.get("事件ID")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _suppression_evidence_refs(

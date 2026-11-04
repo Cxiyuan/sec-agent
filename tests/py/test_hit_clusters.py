@@ -35,14 +35,14 @@ class _Scalars:
 class FakeDB:
     """只模拟 `enqueue_hit_clusters` 用到的两段查询。"""
 
-    def __init__(self, hit_rows: list[Any], task_keys: set[str]) -> None:
+    def __init__(self, hit_rows: list[Any], task_families: set[str]) -> None:
         self._hit_rows = hit_rows
-        self._task_keys = task_keys
+        self._task_families = task_families
 
     def scalars(self, stmt: Any) -> _Scalars:
         text = str(stmt)
-        if "dedupe_key" in text:
-            return _Scalars(list(self._task_keys))
+        if "analysis_tasks" in text:
+            return _Scalars(list(self._task_families))
         return _Scalars(list(self._hit_rows))
 
     def __enter__(self) -> Self:
@@ -94,6 +94,7 @@ class EnqueueSpy:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.keys: set[str] = set()
+        self.families: set[str] = set()
 
     def enqueue(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
@@ -102,6 +103,9 @@ class EnqueueSpy:
             kwargs["kind"], kwargs["subject_kind"], kwargs["subject"], kwargs["feature"]
         )
         self.keys.add(key)
+        family = str((kwargs.get("hint") or {}).get("reuse_identity") or "")
+        if family:
+            self.families.add(family)
         return "new"
 
 
@@ -109,7 +113,7 @@ def _install(
     monkeypatch: pytest.MonkeyPatch, hit_rows: list[Any], spy: EnqueueSpy
 ) -> None:
     cand = importlib.import_module("app.analysis.candidates")
-    monkeypatch.setattr(cand, "SessionLocal", lambda: FakeDB(hit_rows, set(spy.keys)))
+    monkeypatch.setattr(cand, "SessionLocal", lambda: FakeDB(hit_rows, set(spy.families)))
     monkeypatch.setattr(cand, "queue", spy)
     monkeypatch.setattr(cand.subjects, "staleness", lambda *_a, **_k: 0.5, raising=True)
     monkeypatch.setattr(

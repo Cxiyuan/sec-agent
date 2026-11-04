@@ -1240,8 +1240,10 @@ def create_item(
         and not is_task
         and int(trial.get("scanned_rows") or 0) > 0
         and int(trial.get("matched_rows") or 0) == 0
-        and not _src_ips_of(match)
     ):
+        # 注意：以前只在“没有 src_ip”时才拒绝，导致 `src_ip + 不存在的
+        # http.uri` 这类条件也能入库，但 hits 永远为 0。事件级抑制必须
+        # 真正匹配到触发噪声的命中事件，否则就是一条假抑制。
         raise ValueError(
             "你的条件在近 "
             f"{int(trial.get('days') or 0)} 天的命中事件里一条都匹配不到"

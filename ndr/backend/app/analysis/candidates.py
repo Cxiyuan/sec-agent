@@ -38,7 +38,7 @@ from app.baseline import poisson
 from app.db.base import SessionLocal
 from app.db.models import AnalysisResult, AnalysisTask, HitEvent, Observation, ObservedSubject
 from app.detector import suppression
-from app.detector.clustering import cluster_label
+from app.detector.clustering import cluster_label, net_of
 from app.iputil import is_internal_ip
 from app.schemas import UnifiedLog
 from app.workers.log import get_logger
@@ -335,7 +335,7 @@ def enqueue_hit_clusters(client: Any) -> int:
         return 0
     now = datetime.now(UTC)
     since = now - timedelta(minutes=_HIT_CLUSTER_RECALL_MINUTES)
-    guard_prefixes: set[str] = set()
+    guard_families: set[str] = set()
     try:
         with SessionLocal() as db:
             rows = list(
@@ -349,16 +349,20 @@ def enqueue_hit_clusters(client: Any) -> int:
                     .limit(_HIT_CLUSTER_EVENT_CAP)
                 ).all()
             )
-            # 24h 观察护栏的账本：最近一天派过工的簇族（去重键去掉末尾时间桶）不再重复派
+            # 24h 观察护栏的账本：最近一天真正派过工的簇族（按 canonical family）不再重复派。
+            # 不按 `dedupe_key`：它带 principal，principal 在事件顺序变化时会漂移；
+            # 也不把 expired/stuck 算进来——它们没有完成分析，不能让一个失败任务占住 24h。
             day_ago = now - timedelta(hours=24)
-            guard_prefixes = {
-                str(k).rsplit("|", 1)[0]
+            guard_families = {
+                str(k).strip()
                 for k in db.scalars(
-                    select(AnalysisTask.dedupe_key).where(
+                    select(AnalysisTask.hint["reuse_identity"].astext).where(
                         AnalysisTask.kind == "hit_cluster",
                         AnalysisTask.created_at >= day_ago,
+                        AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
                     )
                 )
+                if str(k).strip()
             }
     except Exception:  # noqa: BLE001 — 派工失败不能拖垮检测
         return 0
@@ -384,21 +388,43 @@ def enqueue_hit_clusters(client: Any) -> int:
 
     scored: list[tuple[float, str, list[Any], str, list[str]]] = []
     for events in clusters.values():
-        principal = ""
-        for ev in events:
-            for cand_ip in [str(x) for x in (ev.dst_ips or [])] + [str(ev.src_ip or "")]:
-                if cand_ip and is_internal_ip(cand_ip):
-                    principal = cand_ip
-                    break
-            if principal:
-                break
-        if not principal:
+        # principal 必须是**确定性**的：按事件列表第一个内网地址选，事件顺序变化
+        # 就会让同一簇换主体、换 dedupe_key、换复用键。排序后取最小地址。
+        internal_assets = sorted(
+            {
+                cand_ip
+                for ev in events
+                for cand_ip in [str(x) for x in (ev.dst_ips or [])] + [str(ev.src_ip or "")]
+                if cand_ip and is_internal_ip(cand_ip)
+            }
+        )
+        if not internal_assets:
             continue  # 外部↔外部不是我们的资产
+        principal = internal_assets[0]
         rule_names = sorted({str(ev.rule or "") for ev in events} - {""})[:10]
-        # 簇族身份：主体资产 + 规则集合，**不含小时桶**（同一族跨小时可复用结论）
-        family_raw = f"hit_cluster|{principal}|{','.join(rule_names)}"
+        # 簇族身份：规则集合 + 源网段 + 方向，**不含 principal/小时桶**。
+        # 原实现用 principal+规则，principal 会随事件顺序漂移（同一簇可能出现多个
+        # 不同 family）；而 cluster_id 的语义本来就是「归类+源网段+小时」，
+        # 去掉小时后剩下的稳定部分才是可复用的簇族。
+        source_nets = sorted(
+            {
+                net_of(str(ev.src_ip or ev.client or ""))
+                for ev in events
+                if str(ev.src_ip or ev.client or "").strip()
+            }
+            - {""}
+        )
+        directions = sorted({str(getattr(ev, "direction", "") or "") for ev in events} - {""})
+        family_raw = "|".join(
+            (
+                "hit_cluster",
+                ",".join(rule_names),
+                ",".join(source_nets),
+                ",".join(directions),
+            )
+        )
         family = hashlib.sha256(family_raw.encode("utf-8")).hexdigest()[:32]
-        if f"hit_cluster|asset:{principal}|cluster:{family}" in guard_prefixes:
+        if family in guard_families:
             continue  # 24h 观察护栏：这个簇族 24h 内已经派过工
         scored.append(
             (

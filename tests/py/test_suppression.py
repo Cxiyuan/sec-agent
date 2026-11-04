@@ -733,14 +733,14 @@ def test_no_match_is_rejected_for_agent(sup: ModuleType, monkeypatch: pytest.Mon
         },
     )
     monkeypatch.setattr(sup, "SessionLocal", _FakeSession)
-    # 条件里没有 src_ip（没把来源钉死）→ 一条都拦不住就要被挡下
+    # 不管有没有 src_ip，零匹配都拦不住任何事件，必须拒绝。
+    # 旧实现放过了带 src_ip 的零匹配条件，线上留下了 hits=0 的假抑制。
     body = _body(match=_tree(("dst_port", "eq", 22346), ("user_agent", "eq", "00_linux_client")))
     with pytest.raises(ValueError, match="匹配不到"):
         sup.create_item(body, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
-    # 钉死了来源的（src_ip）不拦：它本来就只针对那一个来源
-    ok = _body(match=_tree(("src_ip", "eq", "10.1.2.3"), ("dst_port", "eq", 22346)))
-    out = sup.create_item(ok, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
-    assert out["mode"] in (sup.MODE_SUPPRESS, sup.MODE_RECORD_ONLY)
+    body = _body(match=_tree(("src_ip", "eq", "10.1.2.3"), ("dst_port", "eq", 22346)))
+    with pytest.raises(ValueError, match="匹配不到"):
+        sup.create_item(body, created_by="t", tool_hits={"search_events": 2, "net_flows": 2})
 
 
 def test_queue_enqueue_merges_same_canonical_identity(
@@ -837,3 +837,67 @@ def test_auto_suppress_false_positive_creates_task_scope(
     assert body["reuse_identity"] == "profile_anomaly|entity:session:x|codes:cross_ip"
     assert body["reason_code"] == "business_normal"
     assert kwargs["origin"] == q.suppression.ORIGIN_AGENT
+
+
+def test_auto_event_suppression_derives_match_from_real_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hit/hit_cluster FP 要生成 event-scope match，而不是降级成 task scope。"""
+    from app.analysis import queue as q
+
+    events = [
+        SimpleNamespace(id="e1", rule="策略违规", src_ip="10.1.2.3"),
+        SimpleNamespace(id="e2", rule="策略违规", src_ip="10.1.2.3"),
+    ]
+
+    class _DB:
+        def scalars(self, _stmt: Any) -> Any:
+            return SimpleNamespace(all=lambda: events)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(q, "SessionLocal", lambda: _DB())
+    monkeypatch.setattr(q, "bump", lambda *_a, **_k: None)
+    monkeypatch.setattr(q.suppression, "enabled", lambda: True)
+    monkeypatch.setattr(q.suppression, "min_confidence", lambda: 0.8)
+    monkeypatch.setattr(q.suppression, "min_refs", lambda: 3)
+    monkeypatch.setattr(
+        q.suppression, "create_item",
+        lambda body, **kw: calls.append({**body, **kw}) or {"name": body["name"]},
+    )
+    name = q._auto_suppress_event_false_positive(
+        task_id="abc12345-0000-0000-0000-000000000000",
+        task_kind="hit_cluster",
+        confidence=0.93,
+        evidence_refs=["es:idx/1", "es:idx/2", "es:idx/3"],
+        reused_from="",
+        task_hint={"事件ID": ["e1", "e2"]},
+        findings={},
+    )
+    assert name.startswith("agent-abc12345-")
+    assert len(calls) == 1
+    body = calls[0]
+    assert body["scope"] == q.suppression.SCOPE_EVENT
+    assert body["match"] == {
+        "logic": "and",
+        "rules": [
+            {"field": "rule", "op": "eq", "value": "策略违规"},
+            {"field": "src_ip", "op": "eq", "value": "10.1.2.3"},
+        ],
+    }
+    # 混合簇必须拒绝整体自动抑制
+    monkeypatch.setattr(q.suppression, "create_item", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不应创建")))
+    assert q._auto_suppress_event_false_positive(
+        task_id="abc12345-0000-0000-0000-000000000000",
+        task_kind="hit_cluster",
+        confidence=0.93,
+        evidence_refs=["es:idx/1", "es:idx/2", "es:idx/3"],
+        reused_from="",
+        task_hint={"事件ID": ["e1", "e2"]},
+        findings={"mixed_two_distinct_events": True},
+    ) == ""
