@@ -16,7 +16,7 @@ import ipaddress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 
 from app.db.models import AnalysisAnchor, AnalysisResult
 
@@ -175,7 +175,7 @@ def results_for_assets(
     with _session() as db:
         rows = db.execute(
             select(AnalysisResult, AnalysisAnchor.asset_kind, AnalysisAnchor.asset_value)
-            .join(AnalysisAnchor, AnalysisAnchor.result_id == AnalysisResult.id)
+            .join(AnalysisAnchor, cast(AnalysisResult.id, String) == AnalysisAnchor.result_id)
             .where(anchor_conds)
             .order_by(AnalysisResult.created_at.desc())
             .limit(cap)
@@ -196,7 +196,7 @@ def conclusion_stats(assets: list[str]) -> dict[str, dict[str, Any]]:
                 func.count(AnalysisResult.id),
                 func.max(AnalysisResult.created_at),
             )
-            .join(AnalysisResult, AnalysisResult.id == AnalysisAnchor.result_id)
+            .join(AnalysisResult, cast(AnalysisResult.id, String) == AnalysisAnchor.result_id)
             .where(AnalysisAnchor.asset_kind == "ip", AnalysisAnchor.asset_value.in_(keys))
             .group_by(AnalysisAnchor.asset_value)
         ).all()
@@ -206,7 +206,7 @@ def conclusion_stats(assets: list[str]) -> dict[str, dict[str, Any]]:
                 continue
             verdict = db.scalar(
                 select(AnalysisResult.verdict)
-                .join(AnalysisAnchor, AnalysisAnchor.result_id == AnalysisResult.id)
+                .join(AnalysisAnchor, cast(AnalysisResult.id, String) == AnalysisAnchor.result_id)
                 .where(
                     AnalysisAnchor.asset_kind == "ip",
                     AnalysisAnchor.asset_value == str(value),
@@ -231,7 +231,7 @@ def covered_asset_count(days: int = 7) -> int:
     with _session() as db:
         value = db.scalar(
             select(func.count(func.distinct(AnalysisAnchor.asset_value)))
-            .join(AnalysisResult, AnalysisResult.id == AnalysisAnchor.result_id)
+            .join(AnalysisResult, cast(AnalysisResult.id, String) == AnalysisAnchor.result_id)
             .where(
                 AnalysisAnchor.asset_kind == "ip",
                 AnalysisResult.created_at >= since,
