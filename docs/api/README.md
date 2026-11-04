@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **131 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **132 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 > 智能体控制台（xdr-ui）自己的接口另见 [`agent-console.md`](./agent-console.md)（项目组织 / 分析过程 / 脚本 / 参数）。
 
@@ -185,6 +185,7 @@
 | `POST` | `/api/analysis/config/reset` | — | — | body |
 | `GET` | `/api/analysis/coverage` | `days,kind,limit` | — | — |
 | `GET` | `/api/analysis/inventory` | `limit,kind` | — | — |
+| `GET` | `/api/analysis/quality` | `days` | — | — |
 | `GET` | `/api/analysis/results` | `task_id,subject,verdict,limit,offset` | — | — |
 | `GET` | `/api/analysis/stats` | — | — | — |
 | `GET` | `/api/analysis/tasks` | `state,kind,subject,q,limit,offset` | — | — |
