@@ -800,3 +800,40 @@ def test_queue_enqueue_merges_same_canonical_identity(
     assert row.priority == 80
     assert db.commits == 1
     assert ("merged_identity", 1) in bumps
+
+
+def test_auto_suppress_false_positive_creates_task_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FP 结论即使模型没调 submit_suppression，服务端也要补任务级抑制。"""
+    from app.analysis import queue as q
+
+    calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    monkeypatch.setattr(q.suppression, "enabled", lambda: True)
+    monkeypatch.setattr(q.suppression, "min_confidence", lambda: 0.8)
+    monkeypatch.setattr(q.suppression, "min_refs", lambda: 3)
+    monkeypatch.setattr(q.suppression, "decide_task", lambda **_kw: None)
+    monkeypatch.setattr(
+        q.suppression, "create_item",
+        lambda body, **kw: calls.append((body, kw)) or {"name": "agent-abc12345"},
+    )
+    monkeypatch.setattr(q, "bump", lambda *_a, **_k: None)
+
+    name = q._auto_suppress_false_positive(
+        task_id="abc12345-0000-0000-0000-000000000000",
+        task_kind="observation",
+        identity="profile_anomaly|entity:session:x|codes:cross_ip",
+        verdict="false_positive",
+        terminal_reason="concluded",
+        confidence=0.93,
+        evidence_refs=["es:idx/1", "es:idx/2", "es:idx/3"],
+        reused_from="",
+        light_triaged=False,
+    )
+    assert name == "agent-abc12345"
+    assert len(calls) == 1
+    body, kwargs = calls[0]
+    assert body["scope"] == q.suppression.SCOPE_TASK
+    assert body["reuse_identity"] == "profile_anomaly|entity:session:x|codes:cross_ip"
+    assert body["reason_code"] == "business_normal"
+    assert kwargs["origin"] == q.suppression.ORIGIN_AGENT

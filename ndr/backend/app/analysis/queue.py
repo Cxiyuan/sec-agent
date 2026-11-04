@@ -584,16 +584,32 @@ def complete_task(
         )
         db.refresh(row)
         bump(client, "done")
-        # 提交后 ORM 属性会过期，要在这里就把后面要用的三个值取出来
+        # 提交后 ORM 属性会过期，要在这里就把后面要用的值取出来
         done_id = str(row.id)
         task_kind = str(row.kind or "")
         task_subject = str(row.subject or "")
+        task_identity = str((row.hint or {}).get("reuse_identity") or "").strip()
     # 反馈学习（会话已关，不占事务）：
     # - 新分析结论一进库就作废系数缓存；真阳性会触发误抑制回弹；
     # - 复用结论只是把旧判断写到新任务作审计，**不是新证据**，不能再次训练反馈，
     #   尤其不能因为复用旧 true_positive 就误撤一条后来新增的抑制。
     reused_from = str((findings or {}).get("reused_from") or "").strip()
     light_triaged = str((findings or {}).get("triaged_by") or "") == "light"
+    # false_positive 的闭环：模型经常只交回结论、不调 submit_suppression；
+    # 复用路径更是没有模型会话，不可能自己提交。这里由服务端按任务
+    # canonical identity 自动补一条任务级抑制，否则 NDR 会继续派工同类现象。
+    auto_suppression = _auto_suppress_false_positive(
+        task_id=done_id,
+        task_kind=task_kind,
+        identity=task_identity,
+        verdict=verdict,
+        terminal_reason=reason,
+        confidence=float(confidence or 0),
+        evidence_refs=evidence_refs,
+        reused_from=reused_from,
+        light_triaged=light_triaged,
+        client=client,
+    )
     rebound = 0
     if not reused_from and not light_triaged:
         # 初筛关单同理：2B 小模型只看 hint，它的 benign/false_positive 不是取证结论，
@@ -609,7 +625,116 @@ def complete_task(
         "terminal_reason": reason,
         "anchors": anchored,
         "suppression_rebound": rebound,
+        **({"auto_suppression": auto_suppression} if auto_suppression else {}),
     }
+
+
+def _auto_suppress_false_positive(
+    *,
+    task_id: str,
+    task_kind: str,
+    identity: str,
+    verdict: str,
+    terminal_reason: str,
+    confidence: float,
+    evidence_refs: list[str] | None,
+    reused_from: str,
+    light_triaged: bool,
+    client: Any = None,
+) -> str:
+    """false_positive 自动补任务级抑制（返回抑制名；没创建返回空串）。
+
+    为什么放在服务端而不是让模型再调一次 `submit_suppression`：
+    - 模型经常只调用 `complete_task`，抑制留着不提交；
+    - 复用路径根本没有模型会话，agent 无法补提交。
+
+    只对**任务级**（非 hit/hit_cluster）且 `terminal_reason=concluded` 的
+    false_positive 生效；证据从当前结论或复用来源结论里取，至少满足
+    `suppression.min_refs`。任务级抑制只按 canonical identity 精确拦截，
+    不放宽任何事件级条件树。
+    """
+    if verdict != "false_positive" or terminal_reason != "concluded":
+        return ""
+    if light_triaged or not identity or task_kind in ("hit", "hit_cluster"):
+        return ""
+    if not suppression.enabled():
+        return ""
+    if confidence < suppression.min_confidence():
+        return ""
+    # 模型/人工已经提交过同一 identity 的抑制：不重复创建。
+    if suppression.decide_task(kind=task_kind, reuse_identity=identity) is not None:
+        return ""
+    refs = _suppression_evidence_refs(evidence_refs, reused_from)
+    if len(refs) < suppression.min_refs():
+        log.info(
+            "自动抑制跳过（任务 %s）：证据引用 %d 条，低于下限 %d",
+            task_id, len(refs), suppression.min_refs(),
+        )
+        return ""
+    body = {
+        "name": f"agent-{task_id[:8]}",
+        "scope": suppression.SCOPE_TASK,
+        "reuse_identity": identity,
+        "task_kind": task_kind,
+        "reason_code": "repeated_after_analysis" if reused_from else "business_normal",
+        "note": (
+            "false_positive 自动补抑制"
+            + (f"（复用来源 {reused_from}）" if reused_from else "")
+        ),
+        "evidence_refs": refs,
+        "confidence": confidence,
+        "source_task_id": task_id,
+    }
+    try:
+        out = suppression.create_item(
+            body,
+            created_by="xdr-ingest:auto",
+            origin=suppression.ORIGIN_AGENT,
+        )
+    except Exception as exc:  # noqa: BLE001 — 抑制补齐失败不能影响结论交回
+        log.warning("自动补抑制失败（任务 %s）：%s", task_id, str(exc)[:300])
+        return ""
+    name = str(out.get("name") or "")
+    if name:
+        bump(client, "auto_suppressed")
+        log.info("自动补抑制：%s（%s / %s）", name, task_kind, identity[:100])
+    return name
+
+
+def _suppression_evidence_refs(
+    refs: list[str] | None, reused_from: str
+) -> list[str]:
+    """当前结论没有证据时，沿 `reused_from` 回溯到原始真分析结论。
+
+    复用行的 evidence_refs 是空的（没有真取证）；但原始结论有。自动补抑制
+    必须引用真实证据，不能为了关单编造引用。
+    """
+    out = [str(x)[:200] for x in (refs or [])][:20]
+    if len(out) >= suppression.min_refs() or not reused_from:
+        return out
+    seen: set[str] = set()
+    current = reused_from
+    for _ in range(5):
+        if not current or current in seen:
+            break
+        seen.add(current)
+        try:
+            with SessionLocal() as db:
+                row = db.scalars(
+                    select(AnalysisResult)
+                    .where(AnalysisResult.task_id == current)
+                    .order_by(AnalysisResult.created_at.desc())
+                    .limit(1)
+                ).first()
+        except Exception:  # noqa: BLE001
+            break
+        if row is None:
+            break
+        out = [str(x)[:200] for x in (row.evidence_refs or [])][:20]
+        if len(out) >= suppression.min_refs():
+            return out
+        current = str((row.findings or {}).get("reused_from") or "").strip()
+    return out
 
 
 # 词表唯一来源是 `analysis.verdicts`（与 record_conclusion 共用，中文别名同样接受）
