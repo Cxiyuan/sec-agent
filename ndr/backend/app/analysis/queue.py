@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from app.analysis import (
     anchors as anchors_mod,
     digests as digests_mod,
+    domain_intel as domain_intel_mod,
     facts as facts_mod,
     feedback,
     params,
@@ -551,8 +552,34 @@ def _mirror_event_conclusion(
                 "terminal_reason": str(terminal_reason or ""),
             }
         )
+        task_hint = dict(task.hint or {})
+        task_rules = {str(x) for x in (task_hint.get("规则") or []) if str(x).strip()}
+        task_domains = {str(x).lower() for x in (task_hint.get("dns_domains") or []) if str(x).strip()}
+        per_rule = (findings or {}).get("verdict_for_rule")
+        per_rule = per_rule if isinstance(per_rule, dict) else {}
+        if len(task_rules) > 1 and not per_rule:
+            log.warning(
+                "事件结论镜像跳过（任务 %s）：多规则簇缺少 verdict_for_rule，不能把一个结论覆盖到 %d 个事件",
+                task.id, len(ids),
+            )
+            return 0
+        events = {
+            str(ev.id): ev
+            for ev in db.scalars(select(HitEvent).where(HitEvent.id.in_(ids))).all()
+        }
         written = 0
         for event_id in ids:
+            event = events.get(event_id)
+            if event is not None and task_rules and str(event.rule or "") not in task_rules:
+                continue
+            if event is not None and task_domains:
+                event_domains = {
+                    domain_intel_mod.registrable_domain(qname)
+                    for sample in (event.evidence or [])
+                    if (qname := suppression.dns_query_from_sample(sample))
+                } - {""}
+                if event_domains and not (event_domains & task_domains):
+                    continue
             rec = db.execute(
                 select(ConclusionRecord).where(ConclusionRecord.dedup_key == event_id)
             ).scalar_one_or_none()
@@ -560,7 +587,10 @@ def _mirror_event_conclusion(
                 rec = ConclusionRecord(dedup_key=event_id, created_at=now)
                 db.add(rec)
             rec.event_id = event_id
-            rec.status = str(verdict or "")[:32]
+            event_verdict = (
+                per_rule.get(str(event.rule or ""), verdict) if event is not None and per_rule else verdict
+            )
+            rec.status = str(event_verdict or "")[:32]
             # 任务级结论没有"严重度"这一维（智能体不编严重度）：留空，界面回退看结论态
             rec.severity = ""
             rec.summary = str(summary)[:4000]
