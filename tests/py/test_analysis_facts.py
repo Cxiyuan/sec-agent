@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from app.analysis import facts, queue
 
@@ -29,14 +30,14 @@ def test_merge_task_hint_keeps_new_events_and_domains() -> None:
 
 
 def test_success_state_distinguishes_established_and_unknown() -> None:
-    established = SimpleNamespace(
+    established: Any = SimpleNamespace(
         conn_states=["SF"],
         evidence=[{"status_code": 200}],
     )
     out = facts._success_state([established])
     assert out["state"] == "success"
 
-    unknown = SimpleNamespace(conn_states=[], evidence=[])
+    unknown: Any = SimpleNamespace(conn_states=[], evidence=[])
     assert facts._success_state([unknown])["state"] == "unknown"
 
 

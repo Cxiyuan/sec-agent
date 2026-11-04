@@ -701,6 +701,14 @@ def complete_task(
             findings = dict(findings or {})
             findings["contract_violations"] = contract_violations
     facts_hash = str((facts or {}).get("facts_hash") or "")
+    # DNS 结论自动锚定主域：同一域名换客户端/换解析器仍能在 prior_findings 里查到。
+    if facts:
+        known = {pair for pair in anchor_pairs}
+        for domain in (facts.get("dns") or {}).get("registrable_domains") or []:
+            pair = ("domain", str(domain)[:196])
+            if pair not in known and len(anchor_pairs) < anchors_mod.MAX_ANCHORS:
+                anchor_pairs.append(pair)
+                known.add(pair)
     with SessionLocal() as db:
         row = db.get(AnalysisTask, str(task_id or "").strip())
         if row is None:
@@ -1739,9 +1747,17 @@ def _anchor_pairs_for(subject_text: str, rows: Sequence[AnalysisResult]) -> list
     """要反查哪些资产：显式 subject（当它是 IP）+ 本批结果自己挂的锚点。"""
     pairs: list[tuple[str, str]] = []
     if subject_text:
-        normalized = anchors_mod.normalize_ip(subject_text)
-        if normalized:
-            pairs.append(("ip", normalized))
+        try:
+            import ipaddress
+
+            ipaddress.ip_address(subject_text)
+        except ValueError:
+            # 域名/主机名：按 domain 锚点反查同一域名的历史，而不是硬当成 IP。
+            pairs.append(("domain", subject_text.lower().rstrip(".")))
+        else:
+            normalized = anchors_mod.normalize_ip(subject_text)
+            if normalized:
+                pairs.append(("ip", normalized))
     ids = [str(r.id) for r in rows]
     if ids:
         for assets in anchors_mod.assets_of_results(ids).values():
