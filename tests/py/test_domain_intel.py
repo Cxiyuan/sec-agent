@@ -43,13 +43,14 @@ def test_huawei_cdn_and_amazon_device_are_known() -> None:
 
 def test_ptr_reverse_dns_is_not_a_tunnel() -> None:
     out = domain_intel.lookup_domain(
-        "a.d.4.b.3.2.1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa"
+        "a.b.c.d.e.f.a.b.c.d.e.f.a.b.c.d.e.f.a.b.c.d.e.f."
+        "a.b.c.d.e.f.a.b.c.d.e.f.a.b.c.d.e.f.ip6.arpa"
     )
     assert out["category"] == "PTR 反查"
     assert out["benign_for_long_random_subdomain"] is True
     assert "PTR" in out["guidance"]
 
-    v4 = domain_intel.lookup_domain("1.0.0.10.in-addr.arpa")
+    v4 = domain_intel.lookup_domain("10.1.2.3.in-addr.arpa")
     assert v4["category"] == "PTR 反查"
 
 
