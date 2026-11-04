@@ -874,6 +874,15 @@ def _get_event_detail(args: dict[str, Any]) -> dict[str, Any]:
     event["conclusions"] = _get_event({"event_id": hit_id, "fingerprint": ""}).get(
         "conclusions", []
     )
+    # DNS 事件附带域名归属：不要求模型每次都记得调 domain_intel，
+    # 让“父域是不是腾讯 CDN/华为云 CDN/Amazon 遥测/PTR”直接出现在事件详情里。
+    qname = ""
+    for sample in event.get("evidence") or []:
+        qname = suppression.dns_query_from_sample(sample)
+        if qname:
+            break
+    if qname:
+        event["domain_intel"] = analysis_domain_intel.lookup_domain(qname)
     return event
 
 
