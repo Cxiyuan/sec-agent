@@ -930,6 +930,49 @@ def decide_task(*, kind: str, reuse_identity: str) -> Matched | None:
     return None
 
 
+def task_event_suppressed(*, kind: str, hint: dict[str, Any] | None) -> Matched | None:
+    """hit/hit_cluster 任务的事件级抑制检查。
+
+    事件级抑制过去只在检测热路径 `decide()` 上求值；抑制创建时已经在队列里的
+    hit/hit_cluster 任务不会被回收，仍会被 agent 领走。这里用任务 hint 的
+    `事件ID` 重新求值一次，让 event suppression 对**入队和领取**同样生效。
+    """
+    task_kind = str(kind or "")
+    if task_kind not in ("hit", "hit_cluster") or not enabled():
+        return None
+    raw_ids = (hint or {}).get("事件ID")
+    if isinstance(raw_ids, str):
+        raw_ids = [raw_ids]
+    if not isinstance(raw_ids, list):
+        return None
+    event_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+    if not event_ids:
+        return None
+    try:
+        with SessionLocal() as db:
+            events = list(
+                db.scalars(select(HitEvent).where(HitEvent.id.in_(event_ids[:50]))).all()
+            )
+    except Exception as exc:  # noqa: BLE001 — 读不到事件就不额外拦，交给原有路径
+        log.debug("task event suppression lookup failed: %s", exc)
+        return None
+    if not events:
+        return None
+    for row in _active_rows():
+        if str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT) != SCOPE_EVENT:
+            continue
+        row_kind = str(getattr(row, "task_kind", "") or "")
+        if row_kind and row_kind != task_kind:
+            continue
+        match = normalize_match(row.match or {})
+        if not match:
+            continue
+        for event in events:
+            if _hit_event_matches(event, match):
+                return Matched(id=str(row.id), name=str(row.name or ""), mode=MODE_SUPPRESS)
+    return None
+
+
 def note_hit(item_id: str) -> None:
     """记一次抑制命中（内存累加，`flush_hits()` 攒批落库）。"""
     _pending_hits[item_id] = _pending_hits.get(item_id, 0) + 1

@@ -151,6 +151,14 @@ def enqueue(
             suppression.note_hit(blocked.id)
             bump(client, "task_suppressed")
             return "suppressed"
+    # hit/hit_cluster 的事件级抑制也要在入队时生效：抑制创建后已经在队列里的
+    # 任务不能继续把模型会话跑完。
+    if kind in ("hit", "hit_cluster") and not force:
+        blocked_event = suppression.task_event_suppressed(kind=kind, hint=hint)
+        if blocked_event is not None:
+            suppression.note_hit(blocked_event.id)
+            bump(client, "task_suppressed")
+            return "suppressed"
     key = dedupe_key(kind, subject_kind, subject, feature)
     now = datetime.now(UTC)
     try:
@@ -344,6 +352,10 @@ def claim_tasks(
                     if identity
                     else None
                 )
+                if blocked is None and str(task.kind or "") in ("hit", "hit_cluster"):
+                    blocked = suppression.task_event_suppressed(
+                        kind=str(task.kind or ""), hint=dict(task.hint or {})
+                    )
                 if blocked is not None:
                     suppression.note_hit(blocked.id)
                     suppressed_ids.append(str(task.id))
