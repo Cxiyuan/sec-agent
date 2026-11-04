@@ -290,7 +290,7 @@ def list_records(
 
 @router.post("/records")
 def create_record(
-    payload: AssetIn, _: Annotated[User, Depends(get_current_user)]
+    payload: AssetIn, user: Annotated[User, Depends(get_current_user)]
 ) -> dict[str, Any]:
     ip = payload.ip.strip()
     try:
@@ -313,6 +313,16 @@ def create_record(
             role=payload.role if payload.role in ROLES else "unknown",
             authorization=payload.authorization if payload.authorization in AUTHORIZATIONS else "unknown",
             authorization_note=payload.authorization_note or "",
+            authorized_by=(
+                str(getattr(user, "username", "") or "")
+                if payload.authorization in AUTHORIZATIONS and payload.authorization != "unknown"
+                else ""
+            ),
+            authorized_at=(
+                datetime.now(UTC)
+                if payload.authorization in AUTHORIZATIONS and payload.authorization != "unknown"
+                else None
+            ),
             expected_scan=bool(payload.expected_scan),
         )
         db.add(row)
