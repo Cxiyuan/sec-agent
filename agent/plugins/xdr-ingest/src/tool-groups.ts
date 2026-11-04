@@ -13,6 +13,7 @@ export const CORE_NDR_TOOLS: readonly string[] = [
   'aggregate_events',
   'search_hits',
   'prior_findings',
+  'domain_intel',
   'asset_context',
   'list_networks',
   'describe_data',

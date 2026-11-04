@@ -593,6 +593,15 @@ def get_event_detail(event_id: str = "") -> str:
     return _run("get_event_detail", _clean(event_id=event_id), native=True)
 
 
+def domain_intel(qname: str = "") -> str:
+    """查域名归属/用途：腾讯 CDN/遥测、华为云 CDN、Amazon 遥测、PTR 反查等。
+
+    DNS 隧道类告警先看父域是不是已知厂商基础设施；只给事实与判读提示，
+    最终 verdict 仍由分析智能体结合 qtype/频次/证据决定。
+    """
+    return _run("domain_intel", _clean(qname=qname), native=True)
+
+
 def prior_findings(
     subject: str = "",
     kind: str = "",
@@ -762,6 +771,7 @@ _NDR_TOOL_FUNCS = (
     coverage_report,
     search_hits,
     get_event_detail,
+    domain_intel,
     prior_findings,
     list_suppressions,
     revoke_suppression,
@@ -812,6 +822,7 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         # 事件面与历史
         "search_hits",
         "get_event_detail",
+        "domain_intel",
         "prior_findings",
         # 规则面：命中线索的 hint 只有规则名，看不到规则的匹配条件就会把
         # 「这条规则在抓什么」误当成「这条流量做了什么」
@@ -901,6 +912,11 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         parts.append(claim_line)
 
     history: list[str] = []
+    if has("domain_intel"):
+        history.append(
+            "domain_intel(qname) 查域名归属/用途"
+            "（腾讯 CDN/遥测、华为云 CDN、Amazon 遥测、PTR 反查等；DNS 隧道告警先查它）"
+        )
     if has("prior_findings"):
         history.append(
             "prior_findings(subject) 问过看过没有、结论是什么"

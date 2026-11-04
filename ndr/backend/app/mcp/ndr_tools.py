@@ -24,6 +24,7 @@ from app.mcpapi import (
     IngestFilter,
     Rule,
     analysis_anchors,
+    analysis_domain_intel,
     analysis_get_trace,
     analysis_log_step,
     analysis_params,
@@ -876,6 +877,16 @@ def _get_event_detail(args: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
+def _domain_intel(args: dict[str, Any]) -> dict[str, Any]:
+    """域名归属与用途（离线厂商后缀库 + PTR 识别）。
+
+    智能体没有外网 WHOIS 工具；DNS 隧道类告警必须先确认父域是不是
+    CDN/云厂商/设备遥测域，否则会把合法的长随机子域当成隧道。
+    """
+    value = args.get("qname") or args.get("domain") or args.get("host") or ""
+    return analysis_domain_intel.lookup_domain(value)
+
+
 def _prior_findings(args: dict[str, Any]) -> dict[str, Any]:
     """某个对象的既往结论（智能体开工前的"看过没有"检查）。
 
@@ -1678,6 +1689,16 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _get_event_detail,
         "desc": "取单条命中事件的**完整内容**：事件类型、三类来源、源/客户端/中继、目的 IP:端口、证据、簇 ID，并附带这条事件已有的结论",
         "params": {"event_id": "事件 ID（从 search_hits 结果里拿）"},
+    },
+    "domain_intel": {
+        "run": _domain_intel,
+        "desc": (
+            "查域名的归属/用途（腾讯 CDN、华为云 CDN、Amazon 遥测、PTR 反查等），"
+            "用于判断长随机子域是正常基础设施还是隧道线索。只给事实与提示，不替你做最终 verdict"
+        ),
+        "params": {
+            "qname": "DNS 查询名或父域（如 abc.v.smtcdns.com / tfogc.com；也可传 URL）",
+        },
     },
     "prior_findings": {
         "run": _prior_findings,

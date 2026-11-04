@@ -205,6 +205,27 @@ def test_kinds_default_includes_hit_cluster() -> None:
     assert "hit_cluster" in str(kinds._BY_KEY["analysis.candidate_kinds"].default)
 
 
+def test_lateral_cluster_principal_is_source_actor(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """in→in 横向扫描：主体必须是发起方，不能取“最小内网地址”把受害者当攻击者。"""
+    cand = importlib.import_module("app.analysis.candidates")
+    spy = EnqueueSpy()
+    actor = "10.1.1.20"
+    victim = "10.1.1.10"  # 地址比 actor 小：旧实现会错选成主体
+    row = _hit("cL", src=actor, dst=victim)
+    row.direction = "in→in"
+    row.client = actor
+    _install(monkeypatch, [row], spy)
+    assert cand.enqueue_hit_clusters(None) == 1
+    assert spy.calls[0]["subject"] == actor
+    hint = spy.calls[0]["hint"]
+    assert hint["主体角色"] == "actor"
+    assert hint["actor_asset"] == {"kind": "ip", "value": actor}
+    assert {"kind": "ip", "value": victim} in hint["victim_assets"]
+    assert {"kind": "ip", "value": victim} in hint["受影响资产"]
+
+
 def test_in_to_out_cluster_keeps_our_assets_as_affected(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

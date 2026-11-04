@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -320,6 +321,50 @@ _HIT_CLUSTER_RECALL_MINUTES = 60
 _HIT_CLUSTER_EVENT_CAP = 600
 
 
+def _cluster_principal(events: list[Any]) -> tuple[str, str]:
+    """选簇主体：横向/外连取发起方，外→内取被访问资产。
+
+    旧实现取“事件里最小的内网地址”，在 in→in 扫描里会选中受害者（例如
+    196.130 < 199.68），于是任务主体、结论展示都变成受害者。这里按方向和
+    出现次数选行为方：
+    - in→in / in→out：发起方是我们监控网段内的资产，主体取出现最多的内网 src；
+    - out→in：外部攻击者不是资产，主体取出现最多的内网 dst（受害者）；
+    - 方向不明：回退到原来的确定排序。
+    """
+    direction = str(getattr(events[0], "direction", "") or "") if events else ""
+    internal_src = [
+        str(ev.src_ip or "").strip()
+        for ev in events
+        if is_internal_ip(str(ev.src_ip or ""))
+    ]
+    internal_dst = [
+        str(value)
+        for ev in events
+        for value in (str(x) for x in (ev.dst_ips or []))
+        if is_internal_ip(value)
+    ]
+
+    def _most_common(values: list[str]) -> str:
+        counts = Counter(value for value in values if value)
+        if not counts:
+            return ""
+        # 次数优先，同次数按地址排序，保证同一簇跨轮次稳定。
+        return min(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+
+    if direction in ("in→in", "in→out"):
+        actor = _most_common(internal_src)
+        if actor:
+            return actor, "actor"
+    elif direction == "out→in":
+        victim = _most_common(internal_dst)
+        if victim:
+            return victim, "victim"
+    all_assets = sorted(set(internal_src) | set(internal_dst))
+    if not all_assets:
+        return "", "unknown"
+    return all_assets[0], "unknown"
+
+
 def enqueue_hit_clusters(client: Any) -> int:
     """命中簇 → `hit_cluster` 线索（D2，2026-10-29）：资产为中心，先全貌再逐条。
 
@@ -386,21 +431,13 @@ def enqueue_hit_clusters(client: Any) -> int:
             principal,
         )
 
-    scored: list[tuple[float, str, list[Any], str, list[str]]] = []
+    scored: list[tuple[float, str, str, list[Any], str, list[str]]] = []
     for events in clusters.values():
-        # principal 必须是**确定性**的：按事件列表第一个内网地址选，事件顺序变化
-        # 就会让同一簇换主体、换 dedupe_key、换复用键。排序后取最小地址。
-        internal_assets = sorted(
-            {
-                cand_ip
-                for ev in events
-                for cand_ip in [str(x) for x in (ev.dst_ips or [])] + [str(ev.src_ip or "")]
-                if cand_ip and is_internal_ip(cand_ip)
-            }
-        )
-        if not internal_assets:
+        # principal 必须**确定性且是行为方**：in→in 取发起方，out→in 取受害者；
+        # 事件顺序变化不能让主体漂移，也不能把受害者当成扫描源。
+        principal, principal_role = _cluster_principal(events)
+        if not principal:
             continue  # 外部↔外部不是我们的资产
-        principal = internal_assets[0]
         rule_names = sorted({str(ev.rule or "") for ev in events} - {""})[:10]
         # 簇族身份：规则集合 + 源网段 + 方向，**不含 principal/小时桶**。
         # 原实现用 principal+规则，principal 会随事件顺序漂移（同一簇可能出现多个
@@ -430,6 +467,7 @@ def enqueue_hit_clusters(client: Any) -> int:
             (
                 _objective_strength(events, principal),
                 principal,
+                principal_role,
                 events,
                 family,
                 rule_names,
@@ -437,7 +475,7 @@ def enqueue_hit_clusters(client: Any) -> int:
         )
     scored = sorted(scored, key=lambda item: item[0], reverse=True)
     made = 0
-    for strength, principal, events, family, rule_names in scored[:_HIT_CLUSTER_PER_ROUND]:
+    for strength, principal, principal_role, events, family, rule_names in scored[:_HIT_CLUSTER_PER_ROUND]:
         event_ids = [str(ev.id) for ev in events[:20]]
         direction = str((events[0].direction if events else "") or "")
         lead = events[0]
@@ -458,11 +496,19 @@ def enqueue_hit_clusters(client: Any) -> int:
             "规则": rule_names,
             "主体资产": {"kind": "ip", "value": principal},
             "principal_asset": {"kind": "ip", "value": principal},
+            "主体角色": principal_role,
+            "principal_role": principal_role,
             "受影响资产": [{"kind": "ip", "value": v} for v in affected[:20]],
             "affected_assets": [{"kind": "ip", "value": v} for v in affected[:20]],
             # 智能体侧复用键（不含时间桶）：同一簇族可以复用上次的结论
             "reuse_identity": family,
         }
+        if principal_role == "actor":
+            hint["actor_asset"] = {"kind": "ip", "value": principal}
+            if direction == "in→in":
+                hint["victim_assets"] = [{"kind": "ip", "value": v} for v in affected[:20]]
+        elif principal_role == "victim":
+            hint["victim_assets"] = [{"kind": "ip", "value": principal}]
         if direction:
             hint["方向"] = direction
             hint["direction"] = direction

@@ -22,6 +22,7 @@ from app import system_license
 from app.analysis import (
     anchors as analysis_anchors,
     digests as _digests,
+    domain_intel as analysis_domain_intel,
     params as analysis_params,
     queue as analysis_queue,
     subjects as analysis_subjects,
@@ -74,6 +75,7 @@ __all__ = [
     "analysis_anchor_kinds",
     "analysis_anchors",
     "analysis_digests",
+    "analysis_domain_intel",
     "analysis_get_trace",
     "analysis_log_step",
     "analysis_params",
