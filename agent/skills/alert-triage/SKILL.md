@@ -40,6 +40,8 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 `32hex.父域` 只是**形态线索**，不是隧道证据。收到 SID 9109001/9109002/
 9109003/9109006 这类 DNS 隧道告警时，先调用 `domain_intel(qname=完整查询名)`：
 
+- 未知域名调用 Agent 侧 `rdap_lookup(domain=父域或完整查询名)` 查注册人；
+  注册人只说明归属，不说明用途，不能单独判恶意或良性。
 - 父域属于腾讯 CDN/遥测（`smtcdns.com`、`tfogc.com`）、华为云 CDN
   （`cdnhwc8.com`/`.cn`）、Amazon 设备遥测（`a2z.com`）、Microsoft 更新等
   已知厂商基础设施：长随机子域是正常客户端标识；只有 `A/AAAA/HTTPS`、无

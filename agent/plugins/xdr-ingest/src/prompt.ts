@@ -104,8 +104,9 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '先调 `task_facts(task_id=...)` 读客观事实（actor/victim、资产授权、DNS qtype/rcode/频次、'
     + '成功状态、证据/历史），再决定还要补什么；不要从 hint 自己猜方向或资产角色。',
     '然后用 `prior_findings(subject=...)` 查看是否有相关历史结论，避免从头重复已知部分；',
-    'DNS 隧道/长随机子域告警先调 `domain_intel(qname=完整查询名)`：腾讯 CDN/遥测、',
-    '华为云 CDN、Amazon 遥测、PTR 反查等已知厂商域，长随机标签本身不是隧道证据。',
+    'DNS 隧道/长随机子域告警先调 `domain_intel(qname=完整查询名)` 查离线厂商情报；',
+    '未知域名再调 `rdap_lookup(domain=父域或完整查询名)` 查注册人/归属。',
+    '腾讯 CDN/遥测、华为云 CDN、Amazon 遥测、PTR 反查等已知厂商域，长随机标签本身不是隧道证据。',
     '资产未登记只说明台账缺口，不能单独当恶意证据；授权不明的内部扫描/overlay 先判 suspicious。',
     '然后自己拟定调查问题与范围，只调用能回答问题的工具。台账、代理链路、基线、原始事件等',
     '按需取用，不要求每条任务都查全。**引用必须来自本会话实际取回的证据**（es:/ev:）。',

@@ -14,6 +14,7 @@ import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
+import { registerRdapTool } from './rdap.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
 import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
@@ -371,6 +372,15 @@ export class Analyst {
         } catch (error) {
           console.warn(
             '[xdr-ingest] 无法注册 enable_analysis_tools，工具面不会按需扩展：',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+        // 动态 RDAP 属于分析端取证：NDR 不承担外网查询；每个会话注册本地工具。
+        try {
+          registerRdapTool(agentCtx)
+        } catch (error) {
+          console.warn(
+            '[xdr-ingest] 无法注册 rdap_lookup：',
             error instanceof Error ? error.message : String(error),
           )
         }

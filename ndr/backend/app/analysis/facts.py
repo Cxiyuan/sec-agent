@@ -245,7 +245,7 @@ def build_task_facts(task_id: str) -> dict[str, Any]:
     dns_list: list[dict[str, Any]] = []
     for item in dns_queries.values():
         # 热路径不查外部 RDAP：facts 只带离线情报，智能体需要时再调 domain_intel。
-        info = domain_intel.lookup_domain(item["qname"], allow_network=False)
+        info = domain_intel.lookup_domain(item["qname"])
         dns_list.append(
             {
                 **item,

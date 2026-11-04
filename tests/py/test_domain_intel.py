@@ -55,7 +55,7 @@ def test_ptr_reverse_dns_is_not_a_tunnel() -> None:
 
 
 def test_unknown_domain_stays_suspicious_guidance() -> None:
-    out = domain_intel.lookup_domain("deadbeefdeadbeefdeadbeefdeadbeef.evil.example", allow_network=False)
+    out = domain_intel.lookup_domain("deadbeefdeadbeefdeadbeefdeadbeef.evil.example")
     assert out["known"] is False
     assert out["benign_for_long_random_subdomain"] is False
     assert "suspicious" in out["guidance"]
@@ -66,25 +66,3 @@ def test_input_normalization() -> None:
     assert domain_intel.registrable_domain("a.b.example.co.uk") == "example.co.uk"
     assert domain_intel.lookup_domain("")["error"]
 
-
-def test_rdap_vcard_entity_name() -> None:
-    payload = {
-        "entities": [
-            {
-                "vcardArray": [
-                    "vcard",
-                    [
-                        ["version", {}, "text", "4.0"],
-                        ["fn", {}, "text", "Example Registrar"],
-                    ],
-                ]
-            }
-        ]
-    }
-    assert domain_intel._rdap_entity_name(payload["entities"]) == "Example Registrar"
-
-
-def test_rdap_unknown_without_network_stays_unknown() -> None:
-    out = domain_intel.lookup_domain("unknown.example", allow_network=False)
-    assert out["known"] is False
-    assert out["benign_for_long_random_subdomain"] is False
