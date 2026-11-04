@@ -9,18 +9,20 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import redis
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import String, cast, select
 from sqlalchemy.orm import Session
 
-from app.analysis import params, queue as tasks, subjects as inventory
+from app.analysis import domain_intel, params, queue as tasks, subjects as inventory
 from app.api.deps import get_current_user
 from app.db.base import get_db
-from app.db.models import User
+from app.db.models import AnalysisAnchor, AnalysisResult, AnalysisTask, User
 from app.workers.log import get_logger
 
 log = get_logger(__name__)
@@ -160,6 +162,78 @@ def inventory_results(
 def analysis_stats(_: Annotated[User, Depends(get_current_user)]):
     """总览：各状态条数、按类型/结论分布、平均成本、计数器、当前预算。"""
     return tasks.stats(_client())
+
+
+@router.get("/quality")
+def analysis_quality(
+    _: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    days: int = 30,
+):
+    """结论质量审计：已知良性域名 TP、无证据 TP、主体=受害者、复用了错误结论等。"""
+    days = max(1, min(int(days or 30), 365))
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = list(
+        db.scalars(
+            select(AnalysisResult)
+            .where(AnalysisResult.created_at >= since)
+            .order_by(AnalysisResult.created_at.desc())
+        ).all()
+    )
+    tp = [row for row in rows if str(row.verdict or "") == "true_positive"]
+    no_refs = [row for row in tp if not (row.evidence_refs or [])]
+    no_basis = [row for row in tp if not dict(row.verdict_basis or {})]
+    task_ids = {str(row.task_id) for row in tp}
+    roles: dict[str, str] = {}
+    if task_ids:
+        tasks_rows = db.scalars(
+            select(AnalysisTask).where(cast(AnalysisTask.id, String).in_(task_ids))
+        ).all()
+        roles = {
+            str(task.id): str((task.hint or {}).get("主体角色") or "unknown")
+            for task in tasks_rows
+        }
+    victim_subject = [row for row in tp if roles.get(str(row.task_id)) == "victim"]
+    known_domain_tp: list[dict[str, Any]] = []
+    if tp:
+        anchors = db.scalars(
+            select(AnalysisAnchor).where(
+                AnalysisAnchor.result_id.in_([str(row.id) for row in tp]),
+                AnalysisAnchor.asset_kind == "domain",
+            )
+        ).all()
+        tp_by_id = {str(row.id): row for row in tp}
+        for anchor in anchors:
+            info = domain_intel.lookup_domain(str(anchor.asset_value or ""))
+            if info.get("known"):
+                row = tp_by_id.get(str(anchor.result_id))
+                if row is not None:
+                    known_domain_tp.append(
+                        {
+                            "task_id": str(row.task_id),
+                            "domain": str(anchor.asset_value),
+                            "provider": info.get("provider"),
+                            "category": info.get("category"),
+                        }
+                    )
+    total = len(rows)
+    return {
+        "days": days,
+        "total": total,
+        "true_positive": len(tp),
+        "true_positive_no_evidence_refs": len(no_refs),
+        "true_positive_no_verdict_basis": len(no_basis),
+        "true_positive_subject_victim": len(victim_subject),
+        "true_positive_known_benign_domain": len(known_domain_tp),
+        "rates": {
+            "no_evidence_refs": round(len(no_refs) / len(tp), 4) if tp else 0.0,
+            "no_verdict_basis": round(len(no_basis) / len(tp), 4) if tp else 0.0,
+            "subject_victim": round(len(victim_subject) / len(tp), 4) if tp else 0.0,
+            "known_benign_domain": round(len(known_domain_tp) / len(tp), 4) if tp else 0.0,
+        },
+        "known_benign_domain_tp": known_domain_tp[:100],
+        "note": "这是审计口径，不是自动改 verdict；用于发现语义错误但格式合法的结论。",
+    }
 
 
 @router.get("/coverage")
