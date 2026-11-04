@@ -114,6 +114,10 @@ class Aggregator:
                 "real_client_ips": [],
                 "proxied": False,
                 "samples": [],
+                # DNS 聚合事实：仅用来给智能体看 qtype/rcode/域名分布，不在这里下 verdict。
+                "dns_qtypes": {},
+                "dns_rcodes": {},
+                "dns_queries": {},
                 "first_seen": _iso(ts),
                 "first_seen_ts": ts,
                 "last_seen": _iso(ts),
@@ -141,6 +145,26 @@ class Aggregator:
             samples.append(sample)
         else:
             samples[-1] = sample
+        # DNS 事实计数（不依赖 3 条样本）：qtype/rcode/查询名各出现多少次。
+        is_dns = (
+            str(getattr(entry, "log_type", "") or "").lower() == "dns"
+            or str(getattr(entry, "event_type", "") or "").lower().startswith("dns")
+            or bool(str(getattr(entry, "qtype", "") or ""))
+        )
+        if is_dns:
+            qname = str(getattr(entry, "query", "") or "")[:255]
+            qtype = str(getattr(entry, "qtype", "") or "")[:16]
+            rcode = str(getattr(entry, "rcode", "") or "")[:16]
+            if qname:
+                queries = state.setdefault("dns_queries", {})
+                if qname in queries or len(queries) < 200:
+                    queries[qname] = _to_int(queries.get(qname), 0) + 1
+            if qtype:
+                qtypes = state.setdefault("dns_qtypes", {})
+                qtypes[qtype] = _to_int(qtypes.get(qtype), 0) + 1
+            if rcode:
+                rcodes = state.setdefault("dns_rcodes", {})
+                rcodes[rcode] = _to_int(rcodes.get(rcode), 0) + 1
 
         current = _to_int(self.r.zcard(_DUE_KEY), 0)
         if current >= self.max_keys and not self.r.zscore(_DUE_KEY, key):

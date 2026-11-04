@@ -188,6 +188,28 @@ def build_task_facts(task_id: str) -> dict[str, Any]:
     qtypes: Counter[str] = Counter()
     rcodes: Counter[str] = Counter()
     answers: set[str] = set()
+    has_dns_facts = False
+    # 聚合事实优先：不受 evidence 只保留 3 条样本的限制。
+    for event in events:
+        dns_facts = getattr(event, "dns_facts", None)
+        if not isinstance(dns_facts, dict):
+            continue
+        if dns_facts.get("qtypes") or dns_facts.get("rcodes") or dns_facts.get("queries"):
+            has_dns_facts = True
+        qtypes.update({str(k): int(v) for k, v in (dns_facts.get("qtypes") or {}).items()})
+        rcodes.update({str(k): int(v) for k, v in (dns_facts.get("rcodes") or {}).items()})
+        for qname, count in (dns_facts.get("queries") or {}).items():
+            item = dns_queries.setdefault(
+                str(qname),
+                {
+                    "qname": str(qname),
+                    "registrable_domain": domain_intel.registrable_domain(str(qname)),
+                    "qtypes": Counter(),
+                    "rcodes": Counter(),
+                    "samples": 0,
+                },
+            )
+            item["samples"] += int(count or 0)
     for event in events:
         for sample in event.evidence or []:
             if not isinstance(sample, dict):
@@ -195,13 +217,14 @@ def build_task_facts(task_id: str) -> dict[str, Any]:
             qname = suppression.dns_query_from_sample(sample)
             qtype = _qtype_of(sample)
             rcode = _rcode_of(sample)
-            if qtype:
+            if qtype and not has_dns_facts:
                 qtypes[qtype] += 1
-            if rcode:
+            if rcode and not has_dns_facts:
                 rcodes[rcode] += 1
             answers.update(_answers_of(sample))
             if not qname:
                 continue
+            existed = qname in dns_queries
             item = dns_queries.setdefault(
                 qname,
                 {
@@ -212,15 +235,17 @@ def build_task_facts(task_id: str) -> dict[str, Any]:
                     "samples": 0,
                 },
             )
-            item["samples"] += 1
-            if qtype:
+            if not has_dns_facts or not existed:
+                item["samples"] += 1
+            if qtype and not has_dns_facts:
                 item["qtypes"][qtype] += 1
-            if rcode:
+            if rcode and not has_dns_facts:
                 item["rcodes"][rcode] += 1
 
     dns_list: list[dict[str, Any]] = []
     for item in dns_queries.values():
-        info = domain_intel.lookup_domain(item["qname"])
+        # 热路径不查外部 RDAP：facts 只带离线情报，智能体需要时再调 domain_intel。
+        info = domain_intel.lookup_domain(item["qname"], allow_network=False)
         dns_list.append(
             {
                 **item,

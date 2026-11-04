@@ -741,6 +741,8 @@ def enqueue_observations(client: Any) -> int:
         # D1：观察事实按"类别决定方向"下发（egress 类是 in→out，入口探测是 out→in）。
         # 不能派工后再判 —— agent 需要"这个事实本身发生在哪个方向"来选查询路径。
         direction = _OBSERVATION_DIRECTION.get(str(row.kind or ""), "")
+        # 观察事实也要明确主体角色：egress 是“我方主动外连”=actor；入口探测=被访问方。
+        role = "actor" if direction == "in→out" else ("victim" if direction == "out→in" else "unknown")
         result = queue.enqueue(
             kind="observation",
             subject_kind=subject_kind,
@@ -763,6 +765,18 @@ def enqueue_observations(client: Any) -> int:
                 ),
                 **({"方向": direction} if direction else {}),
                 **({"direction": direction} if direction else {}),
+                "主体角色": role,
+                "principal_role": role,
+                **(
+                    {"actor_asset": {"kind": subject_kind, "value": str(row.subject or "")}}
+                    if role == "actor"
+                    else {}
+                ),
+                **(
+                    {"victim_assets": [{"kind": subject_kind, "value": str(row.subject or "")}]}
+                    if role == "victim"
+                    else {}
+                ),
                 **({"相关规则命中": evidence} if evidence else {}),
             },
             client=client,

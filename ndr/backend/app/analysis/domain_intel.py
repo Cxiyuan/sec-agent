@@ -11,6 +11,11 @@ Amazon 设备遥测等合法服务同样使用长随机子域。把已知厂商�
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.parse
+import urllib.request
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -168,7 +173,58 @@ def _matched_suffix(domain: str) -> str:
     return ""
 
 
-def lookup_domain(value: Any) -> dict[str, Any]:
+def _vcard_value(entity: dict[str, Any], key: str) -> str:
+    vcard = entity.get("vcardArray")
+    if not isinstance(vcard, list) or len(vcard) < 2 or not isinstance(vcard[1], list):
+        return ""
+    for item in vcard[1]:
+        if not isinstance(item, list) or len(item) < 4 or str(item[0]).lower() != key:
+            continue
+        value = item[3]
+        if isinstance(value, list):
+            value = " ".join(str(x) for x in value)
+        return str(value or "").strip()
+    return ""
+
+
+def _rdap_entity_name(entities: Any) -> str:
+    if not isinstance(entities, list):
+        return ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        for key in ("fn", "org"):
+            value = _vcard_value(entity, key)
+            if value:
+                return value
+        nested = _rdap_entity_name(entity.get("entities"))
+        if nested:
+            return nested
+    return ""
+
+
+@lru_cache(maxsize=512)
+def _rdap_lookup(domain: str) -> dict[str, Any]:
+    """RDAP 查询注册人（失败返回空对象；不把失败当“未知=恶意”）。"""
+    if os.getenv("NDR_DOMAIN_RDAP", "1").strip().lower() in ("0", "false", "off", "no"):
+        return {}
+    url = "https://rdap.org/domain/" + urllib.parse.quote(domain, safe="")
+    request = urllib.request.Request(url, headers={"User-Agent": "shentong-ndr/domain-intel"})
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read(2_000_000).decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 — 外部网络不可用/超时不影响本判定
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "registrant": _rdap_entity_name(payload.get("entities")),
+        "handle": str(payload.get("handle") or ""),
+        "rdap_url": url,
+    }
+
+
+def lookup_domain(value: Any, *, allow_network: bool = True) -> dict[str, Any]:
     """返回一个域名/URL 的归属、用途和 DNS 隧道判读提示。"""
     domain = normalize_domain(value)
     if not domain:
@@ -213,6 +269,25 @@ def lookup_domain(value: Any) -> dict[str, Any]:
                 "若只有 A/AAAA/HTTPS 且频次与基线相当，倾向 false_positive/benign。"
             ),
         }
+    rdap = _rdap_lookup(reg) if allow_network else {}
+    if rdap.get("registrant"):
+        return {
+            "input": str(value),
+            "domain": domain,
+            "registrable_domain": reg,
+            "known": True,
+            "provider": str(rdap.get("registrant")),
+            "category": "RDAP 注册信息",
+            "registrant": str(rdap.get("registrant")),
+            "rdap_url": str(rdap.get("rdap_url") or ""),
+            # 注册人已知 ≠ 用途良性：CDN/云厂商子域仍可能被滥用，不能仅凭 owner 判 benign。
+            "benign_for_long_random_subdomain": False,
+            "guidance": (
+                "RDAP 已返回注册人，但注册人只说明归属、不说明用途。"
+                "仍需看 qtype（TXT/NULL）、单主机频次、回包/载荷；"
+                "若注册人是已知 CDN/遥测厂商再结合域名用途库判断。"
+            ),
+        }
     return {
         "input": str(value),
         "domain": domain,
@@ -220,8 +295,8 @@ def lookup_domain(value: Any) -> dict[str, Any]:
         "known": False,
         "benign_for_long_random_subdomain": False,
         "guidance": (
-            "未知域名。32 位十六进制子域只能当线索：单次查询先判 suspicious；"
-            "要判 true_positive，至少要有 TXT/NULL 等隧道类型、单主机高频持续、"
-            "异常回包/载荷或外部情报佐证。"
+            "未知域名（RDAP 未返回可用注册人）。32 位十六进制子域只能当线索："
+            "单次查询先判 suspicious；要判 true_positive，至少要有 TXT/NULL 等隧道类型、"
+            "单主机高频持续、异常回包/载荷或外部情报佐证。"
         ),
     }

@@ -796,6 +796,11 @@ def save_from_digest(digest: dict[str, Any]) -> str:
                 real_client_ips=reals,
                 # 方向在聚合定型时由 runner 统一算好放进 digest（D1）：这里只落库
                 direction=str(digest.get("direction") or ""),
+                dns_facts={
+                    "qtypes": dict(digest.get("dns_qtypes") or {}),
+                    "rcodes": dict(digest.get("dns_rcodes") or {}),
+                    "queries": dict(digest.get("dns_queries") or {}),
+                },
                 evidence=_evidence(digest),
             )
             db.add(row)

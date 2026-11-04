@@ -117,6 +117,8 @@ class UnifiedLog(BaseModel):
     tls_established: bool | None = None
     # DNS / 文件
     qtype: str = ""
+    rcode: str = ""
+    answers: list[str] = Field(default_factory=list)
     filename: str = ""
     mime_type: str = ""
     # 文件（Zeek files.log）：哈希由 Zeek 的 FileHash 分析器算好落日志，这里原样搬运

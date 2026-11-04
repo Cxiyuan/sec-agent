@@ -659,6 +659,8 @@ class HitEvent(Base):
     direction: Mapped[str] = mapped_column(String(16), default="")
     #: 样例事件的关键字段（时间/类型/URI/UA/状态码/账号…）
     evidence: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 聚合后的 DNS 事实：qtype/rcode/qname 计数（不受 3 条样例上限影响）。
+    dns_facts: Mapped[dict] = mapped_column(JSONB, default=dict)
     #: 已忽略：不再出现在默认列表里（行保留，可追溯、可撤回）
     ignored: Mapped[bool] = mapped_column(Boolean, default=False)
     ignored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

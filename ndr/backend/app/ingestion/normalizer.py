@@ -655,6 +655,10 @@ def _http_fields(doc: dict[str, Any], log_type: str, peer_ip: Any = None) -> dic
         # C 组规则只用 "16"、D 组 catalog 按数字码写描述、G 组前端按数字码显示；
         # 只有上游**没给**数字码时才回落到 qtype_name。
         "qtype": str(doc.get("qtype") or doc.get("qtype_name") or "")[:16],
+        "rcode": str(doc.get("rcode") or doc.get("rcode_name") or "")[:16],
+        "answers": [str(x)[:200] for x in (doc.get("answers") or [])][:20]
+        if isinstance(doc.get("answers"), list)
+        else [],
         "filename": str(doc.get("filename") or "")[:256],
         "mime_type": str(doc.get("mime_type") or "")[:128],
         "fuid": str(doc.get("fuid") or "")[:64],
@@ -909,6 +913,17 @@ def _eve_http_doc(doc: dict[str, Any]) -> dict[str, Any]:
             _as_dict(dns.get("rrtype")).get("code") or dns.get("rrtype") or dns.get("qtype")
         )
         out["qtype_name"] = dns.get("rrtype")
+        out["rcode"] = str(dns.get("rcode") or "")
+        raw_answers = dns.get("answers") or dns.get("answer") or []
+        if isinstance(raw_answers, list):
+            out["answers"] = [
+                str(
+                    (item.get("rdata") or item.get("data") or item.get("rrname") or item)
+                    if isinstance(item, dict)
+                    else item
+                )[:200]
+                for item in raw_answers
+            ][:20]
     if tls:
         out["server_name"] = tls.get("sni")
         out["version"] = tls.get("version")
