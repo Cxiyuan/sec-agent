@@ -34,7 +34,14 @@ from typing import Any
 
 from sqlalchemy import Text, cast, func, select, tuple_
 
-from app.analysis import cold_start as cold_start_mod, feedback, params, queue, subjects
+from app.analysis import (
+    cold_start as cold_start_mod,
+    domain_intel as domain_intel_mod,
+    feedback,
+    params,
+    queue,
+    subjects,
+)
 from app.baseline import poisson
 from app.db.base import SessionLocal
 from app.db.models import AnalysisResult, AnalysisTask, HitEvent, Observation, ObservedSubject
@@ -365,6 +372,26 @@ def _cluster_principal(events: list[Any]) -> tuple[str, str]:
     return all_assets[0], "unknown"
 
 
+def _cluster_dns_domains(events: list[Any]) -> list[str]:
+    """簇内 DNS 查询的可注册主域（排序、去重）。
+
+    为什么簇族必须带上它：同一 source /24、同一条 DNS 隧道规则下，
+    smtcdns.com（腾讯 CDN）、tfogc.com（腾讯遥测）和真正的恶意域会共享
+    rule+source_net+direction。若 family 不含域名，一个域的误报会被复用到
+    另一个域，24h 护栏还会把另一个域当成“同一现象”直接跳过。
+    """
+    domains: set[str] = set()
+    for event in events:
+        for sample in (getattr(event, "evidence", None) or []):
+            qname = suppression.dns_query_from_sample(sample)
+            if not qname:
+                continue
+            domain = domain_intel_mod.registrable_domain(qname)
+            if domain:
+                domains.add(domain)
+    return sorted(domains)
+
+
 def enqueue_hit_clusters(client: Any) -> int:
     """命中簇 → `hit_cluster` 线索（D2，2026-10-29）：资产为中心，先全貌再逐条。
 
@@ -431,7 +458,7 @@ def enqueue_hit_clusters(client: Any) -> int:
             principal,
         )
 
-    scored: list[tuple[float, str, str, list[Any], str, list[str]]] = []
+    scored: list[tuple[float, str, str, list[Any], str, list[str], list[str]]] = []
     for events in clusters.values():
         # principal 必须**确定性且是行为方**：in→in 取发起方，out→in 取受害者；
         # 事件顺序变化不能让主体漂移，也不能把受害者当成扫描源。
@@ -439,7 +466,8 @@ def enqueue_hit_clusters(client: Any) -> int:
         if not principal:
             continue  # 外部↔外部不是我们的资产
         rule_names = sorted({str(ev.rule or "") for ev in events} - {""})[:10]
-        # 簇族身份：规则集合 + 源网段 + 方向，**不含 principal/小时桶**。
+        dns_domains = _cluster_dns_domains(events)
+        # 簇族身份：规则集合 + 源网段 + 方向 + DNS 主域，**不含 principal/小时桶**。
         # 原实现用 principal+规则，principal 会随事件顺序漂移（同一簇可能出现多个
         # 不同 family）；而 cluster_id 的语义本来就是「归类+源网段+小时」，
         # 去掉小时后剩下的稳定部分才是可复用的簇族。
@@ -452,14 +480,17 @@ def enqueue_hit_clusters(client: Any) -> int:
             - {""}
         )
         directions = sorted({str(getattr(ev, "direction", "") or "") for ev in events} - {""})
-        family_raw = "|".join(
-            (
-                "hit_cluster",
-                ",".join(rule_names),
-                ",".join(source_nets),
-                ",".join(directions),
-            )
-        )
+        family_parts = [
+            "hit_cluster",
+            ",".join(rule_names),
+            ",".join(source_nets),
+            ",".join(directions),
+        ]
+        # 没有 DNS 主域时保持旧 family 不变，避免部署后把正在跑的普通簇
+        # 全部当成新现象重派；只有能识别域名时才把域作为分族维度。
+        if dns_domains:
+            family_parts.append(",".join(dns_domains))
+        family_raw = "|".join(family_parts)
         family = hashlib.sha256(family_raw.encode("utf-8")).hexdigest()[:32]
         if family in guard_families:
             continue  # 24h 观察护栏：这个簇族 24h 内已经派过工
@@ -471,11 +502,20 @@ def enqueue_hit_clusters(client: Any) -> int:
                 events,
                 family,
                 rule_names,
+                dns_domains,
             )
         )
     scored = sorted(scored, key=lambda item: item[0], reverse=True)
     made = 0
-    for strength, principal, principal_role, events, family, rule_names in scored[:_HIT_CLUSTER_PER_ROUND]:
+    for (
+        strength,
+        principal,
+        principal_role,
+        events,
+        family,
+        rule_names,
+        dns_domains,
+    ) in scored[:_HIT_CLUSTER_PER_ROUND]:
         event_ids = [str(ev.id) for ev in events[:20]]
         direction = str((events[0].direction if events else "") or "")
         lead = events[0]
@@ -494,6 +534,7 @@ def enqueue_hit_clusters(client: Any) -> int:
             "事件数": len(events),
             "事件ID": event_ids,
             "规则": rule_names,
+            "dns_domains": dns_domains,
             "主体资产": {"kind": "ip", "value": principal},
             "principal_asset": {"kind": "ip", "value": principal},
             "主体角色": principal_role,

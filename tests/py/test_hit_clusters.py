@@ -226,6 +226,29 @@ def test_lateral_cluster_principal_is_source_actor(
     assert {"kind": "ip", "value": victim} in hint["受影响资产"]
 
 
+def test_dns_cluster_family_separates_domains(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同源/同规则的 DNS 簇必须按主域分族，不能把 CDN 误报复用到另一个域。"""
+    cand = importlib.import_module("app.analysis.candidates")
+    spy = EnqueueSpy()
+    first = _hit("cDns1", src=ADMIN_ASSET, dst=SCANNER)
+    first.direction = "in→out"
+    first.evidence = [
+        {"query": "aafd8cefac83e7667d4b1020157fd6db.v.smtcdns.com"}
+    ]
+    second = _hit("cDns2", src=ADMIN_ASSET, dst=SCANNER)
+    second.direction = "in→out"
+    second.evidence = [
+        {"query": "32849170ffb36267323742377076e244.rdt.tfogc.com"}
+    ]
+    _install(monkeypatch, [first, second], spy)
+    assert cand.enqueue_hit_clusters(None) == 2
+    assert len(spy.families) == 2, "不同 DNS 主域不能共享同一个 reuse_identity"
+    domains = {tuple(call["hint"]["dns_domains"]) for call in spy.calls}
+    assert domains == {("smtcdns.com",), ("tfogc.com",)}
+
+
 def test_in_to_out_cluster_keeps_our_assets_as_affected(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
