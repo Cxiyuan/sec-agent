@@ -655,6 +655,10 @@ def enqueue_observations(client: Any) -> int:
         )
         if result in ("new", "merged"):
             made += 1
+        # 被抑制也属于「这条事实已经处理过」：不记 last_enqueued_at 的话，
+        # 同一事实每 5 分钟会重新撞一次抑制，既刷高 hits/`task_suppressed`，
+        # 也可能把一条正常抑制计数推到熔断阈值。
+        if result in ("new", "merged", "suppressed"):
             enqueued_ids.append(str(row.id))
     if enqueued_ids:
         try:

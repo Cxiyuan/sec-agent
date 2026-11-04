@@ -27,13 +27,14 @@ def cand(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Any
 
 
 class FakeQueue:
-    def __init__(self) -> None:
+    def __init__(self, result: str = "new") -> None:
         self.calls: list[dict[str, Any]] = []
         self.bumps: list[tuple[str, int]] = []
+        self.result = result
 
     def enqueue(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
-        return "new"
+        return self.result
 
     def bump(self, _client: Any, field: str, count: int = 1) -> None:
         self.bumps.append((field, count))
@@ -139,6 +140,20 @@ def test_dispatch_prefers_observation_canonical_identity(
     cand.enqueue_observations(client=SimpleNamespace())
     assert fake_queue.calls[0]["hint"]["reuse_identity"] == canonical
     assert fake_queue.calls[1]["hint"]["reuse_identity"].startswith("profile_anomaly:")
+
+
+def test_suppressed_observation_still_gets_cooldown(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """被抑制的事实也要记 last_enqueued_at，否则每 5 分钟重撞一次、刷高 hits。"""
+    rows = [_obs("profile_anomaly", idx="o1")]
+    db = FakeDB(rows, scalar_values=[1, 0])
+    monkeypatch.setattr(cand, "SessionLocal", lambda: db)
+    fake_queue = FakeQueue("suppressed")
+    monkeypatch.setattr(cand, "queue", fake_queue)
+    monkeypatch.setattr(cand.params, "candidate_kinds", lambda: {"observation"})
+    monkeypatch.setattr(cand, "_recent_rule_hits", lambda *_a, **_k: [])
+    made = cand.enqueue_observations(client=SimpleNamespace())
+    assert made == 0
+    assert rows[0].last_enqueued_at is not None
 
 
 def test_starved_counter_when_quota_blocks(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:
