@@ -421,14 +421,20 @@ def quality_summary(days: int = 30) -> dict[str, Any]:
                 .order_by(func.count().desc())
             ).all()
         ]
-        decision_actions = [
-            {"action": str(action or "unknown"), "count": int(count)}
-            for action, count in db.execute(
-                select(AnalysisAudit.decision["action"].astext, func.count())
-                .where(AnalysisAudit.created_at >= since)
-                .group_by(AnalysisAudit.decision["action"].astext)
-                .order_by(func.count().desc())
+        # JSONB 下标表达式在 SELECT/GROUP BY 里会被 SQLAlchemy 绑成两个不同参数
+        # （PG 因 $1/$2 不等而报 GroupingError）；审计量很小，直接取 JSON 在 Python 聚合。
+        decision_rows = list(
+            db.scalars(
+                select(AnalysisAudit.decision).where(AnalysisAudit.created_at >= since)
             ).all()
+        )
+        decision_counts: dict[str, int] = {}
+        for item in decision_rows:
+            action = str((item or {}).get("action") or "unknown") if isinstance(item, dict) else "unknown"
+            decision_counts[action] = decision_counts.get(action, 0) + 1
+        decision_actions = [
+            {"action": action, "count": count}
+            for action, count in sorted(decision_counts.items(), key=lambda pair: pair[1], reverse=True)
         ]
     return {
         "results": result_total,
