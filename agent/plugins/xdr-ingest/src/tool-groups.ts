@@ -48,7 +48,11 @@ export const CORE_AGENT_TOOLS: readonly string[] = [
 ]
 
 /** 分析会话永久禁用的工具：只能处理派给自己的那条任务。 */
-export const ALWAYS_DENY_TOOLS: readonly string[] = ['mcp__ndr__claim_tasks']
+export const ALWAYS_DENY_TOOLS: readonly string[] = [
+  'mcp__ndr__claim_tasks',
+  // 租约心跳是插件运行层职责，模型不需要/不应该改租约。
+  'mcp__ndr__renew_task_lease',
+]
 
 /** 非 NDR 的按需能力组；与 MCP 组一样可通过 enable_analysis_tools 激活。 */
 export const NON_NDR_GROUPS: Readonly<Record<string, readonly string[]>> = {

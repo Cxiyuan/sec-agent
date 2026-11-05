@@ -84,8 +84,25 @@ export interface AgentCreateOptions {
   readonly setup?: (agentCtx: AgentScopedContext) => void | Promise<void>
 }
 
+/**
+ * Resume an agent on a persisted DSH session.
+ *
+ * `resume` reloads the stored event log, re-runs `setup` (tool/prompt scopes are
+ * not persisted), rebuilds model history, repairs an interrupted turn, and
+ * continues turn numbering. The old handle must be disposed first: resume takes
+ * an exclusive write lease. Resume does not wake the agent; the caller must send
+ * a `followup` after it resolves.
+ */
+export interface AgentResumeOptions {
+  readonly resumeSessionId: string
+  readonly agentOptions?: { readonly provider?: string; readonly model?: string }
+  readonly setup?: (agentCtx: AgentScopedContext) => void | Promise<void>
+}
+
 export interface AgentsServiceLike {
   create(options: AgentCreateOptions): Promise<AgentHandleLike>
+  /** Optional so older hosts/tests can still create sessions (resume degrades). */
+  resume?(options: AgentResumeOptions): Promise<AgentHandleLike>
 }
 
 /**

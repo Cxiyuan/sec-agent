@@ -101,3 +101,16 @@ def test_contract_requires_benign_basis_for_fp() -> None:
         facts={},
     )
     assert violations
+
+
+def test_contract_rejects_policy_violation_as_true_positive() -> None:
+    violations = queue._contract_violations(
+        verdict="true_positive",
+        basis={
+            "evidence_categories": ["malicious_unauthorized_p2p_overlay_tunneling"],
+            "contradictions_checked": ["asset_authorization"],
+        },
+        evidence_refs=["es:idx/1"],
+        facts={},
+    )
+    assert any("恶意证据" in item for item in violations)

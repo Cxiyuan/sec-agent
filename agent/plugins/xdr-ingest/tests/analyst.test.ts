@@ -10,12 +10,14 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { Analyst } from '../src/analyst.ts'
-import type { AgentCreateOptions, AgentHandleLike, AgentsServiceLike } from '../src/agent-port.ts'
+import type { AgentCreateOptions, AgentHandleLike, AgentResumeOptions, AgentsServiceLike } from '../src/agent-port.ts'
 import type { ClaimedTask } from '../src/claim-loop.ts'
 import type { NdrTaskPort, ReusePayload, TaskStateReply } from '../src/analyst.ts'
 import type { LightTriagePort, TriageResult } from '../src/light-triage.ts'
 import { MemoryStateStore } from '../src/state-store.ts'
 import { taskResultKey } from '../src/task-results.ts'
+import type { SessionAudit } from '../src/session-audit.ts'
+import { taskFingerprint } from '../src/task-fingerprint.ts'
 
 const task: ClaimedTask = {
   id: 'task-1',
@@ -961,4 +963,292 @@ test('setup pins the task in the prompt and after runtime context', async () => 
   assert.equal(calls.contexts[0]?.order, 300)
   assert.match(calls.contexts[0]?.text ?? '', /task-prompt/u)
   assert.match(calls.sections[0]?.text ?? '', /runtime context/u)
+})
+
+function auditOf(overrides: Partial<SessionAudit> = {}): SessionAudit {
+  return {
+    ok: true,
+    sessionId: 'session-1',
+    startedAt: '2026-11-05T00:00:00.000Z',
+    endedAt: '2026-11-05T00:01:00.000Z',
+    turns: 1,
+    steps: 1,
+    toolCalls: [],
+    toolCount: 0,
+    toolErrors: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false },
+    errors: [],
+    errorCount: 0,
+    modelFailures: [],
+    retryCount: 0,
+    model: 'llm-agg/deepseek',
+    turnEnds: [{ turn: 1, reason: 'completed', at: '2026-11-05T00:01:00.000Z' }],
+    redacted: false,
+    truncated: false,
+    ...overrides,
+  }
+}
+
+function fakeResumeAgents(rec: Recorder & { resumes: AgentResumeOptions[], creates: number }): AgentsServiceLike {
+  const handle = (): AgentHandleLike => ({
+    agent: {
+      followup(input) {
+        rec.prompts.push(input.content.map(part => part.text).join(''))
+      },
+      whenIdle: async () => undefined,
+      cancel() {
+        rec.cancelled += 1
+      },
+    },
+    dispose() {
+      rec.disposed += 1
+    },
+  })
+  return {
+    async create() {
+      rec.creates += 1
+      return handle()
+    },
+    async resume(options) {
+      rec.resumes.push(options)
+      return handle()
+    },
+  }
+}
+
+test('模型失败后用同一 DSH 会话续跑，不写终态 inconclusive', async () => {
+  const base = recorder()
+  const rec = { ...base, resumes: [] as AgentResumeOptions[], creates: 0 }
+  const store = new MemoryStateStore()
+  let stateChecks = 0
+  let auditChecks = 0
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() {
+      stateChecks += 1
+      return { state: stateChecks >= 3 ? 'done' : 'claimed' }
+    },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+  }
+  const analyst = new Analyst({
+    agents: fakeResumeAgents(rec),
+    ndr,
+    timeoutMs: 5_000,
+    process: store,
+    sessionAudit: async () => {
+      auditChecks += 1
+      if (auditChecks === 1) {
+        const at = '2026-11-05T00:00:30.000Z'
+        return auditOf({
+          toolCount: 2,
+          errors: ['SERVER'],
+          errorCount: 1,
+          modelFailures: [{ code: 'SERVER', message: 'No available accounts', at }],
+          turnEnds: [{ turn: 1, reason: 'error', code: 'SERVER', message: 'No available accounts', at }],
+        })
+      }
+      return auditOf({
+        toolCount: 3,
+        turns: 2,
+        turnEnds: [{ turn: 2, reason: 'completed', at: '2026-11-05T00:02:00.000Z' }],
+      })
+    },
+    retryUnfinishedTurn: false,
+    resumeBackoffMs: 0,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-resume' })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.creates, 1)
+  assert.equal(rec.resumes.length, 1)
+  assert.equal(rec.resumes[0]?.resumeSessionId.startsWith('xdr-analysis-task-resume-'), true)
+  assert.equal(rec.completed.length, 0, '模型故障不能代交 inconclusive')
+  assert.match(rec.prompts[1] ?? '', /从断点继续/u)
+  assert.doesNotMatch(rec.prompts[1] ?? '', /objective_strength/u)
+  const runs = await store.listProcessRuns('task-resume')
+  assert.equal(runs.length, 2)
+  assert.equal(runs[0]?.sessionId, runs[1]?.sessionId)
+  assert.equal(runs[0]?.outcome, 'failed')
+  assert.equal(runs[1]?.outcome, 'done')
+})
+
+test('任务事实指纹变化时不恢复旧会话', async () => {
+  const rec = { ...recorder(), resumes: [] as AgentResumeOptions[], creates: 0 }
+  const store = new MemoryStateStore()
+  await store.startProcess({
+    taskId: 'task-fingerprint',
+    sessionId: 'old-session',
+    kind: task.kind,
+    subject: task.subject,
+    model: 'llm-agg/test',
+    startedAt: new Date().toISOString(),
+    decision: { task_fingerprint: 'different', prompt_attempts: 0 },
+  })
+  await store.finishProcess({
+    taskId: 'task-fingerprint',
+    endedAt: new Date().toISOString(),
+    outcome: 'deferred',
+    attempt: 1,
+    sessionId: 'old-session',
+  })
+  const analyst = new Analyst({
+    agents: fakeResumeAgents(rec),
+    ndr: fakeNdr(rec, () => ({ state: 'done' })),
+    timeoutMs: 1000,
+    process: store,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-fingerprint' })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.resumes.length, 0)
+  assert.equal(rec.creates, 1)
+})
+
+test('resume 加载失败时先 defer，不抢跑新会话也不写结论', async () => {
+  const rec = { ...recorder(), resumes: [] as AgentResumeOptions[], creates: 0 }
+  const store = new MemoryStateStore()
+  const fingerprint = taskFingerprint({ ...task, id: 'task-resume-fail' }, null)
+  await store.startProcess({
+    taskId: 'task-resume-fail',
+    sessionId: 'old-session-fail',
+    kind: task.kind,
+    subject: task.subject,
+    model: 'llm-agg/test',
+    startedAt: new Date().toISOString(),
+    decision: { task_fingerprint: fingerprint, prompt_attempts: 0 },
+  })
+  await store.finishProcess({
+    taskId: 'task-resume-fail',
+    endedAt: new Date().toISOString(),
+    outcome: 'deferred',
+    attempt: 1,
+    sessionId: 'old-session-fail',
+  })
+  const agents: AgentsServiceLike = {
+    async create() {
+      rec.creates += 1
+      return fakeResumeAgents(rec).create({} as AgentCreateOptions)
+    },
+    async resume() {
+      throw new Error('session is already owned by an active write handle')
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr: fakeNdr(rec, () => ({ state: 'claimed' })),
+    timeoutMs: 1000,
+    process: store,
+    sessionAudit: async () => auditOf(),
+    resumeBackoffMs: 0,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-resume-fail' })
+  assert.equal(outcome.completed, false)
+  assert.equal(outcome.deferred, true)
+  assert.equal(rec.creates, 0, '活跃写者冲突不能新开第二个会话')
+  assert.equal(rec.completed.length, 0)
+  assert.equal(rec.deferred[0]?.reason, 'resume_failed')
+})
+
+test('进程表缺失时用 task_state.audits 找回旧会话', async () => {
+  const rec = { ...recorder(), resumes: [] as AgentResumeOptions[], creates: 0 }
+  let checks = 0
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() {
+      checks += 1
+      if (checks === 1) {
+        return {
+          state: 'claimed',
+          audits: [{
+            session_id: 'recovered-session',
+            attempt: 4,
+            outcome: 'deferred',
+            decision: {
+              task_fingerprint: taskFingerprint({ ...task, id: 'task-cross-claim' }, null),
+              prompt_attempts: 2,
+            },
+          }],
+        }
+      }
+      return { state: 'done' }
+    },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+  }
+  const analyst = new Analyst({
+    agents: fakeResumeAgents(rec),
+    ndr,
+    timeoutMs: 1000,
+    sessionAudit: async () => auditOf(),
+    retryUnfinishedTurn: false,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-cross-claim' })
+  assert.equal(outcome.completed, true)
+  assert.equal(rec.resumes.length, 1)
+  assert.equal(rec.resumes[0]?.resumeSessionId, 'recovered-session')
+  assert.equal(rec.creates, 0)
+  assert.match(rec.prompts[0] ?? '', /从断点继续/u)
+})
+
+test('租约心跳失败时取消会话并 defer，不代交结论', async () => {
+  const rec = recorder()
+  let renews = 0
+  let release!: () => void
+  const idle = new Promise<void>(resolve => { release = resolve })
+  const agents: AgentsServiceLike = {
+    async create(): Promise<AgentHandleLike> {
+      return {
+        agent: {
+          followup() {},
+          whenIdle: () => idle,
+          cancel() {
+            rec.cancelled += 1
+            release()
+          },
+        },
+        dispose() { rec.disposed += 1 },
+      }
+    },
+  }
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() { return { state: 'claimed' } },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+    async renewLease() {
+      renews += 1
+      return { error: 'not_owner' }
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr,
+    timeoutMs: 1000,
+    leaseHeartbeatMs: 5,
+    retryUnfinishedTurn: false,
+  })
+  const outcome = await analyst.run({ ...task, id: 'task-lease' })
+  assert.equal(outcome.completed, false)
+  assert.equal(outcome.deferred, true)
+  assert.ok(renews >= 1, '心跳必须真的调用续租')
+  assert.equal(rec.cancelled, 1)
+  assert.equal(rec.completed.length, 0)
+  assert.equal(rec.deferred[0]?.reason, 'lease_lost')
 })

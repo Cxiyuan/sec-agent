@@ -1075,3 +1075,13 @@ def test_novelty_expires_after_12_hours() -> None:
     assert "novelty_cutoff = now - timedelta(hours=12)" in src
     assert 'note="首见线索超过 12 小时未分析，已过期"' in src
     assert "AnalysisTask.kind == \"novelty\"" in src
+
+
+def test_renew_task_lease_is_owner_scoped_and_does_not_change_attempts(queue_mod: Any) -> None:
+    """续租只能延长自己的租约：非持有者/非 claimed 状态必须拒绝，且不能改 attempts。"""
+    src = inspect.getsource(queue_mod.renew_task_lease)
+    assert "claimed_by" in src
+    assert "not_owner" in src
+    assert "lease_until" in src
+    assert "row.attempts" not in src
+    assert "state =" not in src, "续租不能改 state"

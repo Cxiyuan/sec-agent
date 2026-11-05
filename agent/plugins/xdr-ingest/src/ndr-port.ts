@@ -130,6 +130,43 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
         ;(out as Record<string, string>)[key] = value
       }
     }
+    // DSH 运行审计是跨进程恢复的唯一指针：进程表丢失/换 worker 后，
+    // 靠 audits[].session_id + decision.task_fingerprint 找回同一会话。
+    if (Array.isArray(reply['audits'])) {
+      const audits = reply['audits']
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .slice(0, 20)
+        .map(item => ({
+          ...(typeof item['id'] === 'string' ? { id: item['id'] } : {}),
+          ...(typeof item['session_id'] === 'string' && item['session_id'] !== ''
+            ? { session_id: item['session_id'] }
+            : {}),
+          ...(typeof item['attempt'] === 'number' ? { attempt: item['attempt'] } : {}),
+          ...(typeof item['outcome'] === 'string' ? { outcome: item['outcome'] } : {}),
+          ...(typeof item['result_id'] === 'string' && item['result_id'] !== ''
+            ? { result_id: item['result_id'] }
+            : {}),
+          ...(typeof item['decision'] === 'object' && item['decision'] !== null
+            && !Array.isArray(item['decision'])
+            ? { decision: item['decision'] as Record<string, unknown> }
+            : {}),
+          ...(typeof item['turn_end_reason'] === 'string'
+            ? { turn_end_reason: item['turn_end_reason'] }
+            : {}),
+          ...(typeof item['error'] === 'string' ? { error: item['error'] } : {}),
+          ...(typeof item['started_at'] === 'string' ? { started_at: item['started_at'] } : {}),
+          ...(typeof item['ended_at'] === 'string' ? { ended_at: item['ended_at'] } : {}),
+          ...(typeof item['tools_used'] === 'number' ? { tools_used: item['tools_used'] } : {}),
+          ...(typeof item['tokens'] === 'object' && item['tokens'] !== null
+            && !Array.isArray(item['tokens'])
+            ? { tokens: item['tokens'] as Record<string, unknown> }
+            : {}),
+          ...(typeof item['trace_available'] === 'boolean'
+            ? { trace_available: item['trace_available'] }
+            : {}),
+        }))
+      ;(out as { audits?: unknown }).audits = audits
+    }
     // `task_detail` 会带回该任务的历史结论（最新在前）：复用库要靠它拿
     // verdict/summary/confidence，否则只能存一个"看起来完成了"的空壳。
     if (Array.isArray(reply['results'])) {
@@ -201,7 +238,7 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
     const out: CompleteReply = {}
     const pick = (key: string): string | null =>
       typeof reply[key] === 'string' && reply[key] !== '' ? (reply[key] as string) : null
-    for (const key of ['task_state', 'state', 'error'] as const) {
+    for (const key of ['task_state', 'state', 'result_id', 'error'] as const) {
       const value = pick(key)
       if (value !== null) {
         ;(out as Record<string, string>)[key] = value
@@ -213,8 +250,26 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
     return out
   }
 
-  async deferTask(taskId: string, reason: string): Promise<unknown> {
-    return this.caller.callTool('defer_task', { task_id: taskId, reason })
+  async deferTask(
+    taskId: string,
+    reason: string,
+    options?: { readonly retryAfterSeconds?: number },
+  ): Promise<unknown> {
+    return this.caller.callTool('defer_task', {
+      task_id: taskId,
+      reason,
+      ...(options?.retryAfterSeconds !== undefined
+        ? { retry_after_seconds: Math.max(60, Math.floor(options.retryAfterSeconds)) }
+        : {}),
+    })
+  }
+
+  /** 租约心跳：不改变 state/attempts，只把 lease_until 往后推。 */
+  async renewLease(taskId: string): Promise<{ ok?: boolean, error?: string } | void> {
+    return await this.caller.callTool('renew_task_lease', { task_id: taskId }) as {
+      ok?: boolean
+      error?: string
+    }
   }
 
   /**

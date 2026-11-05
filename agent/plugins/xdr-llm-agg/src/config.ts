@@ -144,9 +144,9 @@ function resolveToolResultLimits(
 /** 默认重试比 dsh 通用 5 次更保守：每次重试都会重发整段上下文。 */
 const DEFAULT_RETRY_POLICY: NormalRetryPolicyConfig = {
   mode: 'normal',
-  maxRetries: 2,
+  maxRetries: 3,
   retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
-  backoff: { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 },
+  backoff: { initialDelayMs: 2_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
 }
 
 /**
@@ -164,15 +164,15 @@ export function resolveRetryPolicyConfig(config: Config): ResolvedRetryPolicy {
   if (policy.mode === 'normal') {
     const backoff = policy.backoff
     // 配置层可能把 schema 的通用默认值（5 次、500ms/10s/0.1）materialize
-    // 出来。只有完全命中这组默认值时才改成 2 次/1–8 秒；显式配置保留，
+    // 出来。只有完全命中这组默认值时才改成 3 次/2–30 秒；显式配置保留，
     // 便于运维按需调高。
     if ((policy.maxRetries ?? 5) === 5
       && backoff !== undefined
       && backoff.initialDelayMs === 500
       && backoff.maxDelayMs === 10_000
       && backoff.jitterRatio === 0.1) {
-      policy.maxRetries = 2
-      policy.backoff = { initialDelayMs: 1_000, maxDelayMs: 8_000, jitterRatio: 0.2 }
+      policy.maxRetries = 3
+      policy.backoff = { initialDelayMs: 2_000, maxDelayMs: 30_000, jitterRatio: 0.2 }
     }
   }
   return resolveRetryPolicy(policy, 'xdr-llm-agg: retryPolicy')
