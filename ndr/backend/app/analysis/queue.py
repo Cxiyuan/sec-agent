@@ -787,6 +787,7 @@ def complete_task(
         )
         db.add(result_row)
         db.flush()  # 先拿到新结论行的主键；直接持对象，避免并发时锚到别人的结果
+        result_id = str(result_row.id)
         anchored = 0
         if anchor_pairs:
             anchored = anchors_mod.write_anchors(
@@ -865,7 +866,7 @@ def complete_task(
     return {
         "ok": True,
         "task_id": done_id,
-        "result_id": str(result_row.id),
+        "result_id": result_id,
         "task_state": "done",
         "verdict": verdict,
         "terminal_reason": reason,
