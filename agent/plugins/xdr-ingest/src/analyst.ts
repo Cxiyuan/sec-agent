@@ -164,6 +164,14 @@ export interface AnalystOptions {
   /** 会话结束后的 DSH 审计投影（工具调用/tokens/turn 终态/错误）。 */
   readonly sessionAudit?: (sessionId: string) => Promise<SessionAudit | null>
   /**
+   * 分析会话 cwd 的父目录（每个项目一个子目录）。
+   * DSH 的 working-directory 工具要求 cwd **真实存在**；默认 `/xdr` 在容器里不一定可写，
+   * 部署侧必须传一个可写卷路径（当前是 `/data/dsh/projects`）。
+   */
+  readonly sessionCwdRoot?: string
+  /** 起会话前确保 cwd 存在（目录不存在时 DSH 第一轮直接 error）。 */
+  readonly ensureSessionCwd?: (dir: string) => Promise<void>
+  /**
    * 首轮会话结束但任务未交回时，是否重发一次任务提示（默认 true）。
    * 关掉 = 保持旧行为（直接回查/延后），测试与严格部署可用。
    */
@@ -371,10 +379,25 @@ export class Analyst {
     this.options.onSession?.(sessionId, 'start')
     // 项目级 cwd：DSH 的 session_search/session_trace 只允许同 cwd 会话互查。
     // 不传时 header.cwd 为空，所有历史工具都只能看到当前会话本身。
+    // DSH 还会校验 cwd 真实存在；容器内 /xdr 不存在，默认用可写的 /xdr，
+    // 部署层通过 sessionCwdRoot 指到 dsh-home 卷并预建目录。
     const project = (this.options.projectId ?? '').trim().replace(/[^A-Za-z0-9._-]/gu, '') || 'default'
+    const cwdRoot = (this.options.sessionCwdRoot ?? '/xdr').replace(/\/+$/u, '') || '/xdr'
+    const sessionCwd = `${cwdRoot}/${project}`
+    if (this.options.ensureSessionCwd !== undefined) {
+      try {
+        await this.options.ensureSessionCwd(sessionCwd)
+      } catch (exc) {
+        console.warn(
+          `[xdr-ingest] 无法创建分析工作目录 ${sessionCwd}：`
+          + `${exc instanceof Error ? exc.message : String(exc)}`.slice(0, 240)
+          + '；DSH 第一轮可能因 working-directory 不存在而失败',
+        )
+      }
+    }
     const handle = await this.options.agents.create({
       sessionId,
-      meta: { cwd: `/xdr/${project}` },
+      meta: { cwd: sessionCwd },
       agentOptions: {
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),

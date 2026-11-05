@@ -11,6 +11,8 @@
  * 收到门铃只叫醒那一台 NDR 的循环（不会串到别的项目）。
  */
 
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import type { AgentsServiceLike } from './agent-port.ts'
 import { ConcurrencyGate, FailureBreaker, isTransientFailure } from './breaker.ts'
 import { sendAlert } from './notify.ts'
@@ -327,6 +329,12 @@ export class ProjectRuntime {
       },
       // 会话收尾后的运行事实：与时间线同源（DSH 日志），但按 callId 配对并保留 turn 终态。
       sessionAudit: sessionId => readSessionAudit(this.config.sessionDir, sessionId),
+      // cwd 必须是真实存在的目录；放在 dsh-home 卷里（`sessions/../projects`），
+      // 否则容器重启后 /xdr 丢失，DSH working-directory 第一轮就报错。
+      sessionCwdRoot: path.join(path.dirname(this.config.sessionDir), 'projects'),
+      ensureSessionCwd: async dir => {
+        await fs.mkdir(dir, { recursive: true })
+      },
       maxTools: this.config.maxToolsPerTask,
       stallMinutes: this.config.stallMinutes,
       onSession: (sessionId, phase) => {
