@@ -66,6 +66,7 @@ export function taskFingerprint(task: ClaimedTask, workflow?: WorkflowRecord | n
       : {
           workflowId: workflow.workflowId,
           name: workflow.name,
+          description: workflow.description,
           stages: canonical(workflow.stages),
         },
   }
