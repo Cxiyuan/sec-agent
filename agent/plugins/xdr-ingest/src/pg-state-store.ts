@@ -1267,6 +1267,16 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
         finish.error ?? '', finish.turnEndReason ?? '', JSON.stringify(tokens),
         JSON.stringify(finish.decision ?? {}), JSON.stringify(finish.audit ?? {}),
       ]
+      // attempt 表的列顺序与“最新过程”不同（attempt 在第 3 位、session 在第 4 位），
+      // 不能复用上面的 values；曾因复用导致 session_id 被塞进 attempt 的整数列。
+      const attemptValues = [
+        this.projectId, finish.taskId, attempt, sessionId, kind, subject,
+        finish.model ?? previous?.model ?? '', finish.endedAt, finish.outcome,
+        finish.toolsUsed ?? 0, finish.toolErrors ?? 0, finish.turns ?? 0,
+        finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
+        finish.error ?? '', finish.turnEndReason ?? '', JSON.stringify(tokens),
+        JSON.stringify(finish.decision ?? {}), JSON.stringify(finish.audit ?? {}),
+      ]
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
            (project_id, task_id, session_id, kind, subject, model, started_at, ended_at, outcome, attempt,
@@ -1321,7 +1331,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            decision = EXCLUDED.decision,
            audit = EXCLUDED.audit,
            updated_at = now()`,
-        values,
+        attemptValues,
       )
     } catch (error) {
       console.error(`${LOG_PREFIX} process finish failed:`, this.message(error))
