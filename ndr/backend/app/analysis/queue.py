@@ -31,6 +31,7 @@ from app.analysis import (
 from app.analysis.verdicts import VERDICT_VALUES, clean_terminal_reason, clean_verdict
 from app.db.base import SessionLocal
 from app.db.models import (
+    AnalysisAudit,
     AnalysisResult,
     AnalysisTask,
     ConclusionRecord,
@@ -619,8 +620,15 @@ def _contract_violations(
         for x in (basis.get("evidence_categories") or [])
         if str(x).strip()
     }
+    # “未授权/影子 IT/合规违规”是授权问题，不是恶意行为本身；
+    # 只有同时存在明确的恶意行为类别（C2/利用成功/外传/横向成功/凭据窃取）才算 TP。
+    policy_only = {
+        category for category in categories
+        if any(word in category for word in ("unauthorized", "policy_violation", "shadow_it"))
+    }
     malicious = any(
-        category.startswith(("malicious_", "exploit_", "data_exfiltration", "lateral_success", "credential_"))
+        category not in policy_only
+        and category.startswith(("malicious_", "exploit_", "data_exfiltration", "lateral_success", "credential_"))
         for category in categories
     )
     benign = bool(categories & {
@@ -744,11 +752,26 @@ def complete_task(
         if row is None:
             return {"error": "任务不存在"}
         now = datetime.now(UTC)
+        # Agent 在会话开始时写了 running 审计（带 session_id/attempt）。
+        # 模型可能先交回结论、插件还没来得及写收尾审计就崩溃；这里从审计把
+        # 会话关联补到结论上，避免结论永远找不到对应 DSH 轨迹。
+        audit = db.scalar(
+            select(AnalysisAudit)
+            .where(
+                AnalysisAudit.task_id == str(row.id),
+                AnalysisAudit.session_id != "",
+                AnalysisAudit.outcome == "running",
+            )
+            .order_by(AnalysisAudit.created_at.desc())
+            .limit(1)
+        )
         result_row = AnalysisResult(
             task_id=str(row.id),
             kind=row.kind,
             subject_kind=row.subject_kind,
             subject=row.subject,
+            session_id=str(audit.session_id if audit is not None else ""),
+            attempt=int(audit.attempt if audit is not None else 0),
             verdict=verdict,
             confidence=max(0.0, min(1.0, float(confidence or 0))),
             summary=str(summary or "")[:4000],
@@ -842,6 +865,7 @@ def complete_task(
     return {
         "ok": True,
         "task_id": done_id,
+        "result_id": str(result_row.id),
         "task_state": "done",
         "verdict": verdict,
         "terminal_reason": reason,
@@ -1184,6 +1208,35 @@ def _suppression_evidence_refs(
 
 # 词表唯一来源是 `analysis.verdicts`（与 record_conclusion 共用，中文别名同样接受）
 VERDICTS = VERDICT_VALUES
+
+
+def renew_task_lease(
+    client: Any, task_id: str, *, token: str = ""
+) -> dict[str, Any]:
+    """给仍在分析的持有者续租；不改 state/attempts，不续非持有者。"""
+    tid = str(task_id or "").strip()
+    if tid == "":
+        return {"error": "task_id 必填", "field": "task_id"}
+    with SessionLocal() as db:
+        row = db.get(AnalysisTask, tid)
+        if row is None:
+            return {"error": "任务不存在"}
+        if row.state != "claimed":
+            return {"error": f"not_claimed:{row.state}"}
+        if str(row.claimed_by or "") != str(token or "")[:64]:
+            return {"error": "not_owner"}
+        now = datetime.now(UTC)
+        lease_until = now + timedelta(seconds=params.lease_seconds())
+        row.lease_until = lease_until
+        row.updated_at = now
+        db.commit()
+        bump(client, "lease_renewed")
+        return {
+            "ok": True,
+            "task_id": tid,
+            "state": row.state,
+            "lease_until": lease_until.isoformat(),
+        }
 
 
 def defer_task(

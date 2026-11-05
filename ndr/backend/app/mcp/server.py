@@ -481,6 +481,15 @@ def defer_task(task_id: str = "", reason: str = "", retry_after_seconds: int = 0
     )
 
 
+def renew_task_lease(task_id: str = "") -> str:
+    """给仍持有任务的会话续租；非持有者/非 claimed 状态拒绝。"""
+    return _run(
+        "renew_task_lease",
+        _with_ctx("renew_task_lease", _clean(task_id=task_id)),
+        native=True,
+    )
+
+
 def task_state(task_id: str = "") -> str:
     """查单条任务的状态与结论：会话结束前用它确认"到底交回没有"。"""
     return _run("task_state", _clean(task_id=task_id), native=True)
@@ -841,6 +850,7 @@ _NDR_TOOL_FUNCS = (
     claim_tasks,
     complete_task,
     defer_task,
+    renew_task_lease,
     task_state,
     log_step,
     search_traces,
@@ -926,6 +936,8 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "claim_tasks",
         "complete_task",
         "defer_task",
+        # 运行层心跳；xdr-ingest 在模型工具面 deny 掉，其它调用方即使看到也只能续自己的租约
+        "renew_task_lease",
         "task_state",
         # 过程/成本观测：看队列与自己的预算，决定领取节奏；查轨迹避免重复取数
         "task_stats",
@@ -994,6 +1006,8 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         )
         if has("task_stats"):
             claim_line += "task_stats 看队列/成本总览与覆盖率。"
+        if has("renew_task_lease"):
+            claim_line += "renew_task_lease 由智能体运行层做租约心跳，模型无需主动调用。"
         parts.append(claim_line)
 
     history: list[str] = []

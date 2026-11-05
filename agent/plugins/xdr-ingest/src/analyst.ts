@@ -9,14 +9,16 @@
 
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { AgentFollowupInput, AgentsServiceLike } from './agent-port.ts'
+import type { AgentFollowupInput, AgentHandleLike, AgentScopedContext, AgentsServiceLike } from './agent-port.ts'
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { registerRdapTool } from './rdap.ts'
+import { auditDelta } from './session-audit.ts'
 import type { SessionAudit } from './session-audit.ts'
+import { taskFingerprint } from './task-fingerprint.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
 import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
@@ -44,6 +46,23 @@ export interface TaskResultView {
   readonly created_at?: string
 }
 
+/** NDR 一条 DSH 运行审计（`task_detail.audits[]`）。 */
+export interface TaskAuditView {
+  readonly id?: string
+  readonly session_id?: string
+  readonly attempt?: number
+  readonly outcome?: string
+  readonly result_id?: string
+  readonly decision?: Record<string, unknown>
+  readonly turn_end_reason?: string
+  readonly error?: string
+  readonly started_at?: string | null
+  readonly ended_at?: string | null
+  readonly tools_used?: number
+  readonly tokens?: Record<string, unknown>
+  readonly trace_available?: boolean
+}
+
 /** 会话结束后任务应处的状态（NDR `task_state` 的返回形状）。 */
 export interface TaskStateReply {
   readonly state?: string
@@ -52,6 +71,7 @@ export interface TaskStateReply {
   readonly verdict?: string
   readonly error?: string
   readonly results?: readonly TaskResultView[]
+  readonly audits?: readonly TaskAuditView[]
 }
 
 /** 直接交回（复用命中）的回执。 */
@@ -59,6 +79,7 @@ export interface CompleteReply {
   readonly ok?: boolean
   readonly task_state?: string
   readonly state?: string
+  readonly result_id?: string
   readonly error?: string
 }
 
@@ -88,7 +109,9 @@ export interface NdrTaskPort extends NdrPort {
    * 失败只告警：审计不能反过来让已经交回的任务失败。
    */
   recordAudit?(taskId: string, payload: Record<string, unknown>): Promise<unknown>
-  deferTask(taskId: string, reason: string): Promise<unknown>
+  deferTask(taskId: string, reason: string, options?: { readonly retryAfterSeconds?: number }): Promise<unknown>
+  /** 续租：长会话/同会话恢复期间不能被 NDR sweep 回收后双跑。 */
+  renewLease?(taskId: string): Promise<{ readonly ok?: boolean; readonly error?: string } | void>
   /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
   /** null = 本次同步失败（不要据此清空本地抑制记忆）。 */
   listSuppressions?(): Promise<readonly SuppressionView[] | null>
@@ -177,6 +200,23 @@ export interface AnalystOptions {
    * 关掉 = 保持旧行为（直接回查/延后），测试与严格部署可用。
    */
   readonly retryUnfinishedTurn?: boolean
+  /** 一次 claim 内最多 resume 次数（默认 1；单步 llm-retry 已在 DSH 内重试）。 */
+  readonly maxResumeAttempts?: number
+  /** 连续 resume 加载/锁失败多少次后放弃旧会话（默认 3）。 */
+  readonly maxResumeFailures?: number
+  /** resume 前的退避（毫秒，默认 5s）。 */
+  readonly resumeBackoffMs?: number
+  /** 租约心跳间隔（毫秒，默认 120s；0 = 关闭）。 */
+  readonly leaseHeartbeatMs?: number
+}
+
+interface ResumeCandidate {
+  readonly sessionId: string
+  readonly attempt: number
+  readonly outcome: string
+  readonly promptAttempts: number
+  readonly resumeFailures: number
+  readonly audit: SessionAudit | null
 }
 
 export interface AnalystOutcome {
@@ -248,9 +288,67 @@ export class Analyst {
     }
   }
 
+  /**
+   * 找可恢复的上一段会话：进程索引优先，NDR audits 补缺。
+   *
+   * 必须同时满足：会话 id 非空、outcome 不是终态、事实指纹一致、会话日志可读、
+   * 宿主支持 resume。任何一项不满足都返回 null（新起会话），绝不拿旧事实续跑。
+   */
+  private async findResumeCandidate(
+    task: ClaimedTask,
+    fingerprint: string,
+  ): Promise<ResumeCandidate | null> {
+    if (this.options.agents.resume === undefined) return null
+    const process = await this.options.process?.getProcess(task.id) ?? null
+    const needsAuditFallback = process === null
+      || process.sessionId === ''
+      || String((process.decision ?? {})['task_fingerprint'] ?? '') === ''
+    const reply = needsAuditFallback ? await this.readTask(task.id) : null
+    const auditRow = reply?.audits?.find(item => (item.session_id ?? '') !== '') ?? null
+    const sessionId = process !== null && process.sessionId !== ''
+      ? process.sessionId
+      : String(auditRow?.session_id ?? '')
+    if (sessionId === '') return null
+    const outcome = process?.outcome ?? String(auditRow?.outcome ?? '')
+    if (!['running', 'deferred', 'failed'].includes(outcome)) return null
+    const decision = {
+      ...(auditRow?.decision ?? {}),
+      ...((process?.decision ?? {}) as Record<string, unknown>),
+    }
+    if (String(decision['task_fingerprint'] ?? '') !== fingerprint) return null
+    let audit: SessionAudit | null = null
+    if (this.options.sessionAudit !== undefined) {
+      audit = await this.options.sessionAudit(sessionId)
+      if (audit === null || !audit.ok) return null
+    }
+    const rawAttempt = process?.attempt ?? auditRow?.attempt ?? 0
+    const rawPromptAttempts = decision['prompt_attempts']
+    const rawResumeFailures = decision['resume_failures']
+    return {
+      sessionId,
+      attempt: Number.isFinite(Number(rawAttempt)) ? Math.max(0, Number(rawAttempt)) : 0,
+      outcome,
+      promptAttempts: Number.isFinite(Number(rawPromptAttempts))
+        ? Math.max(0, Number(rawPromptAttempts))
+        : 0,
+      resumeFailures: Number.isFinite(Number(rawResumeFailures))
+        ? Math.max(0, Number(rawResumeFailures))
+        : 0,
+      audit,
+    }
+  }
+
   private async runUnlocked(task: ClaimedTask): Promise<AnalystOutcome> {
     const startedAt = Date.now()
-    const reused = await this.tryReuse(task, startedAt)
+    // 先回答“能不能续跑”。可恢复会话优先于复用/抑制/轻量初筛：快捷路径
+    // 关单会把上一轮已经完成的工具证据直接丢掉，这正是本次要根治的行为。
+    const workflow = typeof this.options.workflow === 'function'
+      ? this.options.workflow()
+      : this.options.workflow ?? null
+    const fingerprint = taskFingerprint(task, workflow)
+    const candidate = await this.findResumeCandidate(task, fingerprint)
+    const canResume = candidate !== null
+    const reused = canResume ? null : await this.tryReuse(task, startedAt)
     if (reused !== null) {
       this.reuse.reused += 1
       console.log(
@@ -281,7 +379,7 @@ export class Analyst {
     }
 
     // 抑制记忆：这类现象已经被精准抑制过 → 不起会话、不取数，直接交回。
-    const suppressed = await this.trySuppressed(task, startedAt)
+    const suppressed = canResume ? null : await this.trySuppressed(task, startedAt)
     if (suppressed !== null) {
       const decision = { action: 'suppressed', ...(suppressed.decision ?? {}) }
       await this.finishProcess(task, 'suppressed', startedAt, {
@@ -309,7 +407,7 @@ export class Analyst {
     // 轻量初筛（低阶模型闸门）：复用/抑制都没命中才轮到它。它只有「排除权」——
     // 只收得下通过全部硬约束的 benign/误报判定；拿不准/输出不合法/调用失败
     // 一律返回空对象，落到下面的付费会话（fail-open：初筛是省钱手段，不是正确性前提）。
-    const triage = await this.tryLightTriage(task)
+    const triage: LightTriageAttempt = canResume ? {} : await this.tryLightTriage(task)
     if (triage.closed !== undefined) {
       const closed = triage.closed
       const decision = {
@@ -352,32 +450,62 @@ export class Analyst {
       ? ''
       : `抽检复核：初筛判 ${audit.verdict}（${audit.model} 置信度 ${audit.confidence}），已送付费复核`
 
-    const sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
-    const selected = this.options.modelSelection?.()
-    const fallback = this.options.fallbackModel
-    const useFallback = this.preferFallback && fallback !== undefined && fallback.model !== ''
-    const provider = useFallback
-      ? (fallback.provider || selected?.provider.trim())
-      : (this.options.provider?.trim() || selected?.provider.trim())
-    const model = useFallback
-      ? fallback.model
-      : (this.options.model?.trim() || selected?.model.trim())
-    // 过程索引：控制台据此列出「任务 → 会话 → 耗时/工具数/状态」，并读会话时间线
-    const workflow = typeof this.options.workflow === 'function'
-      ? this.options.workflow()
-      : this.options.workflow ?? null
-    const attempt = await this.options.process?.startProcess({
-      taskId: task.id,
-      sessionId,
-      kind: task.kind,
-      subject: task.subject,
-      model: [provider, model].filter(v => (v ?? '') !== '').join('/'),
-      startedAt: new Date(startedAt).toISOString(),
-      workflowId: workflow?.workflowId ?? '',
-      workflowName: workflow?.name ?? '',
-      workflowStages: workflow?.stages ?? [],
-    }) ?? 0
-    this.options.onSession?.(sessionId, 'start')
+    let sessionId = candidate?.sessionId ?? `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
+    let resumable = candidate !== null
+    let promptAttempts = candidate?.promptAttempts ?? task.attempts ?? 0
+    let promptTask: ClaimedTask = { ...task, attempts: promptAttempts }
+    let baseline: SessionAudit | null = candidate?.audit ?? null
+    let attemptFloor = candidate?.attempt ?? 0
+    let resumeFailures = candidate?.resumeFailures ?? 0
+    const maxResumeAttempts = Math.max(0, this.options.maxResumeAttempts ?? 1)
+    const maxResumeFailures = Math.max(1, this.options.maxResumeFailures ?? 3)
+    let resumes = 0
+    let segments = 0
+    let resumeReason = '模型/上游故障或分析中断'
+
+    for (;;) {
+      segments += 1
+      const segmentStartedAt = Date.now()
+      const selected = this.options.modelSelection?.()
+      const fallback = this.options.fallbackModel
+      const useFallback = this.preferFallback && fallback !== undefined && fallback.model !== ''
+      const provider = useFallback
+        ? (fallback.provider || selected?.provider.trim())
+        : (this.options.provider?.trim() || selected?.provider.trim())
+      const model = useFallback
+        ? fallback.model
+        : (this.options.model?.trim() || selected?.model.trim())
+      const modelLabel = [provider, model].filter(v => (v ?? '') !== '').join('/')
+      const decisionBase = {
+        phase: resumable ? 'resume' : 'create',
+        segment: segments,
+        task_fingerprint: fingerprint,
+        prompt_attempts: promptAttempts,
+        prompt_version: 1,
+        resumed: resumable,
+        resume_from_attempt: resumable ? attemptFloor : 0,
+        resume_count: resumes,
+        resume_failures: resumeFailures,
+        model_route: { provider: provider ?? '', model: model ?? '', fallback: useFallback },
+      }
+      const rawAttempt = await this.options.process?.startProcess({
+        taskId: task.id,
+        sessionId,
+        kind: task.kind,
+        subject: task.subject,
+        model: modelLabel,
+        startedAt: new Date(segmentStartedAt).toISOString(),
+        attemptHint: attemptFloor + 1,
+        decision: decisionBase,
+        workflowId: workflow?.workflowId ?? '',
+        workflowName: workflow?.name ?? '',
+        workflowStages: workflow?.stages ?? [],
+      }) ?? 0
+      const attempt = rawAttempt > 0 ? rawAttempt : Math.max(1, attemptFloor + 1)
+      attemptFloor = Math.max(attemptFloor, attempt)
+      // 先落一条 running 审计：即使模型交回后进程崩溃，NDR 也能把结论关联到会话。
+      await this.startAudit(task, sessionId, attempt, modelLabel, segmentStartedAt, decisionBase)
+      this.options.onSession?.(sessionId, 'start')
     // 项目级 cwd：DSH 的 session_search/session_trace 只允许同 cwd 会话互查。
     // 不传时 header.cwd 为空，所有历史工具都只能看到当前会话本身。
     // DSH 还会校验 cwd 真实存在；容器内 /xdr 不存在，默认用可写的 /xdr，
@@ -396,17 +524,11 @@ export class Analyst {
         )
       }
     }
-    const handle = await this.options.agents.create({
-      sessionId,
-      meta: { cwd: sessionCwd },
-      agentOptions: {
-        ...(provider ? { provider } : {}),
-        ...(model ? { model } : {}),
-      },
-      // 每个分析会话只处理派给它的那条任务：把 claim_tasks 从工具面里拿掉。
-      // 否则模型会自己去领别的任务、把别人的任务做完，而本任务一直是 claimed，
-      // Analyst 回查时判定「未交回」并延后。
-      setup: (agentCtx) => {
+    // 每个分析会话只处理派给它的那条任务：把 claim_tasks 从工具面里拿掉。
+    // 否则模型会自己去领别的任务、把别人的任务做完，而本任务一直是 claimed，
+    // Analyst 回查时判定「未交回」并延后。create 与 resume 必须用**完全同一套**
+    // setup：DSH 只持久化事件，不持久化工具/prompt scope。
+    const setup = (agentCtx: AgentScopedContext): void => {
         // claim_tasks 必须无条件拿掉：即使 schemas() 暂不可用，也不能让模型
         // 去领别的任务，导致本任务一直停在 claimed。
         try {
@@ -505,7 +627,7 @@ export class Analyst {
         // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
         // 让任务成为模型眼里的“最后一条请求”。该上下文由 DSH 正常生成 id/source。
         try {
-          const taskText = buildAnalysisPrompt(task, workflow)
+          const taskText = buildAnalysisPrompt(promptTask, workflow)
           agentCtx.systemPrompt?.section?.({
             name: 'xdr-ingest/task',
             order: 10,
@@ -526,8 +648,93 @@ export class Analyst {
             error instanceof Error ? error.message : String(error),
           )
         }
-      },
-    })
+    }
+    const agentOptions = {
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+    }
+    let handle: AgentHandleLike
+    try {
+      handle = resumable && this.options.agents.resume !== undefined
+        ? await this.options.agents.resume({
+            resumeSessionId: sessionId,
+            agentOptions,
+            setup,
+          })
+        : await this.options.agents.create({
+            sessionId,
+            meta: { cwd: sessionCwd },
+            agentOptions,
+            setup,
+          })
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc)
+      if (resumable) {
+        this.options.onSession?.(sessionId, 'end')
+        resumeFailures += 1
+        console.warn(
+          `[xdr-ingest] 任务 ${task.id} 恢复会话 ${sessionId} 失败（${resumeFailures}/${maxResumeFailures}）：`
+          + message.slice(0, 240),
+        )
+        const decision = {
+          ...decisionBase,
+          action: 'resume_failed',
+          reason: 'session_load_failed',
+          resume_failures: resumeFailures,
+          error: message.slice(0, 300),
+        }
+        await this.finishProcess(task, 'failed', segmentStartedAt, {
+          attempt,
+          sessionId,
+          model: modelLabel,
+          note: '恢复 DSH 会话失败，任务延后',
+          error: message.slice(0, 300),
+          decision,
+          startedAt: new Date(segmentStartedAt).toISOString(),
+        })
+        await this.sendAudit(task, {
+          sessionId,
+          attempt,
+          outcome: 'failed',
+          verdict: '',
+          note: '恢复 DSH 会话失败',
+          error: message,
+          decision,
+          startedAt: segmentStartedAt,
+          model: modelLabel,
+        })
+        // 活跃写者/租约竞争不能新建会话（会双跑）；等下一次 claim。
+        const owned = /already owned|already registered|active write|write lock/i.test(message)
+        if (!owned && resumeFailures >= maxResumeFailures) {
+          console.warn(
+            `[xdr-ingest] 任务 ${task.id} 放弃旧会话 ${sessionId}，新建会话继续（resume 失败 ${resumeFailures} 次）`,
+          )
+          resumable = false
+          sessionId = `xdr-analysis-${task.id}-${Date.now()}-${sessionCounter++}`
+          promptAttempts = task.attempts ?? 0
+          promptTask = { ...task, attempts: promptAttempts }
+          attemptFloor = Math.max(attemptFloor, attempt)
+          continue
+        }
+        const retryAfter = 180
+        try {
+          await this.options.ndr.deferTask(task.id, 'resume_failed', { retryAfterSeconds: retryAfter })
+        } catch {
+          // 租约可能已经丢失；保留审计，下一次 claim 再处理。
+        }
+        return {
+          taskId: task.id,
+          completed: false,
+          state: '',
+          deferred: true,
+          durationMs: Date.now() - startedAt,
+          attempt,
+          error: message,
+        }
+      }
+      this.options.onSession?.(sessionId, 'end')
+      throw exc
+    }
     // 每次运行独立的状态（Analyst 实例是共享的，不能用一个字段跨任务）
     // stalled 处置（A4 整改落地）：stallMinutes 配置此前是死配置——probe 每 15 秒
     // 拿到 lastEventAt 却没人用。现在：超过 1× 没新事件记 WARN（只记一次），
@@ -540,6 +747,7 @@ export class Analyst {
       lastEventAt: startedAt,
       stallWarned: false,
       stallCancelled: false,
+      leaseLost: false,
       tools: 0,
     }
     let probeTimer: ReturnType<typeof setInterval> | null = null
@@ -581,13 +789,42 @@ export class Analyst {
       }, this.options.probeIntervalMs ?? 15_000)
       probeTimer.unref?.()
     }
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+    const renewLease = this.options.ndr.renewLease
+    const heartbeatMs = this.options.leaseHeartbeatMs ?? 120_000
+    if (renewLease !== undefined && heartbeatMs > 0) {
+      heartbeatTimer = setInterval(() => {
+        try {
+          void Promise.resolve(renewLease.call(this.options.ndr, task.id)).then((reply) => {
+            const message = typeof reply === 'object' && reply !== null
+              ? String((reply as { error?: string }).error ?? '')
+              : ''
+            if (message === '') return
+            if (!/not.?owner|not.?claimed|lease/i.test(message)) {
+              console.warn(`[xdr-ingest] 任务 ${task.id} 续租失败：${message.slice(0, 160)}`)
+              return
+            }
+            watch.leaseLost = true
+            console.warn(`[xdr-ingest] 任务 ${task.id} 已失去租约，取消当前会话：${message.slice(0, 160)}`)
+            void Promise.resolve(handle.agent.cancel({ reason: 'xdr-ingest lease lost' })).catch(
+              () => undefined,
+            )
+          }).catch(() => undefined)
+        } catch {
+          // 心跳不是分析主路径：同步异常也不能掀掉会话。
+        }
+      }, heartbeatMs)
+      heartbeatTimer.unref?.()
+    }
     let timedOut = false
     let nudged = false
     let error: string | undefined
     let sessionAudit: SessionAudit | null = null
     try {
       const followup = handle.agent.followup(followupMessage(
-        buildAnalysisPrompt(task, workflow),
+        resumable
+          ? continuationPrompt(task, resumeReason)
+          : buildAnalysisPrompt(promptTask, workflow),
         this.options.source ?? 'xdr-ingest',
       ))
       await Promise.resolve(followup)
@@ -616,9 +853,9 @@ export class Analyst {
             + `工具 ${watch.tools} 次），重发任务提示`,
           )
           await Promise.resolve(handle.agent.followup(followupMessage(
-            '上一轮结束时任务仍未交回。请立即继续执行下面的任务，'
-              + '完成后调用 `complete_task` 交回；证据够就收尾，不要再做与任务无关的元数据查询：\n\n'
-              + buildAnalysisPrompt(task, workflow),
+            '上一轮结束时任务仍未交回。请立即从当前证据继续，'
+              + '完成后调用 `complete_task` 交回；证据够就收尾，不要再做与任务无关的元数据查询。\n\n'
+              + continuationPrompt(task, '首轮结束但任务未交回'),
             this.options.source ?? 'xdr-ingest',
           )))
           const second = await this.raceTimeout(handle.agent.whenIdle())
@@ -634,6 +871,7 @@ export class Analyst {
       error = exc instanceof Error ? exc.message : String(exc)
     } finally {
       if (probeTimer !== null) clearInterval(probeTimer)
+      if (heartbeatTimer !== null) clearInterval(heartbeatTimer)
       await Promise.resolve(handle.dispose()).catch(() => undefined)
       this.options.onSession?.(sessionId, 'end')
     }
@@ -647,20 +885,116 @@ export class Analyst {
         )
       }
     }
-    // 两个来源都保留：审计解析成功但投影为空时，探针看到的工具数仍然是事实；
-    // 取较大值避免把真实调用记成 0（这是旧版 tools_used=0 的直接原因）。
-    const auditTools = Math.max(sessionAudit?.toolCount ?? 0, watch.tools)
-    const auditErrors = Math.max(sessionAudit?.toolErrors ?? 0, 0)
+    // 会话审计是累计值：预算按任务累计（maxToolsPerTask），写回/统计按本次
+    // attempt 的增量，否则 resume 后会把前几段的工具/token 重复计入。
+    const cumulativeTools = Math.max(sessionAudit?.toolCount ?? 0, watch.tools)
+    const auditTools = Math.max(0, cumulativeTools - (baseline?.toolCount ?? 0))
+    const segmentAudit = sessionAudit === null ? null : auditDelta(sessionAudit, baseline)
+    const auditErrors = segmentAudit?.toolErrors ?? 0
+    const auditTurns = segmentAudit?.turns ?? 0
+    const auditTokens = segmentAudit?.tokens ?? tokenUsageOf(null)
+    const modelFailure = classifyModelFailure(segmentAudit, error, watch)
+    const turnEndReason = modelFailure.code !== '' && modelFailure.kind !== 'local'
+      ? `error:${modelFailure.code}`
+      : segmentAudit?.turnEnds.at(-1)?.reason ?? ''
 
     // 会话结束不等于任务完成：必须回查 NDR 侧状态
     let reply = await this.readTask(task.id)
     let state = stateOf(reply)
     let completed = state === 'done'
+
+    const interruptedDecision = (action: string): Record<string, unknown> => ({
+      ...decisionBase,
+      action,
+      reason: modelFailure.kind === 'max_tokens'
+        ? 'max_tokens'
+        : modelFailure.kind === 'permanent'
+        ? 'model_config_error'
+        : 'model_unavailable',
+      model_failure: {
+        kind: modelFailure.kind,
+        code: modelFailure.code,
+        retryable: modelFailure.kind === 'retryable' || modelFailure.kind === 'max_tokens',
+        message: modelFailure.message.slice(0, 300),
+      },
+      retry_after_seconds: retryAfterForFailure(modelFailure),
+    })
+    const recordInterrupted = async (action: string): Promise<void> => {
+      const decision = interruptedDecision(action)
+      await this.finishProcess(task, 'failed', segmentStartedAt, {
+        verdict: '',
+        note: action === 'resume_failed'
+          ? '恢复 DSH 会话失败，任务延后'
+          : '模型/上游中断，保留会话待恢复',
+        toolsUsed: auditTools,
+        toolErrors: auditErrors,
+        turns: auditTurns,
+        attempt,
+        sessionId,
+        tokens: auditTokens,
+        error: modelFailure.message || error || '',
+        turnEndReason,
+        decision,
+        audit: segmentAudit === null ? {} : auditPayload(segmentAudit),
+        startedAt: new Date(segmentStartedAt).toISOString(),
+      })
+      await this.sendAudit(task, {
+        sessionId,
+        attempt,
+        outcome: 'failed',
+        verdict: '',
+        note: '模型/上游中断，保留会话待恢复',
+        error: modelFailure.message || error || '',
+        decision,
+        startedAt: segmentStartedAt,
+        sessionAudit: segmentAudit,
+        toolsUsed: auditTools,
+        toolErrors: auditErrors,
+        model: modelLabel,
+      })
+    }
+    const resumeIfAllowed = async (): Promise<boolean> => {
+      if (this.options.agents.resume === undefined) return false
+      if (watch.leaseLost || completed || resumes >= maxResumeAttempts) return false
+      await recordInterrupted('interrupted')
+      resumes += 1
+      resumable = true
+      baseline = sessionAudit
+      resumeReason = modelFailure.kind === 'max_tokens'
+        ? '模型输出被截断（max-tokens）'
+        : `模型/上游故障（${modelFailure.code || modelFailure.kind}）`
+      if (this.options.fallbackModel !== undefined) this.preferFallback = true
+      const waitMs = Math.max(0, this.options.resumeBackoffMs ?? 5_000)
+      if (waitMs > 0) await new Promise<void>(resolve => setTimeout(resolve, waitMs))
+      return true
+    }
+    if (!completed && (modelFailure.kind === 'retryable' || modelFailure.kind === 'max_tokens')) {
+      if (await resumeIfAllowed()) continue
+    } else if (!completed && !watch.leaseLost && modelFailure.kind === 'permanent'
+      && this.options.agents.resume !== undefined
+      && this.options.fallbackModel !== undefined && !this.preferFallback) {
+      // 永久配置/凭证错误：同一会话换备用模型再试一次；仍失败则 defer，不写结论。
+      if (resumes < maxResumeAttempts) {
+        await recordInterrupted('interrupted')
+        resumes += 1
+        resumable = true
+        baseline = sessionAudit
+        resumeReason = `模型配置/凭证错误（${modelFailure.code}），切换备用模型继续`
+        this.preferFallback = true
+        const waitMs = Math.max(0, this.options.resumeBackoffMs ?? 5_000)
+        if (waitMs > 0) await new Promise<void>(resolve => setTimeout(resolve, waitMs))
+        continue
+      }
+    }
+
     // 预算/超时/停滞被强制取消时，模型往往来不及自己交回。会话已经结束，
     // 再延期只是把租约还回去（下次仍会重演）。这里由插件代交一条
     // inconclusive：结论质量降级，但闭环、可见、不再占着队列。
+    // 只要审计里有模型/上游失败码，绝不代交（先走下面的 resume/defer 分支）。
     let forced = false
-    if (!completed && (watch.budgetExceeded || watch.stallCancelled || timedOut || nudged)) {
+    if (!completed && !watch.leaseLost
+      && (modelFailure.kind === 'none' || modelFailure.kind === 'budget' || modelFailure.kind === 'local')
+      && (watch.budgetExceeded || watch.stallCancelled || timedOut || nudged)) {
       const terminalReason = watch.budgetExceeded
         ? 'budget_exhausted'
         : timedOut
@@ -681,7 +1015,7 @@ export class Analyst {
           forced_completion: true,
           reason: terminalReason,
           tools_used: auditTools,
-          audit: sessionAudit === null ? undefined : auditPayload(sessionAudit),
+          audit: segmentAudit === null ? undefined : auditPayload(segmentAudit),
         },
         terminal_reason: terminalReason,
         tools_used: auditTools,
@@ -700,6 +1034,9 @@ export class Analyst {
           // 复用入库/抽检比对仍能拿到 verdict。
           reply = {
             ...reply,
+            ...(receipt.result_id !== undefined && receipt.result_id !== ''
+              ? { result_id: receipt.result_id }
+              : {}),
             results: [{
               verdict: 'inconclusive',
               terminal_reason: terminalReason,
@@ -754,7 +1091,11 @@ export class Analyst {
     let deferred = false
     if (!completed) {
       // 没交回：显式延后（不算失败），把租约让出来，同时留下"为什么"
-      const reason = watch.budgetExceeded
+      const reason = modelFailure.kind !== 'none'
+        ? `model_unavailable:${modelFailure.code || modelFailure.kind}`
+        : watch.leaseLost
+        ? 'lease_lost'
+        : watch.budgetExceeded
         ? 'budget_exhausted'
         : watch.stallCancelled
         ? 'stalled'
@@ -763,41 +1104,60 @@ export class Analyst {
         : error
         ? `agent_error: ${error.slice(0, 120)}`
         : 'no_conclusion'
+      const retryAfter = modelFailure.kind !== 'none' ? retryAfterForFailure(modelFailure) : undefined
       try {
-        await this.options.ndr.deferTask(task.id, reason)
+        await this.options.ndr.deferTask(task.id, reason, retryAfter === undefined ? {} : { retryAfterSeconds: retryAfter })
         deferred = true
       } catch (exc) {
         error = error ?? (exc instanceof Error ? exc.message : String(exc))
       }
     }
-    const outcome = completed ? 'done' : error !== undefined ? 'failed' : 'deferred'
+    const outcome = completed ? 'done' : modelFailure.kind !== 'none' ? 'deferred' : error !== undefined ? 'failed' : 'deferred'
     const verdict = String(reply.results?.[0]?.verdict ?? '')
     const note = [
       auditNote,
       completed
         ? (forced ? '插件代交 inconclusive（预算/超时/停滞）' : '')
-        : watch.budgetExceeded
+        : modelFailure.kind !== 'none'
+          ? `模型/上游暂不可用（${modelFailure.code || modelFailure.kind}），任务延后重试（未写终态结论）`
+          : watch.budgetExceeded
           ? '工具调用超过预算，已取消并延后'
           : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
     ].filter(text => text !== '').join('；')
     const decision = forced
       ? {
+          ...decisionBase,
           action: 'forced_completion',
           reason: watch.budgetExceeded ? 'budget_exhausted' : timedOut ? 'timeout' : 'stalled',
         }
-      : {}
-    await this.finishProcess(task, outcome, startedAt, {
+      : modelFailure.kind !== 'none'
+      ? {
+          ...decisionBase,
+          action: 'deferred',
+          reason: modelFailure.kind === 'permanent' ? 'model_config_error' : 'model_unavailable',
+          model_failure: {
+            kind: modelFailure.kind,
+            code: modelFailure.code,
+            retryable: modelFailure.kind === 'retryable' || modelFailure.kind === 'max_tokens',
+            message: modelFailure.message.slice(0, 300),
+          },
+          retry_after_seconds: retryAfterForFailure(modelFailure),
+        }
+      : { ...decisionBase }
+    await this.finishProcess(task, outcome, segmentStartedAt, {
       verdict,
       note,
       toolsUsed: auditTools,
       toolErrors: auditErrors,
+      turns: auditTurns,
       attempt,
       sessionId,
-      tokens: tokenUsageOf(sessionAudit),
-      error: error ?? (timedOut ? 'timeout' : watch.stallCancelled ? 'stalled' : ''),
-      turnEndReason: sessionAudit?.turnEnds.at(-1)?.reason ?? '',
+      tokens: auditTokens,
+      error: error ?? modelFailure.message ?? (timedOut ? 'timeout' : watch.stallCancelled ? 'stalled' : ''),
+      turnEndReason,
       decision,
-      audit: sessionAudit === null ? {} : auditPayload(sessionAudit),
+      audit: segmentAudit === null ? {} : auditPayload(segmentAudit),
+      startedAt: new Date(segmentStartedAt).toISOString(),
     })
     await this.sendAudit(task, {
       sessionId,
@@ -806,13 +1166,13 @@ export class Analyst {
       outcome,
       verdict,
       note,
-      error: error ?? '',
+      error: error ?? modelFailure.message ?? '',
       decision,
-      startedAt,
-      sessionAudit,
+      startedAt: segmentStartedAt,
+      sessionAudit: segmentAudit,
       toolsUsed: auditTools,
       toolErrors: auditErrors,
-      model: [provider, model].filter(value => (value ?? '') !== '').join('/'),
+      model: modelLabel,
     })
     // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型。
     // 插件代交（forced）不算"模型自己收尾成功"，预算/超时同样触发换备用。
@@ -820,7 +1180,8 @@ export class Analyst {
       this.preferFallback = false
     } else if (
       this.options.fallbackModel !== undefined
-      && (timedOut || watch.budgetExceeded || /429|rate limit|quota|timeout|overloaded|context window/i.test(error ?? ''))
+      && (modelFailure.kind === 'retryable' || modelFailure.kind === 'permanent'
+        || timedOut || watch.budgetExceeded)
     ) {
       this.preferFallback = true
     }
@@ -832,6 +1193,7 @@ export class Analyst {
       durationMs: Date.now() - startedAt,
       attempt,
       ...(error ? { error } : {}),
+    }
     }
   }
 
@@ -1113,6 +1475,45 @@ export class Analyst {
     }
   }
 
+  /** 会话开始时的 running 审计（崩溃也能留下 session/attempt 关联）。 */
+  private async startAudit(
+    task: ClaimedTask,
+    sessionId: string,
+    attempt: number,
+    model: string,
+    startedAt: number,
+    decision: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (this.options.ndr.recordAudit === undefined) return
+    try {
+      await this.options.ndr.recordAudit(task.id, {
+        task_id: task.id,
+        session_id: sessionId,
+        attempt: Math.max(0, attempt),
+        outcome: 'running',
+        verdict: '',
+        source: 'dsh',
+        model,
+        started_at: new Date(startedAt).toISOString(),
+        ended_at: '',
+        tools_used: 0,
+        tool_errors: 0,
+        turns: 0,
+        turn_end_reason: '',
+        tokens: tokenUsageOf(null),
+        error: '',
+        note: '分析会话已启动',
+        decision,
+        trace: {},
+      })
+    } catch (error) {
+      console.warn(
+        `[xdr-ingest] 启动审计写回失败（任务 ${task.id}）：`
+        + `${error instanceof Error ? error.message : String(error)}`.slice(0, 240),
+      )
+    }
+  }
+
   /**
    * 把 DSH 审计写回 NDR。审计不是结论、不是抑制证据；写失败只告警。
    * 没起会话的复用/抑制/初筛也写一条（session_id 为空、decision 说明原因），
@@ -1176,6 +1577,7 @@ export class Analyst {
     extra: {
       toolsUsed?: number
       toolErrors?: number
+      turns?: number
       verdict?: string
       note?: string
       model?: string
@@ -1186,6 +1588,8 @@ export class Analyst {
       turnEndReason?: string
       decision?: Record<string, unknown>
       audit?: Record<string, unknown>
+      /** Segment start (ISO); omitted = store falls back to previous/endedAt. */
+      startedAt?: string
     } = {},
   ): Promise<void> {
     const store = this.options.process
@@ -1200,6 +1604,7 @@ export class Analyst {
         subject: task.subject,
         ...(extra.toolsUsed === undefined ? {} : { toolsUsed: extra.toolsUsed }),
         ...(extra.toolErrors === undefined ? {} : { toolErrors: extra.toolErrors }),
+        ...(extra.turns === undefined ? {} : { turns: extra.turns }),
         ...(extra.verdict === undefined ? {} : { verdict: extra.verdict }),
         ...(extra.note === undefined ? {} : { note: extra.note }),
         ...(extra.model === undefined ? {} : { model: extra.model }),
@@ -1210,6 +1615,7 @@ export class Analyst {
         ...(extra.turnEndReason === undefined ? {} : { turnEndReason: extra.turnEndReason }),
         ...(extra.decision === undefined ? {} : { decision: extra.decision }),
         ...(extra.audit === undefined ? {} : { audit: extra.audit }),
+        ...(extra.startedAt === undefined ? {} : { startedAt: extra.startedAt }),
       })
     } catch (error) {
       console.warn(
@@ -1441,6 +1847,119 @@ function stateOf(reply: TaskStateReply): string {
   return String(reply.task_state ?? reply.state ?? '')
 }
 
+interface RunWatch {
+  readonly budgetExceeded: boolean
+  readonly stalled: boolean
+  readonly tools: number
+  readonly leaseLost?: boolean
+}
+
+type ModelFailureKind = 'none' | 'retryable' | 'permanent' | 'budget' | 'max_tokens' | 'local'
+
+interface ModelFailure {
+  readonly kind: ModelFailureKind
+  readonly code: string
+  readonly message: string
+}
+
+const RETRYABLE_CODES = new Set([
+  'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT',
+])
+const PERMANENT_CODES = new Set([
+  'INVALID_CONFIG', 'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'UNKNOWN_MODEL',
+  'INVALID_REQUEST', 'QUOTA', 'CONTEXT_WINDOW_EXCEEDED',
+])
+
+/**
+ * 失败分类只认结构化 code。
+ *
+ * 旧实现把任何 `turn/end reason='error'` 都当 transient，又把超时/停滞/未交回
+ * 代交成终态 inconclusive；结果模型故障既可能被永久关单，也可能无限 defer。
+ * 现在：模型/上游 code 与“分析策略中断”严格分开，未知 code 走保守的永久路径。
+ */
+function classifyModelFailure(
+  audit: SessionAudit | null,
+  error: string | undefined,
+  watch: RunWatch,
+): ModelFailure {
+  if (watch.budgetExceeded) {
+    return { kind: 'budget', code: 'BUDGET_EXHAUSTED', message: 'tool budget exceeded' }
+  }
+  const failures = audit?.modelFailures ?? []
+  const last = failures.at(-1)
+  const codes = new Set<string>()
+  for (const item of failures) if (item.code !== '') codes.add(item.code.toUpperCase())
+  for (const item of audit?.turnEnds ?? []) {
+    if (item.code !== undefined && item.code !== '') codes.add(item.code.toUpperCase())
+  }
+  for (const code of codes) {
+    if (RETRYABLE_CODES.has(code)) {
+      return { kind: 'retryable', code, message: last?.message ?? code }
+    }
+  }
+  for (const code of codes) {
+    if (PERMANENT_CODES.has(code)) {
+      return { kind: 'permanent', code, message: last?.message ?? code }
+    }
+  }
+  if (codes.has('ABORTED')) {
+    return { kind: 'local', code: 'ABORTED', message: last?.message ?? 'aborted' }
+  }
+  if ((audit?.turnEnds ?? []).some(item => item.reason === 'max-tokens')) {
+    return { kind: 'max_tokens', code: 'MAX_TOKENS', message: 'turn truncated' }
+  }
+  // 未知 code 不猜测可重试：永久路径会 defer，不会写成终态结论。
+  if (codes.size > 0) {
+    const code = [...codes][0] ?? 'UNKNOWN'
+    return { kind: 'permanent', code, message: last?.message ?? code }
+  }
+  const text = [error ?? '', ...(audit?.errors ?? [])].join(' ').toLowerCase()
+  if (/no available accounts|upstream|connecterror|remote protocol|server disconnected|rate limit|429|overloaded|no content|上游正常结束但没有返回|nodename nor servname|econnreset|etimedout|timeout/.test(text)) {
+    return {
+      kind: 'retryable',
+      code: /429|rate limit/.test(text) ? 'RATE_LIMIT' : 'SERVER',
+      message: text.slice(0, 300),
+    }
+  }
+  // 旧 DSH 日志没有结构化 code，但明确是 error turn：按一次性 transient 处理。
+  if ((audit?.turnEnds ?? []).some(item => item.reason === 'error')) {
+    return { kind: 'retryable', code: 'LEGACY_ERROR', message: error ?? 'model error' }
+  }
+  return { kind: 'none', code: '', message: '' }
+}
+
+/** 按失败 code 选择 defer 延迟；模型故障期间不要每 60 秒打一次上游。 */
+function retryAfterForFailure(failure: ModelFailure): number {
+  if (failure.kind === 'max_tokens') return 180
+  switch (failure.code) {
+    case 'RATE_LIMIT': return 300
+    case 'TIMEOUT':
+    case 'TRANSPORT': return 180
+    case 'QUOTA': return 3_600
+    case 'INVALID_CONFIG':
+    case 'MISSING_CREDENTIAL':
+    case 'INVALID_CREDENTIAL':
+    case 'UNKNOWN_MODEL':
+    case 'INVALID_REQUEST':
+    case 'CONTEXT_WINDOW_EXCEEDED': return 21_600
+    default: return failure.kind === 'retryable' ? 180 : 3_600
+  }
+}
+
+/** 恢复时只发断点指令；完整任务已经在会话历史里，重发会诱导模型重做工具。 */
+function continuationPrompt(task: ClaimedTask, reason: string): string {
+  return [
+    `上一次分析被中断（原因：${reason}），DSH 会话已恢复。此前的任务、工具调用和结果都在历史里。`,
+    '',
+    `任务：${task.id}（${task.kind} / ${task.subject}）`,
+    '从断点继续：',
+    '1. 先回顾已获得的证据，不要重复已经执行过的相同工具调用；历史里若有 `TOOL_OUTCOME_UNKNOWN`，先核实该操作是否已生效；',
+    '2. 补查缺失证据；够用就立即调用 complete_task；',
+    '3. 如果仍然缺关键证据，调用 complete_task 交回 inconclusive，并在 terminal_reason/evidence_gap 说明缺口；',
+    '4. 需要之前激活过的工具组时，重新调用 `enable_analysis_tools`（工具 scope 不随会话持久化）。',
+  ].join('\n')
+}
+
 /** DSH followup 要完整 UserMessage：缺 id/role 会写出无法校验的会话日志。 */
 function followupMessage(text: string, source: string): AgentFollowupInput {
   return {
@@ -1476,6 +1995,9 @@ function auditPayload(audit: SessionAudit): Record<string, unknown> {
     tool_errors: audit.toolErrors,
     tokens: audit.tokens,
     errors: audit.errors,
+    error_count: audit.errorCount,
+    model_failures: audit.modelFailures,
+    retry_count: audit.retryCount,
     turn_ends: audit.turnEnds,
     redacted: audit.redacted,
     truncated: audit.truncated,

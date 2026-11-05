@@ -42,6 +42,17 @@ export interface AuditToolCall {
 export interface AuditTurnEnd {
   readonly turn: number
   readonly reason: string
+  /** Structured LlmFailure code (SERVER/RATE_LIMIT/…) when DSH recorded one. */
+  readonly code?: string
+  readonly message?: string
+  readonly at: string
+}
+
+/** 一次模型失败的运行事实（来自 turn/end 或 assistant/attempt）。 */
+export interface AuditLlmFailure {
+  readonly code: string
+  readonly message: string
+  readonly status?: number
   readonly at: string
 }
 
@@ -58,6 +69,11 @@ export interface SessionAudit {
   readonly toolErrors: number
   readonly tokens: AuditTokenUsage
   readonly errors: readonly string[]
+  /** 累计错误条数（errors 有上限，不能用数组长度当计数）。 */
+  readonly errorCount: number
+  readonly modelFailures: readonly AuditLlmFailure[]
+  /** DSH llm-retry 的调度次数（llm/retry 事件）。 */
+  readonly retryCount: number
   readonly model: string
   readonly turnEnds: readonly AuditTurnEnd[]
   readonly redacted: boolean
@@ -152,12 +168,29 @@ function reasonOf(value: unknown): string {
   const row = value as Record<string, unknown>
   const kind = String(row['kind'] ?? '').trim()
   if (kind !== '') return kind
-  const error = row['error']
-  if (typeof error === 'object' && error !== null) {
-    const failure = error as Record<string, unknown>
-    return String(failure['code'] ?? failure['message'] ?? 'error').slice(0, 200)
+  const failure = failureOf(row)
+  return failure.code || failure.message || ''
+}
+
+/**
+ * DSH 的 turn/end reason 形如 `{kind:'error', error:{code,message,status}}`；
+ * assistant/attempt 的 finish 则直接带 `failure`。两种都归一成同一结构，
+ * 否则 Analyst 只能看到字符串 "error"，无法区分可重试的 SERVER 和永久 401。
+ */
+function failureOf(value: unknown): { code: string, message: string, status?: number } {
+  if (typeof value !== 'object' || value === null) return { code: '', message: '' }
+  const row = value as Record<string, unknown>
+  const nested = [row['error'], row['failure']]
+    .find(item => typeof item === 'object' && item !== null)
+  const failure = (nested ?? row) as Record<string, unknown>
+  const code = String(failure['code'] ?? '').trim().slice(0, 64)
+  const message = String(failure['message'] ?? '').trim().slice(0, 500)
+  const rawStatus = Number(failure['status'] ?? failure['statusCode'] ?? 0)
+  return {
+    code,
+    message,
+    ...(Number.isFinite(rawStatus) && rawStatus > 0 ? { status: rawStatus } : {}),
   }
-  return ''
 }
 
 async function locate(root: string, sessionId: string): Promise<string | null> {
@@ -200,6 +233,9 @@ function emptyAudit(sessionId: string, error: string): SessionAudit {
     toolErrors: 0,
     tokens: EMPTY_TOKENS,
     errors: [],
+    errorCount: 0,
+    modelFailures: [],
+    retryCount: 0,
     model: '',
     turnEnds: [],
     redacted: false,
@@ -227,6 +263,9 @@ export function parseSessionAudit(text: string, sessionId: string): SessionAudit
   let redacted = false
   let truncated = false
   const errors: string[] = []
+  let errorCount = 0
+  let retryCount = 0
+  const modelFailures: AuditLlmFailure[] = []
   const turnEnds: AuditTurnEnd[] = []
   const calls = new Map<string, {
     callId: string
@@ -241,8 +280,22 @@ export function parseSessionAudit(text: string, sessionId: string): SessionAudit
   let anonymousCall = 0
 
   const noteError = (textValue: string): void => {
-    if (textValue === '' || errors.length >= MAX_ERRORS) return
+    if (textValue === '') return
+    errorCount += 1
+    if (errors.length >= MAX_ERRORS) return
     errors.push(redactText(textValue, 300))
+  }
+  const noteFailure = (raw: unknown, at: number): void => {
+    const failure = failureOf(raw)
+    if (failure.code === '' && failure.message === '') return
+    noteError(failure.code || failure.message)
+    if (modelFailures.length >= 200) return
+    modelFailures.push({
+      code: failure.code,
+      message: redactText(failure.message, 300),
+      ...(failure.status !== undefined ? { status: failure.status } : {}),
+      at: iso(at),
+    })
   }
 
   for (const event of events) {
@@ -263,8 +316,26 @@ export function parseSessionAudit(text: string, sessionId: string): SessionAudit
     }
     if (type === 'turn/end') {
       const turn = Number(data['turn'] ?? 0)
-      const reason = reasonOf(data['reason']) || 'unknown'
-      turnEnds.push({ turn, reason, at: iso(time) })
+      const reasonRaw = data['reason']
+      const reason = reasonOf(reasonRaw) || 'unknown'
+      const failure = failureOf(reasonRaw)
+      if (reason === 'error' || failure.code !== '' || failure.message !== '') {
+        noteFailure(reasonRaw, time)
+      }
+      turnEnds.push({
+        turn,
+        reason,
+        ...(failure.code !== '' ? { code: failure.code } : {}),
+        ...(failure.message !== '' ? { message: redactText(failure.message, 300) } : {}),
+        at: iso(time),
+      })
+      continue
+    }
+    if (type === 'llm/retry' || type === 'llm/retry-started') {
+      // 调度事件不是模型面消息；started 才算真正重试（llm/retry 只是登记）。
+      if (type === 'llm/retry-started') retryCount += 1
+      const failure = data['failure']
+      if (failure !== undefined) noteFailure(failure, time)
       continue
     }
     if (type === 'request/header') {
@@ -294,8 +365,7 @@ export function parseSessionAudit(text: string, sessionId: string): SessionAudit
         if (chunk['type'] === 'finish') {
           const reason = (chunk['reason'] ?? {}) as Record<string, unknown>
           if (reason['kind'] === 'error') {
-            const failure = (reason['failure'] ?? {}) as Record<string, unknown>
-            noteError(String(failure['message'] ?? failure['code'] ?? 'model error'))
+            noteFailure(reason['failure'] ?? reason['error'] ?? reason, time)
           }
         }
       }
@@ -370,10 +440,52 @@ export function parseSessionAudit(text: string, sessionId: string): SessionAudit
     toolErrors: allCalls.filter(call => call.isError).length,
     tokens,
     errors,
+    errorCount,
+    modelFailures,
+    retryCount,
     model,
     turnEnds: turnEnds.slice(-40),
     redacted,
     truncated,
+  }
+}
+
+/**
+ * 会话审计是累计的；resume 后写回 NDR/PG 的必须只算本次 segment 的增量，
+ * 否则 attempt 2 会把 attempt 1 的工具、token、turn 全再记一遍。
+ */
+export function auditDelta(after: SessionAudit, before: SessionAudit | null): SessionAudit {
+  if (before === null) return after
+  const seen = new Set(before.toolCalls.map(call => call.callId))
+  const delta = (a: number, b: number): number => Math.max(0, a - b)
+  const tokenDelta = {
+    input: delta(after.tokens.input, before.tokens.input),
+    output: delta(after.tokens.output, before.tokens.output),
+    cacheRead: delta(after.tokens.cacheRead, before.tokens.cacheRead),
+    cacheWrite: delta(after.tokens.cacheWrite, before.tokens.cacheWrite),
+    total: delta(after.tokens.total, before.tokens.total),
+    reported: after.tokens.reported,
+  }
+  return {
+    ok: after.ok,
+    ...(after.error !== undefined ? { error: after.error } : {}),
+    sessionId: after.sessionId,
+    startedAt: before.endedAt || after.startedAt,
+    endedAt: after.endedAt,
+    turns: delta(after.turns, before.turns),
+    steps: delta(after.steps, before.steps),
+    toolCalls: after.toolCalls.filter(call => !seen.has(call.callId)),
+    toolCount: delta(after.toolCount, before.toolCount),
+    toolErrors: delta(after.toolErrors, before.toolErrors),
+    tokens: tokenDelta,
+    errors: after.errors.slice(Math.min(before.errors.length, after.errors.length)),
+    errorCount: delta(after.errorCount, before.errorCount),
+    modelFailures: after.modelFailures.slice(Math.min(before.modelFailures.length, after.modelFailures.length)),
+    retryCount: delta(after.retryCount, before.retryCount),
+    model: after.model,
+    turnEnds: after.turnEnds.filter(item => item.turn > before.turns).slice(-40),
+    redacted: after.redacted,
+    truncated: after.truncated,
   }
 }
 

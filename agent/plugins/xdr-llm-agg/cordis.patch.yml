@@ -44,12 +44,12 @@
         toolResultMaxChars: 12000
         toolResultHeadChars: 9000
         toolResultTailChars: 2000
-        # 每次重试都会重发整段上下文：默认只重试 2 次，退避 1–8 秒。
+        # 每次重试都会重发整段上下文：默认重试 3 次，退避 2–30 秒。
         retryPolicy:
           mode: normal
-          maxRetries: 2
+          maxRetries: 3
           retryableCodes: [EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT]
           backoff:
-            initialDelayMs: 1000
-            maxDelayMs: 8000
+            initialDelayMs: 2000
+            maxDelayMs: 30000
             jitterRatio: 0.2

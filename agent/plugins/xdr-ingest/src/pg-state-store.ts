@@ -625,6 +625,24 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         await this.pool.query(SCHEMA_SQL)
+        // 进程重启时不可能还有真实在跑的会话：上一进程的 running 行是中断残留。
+        // 不清理会让控制台永远显示“在跑”，也会掩盖审计缺口。
+        await this.pool.query(
+          `UPDATE xdr_ingest_process
+             SET outcome='failed', ended_at=now(), error='agent_restarted',
+                 note=CASE WHEN note='' THEN 'agent restarted; analysis interrupted'
+                           ELSE note || '；agent restarted; analysis interrupted' END
+           WHERE project_id=$1 AND outcome='running'`,
+          [this.projectId],
+        )
+        await this.pool.query(
+          `UPDATE xdr_ingest_process_attempt
+             SET outcome='failed', ended_at=now(), error='agent_restarted',
+                 note=CASE WHEN note='' THEN 'agent restarted; analysis interrupted'
+                           ELSE note || '；agent restarted; analysis interrupted' END
+           WHERE project_id=$1 AND outcome='running'`,
+          [this.projectId],
+        )
         return true
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -1172,14 +1190,19 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
          WHERE project_id = $1 AND task_id = $2`,
         [this.projectId, start.taskId],
       )
-      const attempt = Math.max(1, Number(rows[0]?.attempt ?? 1))
+      const attempt = Math.max(
+        1,
+        Number(rows[0]?.attempt ?? 1),
+        Math.max(0, Math.floor(start.attemptHint ?? 0)),
+      )
       const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false }
+      const decision = JSON.stringify(start.decision ?? {})
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
            (project_id, task_id, session_id, kind, subject, model, started_at, outcome, attempt,
             tool_errors, turns, error, turn_end_reason, tokens, decision, audit,
             workflow_id, workflow_name, workflow_stages)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, 0, 0, '', '', $9::jsonb, '{}'::jsonb,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, 0, 0, '', '', $9::jsonb, $13::jsonb,
                  '{}'::jsonb, $10, $11, $12::jsonb)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
            session_id = EXCLUDED.session_id,
@@ -1190,12 +1213,16 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            ended_at = NULL,
            outcome = 'running',
            attempt = EXCLUDED.attempt,
+           tools_used = 0,
            tool_errors = 0,
            turns = 0,
+           duration_ms = 0,
+           verdict = '',
+           note = '',
            error = '',
            turn_end_reason = '',
            tokens = EXCLUDED.tokens,
-           decision = '{}'::jsonb,
+           decision = EXCLUDED.decision,
            audit = '{}'::jsonb,
            workflow_id = EXCLUDED.workflow_id,
            workflow_name = EXCLUDED.workflow_name,
@@ -1204,14 +1231,14 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
           this.projectId, start.taskId, start.sessionId, start.kind, start.subject, start.model,
           start.startedAt, attempt, JSON.stringify(tokens),
           start.workflowId ?? '', start.workflowName ?? '',
-          JSON.stringify(start.workflowStages ?? []),
+          JSON.stringify(start.workflowStages ?? []), decision,
         ],
       )
       await this.pool.query(
         `INSERT INTO xdr_ingest_process_attempt
            (project_id, task_id, attempt, session_id, kind, subject, model, started_at, outcome,
             tokens, decision, audit, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', $9::jsonb, '{}'::jsonb, '{}'::jsonb, now())
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', $9::jsonb, $10::jsonb, '{}'::jsonb, now())
          ON CONFLICT (project_id, task_id, attempt) DO UPDATE SET
            session_id = EXCLUDED.session_id,
            kind = EXCLUDED.kind,
@@ -1220,13 +1247,21 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            started_at = EXCLUDED.started_at,
            ended_at = NULL,
            outcome = 'running',
+           tools_used = 0,
+           tool_errors = 0,
+           turns = 0,
+           duration_ms = 0,
+           verdict = '',
+           note = '',
+           error = '',
+           turn_end_reason = '',
            tokens = EXCLUDED.tokens,
-           decision = '{}'::jsonb,
+           decision = EXCLUDED.decision,
            audit = '{}'::jsonb,
            updated_at = now()`,
         [
           this.projectId, start.taskId, attempt, start.sessionId, start.kind, start.subject,
-          start.model, start.startedAt, JSON.stringify(tokens),
+          start.model, start.startedAt, JSON.stringify(tokens), decision,
         ],
       )
       return attempt
@@ -1259,13 +1294,15 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       const tokens = finish.tokens ?? previous?.tokens ?? {
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false,
       }
+      const startedAt = finish.startedAt ?? previous?.startedAt ?? finish.endedAt
+      const decision = JSON.stringify({ ...(previous?.decision ?? {}), ...(finish.decision ?? {}) })
       const values = [
         this.projectId, finish.taskId, sessionId, kind, subject,
         finish.model ?? previous?.model ?? '', finish.endedAt, finish.outcome, attempt,
         finish.toolsUsed ?? 0, finish.toolErrors ?? 0, finish.turns ?? 0,
         finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
         finish.error ?? '', finish.turnEndReason ?? '', JSON.stringify(tokens),
-        JSON.stringify(finish.decision ?? {}), JSON.stringify(finish.audit ?? {}),
+        decision, JSON.stringify(finish.audit ?? {}), startedAt,
       ]
       // attempt 表的列顺序与“最新过程”不同（attempt 在第 3 位、session 在第 4 位），
       // 不能复用上面的 values；曾因复用导致 session_id 被塞进 attempt 的整数列。
@@ -1275,20 +1312,21 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
         finish.toolsUsed ?? 0, finish.toolErrors ?? 0, finish.turns ?? 0,
         finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
         finish.error ?? '', finish.turnEndReason ?? '', JSON.stringify(tokens),
-        JSON.stringify(finish.decision ?? {}), JSON.stringify(finish.audit ?? {}),
+        decision, JSON.stringify(finish.audit ?? {}), startedAt,
       ]
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
            (project_id, task_id, session_id, kind, subject, model, started_at, ended_at, outcome, attempt,
             tools_used, tool_errors, turns, duration_ms, verdict, note, error, turn_end_reason,
             tokens, decision, audit)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+         VALUES ($1, $2, $3, $4, $5, $6, $21, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                  $16, $17, $18::jsonb, $19::jsonb, $20::jsonb)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
            session_id = EXCLUDED.session_id,
            kind = CASE WHEN EXCLUDED.kind = '' THEN xdr_ingest_process.kind ELSE EXCLUDED.kind END,
            subject = CASE WHEN EXCLUDED.subject = '' THEN xdr_ingest_process.subject ELSE EXCLUDED.subject END,
            model = CASE WHEN EXCLUDED.model = '' THEN xdr_ingest_process.model ELSE EXCLUDED.model END,
+           started_at = EXCLUDED.started_at,
            ended_at = EXCLUDED.ended_at,
            outcome = EXCLUDED.outcome,
            attempt = EXCLUDED.attempt,
@@ -1310,13 +1348,14 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            (project_id, task_id, attempt, session_id, kind, subject, model, started_at, ended_at,
             outcome, tools_used, tool_errors, turns, duration_ms, verdict, note, error,
             turn_end_reason, tokens, decision, audit, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $21, $8, $9, $10, $11, $12, $13, $14, $15,
                  $16, $17, $18::jsonb, $19::jsonb, $20::jsonb, now())
          ON CONFLICT (project_id, task_id, attempt) DO UPDATE SET
            session_id = EXCLUDED.session_id,
            kind = EXCLUDED.kind,
            subject = EXCLUDED.subject,
            model = EXCLUDED.model,
+           started_at = EXCLUDED.started_at,
            ended_at = EXCLUDED.ended_at,
            outcome = EXCLUDED.outcome,
            tools_used = EXCLUDED.tools_used,

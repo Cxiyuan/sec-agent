@@ -195,3 +195,31 @@ test('脚本库：停用后 get/getAny 的差别（模型看不到、控制台�
   assert.equal(await store.remove('s1'), true)
   assert.equal(await store.getAny('s1'), null)
 })
+
+test('过程索引：resume attemptHint/decision/segment startedAt 不丢', async () => {
+  const store = new MemoryStateStore('PROJ1')
+  const attempt = await store.startProcess({
+    taskId: 'task-resume',
+    sessionId: 'session-resume',
+    kind: 'hit',
+    subject: '10.0.0.5',
+    model: 'llm-agg/test',
+    startedAt: '2026-11-05T01:00:00Z',
+    attemptHint: 5,
+    decision: { task_fingerprint: 'fp', prompt_attempts: 2 },
+  })
+  assert.equal(attempt, 5)
+  await store.finishProcess({
+    taskId: 'task-resume',
+    endedAt: '2026-11-05T01:05:00Z',
+    startedAt: '2026-11-05T01:00:00Z',
+    outcome: 'deferred',
+    attempt: 5,
+    decision: { action: 'deferred' },
+  })
+  const proc = await store.getProcess('task-resume')
+  assert.equal(proc?.attempt, 5)
+  assert.equal(proc?.startedAt, '2026-11-05T01:00:00Z')
+  assert.equal(proc?.decision['task_fingerprint'], 'fp')
+  assert.equal(proc?.decision['action'], 'deferred')
+})

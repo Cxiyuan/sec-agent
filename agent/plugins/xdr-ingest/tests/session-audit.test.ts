@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { parseSessionAudit, redactText } from '../src/session-audit.ts'
+import { auditDelta, parseSessionAudit, redactText } from '../src/session-audit.ts'
 
 function line(value: Record<string, unknown>): string {
   return JSON.stringify(value)
@@ -99,4 +99,62 @@ test('session audit: no-session decisions are still representable', () => {
   assert.equal(audit.ok, true)
   assert.equal(audit.toolCount, 0)
   assert.equal(audit.tokens.reported, false)
+})
+
+test('session audit: structured model failure codes survive turn/end', () => {
+  const failed = [
+    line({ type: 'turn/start', seq: 1, time: 2_000, data: { turn: 1 } }),
+    line({
+      type: 'assistant/attempt',
+      seq: 2,
+      time: 2_050,
+      data: {
+        stream: [{
+          chunk: {
+            type: 'finish',
+            reason: { kind: 'error', failure: { code: 'SERVER', message: 'No available accounts' } },
+          },
+        }],
+      },
+    }),
+    line({
+      type: 'turn/end',
+      seq: 3,
+      time: 2_100,
+      data: { turn: 1, reason: { kind: 'error', error: { code: 'SERVER', message: 'No available accounts' } } },
+    }),
+  ].join('\n')
+  const audit = parseSessionAudit(failed, 's2')
+  assert.equal(audit.turnEnds[0]?.reason, 'error')
+  assert.equal(audit.turnEnds[0]?.code, 'SERVER')
+  assert.equal(audit.modelFailures[0]?.code, 'SERVER')
+  assert.match(audit.modelFailures[0]?.message ?? '', /No available accounts/u)
+  assert.ok(audit.errorCount >= 1)
+})
+
+test('session audit: delta isolates a resumed segment', () => {
+  const extra = [
+    line({ type: 'turn/start', seq: 10, time: 2_000, data: { turn: 2 } }),
+    line({
+      type: 'tool/call',
+      seq: 11,
+      time: 2_010,
+      data: { turn: 2, step: 1, callId: 'c3', name: 'task_facts', arguments: '{}' },
+    }),
+    line({
+      type: 'tool/result',
+      seq: 12,
+      time: 2_020,
+      data: { turn: 2, step: 1, message: { role: 'tool', toolCallId: 'c3', content: [{ type: 'text', text: 'ok' }] } },
+    }),
+    line({ type: 'turn/end', seq: 13, time: 2_100, data: { turn: 2, reason: { kind: 'completed' } } }),
+  ].join('\n')
+  const before = parseSessionAudit(events, 's1')
+  const after = parseSessionAudit(`${events}\n${extra}`, 's1')
+  const delta = auditDelta(after, before)
+  assert.equal(delta.toolCount, 1)
+  assert.equal(delta.turns, 1)
+  assert.equal(delta.toolCalls[0]?.callId, 'c3')
+  assert.equal(delta.turnEnds[0]?.turn, 2)
+  assert.equal(delta.turnEnds[0]?.reason, 'completed')
 })

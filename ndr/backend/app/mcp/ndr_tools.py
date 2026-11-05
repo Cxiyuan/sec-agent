@@ -1242,6 +1242,15 @@ def _defer_task(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _renew_task_lease(args: dict[str, Any]) -> dict[str, Any]:
+    """分析会话活跃期间续租；不改 state/attempts，非持有者拒绝。"""
+    return analysis_queue.renew_task_lease(
+        _client(),
+        str(args.get("task_id") or ""),
+        token=str(args.get("_token") or "mcp"),
+    )
+
+
 def _task_stats(args: dict[str, Any]) -> dict[str, Any]:
     """队列与成本总览：智能体据此自我节流，运维据此看积压与覆盖率。"""
     out = analysis_queue.stats(_client())
@@ -1976,6 +1985,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "reason": "为什么延后（界面可见）",
             "retry_after_seconds": "多久后可以再领（默认 3600）",
         },
+    },
+    "renew_task_lease": {
+        "run": _renew_task_lease,
+        "desc": "给当前分析会话续租（仅任务持有者；不改 state/attempts）。Agent 运行层使用，模型无需调用",
+        "params": {"task_id": "任务 ID"},
     },
     "egress_baseline": {
         "run": _egress_baseline,

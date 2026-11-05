@@ -203,6 +203,10 @@ export interface ProcessStart {
   readonly subject: string
   readonly model: string
   readonly startedAt: string
+  /** Resume 时沿用 NDR/上次 attempt 的编号，避免本地 attempt 表丢失后从 1 重来。 */
+  readonly attemptHint?: number
+  /** 初始 decision（fingerprint/prompt_attempts/phase/baseline）；finish 时合并。 */
+  readonly decision?: Record<string, unknown>
   readonly workflowId?: string
   readonly workflowName?: string
   readonly workflowStages?: readonly WorkflowStage[]
@@ -212,6 +216,8 @@ export interface ProcessStart {
 export interface ProcessFinish {
   readonly taskId: string
   readonly endedAt: string
+  /** Segment start; defaults to previous.startedAt (not endedAt). */
+  readonly startedAt?: string
   readonly outcome: ProcessOutcome
   readonly attempt?: number
   readonly sessionId?: string
@@ -649,7 +655,10 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
   /* ---------- 过程索引 ---------- */
 
   async startProcess(start: ProcessStart): Promise<number> {
-    const attempt = (this.runs.get(start.taskId)?.length ?? 0) + 1
+    const attempt = Math.max(
+      (this.runs.get(start.taskId)?.length ?? 0) + 1,
+      Math.max(0, Math.floor(start.attemptHint ?? 0)),
+    )
     const record: ProcessRecord = {
       ...start,
       attempt,
@@ -664,7 +673,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       error: '',
       turnEndReason: '',
       tokens: emptyTokens(),
-      decision: {},
+      decision: { ...(start.decision ?? {}) },
       audit: {},
       workflowId: start.workflowId ?? '',
       workflowName: start.workflowName ?? '',
@@ -688,7 +697,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       attempt,
       kind: finish.kind ?? previous?.kind ?? '',
       subject: finish.subject ?? previous?.subject ?? '',
-      startedAt: previous?.startedAt ?? finish.endedAt,
+      startedAt: finish.startedAt ?? previous?.startedAt ?? finish.endedAt,
       endedAt: finish.endedAt,
       outcome: finish.outcome,
       model: finish.model !== undefined && finish.model !== '' ? finish.model : (previous?.model ?? ''),
@@ -701,7 +710,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       error: finish.error ?? previous?.error ?? '',
       turnEndReason: finish.turnEndReason ?? previous?.turnEndReason ?? '',
       tokens: finish.tokens ?? previous?.tokens ?? emptyTokens(),
-      decision: finish.decision ?? previous?.decision ?? {},
+      decision: { ...(previous?.decision ?? {}), ...(finish.decision ?? {}) },
       audit: finish.audit ?? previous?.audit ?? {},
       workflowId: previous?.workflowId ?? '',
       workflowName: previous?.workflowName ?? '',
