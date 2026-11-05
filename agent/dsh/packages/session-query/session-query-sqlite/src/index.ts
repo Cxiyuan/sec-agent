@@ -528,7 +528,12 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const afterSnapshots = await persistence.list(listOptions)
           assertNotAborted(signal)
           const after = materializePersistenceSnapshots(afterSnapshots)
-          if (!samePersistenceSnapshots(persisted, after)) continue
+          // Live owners are indexed from the live store, not this persistence
+          // snapshot. Their revisions keep changing while a turn streams, so
+          // comparing them here makes every search during active analysis fail
+          // with "did not stabilize". Ignore them; live membership stability is
+          // still checked below.
+          if (!samePersistenceSnapshots(persisted, after, initiallyLive)) continue
           if (this._persistenceBinding !== persistenceBinding) continue
         } catch (error: unknown) {
           if (isAbort(error) || signal?.aborted) {
@@ -911,9 +916,16 @@ function materializePersistenceSnapshots(
 function samePersistenceSnapshots(
   before: ReadonlyMap<SessionId, ObservedPersistedSession>,
   after: ReadonlyMap<SessionId, ObservedPersistedSession>,
+  ignore: ReadonlySet<SessionId>,
 ): boolean {
-  if (before.size !== after.size) return false
+  const durableOnly = (snapshots: ReadonlyMap<SessionId, ObservedPersistedSession>): number => {
+    let count = 0
+    for (const id of snapshots.keys()) if (!ignore.has(id)) count += 1
+    return count
+  }
+  if (durableOnly(before) !== durableOnly(after)) return false
   for (const [id, first] of before) {
+    if (ignore.has(id)) continue
     const second = after.get(id)
     if (
       second === undefined

@@ -833,6 +833,30 @@ describe('SQLite reconciliation and source lifecycle', () => {
       .rejects.toThrow(expectCode('SESSION_QUERY_SESSION_NOT_FOUND'))
   })
 
+  it('ignores changing persisted revisions of live sessions during observation', async () => {
+    const shared = header('live-revision-churn', 10)
+    TestPersistence.reset([{ meta: shared, events: messageEvents('persisted needle') }])
+    const ctx = await liveContext()
+    const live = ctx.sessions.prepare(shared.id, {
+      seed: messageEvents('live needle'),
+      meta: { createdAt: shared.createdAt },
+    })
+    const detach = ctx.sessions.enter(live)
+    ctx.sessions.announce(live)
+    const persistence = await ctx.plugin(TestPersistence)
+    // A live turn keeps flushing to persistence; its revision changes between
+    // the before/after observation lists. It must not make every search fail.
+    TestPersistence.listEffect = () => {
+      TestPersistence.listEffect = undefined
+      TestPersistence.revisions.set(shared.id, ++TestPersistence.nextRevision)
+    }
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'live' }))
+      .resolves.toMatchObject({ items: [{ header: shared, live: true, persisted: true }] })
+    detach()
+    await persistence.dispose()
+  })
+
   it('does not load a persisted log while the same session is live', async () => {
     const shared = header('checkpointed-live', 10)
     TestPersistence.reset([{ meta: shared, events: messageEvents('persisted needle') }])
