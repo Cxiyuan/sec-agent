@@ -1002,7 +1002,7 @@ ${THEME}
       lines.push('历史尝试：' + entry.runs.map(r => '#' + r.attempt + ' ' + (r.outcome || '') +
         '（' + (r.toolsUsed || 0) + ' 工具/' + (r.tokens && r.tokens.total || 0) + ' token）').join(' · '))
     }
-    return lines.join('\n')
+    return lines.join('\\n')
   }
 
   function renderProcAudit(entry) {
