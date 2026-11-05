@@ -141,6 +141,8 @@ export type ProcessOutcome = 'running' | 'done' | 'reused' | 'suppressed' | 'tri
 export interface ProcessRecord {
   readonly taskId: string
   readonly sessionId: string
+  /** 第几次尝试（从 1 起）；同一 task 重试不会覆盖历史 attempt 行。 */
+  readonly attempt: number
   readonly kind: string
   readonly subject: string
   readonly model: string
@@ -148,16 +150,52 @@ export interface ProcessRecord {
   readonly endedAt: string
   readonly outcome: ProcessOutcome
   readonly toolsUsed: number
+  readonly toolErrors: number
+  readonly turns: number
   readonly durationMs: number
   readonly verdict: string
   readonly note: string
+  /** 失败/取消原因（与 note 分开：note 是给人看的一句话，error 是机器可聚合的）。 */
+  readonly error: string
+  /** DSH turn/end 的终态（completed / max-tokens / error / aborted …）。 */
+  readonly turnEndReason: string
+  /** 真实 token 用量（未上报时为 0，`reported=false` 在 audit 里）。 */
+  readonly tokens: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number; readonly total: number; readonly reported: boolean }
+  /** 复用/抑制/初筛这类“没起会话”的决定：来源、原因、命中的抑制名。 */
+  readonly decision: Record<string, unknown>
+  /** 有界审计投影（工具调用按 callId 配对、turn 终态、脱敏后的错误/参数）。 */
+  readonly audit: Record<string, unknown>
   /** 这次分析用的工作流（模版改了也不影响历史：过程里存的是**快照**） */
   readonly workflowId: string
   readonly workflowName: string
   readonly workflowStages: readonly WorkflowStage[]
 }
 
-/** 开始一次分析（起会话前调用）。 */
+/** 一次 attempt 的审计行（UI/回溯用，和“最新过程”分开）。 */
+export interface ProcessRun {
+  readonly taskId: string
+  readonly sessionId: string
+  readonly attempt: number
+  readonly kind: string
+  readonly subject: string
+  readonly model: string
+  readonly startedAt: string
+  readonly endedAt: string
+  readonly outcome: ProcessOutcome
+  readonly toolsUsed: number
+  readonly toolErrors: number
+  readonly turns: number
+  readonly durationMs: number
+  readonly verdict: string
+  readonly note: string
+  readonly error: string
+  readonly turnEndReason: string
+  readonly tokens: ProcessRecord['tokens']
+  readonly decision: Record<string, unknown>
+  readonly audit: Record<string, unknown>
+}
+
+/** 开始一次分析（起会话前调用）。返回本次 attempt（从 1 起）。 */
 export interface ProcessStart {
   readonly taskId: string
   readonly sessionId: string
@@ -175,12 +213,22 @@ export interface ProcessFinish {
   readonly taskId: string
   readonly endedAt: string
   readonly outcome: ProcessOutcome
+  readonly attempt?: number
+  readonly sessionId?: string
+  readonly kind?: string
+  readonly subject?: string
+  readonly model?: string
   readonly toolsUsed?: number
+  readonly toolErrors?: number
+  readonly turns?: number
   readonly durationMs?: number
   readonly verdict?: string
   readonly note?: string
-  /** 没起会话却有「模型」的过程（初筛）：补记 `light:<模型名>`；空/缺省 = 不动已有值。 */
-  readonly model?: string
+  readonly error?: string
+  readonly turnEndReason?: string
+  readonly tokens?: ProcessRecord['tokens']
+  readonly decision?: Record<string, unknown>
+  readonly audit?: Record<string, unknown>
 }
 
 /* ------------------------------------------------------------------ */
@@ -301,13 +349,16 @@ export interface SettingsStore {
 /* ------------------------------------------------------------------ */
 
 export interface ProcessStore {
-  startProcess(start: ProcessStart): Promise<void>
+  /** 返回本次 attempt（从 1 起）；store 不可用时返回 0。 */
+  startProcess(start: ProcessStart): Promise<number>
   finishProcess(finish: ProcessFinish): Promise<void>
   listProcesses(query: { limit: number; offset: number; search: string; outcome: string }): Promise<{
     total: number
     items: ProcessRecord[]
   }>
   getProcess(taskId: string): Promise<ProcessRecord | null>
+  /** 同一 task 的历史 attempt（重试不覆盖，审计用）。 */
+  listProcessRuns(taskId: string): Promise<ProcessRun[]>
 }
 
 /* ------------------------------------------------------------------ */
@@ -328,6 +379,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
   private readonly seen = new Map<string, TaskSeenRecord & { readonly suppressedBy: string }>()
   private readonly conclusions = new Map<string, ConclusionRecord>()
   private readonly processes = new Map<string, ProcessRecord>()
+  private readonly runs = new Map<string, ProcessRun[]>()
   private readonly workflows = new Map<string, WorkflowRecord>()
   private settings: RuntimeSettings | null = null
 
@@ -596,40 +648,71 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
 
   /* ---------- 过程索引 ---------- */
 
-  async startProcess(start: ProcessStart): Promise<void> {
-    this.processes.set(start.taskId, {
+  async startProcess(start: ProcessStart): Promise<number> {
+    const attempt = (this.runs.get(start.taskId)?.length ?? 0) + 1
+    const record: ProcessRecord = {
       ...start,
+      attempt,
       endedAt: '',
       outcome: 'running',
       toolsUsed: 0,
+      toolErrors: 0,
+      turns: 0,
       durationMs: 0,
       verdict: '',
       note: '',
+      error: '',
+      turnEndReason: '',
+      tokens: emptyTokens(),
+      decision: {},
+      audit: {},
       workflowId: start.workflowId ?? '',
       workflowName: start.workflowName ?? '',
       workflowStages: start.workflowStages ?? [],
-    })
+    }
+    this.processes.set(start.taskId, record)
+    this.runs.set(start.taskId, [...(this.runs.get(start.taskId) ?? []), toRun(record)])
+    return attempt
   }
 
   async finishProcess(finish: ProcessFinish): Promise<void> {
     const previous = this.processes.get(finish.taskId)
-    this.processes.set(finish.taskId, {
+    const attempt = finish.attempt !== undefined && finish.attempt > 0
+      ? finish.attempt
+      : previous !== undefined && previous.outcome === 'running'
+        ? previous.attempt
+        : ((this.runs.get(finish.taskId)?.length ?? 0) + 1)
+    const record: ProcessRecord = {
       taskId: finish.taskId,
-      sessionId: previous?.sessionId ?? '',
-      kind: previous?.kind ?? '',
-      subject: previous?.subject ?? '',
+      sessionId: finish.sessionId ?? previous?.sessionId ?? '',
+      attempt,
+      kind: finish.kind ?? previous?.kind ?? '',
+      subject: finish.subject ?? previous?.subject ?? '',
       startedAt: previous?.startedAt ?? finish.endedAt,
       endedAt: finish.endedAt,
       outcome: finish.outcome,
       model: finish.model !== undefined && finish.model !== '' ? finish.model : (previous?.model ?? ''),
       toolsUsed: finish.toolsUsed ?? previous?.toolsUsed ?? 0,
+      toolErrors: finish.toolErrors ?? previous?.toolErrors ?? 0,
+      turns: finish.turns ?? previous?.turns ?? 0,
       durationMs: finish.durationMs ?? previous?.durationMs ?? 0,
       verdict: finish.verdict ?? previous?.verdict ?? '',
       note: finish.note ?? previous?.note ?? '',
+      error: finish.error ?? previous?.error ?? '',
+      turnEndReason: finish.turnEndReason ?? previous?.turnEndReason ?? '',
+      tokens: finish.tokens ?? previous?.tokens ?? emptyTokens(),
+      decision: finish.decision ?? previous?.decision ?? {},
+      audit: finish.audit ?? previous?.audit ?? {},
       workflowId: previous?.workflowId ?? '',
       workflowName: previous?.workflowName ?? '',
       workflowStages: previous?.workflowStages ?? [],
-    })
+    }
+    this.processes.set(finish.taskId, record)
+    const runs = this.runs.get(finish.taskId) ?? []
+    const at = runs.findIndex(run => run.attempt === attempt)
+    if (at >= 0) runs[at] = toRun(record)
+    else runs.push(toRun(record))
+    this.runs.set(finish.taskId, runs)
   }
 
   async listProcesses(query: { limit: number; offset: number; search: string; outcome: string }): Promise<{
@@ -640,7 +723,7 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     const outcome = query.outcome.trim()
     const all = [...this.processes.values()]
       .filter(entry => (outcome === '' || entry.outcome === outcome)
-        && (needle === '' || `${entry.taskId}\n${entry.subject}\n${entry.kind}`.toLowerCase().includes(needle)))
+        && (needle === '' || `${entry.taskId}\n${entry.subject}\n${entry.kind}\n${entry.sessionId}`.toLowerCase().includes(needle)))
       .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
     return {
       total: all.length,
@@ -650,6 +733,10 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
 
   async getProcess(taskId: string): Promise<ProcessRecord | null> {
     return this.processes.get(taskId.trim()) ?? null
+  }
+
+  async listProcessRuns(taskId: string): Promise<ProcessRun[]> {
+    return [...(this.runs.get(taskId.trim()) ?? [])].sort((a, b) => a.attempt - b.attempt)
   }
 
   async ping(): Promise<boolean> {
@@ -669,8 +756,23 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     this.seen.clear()
     this.conclusions.clear()
     this.processes.clear()
+    this.runs.clear()
     this.settings = null
   }
+}
+
+function emptyTokens(): ProcessRecord['tokens'] {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false }
+}
+
+function toRun(record: ProcessRecord): ProcessRun {
+  const {
+    workflowId: _workflowId,
+    workflowName: _workflowName,
+    workflowStages: _workflowStages,
+    ...run
+  } = record
+  return run
 }
 
 /**

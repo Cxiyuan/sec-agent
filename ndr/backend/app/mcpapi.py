@@ -21,6 +21,7 @@ from typing import Any
 from app import system_license
 from app.analysis import (
     anchors as analysis_anchors,
+    audits as _audits,
     digests as _digests,
     domain_intel as analysis_domain_intel,
     facts as analysis_facts,
@@ -75,13 +76,17 @@ __all__ = [
     "Rule",
     "analysis_anchor_kinds",
     "analysis_anchors",
+    "analysis_audits_for_task",
     "analysis_digests",
     "analysis_domain_intel",
     "analysis_facts",
+    "analysis_get_audit",
     "analysis_get_trace",
+    "analysis_list_audits",
     "analysis_log_step",
     "analysis_params",
     "analysis_queue",
+    "analysis_record_audit",
     "analysis_search_traces",
     "analysis_status_values",
     "analysis_subjects",
@@ -379,22 +384,83 @@ def analysis_task_suppression_context(task_id: str) -> dict[str, Any] | None:
 
 
 def analysis_log_step(
-    *, task_id: str, tool: str = "", summary: str = "", detail: str = ""
+    *,
+    task_id: str,
+    tool: str = "",
+    summary: str = "",
+    detail: str = "",
+    session_id: str = "",
+    result_id: str = "",
+    attempt: int = 0,
 ) -> dict[str, Any]:
     """记一条过程观察（别人以后能检索到，省掉重复取数）。"""
-    return _traces.log_step(task_id=task_id, tool=tool, summary=summary, detail=detail)
+    return _traces.log_step(
+        task_id=task_id,
+        tool=tool,
+        summary=summary,
+        detail=detail,
+        session_id=session_id,
+        result_id=result_id,
+        attempt=attempt,
+    )
 
 
 def analysis_search_traces(
-    *, q: str = "", exclude_task: str = "", subject: str = "", limit: int = 20
+    *,
+    q: str = "",
+    exclude_task: str = "",
+    subject: str = "",
+    task_id: str = "",
+    tool: str = "",
+    session_id: str = "",
+    since: str = "",
+    until: str = "",
+    limit: int = 20,
 ) -> dict[str, Any]:
     """在别的任务的过程记录里检索（自动排除自己这条；结果是"未经核实的观察"）。"""
-    return _traces.search_traces(q=q, exclude_task=exclude_task, subject=subject, limit=limit)
+    return _traces.search_traces(
+        q=q,
+        exclude_task=exclude_task,
+        subject=subject,
+        task_id=task_id,
+        tool=tool,
+        session_id=session_id,
+        since=since,
+        until=until,
+        limit=limit,
+    )
 
 
 def analysis_get_trace(*, task_id: str, limit: int = 20) -> dict[str, Any]:
     """取某个任务的全部过程步骤。"""
     return _traces.get_trace(task_id=task_id, limit=limit)
+
+
+def analysis_record_audit(**payload: Any) -> dict[str, Any]:
+    """写入一次 attempt 的 DSH 运行审计（Agent 侧自动调用）。"""
+    return _audits.record_audit(**payload)
+
+
+def analysis_list_audits(
+    *, task_id: str = "", session_id: str = "", limit: int = 50, offset: int = 0,
+    with_trace: bool = False,
+) -> dict[str, Any]:
+    """按任务/会话读 DSH 运行审计。"""
+    return _audits.list_audits(
+        task_id=task_id,
+        session_id=session_id,
+        limit=limit,
+        offset=offset,
+        with_trace=with_trace,
+    )
+
+
+def analysis_get_audit(audit_id: str) -> dict[str, Any]:
+    return _audits.get_audit(audit_id)
+
+
+def analysis_audits_for_task(task_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    return _audits.audits_for_task(task_id, limit=limit)
 
 
 def analysis_digests(subject: str = "", subject_kind: str = "", limit: int = 20) -> list[dict[str, Any]]:

@@ -27,9 +27,24 @@ export const CORE_NDR_TOOLS: readonly string[] = [
   'entity_profile',
   'raw_evidence',
   'get_event_detail',
+  'search_traces',
   'complete_task',
   // 抑制是分析闭环的一部分，必须默认可见；否则误报结论无处交回。
   'submit_suppression',
+]
+
+/**
+ * 默认直接暴露的宿主工具（不归 NDR MCP 命名空间）。
+ *
+ * 会话检索不是“罕见能力”：回溯同项目历史分析是每次研判的常规步骤，
+ * 藏在 history 组里模型根本不会激活。分组只保留给真正的低频工具。
+ */
+export const CORE_AGENT_TOOLS: readonly string[] = [
+  'session_search',
+  'session_event_search',
+  'session_trace',
+  'session_event_trace',
+  'session_event_read',
 ]
 
 /** 分析会话永久禁用的工具：只能处理派给自己的那条任务。 */
@@ -37,13 +52,6 @@ export const ALWAYS_DENY_TOOLS: readonly string[] = ['mcp__ndr__claim_tasks']
 
 /** 非 NDR 的按需能力组；与 MCP 组一样可通过 enable_analysis_tools 激活。 */
 export const NON_NDR_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  history: [
-    'session_search',
-    'session_event_search',
-    'session_event_trace',
-    'session_event_read',
-    'session_trace',
-  ],
   schedule: [
     'schedule_create',
     'schedule_update',
@@ -75,6 +83,7 @@ export const NDR_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
     'task_stats',
     'defer_task',
     'log_step',
+    'record_audit',
     'list_rules',
     'get_trace',
   ],
@@ -103,7 +112,10 @@ function withPrefix(name: string): string {
  */
 export function planToolGroups(available: readonly string[]): PlannedToolGroups {
   const existing = new Set(available)
-  const core = CORE_NDR_TOOLS.map(withPrefix).filter(name => existing.has(name))
+  const core = [
+    ...CORE_NDR_TOOLS.map(withPrefix),
+    ...CORE_AGENT_TOOLS,
+  ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}
 
@@ -137,7 +149,6 @@ export const TOOL_GROUP_NAMES: readonly string[] = [
   'evidence',
   'task',
   'suppression',
-  'history',
   'schedule',
   'deliverable',
   'other',

@@ -1426,6 +1426,9 @@ export interface AnalysisResultItem {
   evidence_refs: string[];
   tools_used: number;
   duration_ms: number;
+  /** 产生结论的 DSH 会话与 attempt（旧数据为空/0）。 */
+  session_id?: string;
+  attempt?: number;
   /** 同类现象复用交回（0 token，没起会话）：成本统计不算它，界面标「复用」 */
   reused: boolean;
   /** 复用的原任务 ID（非复用为空串） */
@@ -1441,13 +1444,62 @@ export interface AnalysisResultBrief {
   summary: string;
   tools_used: number;
   duration_ms: number;
+  session_id?: string;
+  attempt?: number;
   claimed_by: string;
   created_at: string;
+}
+
+/** DSH 运行审计（`/api/analysis/audits` / 任务详情里的有界摘要）。 */
+export interface AnalysisAuditItem {
+  id: string;
+  task_id: string;
+  result_id: string;
+  session_id: string;
+  attempt: number;
+  source: string;
+  model: string;
+  started_at: string | null;
+  ended_at: string | null;
+  outcome: string;
+  verdict: string;
+  tools_used: number;
+  tool_errors: number;
+  turns: number;
+  turn_end_reason: string;
+  tokens: Record<string, number | boolean>;
+  error: string;
+  note: string;
+  decision: Record<string, unknown>;
+  created_at: string | null;
+  trust: string;
+  trace_available: boolean;
+  trace?: Record<string, unknown>;
+}
+
+/** 模型写的单条过程观察（`unverified`，只能当线索，不能当抑制证据）。 */
+export interface AnalysisTraceItem {
+  task_id: string;
+  step_index: number;
+  tool: string;
+  summary: string;
+  subject_kind: string;
+  subject: string;
+  session_id?: string;
+  result_id?: string;
+  attempt?: number;
+  source?: string;
+  created_at: string | null;
+  trust: string;
 }
 
 /** `GET /api/analysis/tasks/{id}`：不存在时是 **200 + `{error}`**，不是 404 */
 export interface AnalysisTaskDetail extends AnalysisTaskItem {
   results?: AnalysisResultBrief[];
+  /** DSH 运行审计摘要（工具/ token / turn 终态；完整 trace 走 /audits/{id}）。 */
+  audits?: AnalysisAuditItem[];
+  /** 模型主动写的过程轨迹（unverified）。 */
+  traces?: AnalysisTraceItem[];
   error?: string;
 }
 

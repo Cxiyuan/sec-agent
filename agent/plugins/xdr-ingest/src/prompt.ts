@@ -103,6 +103,9 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     'NDR 工具在模型侧带命名空间，形如 `mcp__ndr__search_events`（下文写裸名，指同一批工具）。',
     '先调 `task_facts(task_id=...)` 读客观事实（actor/victim、资产授权、DNS qtype/rcode/频次、'
     + '成功状态、证据/历史），再决定还要补什么；不要从 hint 自己猜方向或资产角色。',
+    '再用 `session_search` 在本项目历史分析会话里搜同一对象/域名/规则的既往取证，'
+    + '命中后用 `session_event_read` 看具体工具返回、用 `session_trace` 看血缘；'
+    + '这些工具只授权同项目（同 cwd）会话，搜不到就明说，不要假装查过。',
     '然后用 `prior_findings(subject=...)` 查看是否有相关历史结论，避免从头重复已知部分；',
     'DNS 隧道/长随机子域告警先调 `domain_intel(qname=完整查询名)` 查离线厂商情报；',
     '未知域名再调 `rdap_lookup(domain=父域或完整查询名)` 查注册人/归属。',
@@ -123,8 +126,13 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '- 首轮取证先小范围：`search_events` 用 `limit=20`，`search_hits` 指定 `source_kind` 且 `limit=20`，',
     '  `timeline` 用 20–50 条；证据不够再扩大，不要第一轮拉超大窗口。',
     '- 默认工具面只含常用取证工具。需要文件内容、规则、任务统计、覆盖率、轨迹等罕见能力时，',
-    '  先调用 `enable_analysis_tools`（group=network/identity/evidence/task/history/schedule/deliverable/all），下一轮即可调用；',
+    '  先调用 `enable_analysis_tools`（group=network/identity/evidence/task/schedule/deliverable/all），下一轮即可调用；',
     '  不要因为当前工具列表里没有某个 NDR 工具就放弃取证。',
+    '',
+    '## 运行审计（自动，不用你填）',
+    '本次会话的工具调用、参数/结果摘要、token、turn 终态和错误会由运行层写进审计记录，'
+    + '用于事后回溯与质量统计；它不是结论证据，你也不需要手写。'
+    + '如果某一步工具失败/被裁剪，解释清楚对结论的影响即可。',
     '',
     '## 复用与工具脚本（省预算的两件事）',
     '- 同类现象在有效期内由插件直接复用上次结论（命中时你根本不会收到这条任务，不用管）；',

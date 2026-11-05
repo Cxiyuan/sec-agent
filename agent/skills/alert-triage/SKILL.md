@@ -15,6 +15,11 @@ NDR 工具在模型侧的名字形如 `mcp__ndr__search_events`（带命名空�
 先调用 `task_facts(task_id)`，不要从 hint 猜方向、资产角色或 DNS 类型。事实包给出 actor/victim、
 资产 role/authorization、qtype/rcode/频次、成功状态、证据缺口和历史；结论必须引用其中的事实。
 
+再做一次**历史会话回溯**：`session_search` 搜同一对象/域名/规则在本项目的既往分析，
+命中后用 `session_event_read` 看具体工具返回、`session_trace` 看会话血缘。
+这些是 DSH 的运行事实（工具调用/返回/错误/token），不是模型叙事：可以用来复核
+“上次到底取到了什么”，但**不能替代本次证据引用**（`es:`/`ev:`）。搜不到就写“无同项目历史”。
+
 ## 一、先建立三个坐标
 
 1. **资产**：源和目的是谁（`asset_context` / `asset_map`）。主体以 `principal_asset`（监控网段内）为准，

@@ -31,7 +31,8 @@ test('planToolGroups 只返回实际存在的工具，并保留按需分组', ()
   assert.deepEqual(planned.groups.task, [`${prefix}task_stats`])
   assert.deepEqual(planned.groups.suppression, [`${prefix}list_suppressions`])
   assert.ok(planned.core.includes(`${prefix}submit_suppression`))
-  assert.deepEqual(planned.groups.history, ['session_search'])
+  // 会话检索是默认能力（每个任务都要回溯历史），不再藏在 history 组。
+  assert.ok(planned.core.includes('session_search'))
   assert.deepEqual(planned.groups.schedule, ['schedule_create'])
   assert.deepEqual(planned.groups.deliverable, ['present'])
   // 未分组的新能力进入 other；claim_tasks 永远不进入可激活组。
@@ -47,6 +48,6 @@ test('planToolGroups 对缺失工具不报错，也不产生未知名字', () =>
 
 test('工具组名覆盖加载工具的参数枚举', () => {
   assert.deepEqual(TOOL_GROUP_NAMES, [
-    'network', 'identity', 'evidence', 'task', 'suppression', 'history', 'schedule', 'deliverable', 'other', 'all',
+    'network', 'identity', 'evidence', 'task', 'suppression', 'schedule', 'deliverable', 'other', 'all',
   ])
 })

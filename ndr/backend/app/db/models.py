@@ -463,6 +463,10 @@ class AnalysisResult(Base):
     verdict_basis: Mapped[dict] = mapped_column(JSONB, default=dict)
     #: 本次判断使用的任务事实快照哈希；复用/合同校验用它比较事实是否变化。
     facts_hash: Mapped[str] = mapped_column(String(64), default="")
+    #: 产生这条结论的 DSH 会话（运行事实的关联键；复用/初筛为空）。
+    session_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    #: 同一任务可能重试多次；attempt 对应 agent 侧过程索引的 attempt。
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
     #: NDR 下发的 canonical 现象身份（便于按 actor/domain/身份学习，而不是 victim subject）。
     reuse_identity: Mapped[str] = mapped_column(String(200), default="", index=True)
     evidence_refs: Mapped[list] = mapped_column(JSONB, default=list)
@@ -572,6 +576,55 @@ class AnalysisTrace(Base):
     #: 可选细节（≤2000 字）：关键字段、命中条件、反例。刻意**不存原始报文**，
     #: 否则轨迹表会变成第二份 ES（又大又不一致），原始证据永远用 `es:` 引用去取。
     detail: Mapped[str] = mapped_column(Text, default="")
+    #: 关联的 DSH 会话 / 结论 / attempt（运行事实回溯用；模型手写的 log_step 可留空）
+    session_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    result_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    #: model = 模型主动写的过程观察；dsh = Agent 从 DSH 会话日志投影的运行事实。
+    source: Mapped[str] = mapped_column(String(16), default="model")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalysisAudit(Base):
+    """一次分析 attempt 的 **DSH 运行审计**。
+
+    与 `AnalysisTrace` 的区别是信任级别与内容：
+    - trace 是模型写的“未经核实观察”，只能当线索；
+    - 本表是运行层从 DSH 会话日志投影的事实（工具名/调用次数/token/turn 终态/错误），
+      用于回溯、质量统计和成本审计，**仍然不能当结论证据**。
+
+    没有 DSH 会话的路径（复用/抑制/初筛）也写一行，`session_id=''`，
+    `decision` 说明为什么没起会话——这样“跳过”不再是无审计的黑洞。
+    """
+
+    __tablename__ = "analysis_audits"
+    __table_args__ = (
+        Index("ix_analysis_audits_task", "task_id", "created_at"),
+        Index("ix_analysis_audits_session", "session_id"),
+        Index("ix_analysis_audits_result", "result_id"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    result_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    session_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="agent")
+    model: Mapped[str] = mapped_column(String(160), default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(24), default="")
+    verdict: Mapped[str] = mapped_column(String(24), default="")
+    tools_used: Mapped[int] = mapped_column(Integer, default=0)
+    tool_errors: Mapped[int] = mapped_column(Integer, default=0)
+    turns: Mapped[int] = mapped_column(Integer, default=0)
+    turn_end_reason: Mapped[str] = mapped_column(String(32), default="")
+    tokens: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    decision: Mapped[dict] = mapped_column(JSONB, default=dict)
+    #: 有界、已脱敏的 DSH 投影（tool_calls/turn_ends/errors/tokens）。
+    trace: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

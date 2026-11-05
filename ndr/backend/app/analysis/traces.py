@@ -33,6 +33,9 @@ def log_step(
     tool: str = "",
     summary: str = "",
     detail: str = "",
+    session_id: str = "",
+    result_id: str = "",
+    attempt: int = 0,
 ) -> dict[str, Any]:
     """记一条过程观察。任务必须存在且在租约内，否则拒绝（避免往空气里写）。"""
     from datetime import UTC, datetime
@@ -79,6 +82,10 @@ def log_step(
             tool=str(tool or "")[:48],
             summary=text,
             detail=detail_text,
+            session_id=str(session_id or "")[:128],
+            result_id=str(result_id or "")[:64],
+            attempt=max(0, int(attempt or 0)),
+            source="model",
         )
         db.add(row)
         task.updated_at = datetime.now(UTC)
@@ -91,7 +98,13 @@ def search_traces(
     q: str = "",
     exclude_task: str = "",
     subject: str = "",
+    task_id: str = "",
+    tool: str = "",
+    session_id: str = "",
+    since: str = "",
+    until: str = "",
     limit: int = 20,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """按关键字在本会话之外的过程记录里检索（自动排除自己这条任务）。
 
@@ -100,7 +113,8 @@ def search_traces(
     """
     from app.db.base import SessionLocal
 
-    cap = max(1, min(int(limit or 20), 50))
+    cap = max(1, min(int(limit or 20), 200))
+    start = max(0, int(offset or 0))
     conds: list[Any] = []
     keyword = str(q or "").strip()
     if keyword:
@@ -109,6 +123,30 @@ def search_traces(
     subject_text = str(subject or "").strip()
     if subject_text:
         conds.append(AnalysisTrace.subject == subject_text[:128])
+    task_text = str(task_id or "").strip()
+    if task_text:
+        conds.append(AnalysisTrace.task_id == task_text[:64])
+    tool_text = str(tool or "").strip()
+    if tool_text:
+        conds.append(AnalysisTrace.tool == tool_text[:48])
+    session_text = str(session_id or "").strip()
+    if session_text:
+        conds.append(AnalysisTrace.session_id == session_text[:128])
+    for raw, op in ((since, ">="), (until, "<=")):
+        text = str(raw or "").strip()
+        if text == "":
+            continue
+        try:
+            from datetime import UTC, datetime
+
+            value = datetime.fromisoformat(text)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        conds.append(
+            AnalysisTrace.created_at >= value if op == ">=" else AnalysisTrace.created_at <= value
+        )
     exclude = str(exclude_task or "").strip()
     if exclude:
         conds.append(AnalysisTrace.task_id != exclude)
@@ -119,6 +157,7 @@ def search_traces(
                 .where(*conds)
                 .order_by(AnalysisTrace.created_at.desc())
                 .limit(cap)
+                .offset(start)
             ).all()
             total = int(
                 db.scalar(select(func.count()).select_from(AnalysisTrace).where(*conds)) or 0
@@ -182,6 +221,10 @@ def _trace_dict(row: AnalysisTrace, *, with_detail: bool = False) -> dict[str, A
         "summary": str(row.summary or ""),
         "subject_kind": str(row.subject_kind or ""),
         "subject": str(row.subject or ""),
+        "session_id": str(row.session_id or ""),
+        "result_id": str(row.result_id or ""),
+        "attempt": int(row.attempt or 0),
+        "source": str(row.source or "model"),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "trust": "unverified",
     }

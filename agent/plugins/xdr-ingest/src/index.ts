@@ -67,6 +67,8 @@ export type { AnalysisScript, ScriptInput, ScriptQuery, ScriptStore, DataStore, 
 export { ProjectManager, ProjectRuntime, SessionProjects } from './projects.ts'
 export { readSessionTimeline } from './session-timeline.ts'
 export type { SessionTimeline, TimelineEvent } from './session-timeline.ts'
+export { readSessionAudit, parseSessionAudit, redactText } from './session-audit.ts'
+export type { SessionAudit, AuditToolCall, AuditTurnEnd } from './session-audit.ts'
 export { taskResultKey, reuseDecision, REUSABLE_VERDICTS } from './task-results.ts'
 export type { TaskResultRecord, TaskResultStore } from './task-results.ts'
 export type { ConclusionPage, ConclusionQuery, ConclusionRecord } from './conclusions.ts'
@@ -570,7 +572,13 @@ export function apply(ctx: Context, config: Config): void {
     getConclusion: (id: string, projectId?: string) => storeFor(projectId).getConclusion(id),
     listProcesses: (query: { limit: number, offset: number, search: string, outcome: string, project?: string }) =>
       storeFor(query.project).listProcesses(query),
-    getProcess: (taskId: string, projectId?: string) => storeFor(projectId).getProcess(taskId),
+    getProcess: async (taskId: string, projectId?: string) => {
+      const store = storeFor(projectId)
+      const entry = await store.getProcess(taskId)
+      if (entry === null) return null
+      const runs = await store.listProcessRuns(taskId)
+      return { ...entry, runs }
+    },
     listScripts: (query: { search: string, limit: number, offset: number, project?: string }) =>
       storeFor(query.project).list(query),
     getScript: (nameOrId: string, projectId?: string) => storeFor(projectId).getAny(nameOrId),

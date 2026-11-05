@@ -24,6 +24,7 @@ for candidate in (ROOT / "ndr" / "backend", ROOT, Path("/app")):
 from app.db.base import SessionLocal
 from app.db.models import (
     AnalysisAnchor,
+    AnalysisAudit,
     AnalysisDigest,
     AnalysisResult,
     AnalysisSuppression,
@@ -92,6 +93,7 @@ def _inventory(db: Any, task_ids: set[str]) -> dict[str, Any]:
         ).all()
     )
     traces = list(db.scalars(select(AnalysisTrace).where(AnalysisTrace.task_id.in_(task_ids))).all())
+    audits = list(db.scalars(select(AnalysisAudit).where(AnalysisAudit.task_id.in_(task_ids))).all())
     subjects = {(row.subject_kind, row.subject) for row in results}
     digests = []
     for kind, subject in subjects:
@@ -111,6 +113,7 @@ def _inventory(db: Any, task_ids: set[str]) -> dict[str, Any]:
         "conclusions": conclusions,
         "suppressions": suppressions,
         "traces": traces,
+        "audits": audits,
         "digests": digests,
     }
 
@@ -162,6 +165,8 @@ def _apply(db: Any, inventory: dict[str, Any]) -> None:
         db.execute(delete(AnalysisDigest).where(AnalysisDigest.id.in_([row.id for row in inventory["digests"]])))
     if inventory["traces"]:
         db.execute(delete(AnalysisTrace).where(AnalysisTrace.task_id.in_(task_ids)))
+    if inventory["audits"]:
+        db.execute(delete(AnalysisAudit).where(AnalysisAudit.task_id.in_(task_ids)))
     if inventory["suppressions"]:
         db.execute(
             delete(AnalysisSuppression).where(

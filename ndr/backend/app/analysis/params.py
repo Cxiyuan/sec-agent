@@ -112,6 +112,9 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.trace_retention_days", "过程轨迹保留期", "int", 60,
          low=1, high=365, unit="天",
          note="轨迹是派生线索，过期即清理（结论与原始数据不受影响）"),
+    Knob("analysis.audit_retention_days", "运行审计保留期", "int", 90,
+         low=7, high=3650, unit="天",
+         note="DSH 运行事实（工具/token/turn 终态）的保留期；原始会话日志由 Agent 侧单独管理"),
 )
 
 _BY_KEY: dict[str, Knob] = {k.key: k for k in KNOBS}
@@ -366,3 +369,7 @@ def retest_max_per_round() -> int:
 
 def trace_retention_days() -> int:
     return int(_num(_BY_KEY["analysis.trace_retention_days"]))
+
+
+def audit_retention_days() -> int:
+    return int(_num(_BY_KEY["analysis.audit_retention_days"]))

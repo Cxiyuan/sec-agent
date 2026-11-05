@@ -1511,6 +1511,9 @@ def task_detail(task_id: str) -> dict[str, Any]:
         )
         # B2：复用要回放「上次这条结论挂了哪些资产」——锚点按 result_id 查回
         anchors_of = anchors_mod.assets_of_results([str(r.id) for r in results])
+        # 顶层 result_id 给 Agent 运行层写审计用（不用再猜 latest 是哪条）
+        if results:
+            out["result_id"] = str(results[0].id)
         out["results"] = [
             {
                 "verdict": r.verdict,
@@ -1525,6 +1528,9 @@ def task_detail(task_id: str) -> dict[str, Any]:
                 "findings": dict(r.findings or {}),
                 "verdict_basis": dict(r.verdict_basis or {}),
                 "facts_hash": str(r.facts_hash or ""),
+                # 运行关联：让 task_state 的回执能直接指向 DSH 会话/attempt（审计用）
+                "session_id": str(r.session_id or ""),
+                "attempt": int(r.attempt or 0),
                 "evidence_refs": list(r.evidence_refs or []),
                 "anchors": anchors_of.get(str(r.id), []),
                 "tools_used": r.tools_used,
@@ -1534,6 +1540,19 @@ def task_detail(task_id: str) -> dict[str, Any]:
             }
             for r in results
         ]
+        # DSH 运行审计（有界摘要；完整 tool_calls 走 /api/analysis/audits/{id}）
+        try:
+            from app.analysis import audits as audits_mod
+
+            out["audits"] = audits_mod.audits_for_task(str(row.id), limit=20)
+        except Exception:  # noqa: BLE001 — 审计读失败不能影响任务详情
+            out["audits"] = []
+        try:
+            from app.analysis import traces as traces_mod
+
+            out["traces"] = traces_mod.get_trace(task_id=str(row.id), limit=20).get("items", [])
+        except Exception:  # noqa: BLE001 — 轨迹读失败不能影响任务详情
+            out["traces"] = []
         return out
 
 
@@ -1829,6 +1848,8 @@ def _result_dict(row: AnalysisResult, *, with_detail: bool = False) -> dict[str,
         "terminal_reason": str(row.terminal_reason or ""),
         "verdict_basis": dict(row.verdict_basis or {}),
         "facts_hash": str(row.facts_hash or ""),
+        "session_id": str(row.session_id or ""),
+        "attempt": int(row.attempt or 0),
         "claimed_by": row.claimed_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

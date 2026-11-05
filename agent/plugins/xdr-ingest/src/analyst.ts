@@ -15,6 +15,7 @@ import type { LightTriagePort, TriageResult } from './light-triage.ts'
 import { buildAnalysisPrompt } from './prompt.ts'
 import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { registerRdapTool } from './rdap.ts'
+import type { SessionAudit } from './session-audit.ts'
 import { reuseDecision, taskIdentity, taskResultKey } from './task-results.ts'
 import type { SuppressedTask, TaskResultRecord, TaskResultStore } from './task-results.ts'
 import type { ConclusionStore, ProcessStore, TaskSeenStore } from './state-store.ts'
@@ -29,6 +30,9 @@ export interface TaskResultView {
   readonly findings?: unknown
   readonly verdict_basis?: Record<string, unknown>
   readonly facts_hash?: string
+  /** NDR 侧运行关联（旧 NDR 不返回）。 */
+  readonly session_id?: string
+  readonly attempt?: number
   readonly evidence_refs?: readonly string[]
   /** B2：结论挂的资产锚点（复用回放用；旧 NDR 不返回）。 */
   readonly anchors?: readonly { readonly kind?: string; readonly value?: string }[]
@@ -78,6 +82,11 @@ export interface NdrTaskPort extends NdrPort {
   taskState(taskId: string): Promise<TaskStateReply>
   /** 复用命中时直接交回；正常分析由模型自己调 `complete_task`。 */
   completeTask(taskId: string, payload: ReusePayload): Promise<CompleteReply>
+  /**
+   * 把本次 attempt 的 DSH 运行事实写回 NDR（与模型叙事分开）。
+   * 失败只告警：审计不能反过来让已经交回的任务失败。
+   */
+  recordAudit?(taskId: string, payload: Record<string, unknown>): Promise<unknown>
   deferTask(taskId: string, reason: string): Promise<unknown>
   /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
   /** null = 本次同步失败（不要据此清空本地抑制记忆）。 */
@@ -152,6 +161,8 @@ export interface AnalystOptions {
   readonly probeIntervalMs?: number
   /** 会话进度探针（读会话日志：工具调用数 + 最后事件时间）。 */
   readonly probeSession?: (sessionId: string) => Promise<{ tools: number, lastEventAt: number } | null>
+  /** 会话结束后的 DSH 审计投影（工具调用/tokens/turn 终态/错误）。 */
+  readonly sessionAudit?: (sessionId: string) => Promise<SessionAudit | null>
   /**
    * 首轮会话结束但任务未交回时，是否重发一次任务提示（默认 true）。
    * 关掉 = 保持旧行为（直接回查/延后），测试与严格部署可用。
@@ -170,6 +181,10 @@ export interface AnalystOutcome {
   readonly reused?: boolean
   /** true = 没有起会话，由轻量初筛（低阶模型）单轮判定关单。 */
   readonly triaged?: boolean
+  /** 没起会话时，为什么做了这个决定（复用来源/抑制名/初筛模型）。 */
+  readonly decision?: Record<string, unknown>
+  /** 本次 attempt（正常会话从 1 起；没起会话为 0）。 */
+  readonly attempt?: number
 }
 
 /** 轻量初筛一次尝试的结果：要么关单成功，要么带回抽检预判（升级付费时留痕）。 */
@@ -233,14 +248,52 @@ export class Analyst {
         `[xdr-ingest] 任务 ${task.id} 命中同类现象结论复用（${task.kind}/${task.subject}），`
         + '未起分析会话',
       )
-      await this.finishProcess(task, 'reused', startedAt, { note: '同类现象结论复用（未起会话）' })
+      const decision = { action: 'reuse', ...(reused.decision ?? {}) }
+      await this.finishProcess(task, 'reused', startedAt, {
+        note: '同类现象结论复用（未起会话）',
+        verdict: String(reused.decision?.['verdict'] ?? ''),
+        sessionId: '',
+        model: 'reuse',
+        toolsUsed: 0,
+        toolErrors: 0,
+        tokens: tokenUsageOf(null),
+        decision,
+      })
+      await this.sendAudit(task, {
+        sessionId: '',
+        attempt: 0,
+        outcome: 'reused',
+        verdict: String(reused.decision?.['verdict'] ?? ''),
+        decision,
+        startedAt,
+        model: 'reuse',
+      })
       return reused
     }
 
     // 抑制记忆：这类现象已经被精准抑制过 → 不起会话、不取数，直接交回。
     const suppressed = await this.trySuppressed(task, startedAt)
     if (suppressed !== null) {
-      await this.finishProcess(task, 'suppressed', startedAt, { note: '已被精准抑制（未起会话）' })
+      const decision = { action: 'suppressed', ...(suppressed.decision ?? {}) }
+      await this.finishProcess(task, 'suppressed', startedAt, {
+        note: '已被精准抑制（未起会话）',
+        verdict: 'false_positive',
+        sessionId: '',
+        model: 'suppression-memory',
+        toolsUsed: 0,
+        toolErrors: 0,
+        tokens: tokenUsageOf(null),
+        decision,
+      })
+      await this.sendAudit(task, {
+        sessionId: '',
+        attempt: 0,
+        outcome: 'suppressed',
+        verdict: 'false_positive',
+        decision,
+        startedAt,
+        model: 'suppression-memory',
+      })
       return suppressed
     }
 
@@ -250,9 +303,29 @@ export class Analyst {
     const triage = await this.tryLightTriage(task)
     if (triage.closed !== undefined) {
       const closed = triage.closed
+      const decision = {
+        action: 'light_triage',
+        model: closed.model,
+        verdict: closed.verdict,
+        confidence: closed.confidence,
+      }
       await this.finishProcess(task, 'triaged', startedAt, {
         verdict: closed.verdict,
         note: `轻量初筛关单：${closed.verdict}（${closed.model} 置信度 ${closed.confidence}）`,
+        model: `light:${closed.model}`,
+        sessionId: '',
+        toolsUsed: 0,
+        toolErrors: 0,
+        tokens: tokenUsageOf(null),
+        decision,
+      })
+      await this.sendAudit(task, {
+        sessionId: '',
+        attempt: 0,
+        outcome: 'triaged',
+        verdict: closed.verdict,
+        decision,
+        startedAt,
         model: `light:${closed.model}`,
       })
       return {
@@ -284,7 +357,7 @@ export class Analyst {
     const workflow = typeof this.options.workflow === 'function'
       ? this.options.workflow()
       : this.options.workflow ?? null
-    await this.options.process?.startProcess({
+    const attempt = await this.options.process?.startProcess({
       taskId: task.id,
       sessionId,
       kind: task.kind,
@@ -294,10 +367,14 @@ export class Analyst {
       workflowId: workflow?.workflowId ?? '',
       workflowName: workflow?.name ?? '',
       workflowStages: workflow?.stages ?? [],
-    })
+    }) ?? 0
     this.options.onSession?.(sessionId, 'start')
+    // 项目级 cwd：DSH 的 session_search/session_trace 只允许同 cwd 会话互查。
+    // 不传时 header.cwd 为空，所有历史工具都只能看到当前会话本身。
+    const project = (this.options.projectId ?? '').trim().replace(/[^A-Za-z0-9._-]/gu, '') || 'default'
     const handle = await this.options.agents.create({
       sessionId,
+      meta: { cwd: `/xdr/${project}` },
       agentOptions: {
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
@@ -334,7 +411,7 @@ export class Analyst {
               + 'group=network（DNS/TLS/代理/观测/资产地图/基线）、'
               + 'identity（server_info/覆盖率）、evidence（文件内容）、'
               + 'task（任务状态/统计/延迟/规则/轨迹）、suppression（已有抑制清单）、'
-              + 'history（历史会话检索）、schedule（定时任务）、deliverable（交付物）、'
+              + 'schedule（定时任务）、deliverable（交付物）、'
               + 'other（未分组的新工具）、'
               + 'all（全部）。激活后下一轮工具列表生效；不确定时用 all。'
               + '不要因为当前列表看不到某个 NDR 工具就放弃取证。',
@@ -483,6 +560,7 @@ export class Analyst {
     let timedOut = false
     let nudged = false
     let error: string | undefined
+    let sessionAudit: SessionAudit | null = null
     try {
       const followup = handle.agent.followup({
         content: [{ type: 'text', text: buildAnalysisPrompt(task, workflow) }],
@@ -538,6 +616,20 @@ export class Analyst {
       await Promise.resolve(handle.dispose()).catch(() => undefined)
       this.options.onSession?.(sessionId, 'end')
     }
+    if (this.options.sessionAudit !== undefined) {
+      try {
+        sessionAudit = await this.options.sessionAudit(sessionId)
+      } catch (exc) {
+        console.warn(
+          `[xdr-ingest] 会话审计读取失败（${sessionId}）：`
+          + `${exc instanceof Error ? exc.message : String(exc)}`.slice(0, 240),
+        )
+      }
+    }
+    // 两个来源都保留：审计解析成功但投影为空时，探针看到的工具数仍然是事实；
+    // 取较大值避免把真实调用记成 0（这是旧版 tools_used=0 的直接原因）。
+    const auditTools = Math.max(sessionAudit?.toolCount ?? 0, watch.tools)
+    const auditErrors = Math.max(sessionAudit?.toolErrors ?? 0, 0)
 
     // 会话结束不等于任务完成：必须回查 NDR 侧状态
     let reply = await this.readTask(task.id)
@@ -554,7 +646,7 @@ export class Analyst {
         ? 'timeout'
         : 'aborted'
       const summary = watch.budgetExceeded
-        ? `分析在工具调用 ${watch.tools} 次后达到预算上限，会话被取消；现有证据不足以给出确定判定。`
+        ? `分析在工具调用 ${auditTools} 次后达到预算上限，会话被取消；现有证据不足以给出确定判定。`
         : timedOut
         ? '分析超时，会话被取消；现有证据不足以给出确定判定。'
         : watch.stallCancelled
@@ -567,10 +659,11 @@ export class Analyst {
         findings: {
           forced_completion: true,
           reason: terminalReason,
-          tools_used: watch.tools,
+          tools_used: auditTools,
+          audit: sessionAudit === null ? undefined : auditPayload(sessionAudit),
         },
         terminal_reason: terminalReason,
-        tools_used: watch.tools,
+        tools_used: auditTools,
         duration_ms: Date.now() - startedAt,
       }
       try {
@@ -593,7 +686,7 @@ export class Analyst {
               summary,
               findings: forcedPayload.findings,
               evidence_refs: [],
-              tools_used: watch.tools,
+              tools_used: auditTools,
               duration_ms: forcedPayload.duration_ms,
             }],
           }
@@ -603,14 +696,14 @@ export class Analyst {
             summary,
             findings: forcedPayload.findings,
             evidenceRefs: [],
-            toolsUsed: watch.tools,
+            toolsUsed: auditTools,
             durationMs: forcedPayload.duration_ms,
             terminalReason,
             reused: false,
             reusedFrom: '',
           })
           console.warn(
-            `[xdr-ingest] 任务 ${task.id} 已由插件代交 inconclusive（${terminalReason}，工具 ${watch.tools} 次）`,
+            `[xdr-ingest] 任务 ${task.id} 已由插件代交 inconclusive（${terminalReason}，工具 ${auditTools} 次）`,
           )
         } else {
           console.warn(
@@ -628,7 +721,7 @@ export class Analyst {
     if (completed) {
       // 结论入库供下次复用；失败只告警，不要让一条已交回的任务看起来失败
       await this.remember(task, reply)
-      await this.archiveFromReply(task, reply, audit)
+      await this.archiveFromReply(task, reply, audit, auditTools)
       if (audit !== undefined) {
         // 抽检比对（校准初筛用）：两条判定摆在一起，控制台分析记录里也能看到 light_audit
         console.log(
@@ -656,22 +749,50 @@ export class Analyst {
         error = error ?? (exc instanceof Error ? exc.message : String(exc))
       }
     }
-    await this.finishProcess(
-      task,
-      completed ? 'done' : error !== undefined ? 'failed' : 'deferred',
+    const outcome = completed ? 'done' : error !== undefined ? 'failed' : 'deferred'
+    const verdict = String(reply.results?.[0]?.verdict ?? '')
+    const note = [
+      auditNote,
+      completed
+        ? (forced ? '插件代交 inconclusive（预算/超时/停滞）' : '')
+        : watch.budgetExceeded
+          ? '工具调用超过预算，已取消并延后'
+          : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
+    ].filter(text => text !== '').join('；')
+    const decision = forced
+      ? {
+          action: 'forced_completion',
+          reason: watch.budgetExceeded ? 'budget_exhausted' : timedOut ? 'timeout' : 'stalled',
+        }
+      : {}
+    await this.finishProcess(task, outcome, startedAt, {
+      verdict,
+      note,
+      toolsUsed: auditTools,
+      toolErrors: auditErrors,
+      attempt,
+      sessionId,
+      tokens: tokenUsageOf(sessionAudit),
+      error: error ?? (timedOut ? 'timeout' : watch.stallCancelled ? 'stalled' : ''),
+      turnEndReason: sessionAudit?.turnEnds.at(-1)?.reason ?? '',
+      decision,
+      audit: sessionAudit === null ? {} : auditPayload(sessionAudit),
+    })
+    await this.sendAudit(task, {
+      sessionId,
+      attempt,
+      resultId: String(reply.result_id ?? ''),
+      outcome,
+      verdict,
+      note,
+      error: error ?? '',
+      decision,
       startedAt,
-      {
-        verdict: String(reply.results?.[0]?.verdict ?? ''),
-        note: [
-          auditNote,
-          completed
-            ? (forced ? '插件代交 inconclusive（预算/超时/停滞）' : '')
-            : watch.budgetExceeded
-              ? '工具调用超过预算，已取消并延后'
-              : (error ?? (timedOut ? 'timeout' : 'no_conclusion')),
-        ].filter(text => text !== '').join('；'),
-      },
-    )
+      sessionAudit,
+      toolsUsed: auditTools,
+      toolErrors: auditErrors,
+      model: [provider, model].filter(value => (value ?? '') !== '').join('/'),
+    })
     // 主模型连续失败 → 下一轮换备用；成功一次就切回主模型。
     // 插件代交（forced）不算"模型自己收尾成功"，预算/超时同样触发换备用。
     if (completed && !forced) {
@@ -688,6 +809,7 @@ export class Analyst {
       state,
       deferred,
       durationMs: Date.now() - startedAt,
+      attempt,
       ...(error ? { error } : {}),
     }
   }
@@ -785,6 +907,13 @@ export class Analyst {
         deferred: false,
         durationMs: Date.now() - startedAt,
         reused: true,
+        decision: {
+          verdict: record.verdict,
+          source_task_id: record.taskId,
+          reuse_key: key,
+          reuse_at: record.analyzedAt,
+          occurrences: record.occurrences + 1,
+        },
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -860,6 +989,11 @@ export class Analyst {
         deferred: false,
         durationMs: Date.now() - startedAt,
         reused: true,
+        decision: {
+          suppressed_by: hit.suppressedBy,
+          source_task_id: hit.taskId,
+          verdict: 'false_positive',
+        },
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -958,12 +1092,80 @@ export class Analyst {
     }
   }
 
+  /**
+   * 把 DSH 审计写回 NDR。审计不是结论、不是抑制证据；写失败只告警。
+   * 没起会话的复用/抑制/初筛也写一条（session_id 为空、decision 说明原因），
+   * 否则控制台只能看到“跳过了”，看不见“为什么跳过”。
+   */
+  private async sendAudit(
+    task: ClaimedTask,
+    data: {
+      readonly sessionId: string
+      readonly attempt: number
+      readonly resultId?: string
+      readonly outcome: string
+      readonly verdict: string
+      readonly note?: string
+      readonly error?: string
+      readonly decision?: Record<string, unknown>
+      readonly startedAt: number
+      readonly sessionAudit?: SessionAudit | null
+      readonly toolsUsed?: number
+      readonly toolErrors?: number
+      readonly model?: string
+    },
+  ): Promise<void> {
+    if (this.options.ndr.recordAudit === undefined) return
+    try {
+      const audit = data.sessionAudit ?? null
+      await this.options.ndr.recordAudit(task.id, {
+        task_id: task.id,
+        session_id: data.sessionId,
+        attempt: Math.max(0, data.attempt),
+        ...(data.resultId !== undefined && data.resultId !== '' ? { result_id: data.resultId } : {}),
+        outcome: data.outcome,
+        verdict: data.verdict,
+        source: audit === null ? 'agent' : 'dsh',
+        model: audit?.model || data.model || '',
+        started_at: audit?.startedAt ?? new Date(data.startedAt).toISOString(),
+        ended_at: audit?.endedAt ?? new Date().toISOString(),
+        tools_used: data.toolsUsed ?? audit?.toolCount ?? 0,
+        tool_errors: data.toolErrors ?? audit?.toolErrors ?? 0,
+        turns: audit?.turns ?? 0,
+        turn_end_reason: audit?.turnEnds.at(-1)?.reason ?? '',
+        tokens: tokenUsageOf(audit),
+        error: data.error ?? '',
+        note: data.note ?? '',
+        decision: data.decision ?? {},
+        trace: audit === null ? {} : auditPayload(audit),
+      })
+    } catch (error) {
+      console.warn(
+        `[xdr-ingest] 审计写回失败（任务 ${task.id}）：`
+        + `${error instanceof Error ? error.message : String(error)}`.slice(0, 240),
+      )
+    }
+  }
+
   /** 过程索引收尾（控制台「分析过程」页的数据来源）。 */
   private async finishProcess(
     task: ClaimedTask,
     outcome: 'running' | 'done' | 'reused' | 'suppressed' | 'triaged' | 'deferred' | 'failed',
     startedAt: number,
-    extra: { toolsUsed?: number; verdict?: string; note?: string; model?: string } = {},
+    extra: {
+      toolsUsed?: number
+      toolErrors?: number
+      verdict?: string
+      note?: string
+      model?: string
+      attempt?: number
+      sessionId?: string
+      tokens?: ReturnType<typeof tokenUsageOf>
+      error?: string
+      turnEndReason?: string
+      decision?: Record<string, unknown>
+      audit?: Record<string, unknown>
+    } = {},
   ): Promise<void> {
     const store = this.options.process
     if (store === undefined) return
@@ -973,10 +1175,20 @@ export class Analyst {
         endedAt: new Date().toISOString(),
         outcome,
         durationMs: Date.now() - startedAt,
+        kind: task.kind,
+        subject: task.subject,
         ...(extra.toolsUsed === undefined ? {} : { toolsUsed: extra.toolsUsed }),
+        ...(extra.toolErrors === undefined ? {} : { toolErrors: extra.toolErrors }),
         ...(extra.verdict === undefined ? {} : { verdict: extra.verdict }),
         ...(extra.note === undefined ? {} : { note: extra.note }),
         ...(extra.model === undefined ? {} : { model: extra.model }),
+        ...(extra.attempt === undefined ? {} : { attempt: extra.attempt }),
+        ...(extra.sessionId === undefined ? {} : { sessionId: extra.sessionId }),
+        ...(extra.tokens === undefined ? {} : { tokens: extra.tokens }),
+        ...(extra.error === undefined ? {} : { error: extra.error }),
+        ...(extra.turnEndReason === undefined ? {} : { turnEndReason: extra.turnEndReason }),
+        ...(extra.decision === undefined ? {} : { decision: extra.decision }),
+        ...(extra.audit === undefined ? {} : { audit: extra.audit }),
       })
     } catch (error) {
       console.warn(
@@ -1046,6 +1258,7 @@ export class Analyst {
     task: ClaimedTask,
     reply: TaskStateReply,
     audit?: { readonly verdict: string, readonly confidence: number, readonly model: string },
+    toolsUsedOverride?: number,
   ): Promise<void> {
     const latest = reply.results?.[0]
     if (latest === undefined) return
@@ -1062,7 +1275,8 @@ export class Analyst {
         ? (latest.findings ?? {})
         : { ...base, light_audit: { verdict: audit.verdict, confidence: audit.confidence, model: audit.model } },
       evidenceRefs: Array.isArray(latest.evidence_refs) ? latest.evidence_refs : [],
-      toolsUsed: Number(latest.tools_used ?? 0),
+      // 模型经常把 tools_used 填 0；运行层审计有真实工具数时以它为准。
+      toolsUsed: Math.max(Number(latest.tools_used ?? 0), toolsUsedOverride ?? 0),
       durationMs: Number(latest.duration_ms ?? 0),
       terminalReason: String(latest.terminal_reason ?? ''),
       reused: false,
@@ -1204,6 +1418,38 @@ export class Analyst {
 function stateOf(reply: TaskStateReply): string {
   if (typeof reply.error === 'string' && reply.error !== '') return ''
   return String(reply.task_state ?? reply.state ?? '')
+}
+
+function tokenUsageOf(audit: SessionAudit | null): {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  reported: boolean
+} {
+  return audit?.tokens ?? {
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false,
+  }
+}
+
+/** NDR 审计表只收有界投影：工具调用已经按 callId 配对并脱敏，这里再截断一次。 */
+function auditPayload(audit: SessionAudit): Record<string, unknown> {
+  return {
+    ok: audit.ok,
+    started_at: audit.startedAt,
+    ended_at: audit.endedAt,
+    turns: audit.turns,
+    steps: audit.steps,
+    tool_count: audit.toolCount,
+    tool_errors: audit.toolErrors,
+    tokens: audit.tokens,
+    errors: audit.errors,
+    turn_ends: audit.turnEnds,
+    redacted: audit.redacted,
+    truncated: audit.truncated,
+    tool_calls: audit.toolCalls.slice(0, 200),
+  }
 }
 
 /** 复用交回的摘要：开头注明来源，审计时一眼能看出这不是本次取证的结论。 */

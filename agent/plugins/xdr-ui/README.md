@@ -14,6 +14,7 @@ agent 侧的**运营界面插件**：这不是聊天窗口，是"后台自助分
 |---|---|---|
 | 运行总览 | 分析循环开关、在跑/并发上限、门铃与领取/启动/放弃/失败计数、连续错误与最近错误、结论总数与结论数据源、同类结论复用计数、最近 5 条结论 | `xdrIngest.status()/conclusionStats()/listConclusions()` |
 | 分析记录 | **智能体交回的结论**（NDR 的 `analysis_results`，同库只读）：对象、类型、判定、置信度、结论摘要、工具次数/耗时、时间；分页 + 搜索 + 详情（判定、终态原因、成本、findings 原文） | `xdrIngest.listConclusions()/getConclusion()` |
+| 运行审计 | 每次 attempt 的 DSH 运行事实：会话、工具调用/报错、token、turn 终态、复用/抑制/初筛决定；任务详情里与时间线并排展示，重试保留历史 attempt | `xdrIngest.getProcess()`（含 `runs`/`audit`）、`processEvents()` |
 | 配置 | 运行参数（轮询间隔 / 本机并发 / 单次领取条数）热更新并持久化；连接与凭据状态（NDR MCP 地址与令牌是否配置、门铃令牌、冷库类型、登录账号与密码来源、会话时长）；NDR 控制台与原始会话界面入口 | `xdrIngest.settings()/updateSettings()` + 部署环境缝 |
 | 系统 | 默认模型（provider / model / reasoningEffort）、DeepSeek 官方通道的接口地址与 Key；**自定义服务商**（任意 OpenAI/Anthropic 兼容网关：Kimi/GLM/MiniMax/自建反代，填 route + 协议 + BaseURL + 模型 + Key，保存即设为默认）；插件清单（只读）；原生设置入口 | 宿主机服务 `ctx.settings` / `ctx.credentials` / `ctx.loader` |
 

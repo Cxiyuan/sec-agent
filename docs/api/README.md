@@ -1,6 +1,6 @@
 # 深瞳 NDR · REST API 文档（供前端团队对接）
 
-> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **132 个接口**）。
+> 本文件由 `python3 scripts/gen_api_doc.py` **从 OpenAPI 自动生成**，与代码一致（当前共 **136 个接口**）。
 > 后端只提供 REST 接口；页面结构与样式由前端团队负责。
 > 智能体控制台（xdr-ui）自己的接口另见 [`agent-console.md`](./agent-console.md)（项目组织 / 分析过程 / 脚本 / 参数）。
 
@@ -180,6 +180,8 @@
 
 | 方法 | 路径 | 查询参数 | 路径参数 | 请求体 |
 | --- | --- | --- | --- | --- |
+| `GET` | `/api/analysis/audits` | `task_id,session_id,limit,offset,detail` | — | — |
+| `GET` | `/api/analysis/audits/{audit_id}` | — | `audit_id` | — |
 | `GET` | `/api/analysis/config` | — | — | — |
 | `PUT` | `/api/analysis/config` | — | — | body |
 | `POST` | `/api/analysis/config/reset` | — | — | body |
@@ -191,6 +193,8 @@
 | `GET` | `/api/analysis/tasks` | `state,kind,subject,q,limit,offset` | — | — |
 | `POST` | `/api/analysis/tasks` | — | — | body |
 | `GET` | `/api/analysis/tasks/{task_id}` | — | `task_id` | — |
+| `GET` | `/api/analysis/tasks/{task_id}/audit` | — | `task_id` | — |
+| `GET` | `/api/analysis/traces` | `q,task_id,subject,tool,session_id,since,until,limit,offset` | — | — |
 
 ### 配置管理 — `/api/rules`
 

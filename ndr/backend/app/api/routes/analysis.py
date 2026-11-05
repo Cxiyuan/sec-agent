@@ -19,7 +19,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import String, cast, select
 from sqlalchemy.orm import Session
 
-from app.analysis import domain_intel, params, queue as tasks, subjects as inventory
+from app.analysis import (
+    audits,
+    domain_intel,
+    params,
+    queue as tasks,
+    subjects as inventory,
+    traces as trace_mod,
+)
 from app.api.deps import get_current_user
 from app.db.base import get_db
 from app.db.models import AnalysisAnchor, AnalysisResult, AnalysisTask, User
@@ -147,6 +154,8 @@ def inventory_results(
                 "evidence_refs": list(r.evidence_refs or []),
                 "tools_used": r.tools_used,
                 "duration_ms": r.duration_ms,
+                "session_id": str(r.session_id or ""),
+                "attempt": int(r.attempt or 0),
                 # 同类现象复用交回（0 token）：界面把它标成「复用」，别当成一次真分析
                 "reused": bool(tasks.reused_from(r)),
                 "reused_from": tasks.reused_from(r),
@@ -217,9 +226,11 @@ def analysis_quality(
                         }
                     )
     total = len(rows)
+    audit_quality = audits.quality_summary(days=days)
     return {
         "days": days,
         "total": total,
+        "audit": audit_quality,
         "true_positive": len(tp),
         "true_positive_no_evidence_refs": len(no_refs),
         "true_positive_no_verdict_basis": len(no_basis),
@@ -233,6 +244,74 @@ def analysis_quality(
         },
         "known_benign_domain_tp": known_domain_tp[:100],
         "note": "这是审计口径，不是自动改 verdict；用于发现语义错误但格式合法的结论。",
+    }
+
+
+@router.get("/audits")
+def list_audits(
+    _: Annotated[User, Depends(get_current_user)],
+    task_id: str = "",
+    session_id: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    detail: int = 0,
+):
+    """DSH 运行审计（工具调用/token/turn 终态/错误）。`detail=1` 才回完整 trace。"""
+    return audits.list_audits(
+        task_id=task_id,
+        session_id=session_id,
+        limit=limit,
+        offset=offset,
+        with_trace=detail == 1,
+    )
+
+
+@router.get("/audits/{audit_id}")
+def audit_detail(audit_id: str, _: Annotated[User, Depends(get_current_user)]):
+    """单条审计详情（含脱敏后的工具调用投影）。"""
+    return audits.get_audit(audit_id)
+
+
+@router.get("/traces")
+def list_traces(
+    _: Annotated[User, Depends(get_current_user)],
+    q: str = "",
+    task_id: str = "",
+    subject: str = "",
+    tool: str = "",
+    session_id: str = "",
+    since: str = "",
+    until: str = "",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """模型手写过程轨迹（`unverified`，只当线索）的可检索视图。"""
+    cap = max(1, min(int(limit or 50), 200))
+    start = max(0, int(offset or 0))
+    return trace_mod.search_traces(
+        q=q,
+        task_id=task_id,
+        subject=subject,
+        tool=tool,
+        session_id=session_id,
+        since=since,
+        until=until,
+        limit=cap,
+        offset=start,
+    )
+
+
+@router.get("/tasks/{task_id}/audit")
+def task_audit(task_id: str, _: Annotated[User, Depends(get_current_user)]):
+    """单个任务的审计聚合：结论、DSH 运行审计、模型轨迹。"""
+    detail = tasks.task_detail(task_id)
+    if "error" in detail:
+        return detail
+    return {
+        "task_id": task_id,
+        "audits": detail.get("audits", []),
+        "results": detail.get("results", []),
+        "traces": trace_mod.get_trace(task_id=task_id, limit=20),
     }
 
 

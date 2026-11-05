@@ -153,6 +153,8 @@ const PARAM_GROUPS: { title: string; hint: string; keys: string[] }[] = [
       "analysis.feedback_days",
       "analysis.fp_decay_days",
       "analysis.feedback_tp_factor",
+      "analysis.trace_retention_days",
+      "analysis.audit_retention_days",
     ],
   },
 ];
@@ -1491,6 +1493,76 @@ export function AnalysisPanel() {
                     ))}
                 </dl>
               </div>
+            </Section>
+
+            <Section title={`运行审计（${(detail.audits || []).length}）`} divided={false}>
+              {(detail.audits || []).length ? (
+                <ul className="space-y-2">
+                  {(detail.audits || []).map((row) => (
+                    <li key={row.id} className="rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">#{row.attempt || 0}</Badge>
+                        <span className="font-mono">{row.outcome || "—"}</span>
+                        <span className="text-muted-foreground">
+                          {row.source === "dsh" ? "DSH 运行事实" : "Agent 决定记录"}
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">
+                          工具 {row.tools_used}（报错 {row.tool_errors}） · token{" "}
+                          {Number(row.tokens?.total || 0)}
+                        </span>
+                        {row.turn_end_reason ? (
+                          <Badge variant="outline">turn: {row.turn_end_reason}</Badge>
+                        ) : null}
+                        <span className="tabular-nums text-muted-foreground">
+                          {formatDateTime(row.started_at || row.created_at || "")}
+                        </span>
+                      </div>
+                      {row.session_id ? (
+                        <p className="mt-1 font-mono text-muted-foreground">会话 {row.session_id}</p>
+                      ) : (
+                        <p className="mt-1 text-muted-foreground">未起会话（复用/抑制/初筛）</p>
+                      )}
+                      {row.error ? <p className="mt-1 text-sev-critical-fg">{row.error}</p> : null}
+                      {row.decision && Object.keys(row.decision).length ? (
+                        <pre className="mt-1 max-h-32 overflow-auto rounded-xs bg-surface-2 p-2 font-mono">
+                          {JSON.stringify(row.decision, null, 2)}
+                        </pre>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState
+                  size="compact"
+                  title="还没有运行审计"
+                  hint="新版本 Agent 会在会话结束后自动写回工具/token/turn 终态；复用/抑制也会留一条原因。"
+                />
+              )}
+            </Section>
+
+            <Section title={`过程轨迹（${(detail.traces || []).length}，unverified）`} divided={false}>
+              {(detail.traces || []).length ? (
+                <ul className="space-y-2">
+                  {(detail.traces || []).map((row) => (
+                    <li key={`${row.task_id}:${row.step_index}`} className="rounded-xs bg-surface-1 px-3 py-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">#{row.step_index}</Badge>
+                        {row.tool ? <Badge variant="outline">{row.tool}</Badge> : null}
+                        <span className="tabular-nums text-muted-foreground">
+                          {formatDateTime(row.created_at || "")}
+                        </span>
+                      </div>
+                      <p className="mt-1 leading-relaxed text-foreground">{row.summary}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState
+                  size="compact"
+                  title="没有模型过程轨迹"
+                  hint="轨迹由模型主动 log_step 写入，只当线索；运行事实看上方审计。"
+                />
+              )}
             </Section>
 
             <Section title={`该任务的历史结论（${detailResults.length}）`} divided={false}>

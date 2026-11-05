@@ -30,6 +30,7 @@ from app.analysis import (
     subjects as analysis_subjects,
 )
 from app.analysis.anchors import purge_old as purge_old_anchors
+from app.analysis.audits import purge_old as purge_old_audits
 from app.analysis.digests import run_digest_round
 from app.analysis.traces import purge_old as purge_old_traces
 from app.baseline import egress, observations
@@ -926,6 +927,7 @@ def _analysis_round(
             stats["subject_pruned"] += int(cleaned.get("deleted") or 0)
             # 轨迹与锚点是**派生线索**：过期就该退场，否则会把后来的判断带偏
             stats["trace_pruned"] += purge_old_traces(analysis_params.trace_retention_days())
+            stats["audit_pruned"] += purge_old_audits(analysis_params.audit_retention_days())
             stats["anchor_pruned"] += purge_old_anchors(180)
         # 门铃：只在有新线索、且过冷却时按一次；载荷不含任何事件数据
         cfg = push.load_config()

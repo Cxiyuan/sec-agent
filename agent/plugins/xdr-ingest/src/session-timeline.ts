@@ -12,6 +12,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import * as zlib from 'node:zlib'
+import { redactText } from './session-audit.ts'
 
 /** 一条时间线事件（控制台直接渲染）。 */
 export interface TimelineEvent {
@@ -58,9 +59,21 @@ const MAX_EVENTS = 400
 const DETAIL_LIMIT = 600
 
 function clip(value: unknown, max = DETAIL_LIMIT): string {
-  const text = typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value)
-  const trimmed = text.replace(/\s+/gu, ' ').trim()
-  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}…`
+  return redactText(value, max)
+}
+
+function reasonOf(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'object' || value === null) return ''
+  const row = value as Record<string, unknown>
+  const kind = String(row['kind'] ?? '').trim()
+  if (kind !== '') return kind
+  const error = row['error']
+  if (typeof error === 'object' && error !== null) {
+    const failure = error as Record<string, unknown>
+    return String(failure['code'] ?? failure['message'] ?? 'error').slice(0, 120)
+  }
+  return ''
 }
 
 /** 找到某个会话的日志文件（目录按 `<sessionId>/session.v4.jsonl.zstd` 组织）。 */
@@ -188,7 +201,10 @@ export function parseSessionLog(
 ): SessionTimeline {
   const after = Math.max(0, Number(options.after ?? 0))
   const events: TimelineEvent[] = []
-  const tools = new Map<string, { name: string, count: number, errors: number, totalMs: number, openAt: number }>()
+  const tools = new Map<string, { name: string, count: number, errors: number, totalMs: number }>()
+  // `callId -> 工具名`：并行/乱序返回时按 callId 归属，不能取“最近一次打开”的那个。
+  const openCalls = new Map<string, { name: string, openAt: number }>()
+  let anonymousCall = 0
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false }
   let firstTime = 0
   let lastTime = 0
@@ -251,11 +267,12 @@ export function parseSessionLog(
     }
     if (type === 'tool/call') {
       const name = String(data['name'] ?? '')
+      const callId = String(data['callId'] ?? '') || `anonymous-${anonymousCall++}`
       push({ ...base, kind: 'tool', label: `调用 ${name}`, detail: clip(data['arguments']) })
-      const acc = tools.get(name) ?? { name, count: 0, errors: 0, totalMs: 0, openAt: 0 }
+      const acc = tools.get(name) ?? { name, count: 0, errors: 0, totalMs: 0 }
       acc.count += 1
-      acc.openAt = time
       tools.set(name, acc)
+      openCalls.set(callId, { name, openAt: time })
       continue
     }
     if (type === 'tool/result') {
@@ -264,17 +281,15 @@ export function parseSessionLog(
       const isError = message['isError'] === true
       const detail = clip(textOfContent(message['content']))
       push({ ...base, kind: 'tool_result', label: isError ? '工具报错' : '工具返回', detail, isError })
-      // 工具耗时归到最近一次调用（按名称不好对，取"最近打开且还没关"的那个）
-      let target: { name: string, count: number, errors: number, totalMs: number, openAt: number } | null = null
-      for (const acc of tools.values()) {
-        if (acc.openAt > 0 && (target === null || acc.openAt > target.openAt)) target = acc
+      const open = openCalls.get(callId)
+      if (open !== undefined) {
+        openCalls.delete(callId)
+        const acc = tools.get(open.name)
+        if (acc !== undefined) {
+          if (open.openAt > 0 && time >= open.openAt) acc.totalMs += time - open.openAt
+          if (isError) acc.errors += 1
+        }
       }
-      if (target !== null) {
-        if (target.openAt > 0 && time >= target.openAt) target.totalMs += time - target.openAt
-        target.openAt = 0
-        if (isError) target.errors += 1
-      }
-      void callId
       continue
     }
     if (type === 'assistant/attempt') {
@@ -306,7 +321,14 @@ export function parseSessionLog(
       continue
     }
     if (type === 'turn/end') {
-      push({ ...base, kind: 'turn', label: `第 ${turn} 轮结束`, detail: '' })
+      const reason = reasonOf(data['reason'])
+      push({
+        ...base,
+        kind: 'turn',
+        label: `第 ${turn} 轮结束`,
+        detail: reason !== '' ? `终态：${reason}` : '',
+        isError: reason === 'error' || reason === 'interrupted' || reason === 'aborted',
+      })
     }
   }
 

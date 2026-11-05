@@ -65,6 +65,13 @@ export interface AgentScopedContext {
 
 export interface AgentCreateOptions {
   readonly sessionId: string
+  /**
+   * DSH session metadata. `cwd` 必须是绝对路径：
+   * - 它决定 session 日志落盘目录（`_no-cwd` vs 项目目录）；
+   * - 它是 `session_search` / `session_trace` 的授权边界：只有同 cwd 的会话可互相检索。
+   * 分析会话统一用 `/xdr/<projectId>`，项目之间隔离、项目内可回溯。
+   */
+  readonly meta?: { readonly cwd?: string }
   readonly agentOptions?: { readonly provider?: string; readonly model?: string }
   /** Creation-time composition of the agent's scoped world (dsh AgentCreateOptions.setup). */
   readonly setup?: (agentCtx: AgentScopedContext) => void | Promise<void>

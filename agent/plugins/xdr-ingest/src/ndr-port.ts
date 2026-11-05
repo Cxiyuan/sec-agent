@@ -148,6 +148,10 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
           ...(typeof item['facts_hash'] === 'string' && item['facts_hash'] !== ''
             ? { facts_hash: item['facts_hash'] }
             : {}),
+          ...(typeof item['session_id'] === 'string' && item['session_id'] !== ''
+            ? { session_id: item['session_id'] }
+            : {}),
+          ...(typeof item['attempt'] === 'number' ? { attempt: item['attempt'] } : {}),
           // 结论归档/复用要保留证据和成本，不能只留 verdict/summary。
           ...(Array.isArray(item['evidence_refs'])
             ? { evidence_refs: (item['evidence_refs'] as unknown[]).map(String) }
@@ -211,6 +215,15 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
 
   async deferTask(taskId: string, reason: string): Promise<unknown> {
     return this.caller.callTool('defer_task', { task_id: taskId, reason })
+  }
+
+  /**
+   * 写回 DSH 审计投影。它与 `log_step` 是两类东西：
+   * `log_step` 是模型写的“未经核实观察”；这里是运行事实（工具调用/tokens/turn 终态），
+   * 只供回溯与质量统计，不作为抑制证据。
+   */
+  async recordAudit(taskId: string, payload: Record<string, unknown>): Promise<unknown> {
+    return this.caller.callTool('record_audit', { ...payload, task_id: taskId })
   }
 
   /**

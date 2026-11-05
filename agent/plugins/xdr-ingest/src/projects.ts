@@ -23,6 +23,7 @@ import { NdrTaskPortAdapter } from './ndr-port.ts'
 import { DEFAULT_LIGHT_TRIAGE, mergeSettings, settingsView } from './settings.ts'
 import { readSessionTimeline } from './session-timeline.ts'
 import type { SessionTimeline } from './session-timeline.ts'
+import { readSessionAudit } from './session-audit.ts'
 import type { LightTriageConfig, RuntimeSettings } from './settings.ts'
 import type {
   DataStore,
@@ -324,6 +325,8 @@ export class ProjectRuntime {
           lastEventAt: last?.time ?? 0,
         }
       },
+      // 会话收尾后的运行事实：与时间线同源（DSH 日志），但按 callId 配对并保留 turn 终态。
+      sessionAudit: sessionId => readSessionAudit(this.config.sessionDir, sessionId),
       maxTools: this.config.maxToolsPerTask,
       stallMinutes: this.config.stallMinutes,
       onSession: (sessionId, phase) => {

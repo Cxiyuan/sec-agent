@@ -655,6 +655,7 @@ ${THEME}
     <h3 id="proc-title" style="margin:0">分析过程</h3>
     <div id="proc-meta" class="count" style="margin:0"></div>
     <div id="proc-workflow" class="wf-strip"></div>
+    <div id="proc-audit" class="count" style="margin:0;white-space:pre-wrap"></div>
     <div id="proc-tools" class="count" style="margin:0"></div>
     <div id="proc-events" style="overflow:auto;flex:1;border-top:1px solid rgba(255,255,255,.08);padding-top:.5rem"></div>
     <div style="display:flex;justify-content:flex-end;gap:.6rem">
@@ -977,11 +978,43 @@ ${THEME}
     if (!tl.running) stopProcPoll()
   }
 
+  function auditText(entry) {
+    const a = entry.audit || {}
+    const t = entry.tokens || a.tokens || {}
+    const turns = a.turn_ends || []
+    const last = turns.length ? turns[turns.length - 1] : null
+    const lines = []
+    lines.push('尝试 #' + (entry.attempt || 0) + ' · 工具 ' + (entry.toolsUsed || a.tool_count || 0) +
+      '（报错 ' + (entry.toolErrors || a.tool_errors || 0) + '）· token ' +
+      (t.total || 0) + '（缓存读 ' + (t.cacheRead || 0) + ' / 新输入 ' + (t.input || 0) +
+      ' / 输出 ' + (t.output || 0) + '）')
+    if (entry.turnEndReason || last) {
+      lines.push('turn 终态：' + (entry.turnEndReason || (last && last.reason) || '—') +
+        ' · 轮次 ' + (entry.turns || a.turns || 0))
+    }
+    if (entry.error) lines.push('错误：' + entry.error)
+    if (a.redacted) lines.push('审计文本已脱敏（Cookie/Token/密码等不落库）')
+    if (a.truncated) lines.push('工具调用超过 200 条，审计只保留前 200 条')
+    if (entry.decision && Object.keys(entry.decision).length) {
+      lines.push('未起会话的决定：' + JSON.stringify(entry.decision))
+    }
+    if (Array.isArray(entry.runs) && entry.runs.length > 1) {
+      lines.push('历史尝试：' + entry.runs.map(r => '#' + r.attempt + ' ' + (r.outcome || '') +
+        '（' + (r.toolsUsed || 0) + ' 工具/' + (r.tokens && r.tokens.total || 0) + ' token）').join(' · '))
+    }
+    return lines.join('\n')
+  }
+
+  function renderProcAudit(entry) {
+    document.getElementById('proc-audit').textContent = auditText(entry || {})
+  }
+
   async function openProcess(taskId) {
     stopProcPoll()
     procSeq = 0
     document.getElementById('proc-title').textContent = '分析过程：' + taskId
     document.getElementById('proc-meta').textContent = '加载中…'
+    document.getElementById('proc-audit').textContent = ''
     document.getElementById('proc-tools').textContent = ''
     document.getElementById('proc-events').innerHTML = ''
     document.getElementById('proc-dialog').showModal()
@@ -995,6 +1028,7 @@ ${THEME}
     procEntry = entry
     procEvents = []
     document.getElementById('proc-workflow').innerHTML = ''
+    renderProcAudit(entry)
     const tl = data.timeline || {}
     if (tl.ok === false) {
       document.getElementById('proc-events').innerHTML =

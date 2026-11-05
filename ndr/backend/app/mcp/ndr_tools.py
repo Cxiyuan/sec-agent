@@ -30,6 +30,7 @@ from app.mcpapi import (
     analysis_log_step,
     analysis_params,
     analysis_queue,
+    analysis_record_audit,
     analysis_search_traces,
     analysis_status_values,
     analysis_subjects,
@@ -1395,6 +1396,9 @@ def _log_step(args: dict[str, Any]) -> dict[str, Any]:
         tool=str(args.get("tool") or "")[:48],
         summary=str(args.get("summary") or ""),
         detail=str(args.get("detail") or ""),
+        session_id=str(args.get("session_id") or "")[:128],
+        result_id=str(args.get("result_id") or "")[:64],
+        attempt=_bounded_int(args.get("attempt"), default=0, lo=0, hi=10_000),
     )
 
 
@@ -1407,6 +1411,11 @@ def _search_traces(args: dict[str, Any]) -> dict[str, Any]:
         q=str(args.get("q") or ""),
         exclude_task=str(args.get("exclude_task") or args.get("_task_id") or ""),
         subject=str(args.get("subject") or ""),
+        task_id=str(args.get("task_id") or ""),
+        tool=str(args.get("tool") or ""),
+        session_id=str(args.get("session_id") or ""),
+        since=str(args.get("since") or ""),
+        until=str(args.get("until") or ""),
         limit=_bounded_int(args.get("limit"), default=20, lo=1, hi=50),
     )
 
@@ -1419,6 +1428,31 @@ def _get_trace(args: dict[str, Any]) -> dict[str, Any]:
     return analysis_get_trace(
         task_id=task_id,
         limit=_bounded_int(args.get("limit"), default=20, lo=1, hi=20),
+    )
+
+
+def _record_audit(args: dict[str, Any]) -> dict[str, Any]:
+    """Agent 运行层写回 DSH 审计：工具调用/token/turn 终态，不是模型结论。"""
+    return analysis_record_audit(
+        task_id=str(args.get("task_id") or "").strip(),
+        session_id=str(args.get("session_id") or "")[:128],
+        attempt=_bounded_int(args.get("attempt"), default=0, lo=0, hi=10_000),
+        result_id=str(args.get("result_id") or "")[:64],
+        outcome=str(args.get("outcome") or "")[:24],
+        verdict=str(args.get("verdict") or "")[:24],
+        source=str(args.get("source") or "agent")[:16],
+        model=str(args.get("model") or "")[:160],
+        started_at=str(args.get("started_at") or ""),
+        ended_at=str(args.get("ended_at") or ""),
+        tools_used=_bounded_int(args.get("tools_used"), default=0, lo=0, hi=100000),
+        tool_errors=_bounded_int(args.get("tool_errors"), default=0, lo=0, hi=100000),
+        turns=_bounded_int(args.get("turns"), default=0, lo=0, hi=100000),
+        turn_end_reason=str(args.get("turn_end_reason") or "")[:32],
+        tokens=args.get("tokens") if isinstance(args.get("tokens"), dict) else {},
+        error=str(args.get("error") or "")[:4000],
+        note=str(args.get("note") or "")[:4000],
+        decision=args.get("decision") if isinstance(args.get("decision"), dict) else {},
+        trace=args.get("trace") if isinstance(args.get("trace"), dict) else {},
     )
 
 
@@ -2060,6 +2094,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "tool": "产生这条观察的取数工具名（可省）",
             "summary": "一句话观察（≤500 字）",
             "detail": "可选细节（≤2000 字，仍不要贴原始报文）",
+            "session_id": "DSH 会话 ID（由运行层透传；模型可省）",
+            "result_id": "结论 ID（由运行层透传；模型可省）",
+            "attempt": "第几次 attempt（由运行层透传；模型可省）",
         },
     },
     "search_traces": {
@@ -2072,6 +2109,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "q": "关键字",
             "exclude_task": "排除哪个任务（通常填自己当前的 task_id）",
             "subject": "只看某个对象的过程记录（可省）",
+            "task_id": "只看某个任务（可省）",
+            "tool": "只看某个工具产生的观察（可省）",
+            "session_id": "只看某个 DSH 会话（可省）",
+            "since": "起始时间 ISO（可省）",
+            "until": "结束时间 ISO（可省）",
             "limit": "最多返回条数（默认 20，上限 50）",
         },
     },
@@ -2081,6 +2123,34 @@ TOOLS: dict[str, dict[str, Any]] = {
         "params": {
             "task_id": "要看的任务 ID",
             "limit": "最多返回几步（默认 20）",
+        },
+    },
+    "record_audit": {
+        "run": _record_audit,
+        "desc": (
+            "写一次分析 attempt 的 DSH 运行审计（工具调用/token/turn 终态/错误摘要）。"
+            "由 Agent 运行层自动调用，不是模型结论；复用/抑制/初筛关单也写，session_id 留空并带 decision。"
+        ),
+        "params": {
+            "task_id": "任务 ID",
+            "session_id": "DSH 会话 ID（没起会话留空）",
+            "attempt": "第几次 attempt（从 1 起；没起会话为 0）",
+            "result_id": "结论 ID（可空）",
+            "outcome": "running/done/reused/suppressed/triaged/deferred/failed",
+            "verdict": "本次结论词（可空）",
+            "source": "dsh（有会话）/ agent（复用/抑制/初筛决定）",
+            "model": "本轮实际用的 provider/model",
+            "started_at": "开始时间 ISO",
+            "ended_at": "结束时间 ISO",
+            "tools_used": "工具调用次数",
+            "tool_errors": "工具报错次数",
+            "turns": "turn 数",
+            "turn_end_reason": "最后一个 turn/end 的原因",
+            "tokens": "input/output/cacheRead/cacheWrite/total/reported",
+            "error": "失败/取消原因（可空）",
+            "note": "一句话说明（可空）",
+            "decision": "没起会话时的决定原因（action/source_task_id/suppressed_by…）",
+            "trace": "有界 DSH 投影（tool_calls/turn_ends/errors）",
         },
     },
 }

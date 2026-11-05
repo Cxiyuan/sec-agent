@@ -486,22 +486,46 @@ def task_state(task_id: str = "") -> str:
     return _run("task_state", _clean(task_id=task_id), native=True)
 
 
-def log_step(task_id: str = "", tool: str = "", summary: str = "", detail: str = "") -> str:
+def log_step(
+    task_id: str = "",
+    tool: str = "",
+    summary: str = "",
+    detail: str = "",
+    session_id: str = "",
+    result_id: str = "",
+    attempt: int = 0,
+) -> str:
     """记一条过程观察（别人以后能检索到，省掉重复取数）。"""
     return _run(
         "log_step",
-        _clean(task_id=task_id, tool=tool, summary=summary, detail=detail),
+        _clean(
+            task_id=task_id, tool=tool, summary=summary, detail=detail,
+            session_id=session_id, result_id=result_id, attempt=attempt,
+        ),
         native=True,
     )
 
 
-def search_traces(q: str = "", exclude_task: str = "", subject: str = "", limit: int = 0) -> str:
+def search_traces(
+    q: str = "",
+    exclude_task: str = "",
+    subject: str = "",
+    task_id: str = "",
+    tool: str = "",
+    session_id: str = "",
+    since: str = "",
+    until: str = "",
+    limit: int = 0,
+) -> str:
     """在别的任务的过程记录里检索（结果是"未经核实的观察"，只能当线索）。"""
     return _run(
         "search_traces",
         _with_ctx(
             "search_traces",
-            _clean(q=q, exclude_task=exclude_task, subject=subject, limit=limit),
+            _clean(
+                q=q, exclude_task=exclude_task, subject=subject, task_id=task_id,
+                tool=tool, session_id=session_id, since=since, until=until, limit=limit,
+            ),
         ),
         native=True,
     )
@@ -510,6 +534,55 @@ def search_traces(q: str = "", exclude_task: str = "", subject: str = "", limit:
 def get_trace(task_id: str = "", limit: int = 0) -> str:
     """取某个任务的全部过程步骤。"""
     return _run("get_trace", _clean(task_id=task_id, limit=limit), native=True)
+
+
+def record_audit(
+    task_id: str = "",
+    session_id: str = "",
+    attempt: int = 0,
+    result_id: str = "",
+    outcome: str = "",
+    verdict: str = "",
+    source: str = "agent",
+    model: str = "",
+    started_at: str = "",
+    ended_at: str = "",
+    tools_used: int = 0,
+    tool_errors: int = 0,
+    turns: int = 0,
+    turn_end_reason: str = "",
+    tokens: dict[str, Any] | None = None,
+    error: str = "",
+    note: str = "",
+    decision: dict[str, Any] | None = None,
+    trace: dict[str, Any] | None = None,
+) -> str:
+    """写一次分析 attempt 的 DSH 运行审计（Agent 运行层自动调用）。"""
+    return _run(
+        "record_audit",
+        _clean(
+            task_id=task_id,
+            session_id=session_id,
+            attempt=attempt,
+            result_id=result_id,
+            outcome=outcome,
+            verdict=verdict,
+            source=source,
+            model=model,
+            started_at=started_at,
+            ended_at=ended_at,
+            tools_used=tools_used,
+            tool_errors=tool_errors,
+            turns=turns,
+            turn_end_reason=turn_end_reason,
+            tokens=tokens,
+            error=error,
+            note=note,
+            decision=decision,
+            trace=trace,
+        ),
+        native=True,
+    )
 
 
 def task_stats(days: int = 0, kind: str = "", limit: int = 0) -> str:
@@ -772,6 +845,7 @@ _NDR_TOOL_FUNCS = (
     log_step,
     search_traces,
     get_trace,
+    record_audit,
     task_stats,
     server_info,
     asset_map,
@@ -858,6 +932,8 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "log_step",
         "search_traces",
         "get_trace",
+        # Agent 运行层写回 DSH 审计（工具/token/turn 终态；不是模型结论）
+        "record_audit",
         # 身份：项目组织绑定校验（授权ID 必须与智能体侧配置一致）
         "server_info",
         # 抑制（申请与查看；撤销留给人在界面或 full 档上做）
@@ -1016,6 +1092,8 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
         misc.append("search_traces 看别人留下的轨迹（别重复取数）")
     if has("get_trace"):
         misc.append("get_trace 看单条轨迹的完整步骤")
+    if has("record_audit"):
+        misc.append("record_audit 由运行层写回 DSH 工具/token/turn 审计（不是模型结论）")
     if has("add_task"):
         misc.append("巡逻或外部情报得到值得看的对象用 add_task 登记")
     if has("record_disposition"):

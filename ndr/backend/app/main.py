@@ -131,6 +131,16 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS facts_hash VARCHAR(64) NOT NULL DEFAULT ''",
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS reuse_identity VARCHAR(200) NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS ix_analysis_results_reuse_identity ON analysis_results (reuse_identity)",
+    # 2026-11 DSH 运行审计：结论关到会话/attempt，轨迹关到会话/结果。
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS session_id VARCHAR(128) NOT NULL DEFAULT ''",
+    "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_results_session_id ON analysis_results (session_id)",
+    "ALTER TABLE analysis_traces ADD COLUMN IF NOT EXISTS session_id VARCHAR(128) NOT NULL DEFAULT ''",
+    "ALTER TABLE analysis_traces ADD COLUMN IF NOT EXISTS result_id VARCHAR(64) NOT NULL DEFAULT ''",
+    "ALTER TABLE analysis_traces ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE analysis_traces ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'model'",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_traces_session_id ON analysis_traces (session_id)",
+    "CREATE INDEX IF NOT EXISTS ix_analysis_traces_result_id ON analysis_traces (result_id)",
     # 冷摘要回标：非空 = 明细已进 analysis_digests（行本身永不删除）
     "ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ",
     # 2026-10 行为基线改造：账号上次成功登录的地理位置（国家/省），用于"异地登录"事实。

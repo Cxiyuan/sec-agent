@@ -18,6 +18,7 @@ import type {
   ConclusionStore,
   ProcessFinish,
   ProcessRecord,
+  ProcessRun,
   ProcessStart,
   ProcessStore,
   ProjectInput,
@@ -184,6 +185,42 @@ CREATE TABLE IF NOT EXISTS xdr_ingest_process (
 );
 CREATE INDEX IF NOT EXISTS xdr_ingest_process_started_idx
   ON xdr_ingest_process (project_id, started_at DESC);
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS tool_errors INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS turns INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS turn_end_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS tokens JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS decision JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE xdr_ingest_process ADD COLUMN IF NOT EXISTS audit JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- 每次 attempt 的审计底账：最新过程行会被重试覆盖，这里不覆盖。
+CREATE TABLE IF NOT EXISTS xdr_ingest_process_attempt (
+  project_id   TEXT NOT NULL,
+  task_id      TEXT NOT NULL,
+  attempt      INTEGER NOT NULL,
+  session_id   TEXT NOT NULL DEFAULT '',
+  kind         TEXT NOT NULL DEFAULT '',
+  subject      TEXT NOT NULL DEFAULT '',
+  model        TEXT NOT NULL DEFAULT '',
+  started_at   TIMESTAMPTZ NOT NULL,
+  ended_at     TIMESTAMPTZ,
+  outcome      TEXT NOT NULL DEFAULT 'running',
+  tools_used   INTEGER NOT NULL DEFAULT 0,
+  tool_errors  INTEGER NOT NULL DEFAULT 0,
+  turns        INTEGER NOT NULL DEFAULT 0,
+  duration_ms  BIGINT NOT NULL DEFAULT 0,
+  verdict      TEXT NOT NULL DEFAULT '',
+  note         TEXT NOT NULL DEFAULT '',
+  error        TEXT NOT NULL DEFAULT '',
+  turn_end_reason TEXT NOT NULL DEFAULT '',
+  tokens       JSONB NOT NULL DEFAULT '{}'::jsonb,
+  decision     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  audit        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, task_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS xdr_ingest_process_attempt_task_idx
+  ON xdr_ingest_process_attempt (project_id, task_id, attempt);
 ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 ALTER TABLE xdr_ingest_project ADD COLUMN IF NOT EXISTS fallback_model TEXT NOT NULL DEFAULT '';
@@ -294,6 +331,7 @@ interface ConclusionRow {
 interface ProcessRow {
   task_id: string
   session_id: string
+  attempt: number | string
   kind: string
   subject: string
   model: string
@@ -301,9 +339,16 @@ interface ProcessRow {
   ended_at: Date | string | null
   outcome: string
   tools_used: number | string
+  tool_errors: number | string
+  turns: number | string
   duration_ms: number | string
   verdict: string
   note: string
+  error: string
+  turn_end_reason: string
+  tokens: unknown
+  decision: unknown
+  audit: unknown
   workflow_id: string
   workflow_name: string
   workflow_stages: unknown
@@ -446,11 +491,34 @@ function toConclusion(row: ConclusionRow): ConclusionRecord {
   }
 }
 
+function objectOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function tokensOf(value: unknown): ProcessRecord['tokens'] {
+  const row = objectOf(value)
+  const num = (key: string): number => {
+    const n = Number(row[key] ?? 0)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  }
+  return {
+    input: num('input'),
+    output: num('output'),
+    cacheRead: num('cacheRead'),
+    cacheWrite: num('cacheWrite'),
+    total: num('total'),
+    reported: row['reported'] === true,
+  }
+}
+
 function toProcess(row: ProcessRow): ProcessRecord {
   const outcome = String(row.outcome ?? 'running')
   return {
     taskId: String(row.task_id),
     sessionId: String(row.session_id ?? ''),
+    attempt: Math.max(1, Number(row.attempt ?? 1)),
     kind: String(row.kind ?? ''),
     subject: String(row.subject ?? ''),
     model: String(row.model ?? ''),
@@ -458,14 +526,47 @@ function toProcess(row: ProcessRow): ProcessRecord {
     endedAt: isoTime(row.ended_at),
     outcome: outcome as ProcessRecord['outcome'],
     toolsUsed: Number(row.tools_used ?? 0),
+    toolErrors: Number(row.tool_errors ?? 0),
+    turns: Number(row.turns ?? 0),
     durationMs: Number(row.duration_ms ?? 0),
     verdict: String(row.verdict ?? ''),
     note: String(row.note ?? ''),
+    error: String(row.error ?? ''),
+    turnEndReason: String(row.turn_end_reason ?? ''),
+    tokens: tokensOf(row.tokens),
+    decision: objectOf(row.decision),
+    audit: objectOf(row.audit),
     workflowId: String(row.workflow_id ?? ''),
     workflowName: String(row.workflow_name ?? ''),
     workflowStages: Array.isArray(row.workflow_stages)
       ? (row.workflow_stages as WorkflowStage[])
       : [],
+  }
+}
+
+function toRun(row: ProcessRow): ProcessRun {
+  const record = toProcess(row)
+  return {
+    taskId: record.taskId,
+    sessionId: record.sessionId,
+    attempt: record.attempt,
+    kind: record.kind,
+    subject: record.subject,
+    model: record.model,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    outcome: record.outcome,
+    toolsUsed: record.toolsUsed,
+    toolErrors: record.toolErrors,
+    turns: record.turns,
+    durationMs: record.durationMs,
+    verdict: record.verdict,
+    note: record.note,
+    error: record.error,
+    turnEndReason: record.turnEndReason,
+    tokens: record.tokens,
+    decision: record.decision,
+    audit: record.audit,
   }
 }
 
@@ -1062,14 +1163,24 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
 
   /* ---------- 过程索引 ---------- */
 
-  async startProcess(start: ProcessStart): Promise<void> {
-    if (!await this.usable()) return
+  async startProcess(start: ProcessStart): Promise<number> {
+    if (!await this.usable()) return 0
     try {
+      const { rows } = await this.pool.query<{ attempt: number | string }>(
+        `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
+         FROM xdr_ingest_process_attempt
+         WHERE project_id = $1 AND task_id = $2`,
+        [this.projectId, start.taskId],
+      )
+      const attempt = Math.max(1, Number(rows[0]?.attempt ?? 1))
+      const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false }
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
-           (project_id, task_id, session_id, kind, subject, model, started_at, outcome,
+           (project_id, task_id, session_id, kind, subject, model, started_at, outcome, attempt,
+            tool_errors, turns, error, turn_end_reason, tokens, decision, audit,
             workflow_id, workflow_name, workflow_stages)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10::jsonb)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, 0, 0, '', '', $9::jsonb, '{}'::jsonb,
+                 '{}'::jsonb, $10, $11, $12::jsonb)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
            session_id = EXCLUDED.session_id,
            kind = EXCLUDED.kind,
@@ -1078,40 +1189,139 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
            started_at = EXCLUDED.started_at,
            ended_at = NULL,
            outcome = 'running',
+           attempt = EXCLUDED.attempt,
+           tool_errors = 0,
+           turns = 0,
+           error = '',
+           turn_end_reason = '',
+           tokens = EXCLUDED.tokens,
+           decision = '{}'::jsonb,
+           audit = '{}'::jsonb,
            workflow_id = EXCLUDED.workflow_id,
            workflow_name = EXCLUDED.workflow_name,
            workflow_stages = EXCLUDED.workflow_stages`,
         [
           this.projectId, start.taskId, start.sessionId, start.kind, start.subject, start.model,
-          start.startedAt, start.workflowId ?? '', start.workflowName ?? '',
+          start.startedAt, attempt, JSON.stringify(tokens),
+          start.workflowId ?? '', start.workflowName ?? '',
           JSON.stringify(start.workflowStages ?? []),
         ],
       )
+      await this.pool.query(
+        `INSERT INTO xdr_ingest_process_attempt
+           (project_id, task_id, attempt, session_id, kind, subject, model, started_at, outcome,
+            tokens, decision, audit, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', $9::jsonb, '{}'::jsonb, '{}'::jsonb, now())
+         ON CONFLICT (project_id, task_id, attempt) DO UPDATE SET
+           session_id = EXCLUDED.session_id,
+           kind = EXCLUDED.kind,
+           subject = EXCLUDED.subject,
+           model = EXCLUDED.model,
+           started_at = EXCLUDED.started_at,
+           ended_at = NULL,
+           outcome = 'running',
+           tokens = EXCLUDED.tokens,
+           decision = '{}'::jsonb,
+           audit = '{}'::jsonb,
+           updated_at = now()`,
+        [
+          this.projectId, start.taskId, attempt, start.sessionId, start.kind, start.subject,
+          start.model, start.startedAt, JSON.stringify(tokens),
+        ],
+      )
+      return attempt
     } catch (error) {
       console.error(`${LOG_PREFIX} process start failed:`, this.message(error))
+      return 0
     }
   }
 
   async finishProcess(finish: ProcessFinish): Promise<void> {
     if (!await this.usable()) return
     try {
+      const previous = await this.getProcess(finish.taskId)
+      let attempt = finish.attempt ?? 0
+      if (attempt <= 0) {
+        if (previous !== null && previous.outcome === 'running') {
+          attempt = previous.attempt
+        } else {
+          const { rows } = await this.pool.query<{ attempt: number | string }>(
+            `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
+             FROM xdr_ingest_process_attempt WHERE project_id = $1 AND task_id = $2`,
+            [this.projectId, finish.taskId],
+          )
+          attempt = Math.max(1, Number(rows[0]?.attempt ?? 1))
+        }
+      }
+      const sessionId = finish.sessionId ?? previous?.sessionId ?? ''
+      const kind = finish.kind ?? previous?.kind ?? ''
+      const subject = finish.subject ?? previous?.subject ?? ''
+      const tokens = finish.tokens ?? previous?.tokens ?? {
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, reported: false,
+      }
+      const values = [
+        this.projectId, finish.taskId, sessionId, kind, subject,
+        finish.model ?? previous?.model ?? '', finish.endedAt, finish.outcome, attempt,
+        finish.toolsUsed ?? 0, finish.toolErrors ?? 0, finish.turns ?? 0,
+        finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
+        finish.error ?? '', finish.turnEndReason ?? '', JSON.stringify(tokens),
+        JSON.stringify(finish.decision ?? {}), JSON.stringify(finish.audit ?? {}),
+      ]
       await this.pool.query(
         `INSERT INTO xdr_ingest_process
-           (project_id, task_id, model, started_at, ended_at, outcome, tools_used, duration_ms, verdict, note)
-         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
+           (project_id, task_id, session_id, kind, subject, model, started_at, ended_at, outcome, attempt,
+            tools_used, tool_errors, turns, duration_ms, verdict, note, error, turn_end_reason,
+            tokens, decision, audit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18::jsonb, $19::jsonb, $20::jsonb)
          ON CONFLICT (project_id, task_id) DO UPDATE SET
-           model = CASE WHEN EXCLUDED.model = '' THEN xdr_ingest_process.model
-                        ELSE EXCLUDED.model END,
+           session_id = EXCLUDED.session_id,
+           kind = CASE WHEN EXCLUDED.kind = '' THEN xdr_ingest_process.kind ELSE EXCLUDED.kind END,
+           subject = CASE WHEN EXCLUDED.subject = '' THEN xdr_ingest_process.subject ELSE EXCLUDED.subject END,
+           model = CASE WHEN EXCLUDED.model = '' THEN xdr_ingest_process.model ELSE EXCLUDED.model END,
+           ended_at = EXCLUDED.ended_at,
+           outcome = EXCLUDED.outcome,
+           attempt = EXCLUDED.attempt,
+           tools_used = EXCLUDED.tools_used,
+           tool_errors = EXCLUDED.tool_errors,
+           turns = EXCLUDED.turns,
+           duration_ms = EXCLUDED.duration_ms,
+           verdict = EXCLUDED.verdict,
+           note = EXCLUDED.note,
+           error = EXCLUDED.error,
+           turn_end_reason = EXCLUDED.turn_end_reason,
+           tokens = EXCLUDED.tokens,
+           decision = EXCLUDED.decision,
+           audit = EXCLUDED.audit`,
+        values,
+      )
+      await this.pool.query(
+        `INSERT INTO xdr_ingest_process_attempt
+           (project_id, task_id, attempt, session_id, kind, subject, model, started_at, ended_at,
+            outcome, tools_used, tool_errors, turns, duration_ms, verdict, note, error,
+            turn_end_reason, tokens, decision, audit, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18::jsonb, $19::jsonb, $20::jsonb, now())
+         ON CONFLICT (project_id, task_id, attempt) DO UPDATE SET
+           session_id = EXCLUDED.session_id,
+           kind = EXCLUDED.kind,
+           subject = EXCLUDED.subject,
+           model = EXCLUDED.model,
            ended_at = EXCLUDED.ended_at,
            outcome = EXCLUDED.outcome,
            tools_used = EXCLUDED.tools_used,
+           tool_errors = EXCLUDED.tool_errors,
+           turns = EXCLUDED.turns,
            duration_ms = EXCLUDED.duration_ms,
            verdict = EXCLUDED.verdict,
-           note = EXCLUDED.note`,
-        [
-          this.projectId, finish.taskId, finish.model ?? '', finish.endedAt, finish.outcome,
-          finish.toolsUsed ?? 0, finish.durationMs ?? 0, finish.verdict ?? '', finish.note ?? '',
-        ],
+           note = EXCLUDED.note,
+           error = EXCLUDED.error,
+           turn_end_reason = EXCLUDED.turn_end_reason,
+           tokens = EXCLUDED.tokens,
+           decision = EXCLUDED.decision,
+           audit = EXCLUDED.audit,
+           updated_at = now()`,
+        values,
       )
     } catch (error) {
       console.error(`${LOG_PREFIX} process finish failed:`, this.message(error))
@@ -1134,7 +1344,8 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       }
       if (needle !== '') {
         params.push(`%${needle}%`)
-        where.push(`(task_id ILIKE $${params.length} OR subject ILIKE $${params.length} OR kind ILIKE $${params.length})`)
+        where.push(`(task_id ILIKE $${params.length} OR subject ILIKE $${params.length}`
+          + ` OR kind ILIKE $${params.length} OR session_id ILIKE $${params.length})`)
       }
       const clause = where.join(' AND ')
       const [{ rows }, { rows: countRows }] = await Promise.all([
@@ -1170,6 +1381,22 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
     }
   }
 
+  async listProcessRuns(taskId: string): Promise<ProcessRun[]> {
+    if (!await this.usable()) return []
+    try {
+      const { rows } = await this.pool.query<ProcessRow>(
+        `SELECT * FROM xdr_ingest_process_attempt
+         WHERE project_id = $1 AND task_id = $2
+         ORDER BY attempt ASC`,
+        [this.projectId, taskId.trim()],
+      )
+      return rows.map(toRun)
+    } catch (error) {
+      console.error(`${LOG_PREFIX} process runs failed:`, this.message(error))
+      return []
+    }
+  }
+
   /**
    * 保留期清理（跨项目；由维护定时器调用）。
    * 只 DELETE 有明确保留期的表，不碰脚本/设置/项目/工作流。
@@ -1200,6 +1427,11 @@ implements TaskResultStore, ScriptStore, TaskSeenStore, ConclusionStore, Setting
       processes: await job(
         "DELETE FROM xdr_ingest_process WHERE started_at < now() - ($1 || ' days')::interval",
         policy.processesDays,
+      ),
+      process_attempts: await job(
+        "DELETE FROM xdr_ingest_process_attempt WHERE started_at < now() - ($1 || ' days')::interval",
+        policy.processesDays,
+        true,
       ),
       observations: await job(
         "DELETE FROM xdr_ingest_observation WHERE last_seen < now() - ($1 || ' days')::interval",
