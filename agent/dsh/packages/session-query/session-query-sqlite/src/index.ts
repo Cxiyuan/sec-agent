@@ -10,6 +10,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { Context, Service, type Fiber } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { SessionPersistenceCorruptionError } from '@deepseek-ai/dsh-session-persistence'
 import type SessionPersistence from '@deepseek-ai/dsh-session-persistence'
 import type {
   SessionPersistenceRevision,
@@ -519,7 +520,21 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
             // live-preferred.
             if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== undefined) continue
             assertNotAborted(signal)
-            const loaded = await readColdSessionLog(persistence, entry.header.id, signal)
+            let loaded: Awaited<ReturnType<typeof readColdSessionLog>>
+            try {
+              loaded = await readColdSessionLog(persistence, entry.header.id, signal)
+            } catch (error: unknown) {
+              // One interrupted writer must not take down search for every other
+              // session. Corrupt logs stay on disk for diagnosis; they are just
+              // not indexed until repaired or pruned.
+              if (error instanceof SessionPersistenceCorruptionError) {
+                this.ctx.logger.warn(
+                  `session-search skipped corrupt session "${entry.header.id}": ${error.message}`,
+                )
+                continue
+              }
+              throw error
+            }
             assertNotAborted(signal)
             assertSessionHeadersCompatible(entry.header, loaded.header)
             entry.loaded = observeSession(loaded.header, loaded.inheritedEventCount, loaded.events)

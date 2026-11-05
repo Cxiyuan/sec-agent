@@ -8,7 +8,12 @@
         - id: optional-session-query-sqlite
           name: '@deepseek-ai/dsh-session-query-sqlite'
           config:
-            path: ':memory:'
-            openAt: first-search
+            # 持久化索引：首次检索要扫描整个会话历史，建好后重启不必重扫。
+            path: !!js dshHomePath('session-search.db')
+            openAt: startup
         - id: optional-tool-session-query
           name: '@deepseek-ai/dsh-tool-session-query'
+          config:
+            # 首次建索引可能超过 30 秒（历史会话多），但建好后命中很快。
+            searchTimeoutMs: 120000
+            maxSearchResults: 100

@@ -7,8 +7,9 @@
  * 最后进 `stuck`（表面上"智能体在跑"，实际什么都没交）。
  */
 
+import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { AgentsServiceLike } from './agent-port.ts'
+import type { AgentFollowupInput, AgentsServiceLike } from './agent-port.ts'
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
@@ -502,7 +503,7 @@ export class Analyst {
         // dsh 每轮都会在任务消息之后再注入一条 runtime-context（工作目录/Web GUI）。
         // 模型常把最后这条当成“用户请求”，回一句“没有任务”就不干活。把任务写进
         // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
-        // 让任务成为模型眼里的“最后一条请求”。
+        // 让任务成为模型眼里的“最后一条请求”。该上下文由 DSH 正常生成 id/source。
         try {
           const taskText = buildAnalysisPrompt(task, workflow)
           agentCtx.systemPrompt?.section?.({
@@ -585,10 +586,10 @@ export class Analyst {
     let error: string | undefined
     let sessionAudit: SessionAudit | null = null
     try {
-      const followup = handle.agent.followup({
-        content: [{ type: 'text', text: buildAnalysisPrompt(task, workflow) }],
-        source: { kind: this.options.source ?? 'xdr-ingest' },
-      })
+      const followup = handle.agent.followup(followupMessage(
+        buildAnalysisPrompt(task, workflow),
+        this.options.source ?? 'xdr-ingest',
+      ))
       await Promise.resolve(followup)
       const idle = handle.agent.whenIdle()
       const raced = await this.raceTimeout(idle)
@@ -614,15 +615,12 @@ export class Analyst {
             `[xdr-ingest] 任务 ${task.id} 第一轮结束但未交回（state=${firstState || 'unknown'}，`
             + `工具 ${watch.tools} 次），重发任务提示`,
           )
-          await Promise.resolve(handle.agent.followup({
-            content: [{
-              type: 'text',
-              text: '上一轮结束时任务仍未交回。请立即继续执行下面的任务，'
-                + '完成后调用 `complete_task` 交回；证据够就收尾，不要再做与任务无关的元数据查询：\n\n'
-                + buildAnalysisPrompt(task, workflow),
-            }],
-            source: { kind: this.options.source ?? 'xdr-ingest' },
-          }))
+          await Promise.resolve(handle.agent.followup(followupMessage(
+            '上一轮结束时任务仍未交回。请立即继续执行下面的任务，'
+              + '完成后调用 `complete_task` 交回；证据够就收尾，不要再做与任务无关的元数据查询：\n\n'
+              + buildAnalysisPrompt(task, workflow),
+            this.options.source ?? 'xdr-ingest',
+          )))
           const second = await this.raceTimeout(handle.agent.whenIdle())
           if (second === 'timeout') {
             timedOut = true
@@ -1441,6 +1439,16 @@ export class Analyst {
 function stateOf(reply: TaskStateReply): string {
   if (typeof reply.error === 'string' && reply.error !== '') return ''
   return String(reply.task_state ?? reply.state ?? '')
+}
+
+/** DSH followup 要完整 UserMessage：缺 id/role 会写出无法校验的会话日志。 */
+function followupMessage(text: string, source: string): AgentFollowupInput {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: source },
+  }
 }
 
 function tokenUsageOf(audit: SessionAudit | null): {

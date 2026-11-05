@@ -10,6 +10,7 @@ import SessionStore, { SessionLogOffset, SessionSeq, SESSION_FORMAT_VERSION, Ses
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionEvent, SessionHeader, SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
 import SessionPersistence, {
+  SessionPersistenceCorruptionError,
   SessionPersistenceNotFoundError,
   SessionPersistenceRevision,
   SessionReadOnlyError,
@@ -854,6 +855,26 @@ describe('SQLite reconciliation and source lifecycle', () => {
     await expect(ctx.sessionQuery.searchSessions({ query: 'live' }))
       .resolves.toMatchObject({ items: [{ header: shared, live: true, persisted: true }] })
     detach()
+    await persistence.dispose()
+  })
+
+  it('skips one corrupt persisted session instead of failing every search', async () => {
+    const good = header('good-session', 10)
+    const bad = header('corrupt-session', 20)
+    TestPersistence.reset([
+      { meta: good, events: messageEvents('good needle') },
+      { meta: bad, events: messageEvents('bad needle') },
+    ])
+    const ctx = await liveContext()
+    const persistence = await ctx.plugin(TestPersistence)
+    TestPersistence.readEffect = (entry) => {
+      if (entry.meta.id === bad.id) {
+        throw new SessionPersistenceCorruptionError('corrupt fixture', { cause: new Error('bad log') })
+      }
+    }
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
+      .resolves.toMatchObject({ items: [{ header: good }] })
     await persistence.dispose()
   })
 

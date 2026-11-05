@@ -15,7 +15,14 @@ export interface AgentTextPart {
   readonly text: string
 }
 
+/**
+ * DSH `agent.followup()` 收的是**完整 UserMessage**（必须带 id/role/source），
+ * 不是 `{content, source}` 片段。少了 id/role，DSH 会把裸片段直接写进会话日志，
+ * 后续持久化校验报 “lacks an identified message”，整段历史检索不可用。
+ */
 export interface AgentFollowupInput {
+  readonly id: string
+  readonly role: 'user'
   readonly content: readonly AgentTextPart[]
   readonly source: { readonly kind: string }
 }
