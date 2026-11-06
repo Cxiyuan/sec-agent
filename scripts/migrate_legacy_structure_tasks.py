@@ -42,7 +42,7 @@ def main() -> int:
                 select(AnalysisTask)
                 .where(
                     AnalysisTask.kind == "structure",
-                    AnalysisTask.feature == "fail_ratio",
+                    AnalysisTask.dedupe_key.like("structure|%|fail_ratio|%"),
                     AnalysisTask.state.in_(("pending", "deferred", "claimed")),
                 )
                 .order_by(AnalysisTask.created_at.asc())

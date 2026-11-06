@@ -342,3 +342,25 @@ def test_escalate_digest_creates_obs_cases_only_for_attention(
     assert created[0]["kind"] == "obs_case"
     assert created[0]["hint"]["observation_id"] == "o2"
     assert created[0]["force"] is True
+
+
+def test_structure_tasks_become_one_digest(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = DigestDB([])  # existing struct_digest → none; _structure_tasks has no row query
+    monkeypatch.setattr(cand, "SessionLocal", lambda: db)
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(cand, "queue", fake_queue)
+    monkeypatch.setattr(cand.feedback, "apply", lambda value, *_a, **_k: value)
+    monkeypatch.setattr(cand.cold_start_mod, "damped", lambda value, *_a, **_k: value)
+    made = cand._structure_tasks(
+        {"10.0.0.5": 30},
+        {"10.0.0.5": 40},
+        1_000.0,
+        NOW,
+        SimpleNamespace(),
+    )
+    assert made == 1
+    call = fake_queue.calls[0]
+    assert call["kind"] == "struct_digest"
+    assert call["hint"]["条目数"] == 1
+    assert call["hint"]["items"][0]["item_id"].startswith("structure|10.0.0.5|fail_ratio|")
+    assert call["force"] is True
