@@ -697,7 +697,9 @@ export class Analyst {
         const caseKind = task.kind === 'obs_case' || task.kind === 'struct_case' || task.kind === 'hit_case'
 
         let loaderReady = false
-        try {
+        // 案件是窄分析：**不注册**扩面入口。注册后再 deny 会因名字未知让整个
+        // restrict 调用失败，反而把全量工具面留在模型面前（实测踩过）。
+        if (!caseKind) try {
           if (typeof agentCtx.tools?.register !== 'function') {
             throw new Error('agent tools.register 不可用')
           }
@@ -758,23 +760,29 @@ export class Analyst {
             error instanceof Error ? error.message : String(error),
           )
         }
-        // 只有加载工具确实注册成功才隐藏罕见工具组；否则宁可多带 schema，
-        // 也不能让模型看得见“按需激活”的说明却没有任何恢复入口。
-        if (loaderReady) {
+        if (caseKind) {
+          // 案件会话没有扩面入口：把非核心工具全部隐藏（deny 里只能出现真实存在的
+          // 工具名，否则 tools.restrict 会整体失败，反而留下全量工具面）。
           try {
-            if (caseKind) {
-              // 案件会话没有扩面入口：把非核心工具和 enable_analysis_tools 一起隐藏。
-              // 否则模型可以 all/other 一次把全量工具面拉回来，窄分析就形同虚设。
-              const coreSet = new Set(planned.core)
-              const deny = available.filter(name => !coreSet.has(name))
-              deny.push('enable_analysis_tools')
+            const coreSet = new Set(planned.core)
+            const deny = available.filter(name => !coreSet.has(name))
+            if (deny.length > 0) {
               const dispose = agentCtx.tools?.restrict?.({ deny })
               if (dispose !== undefined) groupDisposers.set('__case', dispose)
-            } else if (planned.core.length > 0) {
-              for (const [group, tools] of Object.entries(planned.groups)) {
-                const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
-                if (dispose !== undefined) groupDisposers.set(group, dispose)
-              }
+            }
+          } catch (error) {
+            console.warn(
+              '[xdr-ingest] 无法隐藏案件非核心工具：',
+              error instanceof Error ? error.message : String(error),
+            )
+          }
+        } else if (loaderReady && planned.core.length > 0) {
+          // 只有加载工具确实注册成功才隐藏罕见工具组；否则宁可多带 schema，
+          // 也不能让模型看得见“按需激活”的说明却没有任何恢复入口。
+          try {
+            for (const [group, tools] of Object.entries(planned.groups)) {
+              const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
+              if (dispose !== undefined) groupDisposers.set(group, dispose)
             }
           } catch (error) {
             console.warn(
