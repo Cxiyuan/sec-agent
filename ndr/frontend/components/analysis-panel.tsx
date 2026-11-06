@@ -1852,6 +1852,12 @@ const KIND_LABEL_FALLBACK: Record<string, string> = {
   hit_cluster: "命中簇",
   retest: "复测",
   observation: "基线事实",
+  obs_digest: "观察摘要",
+  obs_case: "观察案件",
+  struct_digest: "结构摘要",
+  struct_case: "结构案件",
+  hit_digest: "命中摘要",
+  hit_case: "命中案件",
 };
 
 const TASK_KIND_LABEL_FALLBACK: Record<string, string> = KIND_LABEL_FALLBACK;
