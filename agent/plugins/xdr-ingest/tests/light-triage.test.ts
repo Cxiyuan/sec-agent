@@ -318,6 +318,28 @@ test('digest gate：兼容对象形式的 attention（但仍受白名单约束�
   )
 })
 
+test('digest gate：命中簇提示明确“规则命中本身不是点名理由”', () => {
+  const hitTask: ClaimedTask = {
+    ...task,
+    kind: 'hit_digest',
+    hint: {
+      items: [
+        { item_id: 'hit|c1', kind: 'hit_cluster', subject: '10.0.0.5', strength: 0.6, facts: { 规则: ['端口扫描'] } },
+      ],
+    },
+  }
+  const hitPrompt = buildDigestPrompt(hitTask)
+  assert.match(hitPrompt, /规则命中本身不是点名理由/u)
+  assert.match(hitPrompt, /不点名/u)
+  // 观察摘要不出现命中簇专属判断，避免给闸门多余指令。
+  const obsTask: ClaimedTask = {
+    ...task,
+    kind: 'obs_digest',
+    hint: { items: [{ observation_id: 'o1', kind: 'egress_new', subject: '10.0.0.5', strength: 0.5, facts: {} }] },
+  }
+  assert.doesNotMatch(buildDigestPrompt(obsTask), /规则命中本身不是点名理由/u)
+})
+
 test('digest gate：一次无工具调用，模型只拿压缩事实', async () => {
   let body: Record<string, unknown> | null = null
   const fetchImpl: typeof fetch = async (_url, init) => {

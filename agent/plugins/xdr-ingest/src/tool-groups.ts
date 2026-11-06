@@ -60,7 +60,6 @@ export const HIT_CASE_TOOLS: readonly string[] = [
   'hit_clusters',
   'get_event_detail',
   'raw_evidence',
-  'search_events',
   'domain_intel',
   'list_networks',
   'complete_task',
