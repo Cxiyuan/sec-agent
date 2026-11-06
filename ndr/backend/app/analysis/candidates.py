@@ -840,7 +840,7 @@ def flush(collector: Collector, client: Any, *, stats: Any = None) -> dict[str, 
         log.warning("线索生成（首见登记）失败：%s", exc)
         queue.bump(client, "candidate_error")
         return out
-    if "structure" in params.candidate_kinds():
+    if ({"struct_digest", "structure"} & params.candidate_kinds()):
         out["structure"] = _structure_tasks(fail_events, total_events, window_start, now, client)
     if stats is not None:
         try:
@@ -857,8 +857,27 @@ def _structure_tasks(
     now: datetime,
     client: Any,
 ) -> int:
-    """轻量结构特征：失败响应占比异常高（只给事实，不说是攻击）。"""
-    made = 0
+    """结构失败率 → 小时摘要（不再逐条起完整 agent）。
+
+    结构类线索历史上几乎全是 FP（失败率高的正常业务/扫描器），逐条跑完整会话
+    性价比极低。这里只产出一条 `struct_digest`，由便宜闸门挑出需要调查的对象；
+    只有被点名的条目才生成 `struct_case`。
+    """
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    subject = f"structure-digest:{hour_key}"
+    with SessionLocal() as db:
+        existing = db.scalars(
+            select(AnalysisTask)
+            .where(
+                AnalysisTask.kind == "struct_digest",
+                AnalysisTask.subject == subject,
+                AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
+            )
+            .limit(1)
+        ).first()
+        if existing is not None:
+            return 0
+    items: list[dict[str, Any]] = []
     for src, fails in fail_events.items():
         total = total_events.get(src, 0) or 1
         if fails < _MIN_FAIL_EVENTS or (fails / total) < _FAIL_RATIO:
@@ -866,26 +885,46 @@ def _structure_tasks(
         strength = feedback.apply(combined_strength(scale_strength(fails), 0.5), "structure", src)
         # 冷启动保护：结构特征也是冷启动噪声大户（大量链路第一次出现）
         strength = cold_start_mod.damped(strength, client)
-        result = queue.enqueue(
-            kind="structure",
-            subject_kind="ip",
-            subject=src,
-            strength=strength,
-            feature="fail_ratio",
-            hint={
-                "事实": f"本窗口失败响应 {fails}/{total}（占比 {fails / total:.0%}）",
-                "窗口": f"{window_start or ''}",
-                "客观强度": strength,
+        items.append(
+            {
+                "item_id": f"structure|{src}|fail_ratio|{hour_key}",
+                "subject_kind": "ip",
+                "subject": src,
+                "strength": strength,
+                "facts": {
+                    "事实": f"本窗口失败响应 {fails}/{total}（占比 {fails / total:.0%}）",
+                    "窗口": f"{window_start or ''}",
+                    "失败数": fails,
+                    "总数": total,
+                },
                 "reuse_identity": f"structure|{src}|fail_ratio",
-            },
-            window_start=now - timedelta(minutes=30),
-            window_end=now,
-            client=client,
+            }
         )
-        if result in ("new", "merged"):
-            made += 1
-    return made
-
+    if not items:
+        return 0
+    items = items[:30]
+    result = queue.enqueue(
+        kind="struct_digest",
+        subject_kind="digest",
+        subject=subject,
+        strength=max(float(item["strength"]) for item in items),
+        feature="struct_digest",
+        hint={
+            "任务类型": "struct_digest",
+            "窗口": hour_key,
+            "条目数": len(items),
+            "items": items,
+            "要求": "只挑出需要完整调查的 item_id；不直接下结论、不建抑制。",
+        },
+        window_start=now - timedelta(minutes=30),
+        window_end=now,
+        client=client,
+        force=True,
+    )
+    if result in ("new", "merged"):
+        queue.bump(client, "struct_digest_enqueued", 1)
+        return 1
+    return 0
 
 def enqueue_suppression_followup(client: Any) -> int:
     """降级的精准抑制 → 一条待办任务（让智能体自己收窄后同名重提）。

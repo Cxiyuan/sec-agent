@@ -152,7 +152,7 @@ export function buildDigestPrompt(task: ClaimedTask): string {
     const row = (item && typeof item === 'object') ? item as Record<string, unknown> : {}
     const facts = row['facts']
     return {
-      id: String(row['observation_id'] ?? ''),
+      id: String(row['observation_id'] ?? row['item_id'] ?? ''),
       n: index + 1,
       kind: String(row['kind'] ?? ''),
       subject_kind: String(row['subject_kind'] ?? ''),
@@ -356,7 +356,8 @@ export class LightTriage {
     const allowed = new Set<string>()
     for (const item of items) {
       if (!item || typeof item !== 'object') continue
-      const id = String((item as Record<string, unknown>)['observation_id'] ?? '').trim()
+      const row = item as Record<string, unknown>
+      const id = String(row['observation_id'] ?? row['item_id'] ?? '').trim()
       if (id !== '') allowed.add(id)
     }
     if (allowed.size === 0) return { attention: [], model: config.model, ms: 0 }

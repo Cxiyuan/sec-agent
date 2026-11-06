@@ -75,6 +75,8 @@ export const TASK_KIND_LABEL: Record<string, string> = {
   observation: "观察（旧）",
   obs_digest: "观察摘要",
   obs_case: "观察案件",
+  struct_digest: "结构摘要",
+  struct_case: "结构案件",
 };
 
 /** 对象类型中文。前 6 个是 `observed_subjects.kind`，后 4 个是任务里的 `subject_kind`。 */

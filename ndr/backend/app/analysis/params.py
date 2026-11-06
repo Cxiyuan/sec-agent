@@ -30,7 +30,7 @@ KNOBS: tuple[Knob, ...] = (
     Knob("analysis.enabled", "启用派工队列", "bool", True,
          note="关掉后不再生成新任务（已有任务保留，智能体仍可领取）"),
     Knob("analysis.candidate_kinds", "生成哪些线索", "text",
-         "novelty,obs_digest,hit_cluster",
+         "novelty,obs_digest,struct_digest,hit_cluster",
          note=(
              "逗号分隔。hit（逐条规则命中）/shift 默认关闭（只作为事实/证据，不再单独派工）；"
              "hit_cluster = 命中簇，以资产为中心把一次扫描折成一件（D2，全局默认开）；"
@@ -125,7 +125,7 @@ EDITABLE_KEYS: tuple[str, ...] = tuple(_BY_KEY)
 #: 扫描类的几十条同因事件不再靠单条 hit 排队。
 KINDS: tuple[str, ...] = (
     "novelty", "shift", "structure", "coverage", "hit", "hit_cluster", "retest", "observation",
-    "obs_digest", "obs_case",
+    "obs_digest", "obs_case", "struct_digest", "struct_case",
 )
 def _num(knob: Knob) -> float:
     try:
@@ -163,7 +163,7 @@ def candidate_kinds() -> set[str]:
     """允许的线索类型（脏值忽略；全空则回落默认三类，避免"一个线索都不生成"）。"""
     raw = _text(_BY_KEY["analysis.candidate_kinds"]).lower()
     picked = {p.strip() for p in raw.split(",") if p.strip() in KINDS}
-    return picked or {"novelty", "obs_digest", "hit_cluster"}
+    return picked or {"novelty", "obs_digest", "struct_digest", "hit_cluster"}
 
 
 def cold_start_hours() -> int:

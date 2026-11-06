@@ -1936,18 +1936,23 @@ def escalate_digest(
         parent = db.get(AnalysisTask, tid)
         if parent is None:
             return {"error": "任务不存在"}
-        if str(parent.kind or "") != "obs_digest":
-            return {"error": "不是 obs_digest 任务", "kind": parent.kind}
+        digest_kind = str(parent.kind or "")
+        if digest_kind not in ("obs_digest", "struct_digest"):
+            return {"error": "不是 obs_digest/struct_digest 任务", "kind": parent.kind}
+        case_kind = "obs_case" if digest_kind == "obs_digest" else "struct_case"
         hint = dict(parent.hint or {})
         raw_items = hint.get("items")
         items = [
             item for item in (raw_items if isinstance(raw_items, list) else [])
             if isinstance(item, dict)
         ]
+        def item_id_of(item: dict[str, Any]) -> str:
+            return str(item.get("observation_id") or item.get("item_id") or "")
+
         by_id = {
-            str(item.get("observation_id") or ""): item
+            item_id_of(item): item
             for item in items
-            if str(item.get("observation_id") or "") != ""
+            if item_id_of(item) != ""
         }
         selected = [by_id[oid] for oid in wanted if oid in by_id][:10]
         rejected = len(wanted) - len(selected)
@@ -1963,22 +1968,22 @@ def escalate_digest(
         db.commit()
     made = 0
     for item in selected:
-        observation_id = str(item.get("observation_id") or "")
+        item_id = str(item.get("observation_id") or item.get("item_id") or "")
         hint = {
-            "observation_id": observation_id,
-            "事实类型": str(item.get("kind") or ""),
+            **({"observation_id": item_id} if digest_kind == "obs_digest" else {"item_id": item_id}),
+            "事实类型": str(item.get("kind") or ("structure_fail_ratio" if digest_kind == "struct_digest" else "")),
             "事实": item.get("facts") or {},
             "出现次数": int(item.get("count") or 0),
             "首次观测": str(item.get("first_seen") or ""),
             "最近观测": str(item.get("last_seen") or ""),
             "主体角色": "actor",
-            "reuse_identity": str(item.get("reuse_identity") or observation_id),
+            "reuse_identity": str(item.get("reuse_identity") or item_id),
             "digest_task_id": parent_id,
             "闸门关注": True,
             **({"相关规则命中": item.get("相关规则命中")} if item.get("相关规则命中") else {}),
         }
         result = enqueue(
-            kind="obs_case",
+            kind=case_kind,
             subject_kind=str(item.get("subject_kind") or "asset")[:32],
             subject=str(item.get("subject") or "")[:128],
             strength=float(item.get("strength") or 0.5),
