@@ -693,6 +693,8 @@ export class Analyst {
         const available = (agentCtx.tools?.schemas?.() ?? []).map(tool => tool.name)
         const planned = planToolGroups(available, task.kind)
         const groupDisposers = new Map<string, () => void>()
+        // 案件（obs/struct/hit case）是窄分析：不给扩面入口，非核心工具一律隐藏。
+        const caseKind = task.kind === 'obs_case' || task.kind === 'struct_case' || task.kind === 'hit_case'
 
         let loaderReady = false
         try {
@@ -758,11 +760,21 @@ export class Analyst {
         }
         // 只有加载工具确实注册成功才隐藏罕见工具组；否则宁可多带 schema，
         // 也不能让模型看得见“按需激活”的说明却没有任何恢复入口。
-        if (loaderReady && planned.core.length > 0) {
+        if (loaderReady) {
           try {
-            for (const [group, tools] of Object.entries(planned.groups)) {
-              const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
-              if (dispose !== undefined) groupDisposers.set(group, dispose)
+            if (caseKind) {
+              // 案件会话没有扩面入口：把非核心工具和 enable_analysis_tools 一起隐藏。
+              // 否则模型可以 all/other 一次把全量工具面拉回来，窄分析就形同虚设。
+              const coreSet = new Set(planned.core)
+              const deny = available.filter(name => !coreSet.has(name))
+              deny.push('enable_analysis_tools')
+              const dispose = agentCtx.tools?.restrict?.({ deny })
+              if (dispose !== undefined) groupDisposers.set('__case', dispose)
+            } else if (planned.core.length > 0) {
+              for (const [group, tools] of Object.entries(planned.groups)) {
+                const dispose = agentCtx.tools?.restrict?.({ deny: [...tools] })
+                if (dispose !== undefined) groupDisposers.set(group, dispose)
+              }
             }
           } catch (error) {
             console.warn(
@@ -2113,7 +2125,9 @@ function continuationPrompt(task: ClaimedTask, reason: string): string {
     '1. 先回顾已获得的证据，不要重复已经执行过的相同工具调用；历史里若有 `TOOL_OUTCOME_UNKNOWN`，先核实该操作是否已生效；',
     '2. 补查缺失证据；够用就立即调用 complete_task；',
     '3. 如果仍然缺关键证据，调用 complete_task 交回 inconclusive，并在 terminal_reason/evidence_gap 说明缺口；',
-    '4. 需要之前激活过的工具组时，重新调用 `enable_analysis_tools`（工具 scope 不随会话持久化）。',
+    ...(task.kind === 'obs_case' || task.kind === 'struct_case' || task.kind === 'hit_case'
+      ? ['4. 这是窄案件会话，没有扩面入口；用当前工具面完成，不要等待更多工具。']
+      : ['4. 需要之前激活过的工具组时，重新调用 `enable_analysis_tools`（工具 scope 不随会话持久化）。']),
   ].join('\n')
 }
 

@@ -61,6 +61,8 @@ test('hit_case 使用窄工具面：保留簇证据工具，去掉会话检索�
   assert.ok(planned.core.includes(`${prefix}submit_suppression`))
   assert.ok(!planned.core.includes(`${prefix}session_search`))
   assert.ok(!planned.core.includes(`${prefix}timeline`))
+  // 全量事件检索会把窄案件重新拖回“全量调查”，簇证据用 get_event_detail/raw_evidence 足够。
+  assert.ok(!planned.core.includes(`${prefix}search_events`))
   assert.deepEqual(planned.groups.network, [`${prefix}dns_queries`])
 })
 
