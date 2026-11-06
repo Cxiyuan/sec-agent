@@ -1365,7 +1365,17 @@ export type AnalysisTaskState =
   | "expired";
 
 /** 线索类型（`params.KINDS`） */
-export type AnalysisTaskKind = "novelty" | "shift" | "structure" | "coverage" | "hit";
+export type AnalysisTaskKind =
+  | "novelty"
+  | "shift"
+  | "structure"
+  | "coverage"
+  | "hit"
+  | "hit_cluster"
+  | "retest"
+  | "observation"
+  | "observation_digest"
+  | "observation_case";
 
 /** 任务结论（`analysis/verdicts.py` 的结论态；`pending`/`done` 是流程态不算判定） */
 export type AnalysisVerdict =

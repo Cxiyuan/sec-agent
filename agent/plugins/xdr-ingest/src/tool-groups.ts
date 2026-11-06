@@ -47,11 +47,27 @@ export const CORE_AGENT_TOOLS: readonly string[] = [
   'session_event_read',
 ]
 
+/** observation_case 的窄工具面：先看事实/资产/基线/域名，不做全量调查。 */
+export const OBSERVATION_CASE_TOOLS: readonly string[] = [
+  'task_facts',
+  'asset_context',
+  'egress_baseline',
+  'domain_intel',
+  'prior_findings',
+  'get_rule',
+  'list_networks',
+  'search_hits',
+  'complete_task',
+  'submit_suppression',
+]
+
 /** 分析会话永久禁用的工具：只能处理派给自己的那条任务。 */
 export const ALWAYS_DENY_TOOLS: readonly string[] = [
   'mcp__ndr__claim_tasks',
   // 租约心跳是插件运行层职责，模型不需要/不应该改租约。
   'mcp__ndr__renew_task_lease',
+  // 摘要分流是插件运行层职责，不能由模型自己扩案。
+  'mcp__ndr__escalate_digest',
 ]
 
 /** 非 NDR 的按需能力组；与 MCP 组一样可通过 enable_analysis_tools 激活。 */
@@ -114,11 +130,14 @@ function withPrefix(name: string): string {
  * 只返回实际存在的名字，避免 `tools.restrict` 因未知工具整体失败；
  * `other` 收容未显式分组的新 MCP 工具，保证以后新增能力可通过 `all` 激活。
  */
-export function planToolGroups(available: readonly string[]): PlannedToolGroups {
+export function planToolGroups(
+  available: readonly string[],
+  kind = '',
+): PlannedToolGroups {
   const existing = new Set(available)
   const core = [
-    ...CORE_NDR_TOOLS.map(withPrefix),
-    ...CORE_AGENT_TOOLS,
+    ...(kind === 'observation_case' ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
+    ...(kind === 'observation_case' ? [] : CORE_AGENT_TOOLS),
   ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}

@@ -72,6 +72,8 @@ export type TriageResult =
 /** Analyst 用的初筛端口（测试里可换成桩实现）。 */
 export interface LightTriagePort {
   triage(task: ClaimedTask): Promise<TriageResult>
+  /** Observation digest 分流（可选；旧宿主的初筛没有这个能力时 digest 会 defer）。 */
+  gate?(task: ClaimedTask): Promise<DigestGateResult | { readonly error: string }>
 }
 
 /** 初筛用的系统提示（短：约束全在 user 提示里，这里只钉住输出形状）。 */
@@ -121,6 +123,95 @@ export function buildLightPrompt(task: ClaimedTask): string {
     '只输出 JSON。',
   ]
   return lines.join('\n')
+}
+
+/** 摘要闸门的结果：只点名需要完整调查的 observation，不下结论。 */
+export interface DigestGateResult {
+  readonly attention: readonly string[]
+  readonly model: string
+  readonly ms: number
+}
+
+/** Agent 用的摘要闸门端口（测试里可换成桩实现）。 */
+export interface DigestGatePort {
+  gate(task: ClaimedTask): Promise<DigestGateResult | { readonly error: string }>
+}
+
+const DIGEST_SYSTEM_PROMPT
+  = '你是安全观察摘要的**分流器**，不是分析器。只输出一个 JSON 对象：'
+  + '{"attention":["observation_id", "..."]}。'
+  + '只点名需要完整调查的条目；不要判断 benign/true_positive，不要解释，不要代码块。'
+  + '/no_think'
+
+/** 摘要闸门的 user 提示：只喂压缩事实表，不给工具。 */
+export function buildDigestPrompt(task: ClaimedTask): string {
+  const hint = task.hint as Record<string, unknown> | null
+  const raw = hint?.['items']
+  const items = Array.isArray(raw) ? raw.slice(0, 30) : []
+  const compact = items.map((item, index) => {
+    const row = (item && typeof item === 'object') ? item as Record<string, unknown> : {}
+    const facts = row['facts']
+    return {
+      id: String(row['observation_id'] ?? ''),
+      n: index + 1,
+      kind: String(row['kind'] ?? ''),
+      subject_kind: String(row['subject_kind'] ?? ''),
+      subject: String(row['subject'] ?? ''),
+      strength: Number(row['strength'] ?? 0),
+      count: Number(row['count'] ?? 0),
+      first_seen: String(row['first_seen'] ?? ''),
+      last_seen: String(row['last_seen'] ?? ''),
+      facts: truncateJson(facts, 500),
+      rules: Array.isArray(row['相关规则命中'])
+        ? (row['相关规则命中'] as unknown[]).slice(0, 5).map(rule => {
+            const r = (rule && typeof rule === 'object') ? rule as Record<string, unknown> : {}
+            return { rule: String(r['rule'] ?? ''), count: Number(r['count'] ?? 0) }
+          })
+        : [],
+    }
+  })
+  return [
+    '下面是安全观察事实的压缩表。只挑出需要完整调查的条目，其余留给台账。',
+    '判断优先级：未知目的地/域名、服务器资产、非标端口、失败/异常行为、规则命中、',
+    '与资产历史基线冲突。不要把“首次出现”本身当成攻击。',
+    '只允许输出 JSON：{"attention":["id"]}；最多 10 个；id 必须来自下面列表。',
+    '<facts>',
+    JSON.stringify(compact),
+    '</facts>',
+    '只输出 JSON。',
+  ].join('\n')
+}
+
+/** 解析闸门输出：只接受 attention 字符串数组，且必须是输入里存在的 id。 */
+export function parseDigestOutput(raw: string, allowedIds: ReadonlySet<string>):
+  | { readonly attention: readonly string[] }
+  | { readonly error: string } {
+  const text = stripNoise(raw)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { error: '输出不是合法 JSON' }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { error: '输出不是 JSON 对象' }
+  }
+  const row = parsed as Record<string, unknown>
+  const keys = Object.keys(row)
+  if (keys.length !== 1 || keys[0] !== 'attention') {
+    return { error: `字段不符（需要且仅需要 attention，实际 ${keys.join(',') || '空'}）` }
+  }
+  const rawAttention = row['attention']
+  if (!Array.isArray(rawAttention)) return { error: 'attention 必须是数组' }
+  const attention: string[] = []
+  for (const item of rawAttention) {
+    if (typeof item !== 'string' || item.trim() === '') continue
+    const id = item.trim()
+    if (!allowedIds.has(id)) continue
+    if (!attention.includes(id)) attention.push(id)
+    if (attention.length >= 10) break
+  }
+  return { attention }
 }
 
 /** hint 是任意 JSON：先序列化再截断（长 hint 截断后仍在数据位，不进指令位）。 */
@@ -210,6 +301,8 @@ function sanitizeSummary(raw: string): string {
 export interface LightTriageOptions {
   /** 当前生效配置（每任务现取，控制台改了下一个任务就生效）。 */
   readonly config: () => LightTriageConfig
+  /** 配置里 apiKey 为空时从 dsh 凭据服务/环境变量解析（摘要闸门用）。 */
+  readonly resolveApiKey?: () => Promise<string | undefined>
   /** 可注入 fetch（测试用）。 */
   readonly fetchImpl?: typeof fetch
   /** 可注入随机数（抽检测试用）。 */
@@ -245,6 +338,44 @@ export class LightTriage {
       last_error: this.lastError,
       breaker: this.breaker.state(),
       response_format: this.useResponseFormat,
+    }
+  }
+
+  /**
+   * 观察摘要分流：一次便宜模型调用，只返回需要完整调查的 observation id。
+   * 失败/禁用时不回退到“全量跑 agent”，由调用方 defer；否则又会回到烧 token 的老路。
+   */
+  async gate(task: ClaimedTask): Promise<DigestGateResult | { readonly error: string }> {
+    const config = this.options.config()
+    if (!config.enabled || config.baseUrl.trim() === '') {
+      return { error: '摘要闸门未启用或未配置端点' }
+    }
+    const hint = task.hint as Record<string, unknown> | null
+    const raw = hint?.['items']
+    const items = Array.isArray(raw) ? raw : []
+    const allowed = new Set<string>()
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue
+      const id = String((item as Record<string, unknown>)['observation_id'] ?? '').trim()
+      if (id !== '') allowed.add(id)
+    }
+    if (allowed.size === 0) return { attention: [], model: config.model, ms: 0 }
+    const startedAt = Date.now()
+    try {
+      const content = await this.callDigest(config, task)
+      const parsed = parseDigestOutput(content, allowed)
+      if ('error' in parsed) {
+        this.counters.invalid += 1
+        this.lastError = parsed.error.slice(0, 300)
+        return { error: parsed.error }
+      }
+      this.counters.calls += 1
+      return { attention: parsed.attention, model: config.model, ms: Date.now() - startedAt }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.counters.errors += 1
+      this.lastError = message.slice(0, 300)
+      return { error: message }
     }
   }
 
@@ -307,6 +438,37 @@ export class LightTriage {
     return { kind: 'closed', verdict: parsed.verdict, confidence: parsed.confidence, summary: parsed.summary, model: config.model, ms }
   }
 
+  /** 摘要闸门的一次 OpenAI 兼容调用。 */
+  private async callDigest(config: LightTriageConfig, task: ClaimedTask): Promise<string> {
+    const url = `${config.baseUrl.replace(/\/+$/u, '')}/chat/completions`
+    const body: Record<string, unknown> = {
+      model: config.model,
+      messages: [
+        { role: 'system', content: DIGEST_SYSTEM_PROMPT },
+        { role: 'user', content: buildDigestPrompt(task) },
+      ],
+      temperature: 0,
+      max_tokens: 512,
+    }
+    let response = await this.post(url, body, config, this.useResponseFormat, this.useThinkingOff)
+    if (
+      response.status >= 400
+      && this.useThinkingOff
+      && /chat_template_kwargs|enable_thinking|unknown.*field/iu.test(response.text)
+    ) {
+      this.useThinkingOff = false
+      response = await this.post(url, body, config, this.useResponseFormat, false)
+    }
+    if (response.status >= 400 && this.useResponseFormat && /response_?format/iu.test(response.text)) {
+      this.useResponseFormat = false
+      response = await this.post(url, body, config, false, this.useThinkingOff)
+    }
+    if (response.status < 100 || response.status >= 400) {
+      throw new Error(`摘要闸门 HTTP ${response.status}：${response.text.slice(0, 200)}`)
+    }
+    return extractContent(response.text)
+  }
+
   /** 一次 OpenAI 兼容调用，返回 `choices[0].message.content` 原文。 */
   private async call(config: LightTriageConfig, task: ClaimedTask): Promise<string> {
     const url = `${config.baseUrl.replace(/\/+$/u, '')}/chat/completions`
@@ -348,7 +510,10 @@ export class LightTriage {
     withThinkingOff: boolean,
   ): Promise<{ status: number, text: string }> {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (config.apiKey !== '') headers['authorization'] = `Bearer ${config.apiKey}`
+    const apiKey = config.apiKey !== ''
+      ? config.apiKey
+      : (this.options.resolveApiKey === undefined ? '' : await this.options.resolveApiKey() ?? '')
+    if (apiKey !== '') headers['authorization'] = `Bearer ${apiKey}`
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), Math.max(1_000, config.timeoutMs))
     try {

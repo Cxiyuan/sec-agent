@@ -1251,6 +1251,16 @@ def _renew_task_lease(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _escalate_digest(args: dict[str, Any]) -> dict[str, Any]:
+    """价值闸门：把 digest 里 attention 的 observation 转成完整案件。"""
+    return analysis_queue.escalate_digest(
+        _client(),
+        str(args.get("task_id") or ""),
+        [str(x) for x in (args.get("attention_ids") or []) if str(x).strip()],
+        note=str(args.get("note") or ""),
+        token=str(args.get("_token") or "mcp"),
+    )
+
 def _task_stats(args: dict[str, Any]) -> dict[str, Any]:
     """队列与成本总览：智能体据此自我节流，运维据此看积压与覆盖率。"""
     out = analysis_queue.stats(_client())
@@ -1991,6 +2001,15 @@ TOOLS: dict[str, dict[str, Any]] = {
         "desc": "给当前分析会话续租（仅任务持有者；不改 state/attempts）。Agent 运行层使用，模型无需调用",
         "params": {"task_id": "任务 ID"},
     },
+    "escalate_digest": {
+        "run": _escalate_digest,
+        "desc": "价值闸门分流：只把 digest 中被点名的 observation 转成完整案件，不直接下结论",
+        "params": {
+            "task_id": "observation_digest 任务 ID",
+            "attention_ids": "需要升级的 observation_id 列表",
+            "note": "分流说明（可选）",
+        },
+    },
     "egress_baseline": {
         "run": _egress_baseline,
         "desc": (
@@ -2188,3 +2207,5 @@ def dispatch(name: str, params: dict[str, Any]) -> dict[str, Any]:
         return result if isinstance(result, dict) else {"result": result}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"工具执行失败：{exc}"}
+
+

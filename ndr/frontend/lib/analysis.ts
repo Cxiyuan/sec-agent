@@ -63,13 +63,18 @@ export const TASK_STATE_VARIANT: Record<string, BadgeVariant> = {
   expired: "outline",
 };
 
-/** 线索类型中文（`analysis/params.py::KINDS` 的 5 种）。 */
+/** 线索类型中文（与 `analysis/params.py::KINDS` 对齐）。 */
 export const TASK_KIND_LABEL: Record<string, string> = {
   novelty: "新现象",
   shift: "漂移",
   structure: "结构",
-  coverage: "覆盖",
+  coverage: "覆盖（已退役）",
   hit: "命中",
+  hit_cluster: "命中簇",
+  retest: "复测",
+  observation: "观察（旧）",
+  observation_digest: "观察摘要",
+  observation_case: "观察案件",
 };
 
 /** 对象类型中文。前 6 个是 `observed_subjects.kind`，后 4 个是任务里的 `subject_kind`。 */

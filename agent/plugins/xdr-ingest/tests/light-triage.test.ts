@@ -7,7 +7,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { LightTriage, buildLightPrompt, parseTriageOutput } from '../src/light-triage.ts'
+import { LightTriage, buildDigestPrompt, buildLightPrompt, parseDigestOutput, parseTriageOutput } from '../src/light-triage.ts'
 import type { ClaimedTask } from '../src/claim-loop.ts'
 import type { LightTriageConfig } from '../src/settings.ts'
 
@@ -296,4 +296,37 @@ test('triage：成功路径计数与响应头令牌', async () => {
   const stats = triage.stats()
   assert.equal(stats['closed'], 1)
   assert.equal(stats['errors'], 0)
+})
+
+test('digest gate：只接受输入里存在的 attention id', () => {
+  const allowed = new Set(['o1', 'o2'])
+  assert.deepEqual(parseDigestOutput('{"attention":["o2","o2","o3"]}', allowed), { attention: ['o2'] })
+  assert.equal('error' in parseDigestOutput('{"attention":["o2"],"verdict":"benign"}', allowed), true)
+  assert.equal('error' in parseDigestOutput('{"attention":["o2"]', allowed), true)
+})
+
+test('digest gate：一次无工具调用，模型只拿压缩事实', async () => {
+  let body: Record<string, unknown> | null = null
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return new Response(okBody('{"attention":["o2"]}'), { status: 200 })
+  }
+  const digestTask: ClaimedTask = {
+    ...task,
+    kind: 'observation_digest',
+    hint: {
+      items: [
+        { observation_id: 'o1', kind: 'egress_new', subject: '10.0.0.5', strength: 0.5, facts: { x: 1 } },
+        { observation_id: 'o2', kind: 'profile_anomaly', subject: '10.0.0.5', strength: 0.9, facts: { y: 2 } },
+      ],
+    },
+  }
+  const result = await client(cfg(), fetchImpl).gate(digestTask)
+  assert.equal('error' in result, false)
+  if ('attention' in result) assert.deepEqual(result.attention, ['o2'])
+  const messages = body?.['messages'] as Array<{ role: string, content: string }>
+  assert.match(messages[0]?.content ?? '', /分流器/u)
+  assert.match(messages[1]?.content ?? '', /o1/u)
+  assert.equal(body?.['temperature'], 0)
+  assert.equal(body?.['max_tokens'], 512)
 })

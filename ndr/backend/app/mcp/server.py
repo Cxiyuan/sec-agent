@@ -490,6 +490,22 @@ def renew_task_lease(task_id: str = "") -> str:
     )
 
 
+def escalate_digest(
+    task_id: str = "",
+    attention_ids: list[str] | None = None,
+    note: str = "",
+) -> str:
+    """价值闸门分流：只把 digest 中 attention 的 observation 转成完整案件。"""
+    return _run(
+        "escalate_digest",
+        _with_ctx(
+            "escalate_digest",
+            _clean(task_id=task_id, attention_ids=attention_ids or [], note=note),
+        ),
+        native=True,
+    )
+
+
 def task_state(task_id: str = "") -> str:
     """查单条任务的状态与结论：会话结束前用它确认"到底交回没有"。"""
     return _run("task_state", _clean(task_id=task_id), native=True)
@@ -851,6 +867,7 @@ _NDR_TOOL_FUNCS = (
     complete_task,
     defer_task,
     renew_task_lease,
+    escalate_digest,
     task_state,
     log_step,
     search_traces,
@@ -938,6 +955,7 @@ _TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "defer_task",
         # 运行层心跳；xdr-ingest 在模型工具面 deny 掉，其它调用方即使看到也只能续自己的租约
         "renew_task_lease",
+        "escalate_digest",
         "task_state",
         # 过程/成本观测：看队列与自己的预算，决定领取节奏；查轨迹避免重复取数
         "task_stats",
@@ -1008,6 +1026,8 @@ def _instructions_for(allowed: Collection[str] | None) -> str:
             claim_line += "task_stats 看队列/成本总览与覆盖率。"
         if has("renew_task_lease"):
             claim_line += "renew_task_lease 由智能体运行层做租约心跳，模型无需主动调用。"
+        if has("escalate_digest"):
+            claim_line += "escalate_digest 由价值闸门把摘要里需要调查的 observation 转成案件，模型无需主动调用。"
         parts.append(claim_line)
 
     history: list[str] = []

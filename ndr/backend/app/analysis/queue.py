@@ -1912,3 +1912,93 @@ def _result_dict(row: AnalysisResult, *, with_detail: bool = False) -> dict[str,
         payload["findings"] = dict(row.findings or {})
         payload["digested_at"] = row.digested_at.isoformat() if row.digested_at else None
     return payload
+
+
+def escalate_digest(
+    client: Any,
+    task_id: str,
+    attention_ids: list[str],
+    *,
+    note: str = "",
+    token: str = "",
+) -> dict[str, Any]:
+    """价值闸门分流结果：把 digest 中 attention 的 observation 变成完整案件。
+
+    闸门本身不下结论、不建抑制；这里只负责把被点名的条目转成
+    `observation_case`，由完整 agent 继续取证。digest 任务置 done，
+    但不写 AnalysisResult（它不是分析结论）。
+    """
+    tid = str(task_id or "").strip()
+    wanted = {str(x).strip() for x in (attention_ids or []) if str(x).strip()}
+    if tid == "":
+        return {"error": "task_id 必填", "field": "task_id"}
+    with SessionLocal() as db:
+        parent = db.get(AnalysisTask, tid)
+        if parent is None:
+            return {"error": "任务不存在"}
+        if str(parent.kind or "") != "observation_digest":
+            return {"error": "不是 observation_digest 任务", "kind": parent.kind}
+        hint = dict(parent.hint or {})
+        raw_items = hint.get("items")
+        items = [
+            item for item in (raw_items if isinstance(raw_items, list) else [])
+            if isinstance(item, dict)
+        ]
+        by_id = {
+            str(item.get("observation_id") or ""): item
+            for item in items
+            if str(item.get("observation_id") or "") != ""
+        }
+        selected = [by_id[oid] for oid in wanted if oid in by_id][:10]
+        rejected = len(wanted) - len(selected)
+        now = datetime.now(UTC)
+        parent_id = str(parent.id)
+        parent_depth = int(parent.depth or 0)
+        window_start = parent.window_start
+        window_end = parent.window_end
+        parent.state = "done"
+        parent.lease_until = None
+        parent.updated_at = now
+        parent.note = (note or f"价值闸门分流：attention {len(selected)} / 条目 {len(items)}")[:200]
+        db.commit()
+    made = 0
+    for item in selected:
+        observation_id = str(item.get("observation_id") or "")
+        hint = {
+            "observation_id": observation_id,
+            "事实类型": str(item.get("kind") or ""),
+            "事实": item.get("facts") or {},
+            "出现次数": int(item.get("count") or 0),
+            "首次观测": str(item.get("first_seen") or ""),
+            "最近观测": str(item.get("last_seen") or ""),
+            "主体角色": "actor",
+            "reuse_identity": str(item.get("reuse_identity") or observation_id),
+            "digest_task_id": parent_id,
+            "闸门关注": True,
+            **({"相关规则命中": item.get("相关规则命中")} if item.get("相关规则命中") else {}),
+        }
+        result = enqueue(
+            kind="observation_case",
+            subject_kind=str(item.get("subject_kind") or "asset")[:32],
+            subject=str(item.get("subject") or "")[:128],
+            strength=float(item.get("strength") or 0.5),
+            feature="observation_case",
+            hint=hint,
+            window_start=window_start,
+            window_end=window_end,
+            parent_id=parent_id,
+            depth=parent_depth + 1,
+            client=client,
+            force=True,
+        )
+        if result in ("new", "merged"):
+            made += 1
+    bump(client, "observation_case_escalated", made)
+    return {
+        "ok": True,
+        "task_id": tid,
+        "accepted": made,
+        "attention": len(selected),
+        "rejected": rejected,
+        "claimed_by": str(token or "")[:64],
+    }

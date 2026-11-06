@@ -890,20 +890,20 @@ def _analysis_round(
         made = candidates.flush(collector, client, stats=stats)
         stats["candidate_novelty"] += int(made.get("novelty") or 0)
         stats["candidate_structure"] += int(made.get("structure") or 0)
-        # 行为基线事实 → 任务（事实在前、判断在后：hint 里不带任何结论/严重度）
-        if now - float(state.get("last_observation") or 0.0) >= 300:
-            state["last_observation"] = now
-            stats["candidate_observation"] += candidates.enqueue_observations(client)
+        # 行为基线事实 → 小时摘要（事实在前、判断在后：hint 里不带任何结论/严重度）。
+        # 2026-11 成本整改：不再逐条 observation 起完整 agent；只建一条 digest，
+        # 由便宜闸门挑出需要完整调查的条目。
+        digest_gap = 3600 * cold_start.interval_scale(client)
+        if now - float(state.get("last_observation_digest") or 0.0) >= digest_gap:
+            state["last_observation_digest"] = now
+            stats["candidate_observation_digest"] += candidates.enqueue_observation_digest(client)
         # 命中簇（D2）：节拍与 observation 同步（300 秒，落在 5–10 分钟要求内）；
         # 开关走 analysis.candidate_kinds（移除 hit_cluster 即回滚，不部署侧改动）
         if now - float(state.get("last_hit_cluster") or 0.0) >= 300:
             state["last_hit_cluster"] = now
             stats["candidate_hit_cluster"] += candidates.enqueue_hit_clusters(client)
-        # 冷启动期把盲区扫描降频（放大倍数可调，见 params.cold_start_scale）
-        coverage_gap = 6 * 3600 * cold_start.interval_scale(client)
-        if now - float(state.get("last_coverage") or 0.0) >= coverage_gap:
-            state["last_coverage"] = now
-            stats["candidate_coverage"] += candidates.enqueue_coverage(client)
+        # Coverage 不再是模型任务（2026-11 成本整改）：覆盖率只进资产/服务台账，
+        # 由 subjects.coverage 与界面展示；这里不再生成 coverage task。
         # 复测与冷摘要：低频（6 小时一次）的"回头看"任务。
         # 放在这里而不是新容器里，理由与候选生成相同：零新增部署单元。
         if now - float(state.get("last_retest") or 0.0) >= 6 * 3600:
