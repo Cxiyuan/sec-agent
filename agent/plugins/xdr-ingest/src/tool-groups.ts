@@ -136,8 +136,8 @@ export function planToolGroups(
 ): PlannedToolGroups {
   const existing = new Set(available)
   const core = [
-    ...(kind === 'obs_case' ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
-    ...(kind === 'obs_case' ? [] : CORE_AGENT_TOOLS),
+    ...((kind === 'obs_case' || kind === 'struct_case') ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
+    ...((kind === 'obs_case' || kind === 'struct_case') ? [] : CORE_AGENT_TOOLS),
   ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}
