@@ -308,7 +308,7 @@ export class Analyst {
       subject: task.subject,
       model: 'observation-gate',
       startedAt: new Date().toISOString(),
-      decision: { action: 'observation_digest', phase: 'digest' },
+      decision: { action: 'obs_digest', phase: 'digest' },
     }) ?? 0
     const attempt = rawAttempt > 0 ? rawAttempt : 1
     const gate = this.options.lightTriage?.gate
@@ -345,7 +345,7 @@ export class Analyst {
       return this.deferDigest(task, attempt, startedAt, 'digest_escalate_failed')
     }
     const decision = {
-      action: 'observation_digest',
+      action: 'obs_digest',
       attention: [...result.attention],
       gate_model: result.model,
       gate_ms: result.ms,
@@ -391,7 +391,7 @@ export class Analyst {
     startedAt: number,
     reason: string,
   ): Promise<AnalystOutcome> {
-    const decision = { action: 'observation_digest_deferred', reason }
+    const decision = { action: 'obs_digest_deferred', reason }
     await this.finishProcess(task, 'deferred', startedAt, {
       verdict: '',
       note: `观察摘要闸门暂不可用：${reason}`,
@@ -482,7 +482,7 @@ export class Analyst {
   private async runUnlocked(task: ClaimedTask): Promise<AnalystOutcome> {
     const startedAt = Date.now()
     // 观察摘要不走 DSH：一次便宜模型调用只做分流；全量 agent 只处理 upgrade 出来的 case。
-    if (task.kind === 'observation_digest') {
+    if (task.kind === 'obs_digest') {
       return this.runObservationDigest(task, startedAt)
     }
     // 先回答“能不能续跑”。可恢复会话优先于复用/抑制/轻量初筛：快捷路径
@@ -772,7 +772,7 @@ export class Analyst {
         // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
         // 让任务成为模型眼里的“最后一条请求”。该上下文由 DSH 正常生成 id/source。
         try {
-          const taskText = task.kind === 'observation_case'
+          const taskText = task.kind === 'obs_case'
             ? buildObservationCasePrompt(promptTask, workflow)
             : buildAnalysisPrompt(promptTask, workflow)
           agentCtx.systemPrompt?.section?.({
@@ -971,7 +971,7 @@ export class Analyst {
       const followup = handle.agent.followup(followupMessage(
         resumable
           ? continuationPrompt(task, resumeReason)
-          : task.kind === 'observation_case'
+          : task.kind === 'obs_case'
           ? buildObservationCasePrompt(promptTask, workflow)
           : buildAnalysisPrompt(promptTask, workflow),
         this.options.source ?? 'xdr-ingest',

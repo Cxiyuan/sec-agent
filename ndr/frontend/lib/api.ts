@@ -1374,8 +1374,8 @@ export type AnalysisTaskKind =
   | "hit_cluster"
   | "retest"
   | "observation"
-  | "observation_digest"
-  | "observation_case";
+  | "obs_digest"
+  | "obs_case";
 
 /** 任务结论（`analysis/verdicts.py` 的结论态；`pending`/`done` 是流程态不算判定） */
 export type AnalysisVerdict =

@@ -1296,13 +1296,13 @@ def significance_for(value: float, mean: float, var: float) -> float:
 _OBS_DIGEST_MAX_ITEMS = 30
 
 
-def enqueue_observation_digest(client: Any) -> int:
+def enqueue_obs_digest(client: Any) -> int:
     """把最近一小时的 observation 折成一条摘要任务，交给便宜模型分流。
 
     与 `enqueue_observations` 的区别：后者逐条生成完整分析任务，会让每个新外连/
-    新端口都跑一轮 20 万 token 的调查。这里只产出一条 `observation_digest`，
+    新端口都跑一轮 20 万 token 的调查。这里只产出一条 `obs_digest`，
     由 Agent 的价值闸门（无工具、便宜模型）挑出真正需要完整调查的条目，
-    再由 `escalate_digest` 生成 `observation_case`。
+    再由 `escalate_digest` 生成 `obs_case`。
 
     只处理 `last_enqueued_at` 已过冷却期的事实；同一小时只建一条摘要。
     """
@@ -1318,7 +1318,7 @@ def enqueue_observation_digest(client: Any) -> int:
         existing = db.scalars(
             select(AnalysisTask)
             .where(
-                AnalysisTask.kind == "observation_digest",
+                AnalysisTask.kind == "obs_digest",
                 AnalysisTask.subject == subject,
                 AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
             )
@@ -1376,13 +1376,13 @@ def enqueue_observation_digest(client: Any) -> int:
             db.commit()
         return 0
     result = queue.enqueue(
-        kind="observation_digest",
+        kind="obs_digest",
         subject_kind="digest",
         subject=subject,
         strength=max(item["strength"] for item in items),
-        feature="observation_digest",
+        feature="obs_digest",
         hint={
-            "任务类型": "observation_digest",
+            "任务类型": "obs_digest",
             "窗口": hour_key,
             "条目数": len(items),
             "items": items,
@@ -1404,7 +1404,7 @@ def enqueue_observation_digest(client: Any) -> int:
                 if item is not None:
                     item.last_enqueued_at = now
             db.commit()
-        queue.bump(client, "observation_digest_enqueued", 1)
+        queue.bump(client, "obs_digest_enqueued", 1)
         return 1
     if suppressed_ids:
         with SessionLocal() as db:

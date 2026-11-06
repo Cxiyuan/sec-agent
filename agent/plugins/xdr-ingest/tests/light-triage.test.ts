@@ -313,7 +313,7 @@ test('digest gate：一次无工具调用，模型只拿压缩事实', async () 
   }
   const digestTask: ClaimedTask = {
     ...task,
-    kind: 'observation_digest',
+    kind: 'obs_digest',
     hint: {
       items: [
         { observation_id: 'o1', kind: 'egress_new', subject: '10.0.0.5', strength: 0.5, facts: { x: 1 } },

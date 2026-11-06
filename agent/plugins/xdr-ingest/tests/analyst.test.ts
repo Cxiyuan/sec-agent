@@ -1291,11 +1291,11 @@ test('observation digest 只走便宜闸门，不启动 DSH 会话', async () =>
   const digestTask: ClaimedTask = {
     ...task,
     id: 'task-digest',
-    kind: 'observation_digest',
+    kind: 'obs_digest',
     subject_kind: 'digest',
     subject: 'observation-digest:2026-11-06T04',
     hint: {
-      任务类型: 'observation_digest',
+      任务类型: 'obs_digest',
       items: [
         { observation_id: 'o1', kind: 'egress_new', subject: '10.0.0.5', subject_kind: 'asset', strength: 0.6, facts: {} },
         { observation_id: 'o2', kind: 'profile_anomaly', subject: '10.0.0.5', subject_kind: 'asset', strength: 0.8, facts: {} },
@@ -1317,5 +1317,5 @@ test('observation digest 只走便宜闸门，不启动 DSH 会话', async () =>
   assert.equal(rec.completed.length, 0)
   const proc = await store.getProcess('task-digest')
   assert.equal(proc?.outcome, 'triaged')
-  assert.equal(proc?.decision['action'], 'observation_digest')
+  assert.equal(proc?.decision['action'], 'obs_digest')
 })

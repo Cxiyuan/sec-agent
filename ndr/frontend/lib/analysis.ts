@@ -73,8 +73,8 @@ export const TASK_KIND_LABEL: Record<string, string> = {
   hit_cluster: "命中簇",
   retest: "复测",
   observation: "观察（旧）",
-  observation_digest: "观察摘要",
-  observation_case: "观察案件",
+  obs_digest: "观察摘要",
+  obs_case: "观察案件",
 };
 
 /** 对象类型中文。前 6 个是 `observed_subjects.kind`，后 4 个是任务里的 `subject_kind`。 */

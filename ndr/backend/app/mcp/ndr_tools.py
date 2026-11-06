@@ -2005,7 +2005,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "run": _escalate_digest,
         "desc": "价值闸门分流：只把 digest 中被点名的 observation 转成完整案件，不直接下结论",
         "params": {
-            "task_id": "observation_digest 任务 ID",
+            "task_id": "obs_digest 任务 ID",
             "attention_ids": "需要升级的 observation_id 列表",
             "note": "分流说明（可选）",
         },
