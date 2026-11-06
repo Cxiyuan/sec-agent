@@ -311,13 +311,13 @@ export class Analyst {
       decision: { action: 'obs_digest', phase: 'digest' },
     }) ?? 0
     const attempt = rawAttempt > 0 ? rawAttempt : 1
-    const gate = this.options.lightTriage?.gate
-    if (gate === undefined) {
+    const gatePort = this.options.lightTriage
+    if (gatePort?.gate === undefined) {
       return this.deferDigest(task, attempt, startedAt, 'digest_gate_unavailable')
     }
-    let result: Awaited<ReturnType<NonNullable<typeof gate>>>
+    let result: Awaited<ReturnType<NonNullable<typeof gatePort.gate>>>
     try {
-      result = await gate(task)
+      result = await gatePort.gate(task)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[xdr-ingest] observation digest 闸门异常（任务 ${task.id}）：${message.slice(0, 240)}`)
