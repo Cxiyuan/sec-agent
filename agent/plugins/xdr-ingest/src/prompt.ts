@@ -233,6 +233,45 @@ export function buildObservationCasePrompt(task: PromptTask, workflow?: Workflow
 }
 
 /**
+ * 抑制降级任务的窄提示词：目标只有一个——把爆炸半径过大的抑制收窄后同名重提。
+ *
+ * hint 里已经带了试算数据、超限维度和收窄建议，不需要重新做全量调查。
+ */
+export function buildSuppressionDowngradePrompt(
+  task: PromptTask,
+  workflow?: WorkflowRecord | null,
+): string {
+  const facts = {
+    task_id: task.id,
+    kind: task.kind,
+    subject_kind: task.subject_kind,
+    subject: task.subject,
+    window: { start: task.window_start ?? null, end: task.window_end ?? null },
+    downgrade: task.hint ?? null,
+  }
+  return [
+    '你是深瞳 NDR 的**抑制收窄执行器**。上游已经判定你之前提交的精准抑制爆炸半径过大，',
+    '当前只是 record_only（不派工但未真正生效）。不要重新做全量调查。',
+    '',
+    '<task>',
+    JSON.stringify(facts, null, 2),
+    '</task>',
+    '',
+    '工作方式（硬约束）：',
+    '1. 先用 task_facts 读事实，用 list_suppressions 找到同名旧条目，确认当前 match 条件；',
+    '2. 按 hint 里的「怎么收窄」「试算」「超限维度」把条件收窄到**单个来源 src_ip + 具体行为特征**；',
+    '3. 不要换新名字，不要撤销旧条目，不要扩大时间窗；',
+    '4. 用**同一个 name** 调用 submit_suppression（同名覆盖）；返回 mode=record_only 时按返回建议再收窄重提；',
+    '5. 提交成功后调用 complete_task；确实无法收窄时 complete_task 交回 inconclusive 并写明缺口。',
+    '',
+    `任务：${task.id}`,
+    ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0
+      ? ['按当前工作流的阶段推进，但这条任务的收尾条件就是“同名重提成功”。']
+      : []),
+  ].join('\n')
+}
+
+/**
  * 命中簇案件的窄提示词：digest 闸门已经从一小时的簇里挑出了这一条。
  *
  * 与观察案件的区别：这里的核心证据是**规则命中本身**（命中事件、簇内资产、

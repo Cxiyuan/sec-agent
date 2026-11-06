@@ -66,6 +66,22 @@ test('hit_case 使用窄工具面：保留簇证据工具，去掉会话检索�
   assert.deepEqual(planned.groups.network, [`${prefix}dns_queries`])
 })
 
+test('抑制降级任务使用窄工具面：只留收窄/重提所需能力', () => {
+  const available = [
+    ...CORE_NDR_TOOLS.map(name => `${prefix}${name}`),
+    `${prefix}list_suppressions`,
+    `${prefix}dns_queries`,
+    'session_search',
+  ]
+  const planned = planToolGroups(available, 'structure', { suppression_name: 'agent-x' })
+  for (const name of ['task_facts', 'list_suppressions', 'search_hits', 'submit_suppression', 'complete_task']) {
+    assert.ok(planned.core.includes(`${prefix}${name}`), `缺少 ${name}`)
+  }
+  assert.ok(!planned.core.includes(`${prefix}search_events`))
+  assert.ok(!planned.core.includes(`${prefix}session_search`))
+  assert.ok(!planned.core.includes(`${prefix}dns_queries`))
+})
+
 test('工具组名覆盖加载工具的参数枚举', () => {
   assert.deepEqual(TOOL_GROUP_NAMES, [
     'network', 'identity', 'evidence', 'task', 'suppression', 'schedule', 'deliverable', 'other', 'all',

@@ -66,6 +66,37 @@ export const HIT_CASE_TOOLS: readonly string[] = [
   'submit_suppression',
 ]
 
+/**
+ * 抑制降级（structure + suppression_downgrade）的窄工具面。
+ *
+ * 任务目标只有一个：把爆炸半径过大的抑制收窄到单个来源并同名重提；
+ * hint 里已经带了试算数据和收窄建议，不需要再做全量调查。
+ */
+export const SUPPRESSION_DOWNGRADE_TOOLS: readonly string[] = [
+  'task_facts',
+  'list_suppressions',
+  'search_hits',
+  'asset_context',
+  'get_rule',
+  'submit_suppression',
+  'complete_task',
+]
+
+/** 抑制降级任务：kind=structure 且 hint 带 suppression_name。 */
+export function isSuppressionDowngrade(kind: string, hint?: unknown): boolean {
+  if (kind !== 'structure' || hint === null || typeof hint !== 'object') return false
+  const name = (hint as Record<string, unknown>)['suppression_name']
+  return typeof name === 'string' && name.trim() !== ''
+}
+
+/** 窄分析任务：案件 + 抑制收窄。它们不提供扩面入口。 */
+export function isNarrowTask(kind: string, hint?: unknown): boolean {
+  return kind === 'obs_case'
+    || kind === 'struct_case'
+    || kind === 'hit_case'
+    || isSuppressionDowngrade(kind, hint)
+}
+
 /** obs_case 的窄工具面：先看事实/资产/基线/域名，不做全量调查。 */
 export const OBSERVATION_CASE_TOOLS: readonly string[] = [
   'task_facts',
@@ -152,15 +183,18 @@ function withPrefix(name: string): string {
 export function planToolGroups(
   available: readonly string[],
   kind = '',
+  hint?: unknown,
 ): PlannedToolGroups {
   const existing = new Set(available)
-  const caseKind = kind === 'obs_case' || kind === 'struct_case' || kind === 'hit_case'
-  const ndrTools = kind === 'hit_case'
-    ? HIT_CASE_TOOLS
-    : caseKind ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS
+  const narrow = isNarrowTask(kind, hint)
+  const ndrTools = isSuppressionDowngrade(kind, hint)
+    ? SUPPRESSION_DOWNGRADE_TOOLS
+    : kind === 'hit_case'
+      ? HIT_CASE_TOOLS
+      : narrow ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS
   const core = [
     ...ndrTools.map(withPrefix),
-    ...(caseKind ? [] : CORE_AGENT_TOOLS),
+    ...(narrow ? [] : CORE_AGENT_TOOLS),
   ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}

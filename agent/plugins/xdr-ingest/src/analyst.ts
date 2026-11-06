@@ -13,8 +13,19 @@ import type { AgentFollowupInput, AgentHandleLike, AgentScopedContext, AgentsSer
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
-import { buildAnalysisPrompt, buildHitCasePrompt, buildObservationCasePrompt } from './prompt.ts'
-import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
+import {
+  buildAnalysisPrompt,
+  buildHitCasePrompt,
+  buildObservationCasePrompt,
+  buildSuppressionDowngradePrompt,
+} from './prompt.ts'
+import {
+  ALWAYS_DENY_TOOLS,
+  isNarrowTask,
+  isSuppressionDowngrade,
+  planToolGroups,
+  TOOL_GROUP_NAMES,
+} from './tool-groups.ts'
 import { registerRdapTool } from './rdap.ts'
 import { auditDelta } from './session-audit.ts'
 import type { SessionAudit } from './session-audit.ts'
@@ -691,15 +702,15 @@ export class Analyst {
         // 工具面默认只保留核心取证工具；罕见能力通过 enable_analysis_tools
         // 按组激活。工具始终注册在 registry 里，不会因为 24 小时未调用而删除。
         const available = (agentCtx.tools?.schemas?.() ?? []).map(tool => tool.name)
-        const planned = planToolGroups(available, task.kind)
+        const planned = planToolGroups(available, task.kind, task.hint)
         const groupDisposers = new Map<string, () => void>()
-        // 案件（obs/struct/hit case）是窄分析：不给扩面入口，非核心工具一律隐藏。
-        const caseKind = task.kind === 'obs_case' || task.kind === 'struct_case' || task.kind === 'hit_case'
+        // 窄分析（案件 + 抑制收窄）：不给扩面入口，非核心工具一律隐藏。
+        const narrow = isNarrowTask(task.kind, task.hint)
 
         let loaderReady = false
         // 案件是窄分析：**不注册**扩面入口。注册后再 deny 会因名字未知让整个
         // restrict 调用失败，反而把全量工具面留在模型面前（实测踩过）。
-        if (!caseKind) try {
+        if (!narrow) try {
           if (typeof agentCtx.tools?.register !== 'function') {
             throw new Error('agent tools.register 不可用')
           }
@@ -760,8 +771,8 @@ export class Analyst {
             error instanceof Error ? error.message : String(error),
           )
         }
-        if (caseKind) {
-          // 案件会话没有扩面入口：把非核心工具全部隐藏（deny 里只能出现真实存在的
+        if (narrow) {
+          // 窄分析会话没有扩面入口：把非核心工具全部隐藏（deny 里只能出现真实存在的
           // 工具名，否则 tools.restrict 会整体失败，反而留下全量工具面）。
           try {
             const coreSet = new Set(planned.core)
@@ -796,11 +807,13 @@ export class Analyst {
         // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
         // 让任务成为模型眼里的“最后一条请求”。该上下文由 DSH 正常生成 id/source。
         try {
-          const taskText = (task.kind === 'obs_case' || task.kind === 'struct_case')
-            ? buildObservationCasePrompt(promptTask, workflow)
-            : task.kind === 'hit_case'
-              ? buildHitCasePrompt(promptTask, workflow)
-              : buildAnalysisPrompt(promptTask, workflow)
+          const taskText = isSuppressionDowngrade(task.kind, task.hint)
+            ? buildSuppressionDowngradePrompt(promptTask, workflow)
+            : (task.kind === 'obs_case' || task.kind === 'struct_case')
+              ? buildObservationCasePrompt(promptTask, workflow)
+              : task.kind === 'hit_case'
+                ? buildHitCasePrompt(promptTask, workflow)
+                : buildAnalysisPrompt(promptTask, workflow)
           agentCtx.systemPrompt?.section?.({
             name: 'xdr-ingest/task',
             order: 10,
@@ -997,11 +1010,13 @@ export class Analyst {
       const followup = handle.agent.followup(followupMessage(
         resumable
           ? continuationPrompt(task, resumeReason)
+          : isSuppressionDowngrade(task.kind, task.hint)
+          ? buildSuppressionDowngradePrompt(promptTask, workflow)
           : (task.kind === 'obs_case' || task.kind === 'struct_case')
-          ? buildObservationCasePrompt(promptTask, workflow)
-          : task.kind === 'hit_case'
-            ? buildHitCasePrompt(promptTask, workflow)
-            : buildAnalysisPrompt(promptTask, workflow),
+            ? buildObservationCasePrompt(promptTask, workflow)
+            : task.kind === 'hit_case'
+              ? buildHitCasePrompt(promptTask, workflow)
+              : buildAnalysisPrompt(promptTask, workflow),
         this.options.source ?? 'xdr-ingest',
       ))
       await Promise.resolve(followup)
@@ -2133,8 +2148,8 @@ function continuationPrompt(task: ClaimedTask, reason: string): string {
     '1. 先回顾已获得的证据，不要重复已经执行过的相同工具调用；历史里若有 `TOOL_OUTCOME_UNKNOWN`，先核实该操作是否已生效；',
     '2. 补查缺失证据；够用就立即调用 complete_task；',
     '3. 如果仍然缺关键证据，调用 complete_task 交回 inconclusive，并在 terminal_reason/evidence_gap 说明缺口；',
-    ...(task.kind === 'obs_case' || task.kind === 'struct_case' || task.kind === 'hit_case'
-      ? ['4. 这是窄案件会话，没有扩面入口；用当前工具面完成，不要等待更多工具。']
+    ...(isNarrowTask(task.kind, task.hint)
+      ? ['4. 这是窄分析会话，没有扩面入口；用当前工具面完成，不要等待更多工具。']
       : ['4. 需要之前激活过的工具组时，重新调用 `enable_analysis_tools`（工具 scope 不随会话持久化）。']),
   ].join('\n')
 }
