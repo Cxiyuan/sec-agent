@@ -139,8 +139,8 @@ export interface DigestGatePort {
 
 const DIGEST_SYSTEM_PROMPT
   = '你是安全观察摘要的**分流器**，不是分析器。只输出一个 JSON 对象：'
-  + '{"attention":["observation_id", "..."]}。'
-  + '只点名需要完整调查的条目；不要判断 benign/true_positive，不要解释，不要代码块。'
+  + '{"attention":["id", "..."]}，数组元素必须是**字符串 id**，不要对象、不要解释。'
+  + '只点名需要完整调查的条目；不要判断 benign/true_positive，不要代码块。'
   + '/no_think'
 
 /** 摘要闸门的 user 提示：只喂压缩事实表，不给工具。 */
@@ -205,13 +205,31 @@ export function parseDigestOutput(raw: string, allowedIds: ReadonlySet<string>):
   if (!Array.isArray(rawAttention)) return { error: 'attention 必须是数组' }
   const attention: string[] = []
   for (const item of rawAttention) {
-    if (typeof item !== 'string' || item.trim() === '') continue
-    const id = item.trim()
+    const id = digestIdOf(item)
+    if (id === '') continue
     if (!allowedIds.has(id)) continue
     if (!attention.includes(id)) attention.push(id)
     if (attention.length >= 10) break
   }
   return { attention }
+}
+
+/**
+ * attention 元素归一成 id：既接受 `"id"`，也接受 `{"id":"..."}`。
+ *
+ * 开了 `response_format=json_object` 之后，不同模型对“字符串数组”的服从度不同
+ * （实测 deepseek-v4.1-flash 返回 `{"attention":[{"id":"..."}]}`）。这里只做
+ * 结构归一，仍然用 `allowedIds` 白名单校验，模型不能借结构变化塞进未知 id。
+ */
+function digestIdOf(item: unknown): string {
+  if (typeof item === 'string') return item.trim()
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) return ''
+  const row = item as Record<string, unknown>
+  for (const key of ['id', 'item_id', 'observation_id']) {
+    const value = row[key]
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  }
+  return ''
 }
 
 /** hint 是任意 JSON：先序列化再截断（长 hint 截断后仍在数据位，不进指令位）。 */

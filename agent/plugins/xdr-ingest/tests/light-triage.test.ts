@@ -305,6 +305,19 @@ test('digest gate：只接受输入里存在的 attention id', () => {
   assert.equal('error' in parseDigestOutput('{"attention":["o2"]', allowed), true)
 })
 
+test('digest gate：兼容对象形式的 attention（但仍受白名单约束）', () => {
+  const allowed = new Set(['hit|c1', 'hit|c2'])
+  assert.deepEqual(
+    parseDigestOutput('{"attention":[{"id":"hit|c1"},{"item_id":"hit|c2"},{"observation_id":"hit|c1"}]}', allowed),
+    { attention: ['hit|c1', 'hit|c2'] },
+  )
+  // 结构变化不能绕过白名单：未知 id / 空对象一律忽略。
+  assert.deepEqual(
+    parseDigestOutput('{"attention":[{"id":"unknown"},"unknown",{}]}', allowed),
+    { attention: [] },
+  )
+})
+
 test('digest gate：一次无工具调用，模型只拿压缩事实', async () => {
   let body: Record<string, unknown> | null = null
   const fetchImpl: typeof fetch = async (_url, init) => {
