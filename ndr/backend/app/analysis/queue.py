@@ -1925,7 +1925,7 @@ def escalate_digest(
     """价值闸门分流结果：把 digest 中 attention 的 observation 变成完整案件。
 
     闸门本身不下结论、不建抑制；这里只负责把被点名的条目转成
-    `observation_case`，由完整 agent 继续取证。digest 任务置 done，
+    `obs_case`，由完整 agent 继续取证。digest 任务置 done，
     但不写 AnalysisResult（它不是分析结论）。
     """
     tid = str(task_id or "").strip()
@@ -1936,8 +1936,8 @@ def escalate_digest(
         parent = db.get(AnalysisTask, tid)
         if parent is None:
             return {"error": "任务不存在"}
-        if str(parent.kind or "") != "observation_digest":
-            return {"error": "不是 observation_digest 任务", "kind": parent.kind}
+        if str(parent.kind or "") != "obs_digest":
+            return {"error": "不是 obs_digest 任务", "kind": parent.kind}
         hint = dict(parent.hint or {})
         raw_items = hint.get("items")
         items = [
@@ -1978,11 +1978,11 @@ def escalate_digest(
             **({"相关规则命中": item.get("相关规则命中")} if item.get("相关规则命中") else {}),
         }
         result = enqueue(
-            kind="observation_case",
+            kind="obs_case",
             subject_kind=str(item.get("subject_kind") or "asset")[:32],
             subject=str(item.get("subject") or "")[:128],
             strength=float(item.get("strength") or 0.5),
-            feature="observation_case",
+            feature="obs_case",
             hint=hint,
             window_start=window_start,
             window_end=window_end,
@@ -1993,7 +1993,7 @@ def escalate_digest(
         )
         if result in ("new", "merged"):
             made += 1
-    bump(client, "observation_case_escalated", made)
+    bump(client, "obs_case_escalated", made)
     return {
         "ok": True,
         "task_id": tid,

@@ -237,7 +237,7 @@ def test_rule_evidence_matches_destination(cand: Any, monkeypatch: pytest.Monkey
 
 
 class DigestDB:
-    """Minimal DB for `enqueue_observation_digest`: first query existing task, then rows."""
+    """Minimal DB for `enqueue_obs_digest`: first query existing task, then rows."""
 
     def __init__(self, rows: list[Any]) -> None:
         self.rows = rows
@@ -276,7 +276,7 @@ class DigestDB:
         return False
 
 
-def test_observation_digest_combines_facts_and_marks_cooldown(
+def test_obs_digest_combines_facts_and_marks_cooldown(
     cand: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rows = [_obs("egress_new", idx="o1"), _obs("profile_anomaly", idx="o2")]
@@ -287,21 +287,21 @@ def test_observation_digest_combines_facts_and_marks_cooldown(
     monkeypatch.setattr(cand, "_recent_rule_hits", lambda *_a, **_k: [])
     monkeypatch.setattr(cand.params, "enabled", lambda: True)
 
-    made = cand.enqueue_observation_digest(client=SimpleNamespace())
+    made = cand.enqueue_obs_digest(client=SimpleNamespace())
     assert made == 1
-    assert fake_queue.calls[0]["kind"] == "observation_digest"
+    assert fake_queue.calls[0]["kind"] == "obs_digest"
     assert fake_queue.calls[0]["hint"]["条目数"] == 2
     assert [x["observation_id"] for x in fake_queue.calls[0]["hint"]["items"]] == ["o1", "o2"]
     assert all(row.last_enqueued_at is not None for row in rows)
 
 
-def test_escalate_digest_creates_observation_cases_only_for_attention(
+def test_escalate_digest_creates_obs_cases_only_for_attention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue_mod = importlib.import_module("app.analysis.queue")
     parent = SimpleNamespace(
         id="digest-1",
-        kind="observation_digest",
+        kind="obs_digest",
         state="claimed",
         hint={
             "items": [
@@ -339,6 +339,6 @@ def test_escalate_digest_creates_observation_cases_only_for_attention(
     assert out["ok"] is True
     assert out["accepted"] == 1
     assert parent.state == "done"
-    assert created[0]["kind"] == "observation_case"
+    assert created[0]["kind"] == "obs_case"
     assert created[0]["hint"]["observation_id"] == "o2"
     assert created[0]["force"] is True

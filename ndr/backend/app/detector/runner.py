@@ -894,9 +894,9 @@ def _analysis_round(
         # 2026-11 成本整改：不再逐条 observation 起完整 agent；只建一条 digest，
         # 由便宜闸门挑出需要完整调查的条目。
         digest_gap = 3600 * cold_start.interval_scale(client)
-        if now - float(state.get("last_observation_digest") or 0.0) >= digest_gap:
-            state["last_observation_digest"] = now
-            stats["candidate_observation_digest"] += candidates.enqueue_observation_digest(client)
+        if now - float(state.get("last_obs_digest") or 0.0) >= digest_gap:
+            state["last_obs_digest"] = now
+            stats["candidate_obs_digest"] += candidates.enqueue_obs_digest(client)
         # 命中簇（D2）：节拍与 observation 同步（300 秒，落在 5–10 分钟要求内）；
         # 开关走 analysis.candidate_kinds（移除 hit_cluster 即回滚，不部署侧改动）
         if now - float(state.get("last_hit_cluster") or 0.0) >= 300:

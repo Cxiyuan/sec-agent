@@ -154,7 +154,7 @@ def test_noisy_rules_removed_from_seed(request: pytest.FixtureRequest) -> None:
     params = _ndr(request, "app.analysis.params")
     kinds = params.candidate_kinds()
     assert "hit" not in kinds and "shift" not in kinds
-    assert "observation_digest" in kinds
+    assert "obs_digest" in kinds
 
 
 def test_suricata_reads_ui_interface() -> None:

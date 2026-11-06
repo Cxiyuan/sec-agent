@@ -323,7 +323,7 @@ def test_runner_wiring_and_rollback_switch() -> None:
     src = inspect.getsource(runner)
     # 2026-11 成本整改：observation 不再逐条起完整 agent，改为小时摘要；
     # coverage 不再是模型任务。
-    assert "candidates.enqueue_observation_digest" in src
+    assert "candidates.enqueue_obs_digest" in src
     assert "candidates.enqueue_observations(" not in src
     assert "candidates.enqueue_coverage(" not in src
     assert "egress.observe_window(" in src

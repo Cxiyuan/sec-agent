@@ -47,7 +47,7 @@ export const CORE_AGENT_TOOLS: readonly string[] = [
   'session_event_read',
 ]
 
-/** observation_case 的窄工具面：先看事实/资产/基线/域名，不做全量调查。 */
+/** obs_case 的窄工具面：先看事实/资产/基线/域名，不做全量调查。 */
 export const OBSERVATION_CASE_TOOLS: readonly string[] = [
   'task_facts',
   'asset_context',
@@ -136,8 +136,8 @@ export function planToolGroups(
 ): PlannedToolGroups {
   const existing = new Set(available)
   const core = [
-    ...(kind === 'observation_case' ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
-    ...(kind === 'observation_case' ? [] : CORE_AGENT_TOOLS),
+    ...(kind === 'obs_case' ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
+    ...(kind === 'obs_case' ? [] : CORE_AGENT_TOOLS),
   ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}
