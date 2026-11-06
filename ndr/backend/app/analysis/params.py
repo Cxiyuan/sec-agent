@@ -125,7 +125,7 @@ EDITABLE_KEYS: tuple[str, ...] = tuple(_BY_KEY)
 #: 扫描类的几十条同因事件不再靠单条 hit 排队。
 KINDS: tuple[str, ...] = (
     "novelty", "shift", "structure", "coverage", "hit", "hit_cluster", "retest", "observation",
-    "obs_digest", "obs_case", "struct_digest", "struct_case",
+    "obs_digest", "obs_case", "struct_digest", "struct_case", "hit_digest", "hit_case",
 )
 def _num(knob: Knob) -> float:
     try:

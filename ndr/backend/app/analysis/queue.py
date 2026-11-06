@@ -1922,11 +1922,11 @@ def escalate_digest(
     note: str = "",
     token: str = "",
 ) -> dict[str, Any]:
-    """价值闸门分流结果：把 digest 中 attention 的 observation 变成完整案件。
+    """价值闸门分流结果：把 digest 中 attention 的条目变成完整案件。
 
     闸门本身不下结论、不建抑制；这里只负责把被点名的条目转成
-    `obs_case`，由完整 agent 继续取证。digest 任务置 done，
-    但不写 AnalysisResult（它不是分析结论）。
+    `obs_case` / `struct_case` / `hit_case`，由完整 agent 继续取证。
+    digest 任务置 done，但不写 AnalysisResult（它不是分析结论）。
     """
     tid = str(task_id or "").strip()
     wanted = {str(x).strip() for x in (attention_ids or []) if str(x).strip()}
@@ -1937,9 +1937,13 @@ def escalate_digest(
         if parent is None:
             return {"error": "任务不存在"}
         digest_kind = str(parent.kind or "")
-        if digest_kind not in ("obs_digest", "struct_digest"):
-            return {"error": "不是 obs_digest/struct_digest 任务", "kind": parent.kind}
-        case_kind = "obs_case" if digest_kind == "obs_digest" else "struct_case"
+        case_kind = {
+            "obs_digest": "obs_case",
+            "struct_digest": "struct_case",
+            "hit_digest": "hit_case",
+        }.get(digest_kind)
+        if case_kind is None:
+            return {"error": "不是 obs_digest/struct_digest/hit_digest 任务", "kind": parent.kind}
         hint = dict(parent.hint or {})
         raw_items = hint.get("items")
         items = [
@@ -1969,25 +1973,44 @@ def escalate_digest(
     made = 0
     for item in selected:
         item_id = str(item.get("observation_id") or item.get("item_id") or "")
-        hint = {
-            **({"observation_id": item_id} if digest_kind == "obs_digest" else {"item_id": item_id}),
-            "事实类型": str(item.get("kind") or ("structure_fail_ratio" if digest_kind == "struct_digest" else "")),
-            "事实": item.get("facts") or {},
-            "出现次数": int(item.get("count") or 0),
-            "首次观测": str(item.get("first_seen") or ""),
-            "最近观测": str(item.get("last_seen") or ""),
-            "主体角色": "actor",
-            "reuse_identity": str(item.get("reuse_identity") or item_id),
-            "digest_task_id": parent_id,
-            "闸门关注": True,
-            **({"相关规则命中": item.get("相关规则命中")} if item.get("相关规则命中") else {}),
-        }
+        if digest_kind == "hit_digest":
+            # hit_digest 的条目自带完整 case_hint（事件ID/规则/主体/对端/DNS 域），
+            # 直接透传给 hit_case；闸门只看到了压缩后的 facts，不能让它丢证据。
+            raw_case = item.get("case_hint")
+            case_hint = dict(raw_case) if isinstance(raw_case, dict) else {}
+            hint = {
+                **case_hint,
+                "item_id": item_id,
+                "事实类型": "hit_cluster",
+                "事实": item.get("facts") or {},
+                "出现次数": int(item.get("count") or 0),
+                "首次观测": str(item.get("first_seen") or ""),
+                "最近观测": str(item.get("last_seen") or ""),
+                "主体角色": str(case_hint.get("主体角色") or "actor"),
+                "reuse_identity": str(item.get("reuse_identity") or case_hint.get("reuse_identity") or item_id),
+                "digest_task_id": parent_id,
+                "闸门关注": True,
+            }
+        else:
+            hint = {
+                **({"observation_id": item_id} if digest_kind == "obs_digest" else {"item_id": item_id}),
+                "事实类型": str(item.get("kind") or ("structure_fail_ratio" if digest_kind == "struct_digest" else "")),
+                "事实": item.get("facts") or {},
+                "出现次数": int(item.get("count") or 0),
+                "首次观测": str(item.get("first_seen") or ""),
+                "最近观测": str(item.get("last_seen") or ""),
+                "主体角色": "actor",
+                "reuse_identity": str(item.get("reuse_identity") or item_id),
+                "digest_task_id": parent_id,
+                "闸门关注": True,
+                **({"相关规则命中": item.get("相关规则命中")} if item.get("相关规则命中") else {}),
+            }
         result = enqueue(
             kind=case_kind,
             subject_kind=str(item.get("subject_kind") or "asset")[:32],
             subject=str(item.get("subject") or "")[:128],
             strength=float(item.get("strength") or 0.5),
-            feature="obs_case",
+            feature=case_kind,
             hint=hint,
             window_start=window_start,
             window_end=window_end,
@@ -1998,7 +2021,7 @@ def escalate_digest(
         )
         if result in ("new", "merged"):
             made += 1
-    bump(client, "obs_case_escalated", made)
+    bump(client, f"{case_kind}_escalated", made)
     return {
         "ok": True,
         "task_id": tid,

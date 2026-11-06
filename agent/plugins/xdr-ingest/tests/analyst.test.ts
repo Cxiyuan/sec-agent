@@ -1375,3 +1375,63 @@ test('struct_digest 也走闸门，不启动 DSH 会话', async () => {
   assert.equal(outcome.triaged, true)
   assert.deepEqual(escalated, ['s1'])
 })
+
+test('hit_digest 也走闸门，只回传被点名的簇', async () => {
+  const rec = recorder()
+  let escalated: string[] = []
+  const agents: AgentsServiceLike = {
+    async create() {
+      throw new Error('hit digest 不应创建 DSH 会话')
+    },
+  }
+  const light: LightTriagePort = {
+    async triage(): Promise<TriageResult> {
+      return { kind: 'escalate', reason: 'disabled', ms: 0 }
+    },
+    async gate(): Promise<DigestGateResult> {
+      return { attention: ['hit|cls-1'], model: 'deepseek-v4-flash', ms: 2 }
+    },
+  }
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() { return { state: 'claimed' } },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+    async escalateDigest(_id, ids) {
+      escalated = [...ids]
+      return { ok: true, accepted: ids.length }
+    },
+  }
+  const hitDigestTask: ClaimedTask = {
+    ...task,
+    id: 'task-hit-digest',
+    kind: 'hit_digest',
+    subject_kind: 'digest',
+    subject: 'hit-cluster-digest:2026-11-06T12',
+    hint: {
+      任务类型: 'hit_digest',
+      items: [
+        { item_id: 'hit|cls-1', kind: 'hit_cluster', subject: '10.0.0.5', subject_kind: 'asset', strength: 0.7, facts: {} },
+        { item_id: 'hit|cls-2', kind: 'hit_cluster', subject: '10.0.0.6', subject_kind: 'asset', strength: 0.5, facts: {} },
+      ],
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr,
+    timeoutMs: 1000,
+    process: new MemoryStateStore(),
+    lightTriage: light,
+  })
+  const outcome = await analyst.run(hitDigestTask)
+  assert.equal(outcome.completed, true)
+  assert.equal(outcome.triaged, true)
+  assert.deepEqual(escalated, ['hit|cls-1'])
+  assert.equal(rec.completed.length, 0)
+})

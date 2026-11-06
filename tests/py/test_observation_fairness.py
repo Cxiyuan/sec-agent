@@ -344,6 +344,80 @@ def test_escalate_digest_creates_obs_cases_only_for_attention(
     assert created[0]["force"] is True
 
 
+def test_escalate_digest_creates_hit_cases_with_full_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hit_digest 分流：生成 hit_case，并把摘要里保留的完整簇证据透传过去。"""
+    queue_mod = importlib.import_module("app.analysis.queue")
+    parent = SimpleNamespace(
+        id="digest-hit",
+        kind="hit_digest",
+        state="claimed",
+        hint={
+            "items": [
+                {
+                    "item_id": "hit|cls-1",
+                    "kind": "hit_cluster",
+                    "subject_kind": "asset",
+                    "subject": "10.0.0.5",
+                    "strength": 0.72,
+                    "count": 12,
+                    "facts": {"簇": "端口扫描_8.8.8.8", "规则": ["端口扫描"], "事件数": 12},
+                    "reuse_identity": "fam-1",
+                    "case_hint": {
+                        "事件ID": ["ev-1", "ev-2"],
+                        "规则": ["端口扫描"],
+                        "主体角色": "victim",
+                        "actor_asset": {"kind": "ip", "value": "8.8.8.8"},
+                        "受影响资产": [{"kind": "ip", "value": "10.0.0.5"}],
+                        "reuse_identity": "fam-1",
+                    },
+                },
+            ]
+        },
+        lease_until=None,
+        updated_at=NOW,
+        note="",
+        depth=0,
+        window_start=NOW,
+        window_end=NOW,
+    )
+
+    class DB:
+        def get(self, _model: Any, key: str) -> Any:
+            return parent if key == "digest-hit" else None
+
+        def commit(self) -> None:
+            return None
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    created: list[dict[str, Any]] = []
+    monkeypatch.setattr(queue_mod, "SessionLocal", lambda: DB())
+    monkeypatch.setattr(queue_mod, "enqueue", lambda **kwargs: created.append(kwargs) or "new")
+    monkeypatch.setattr(queue_mod, "bump", lambda *_a, **_k: None)
+
+    out = queue_mod.escalate_digest(SimpleNamespace(), "digest-hit", ["hit|cls-1", "missing"])
+    assert out["ok"] is True
+    assert out["accepted"] == 1
+    assert parent.state == "done"
+    call = created[0]
+    assert call["kind"] == "hit_case"
+    assert call["feature"] == "hit_case"
+    hint = call["hint"]
+    assert hint["item_id"] == "hit|cls-1"
+    assert hint["事件ID"] == ["ev-1", "ev-2"]
+    assert hint["主体角色"] == "victim"
+    assert hint["reuse_identity"] == "fam-1"
+    assert hint["digest_task_id"] == "digest-hit"
+    assert hint["闸门关注"] is True
+    assert call["force"] is True
+
+
 def test_structure_tasks_become_one_digest(cand: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     db = DigestDB([])  # existing struct_digest → none; _structure_tasks has no row query
     monkeypatch.setattr(cand, "SessionLocal", lambda: db)

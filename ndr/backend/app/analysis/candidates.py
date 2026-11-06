@@ -320,8 +320,8 @@ _OBSERVATION_DIRECTION: dict[str, str] = {
     "path_probe": "out→in",
 }
 
-#: 每轮最多派多少条 `hit_cluster`（D2）：先全貌再逐条，扫几十个 IP 也只占 20 个坑
-_HIT_CLUSTER_PER_ROUND = 20
+#: 每小时摘要最多列出多少个簇（按强度排序）：超过的留到下一小时，避免摘要本身无限膨胀
+_HIT_DIGEST_MAX_ITEMS = 30
 #: 簇查询回看窗口（与去重桶 60 分钟一致：同一簇在桶内只派一次）
 _HIT_CLUSTER_RECALL_MINUTES = 60
 #: 每轮最多读多少条近期命中事件参与成簇（防大站点把内存吃满）
@@ -392,24 +392,77 @@ def _cluster_dns_domains(events: list[Any]) -> list[str]:
     return sorted(domains)
 
 
-def enqueue_hit_clusters(client: Any) -> int:
-    """命中簇 → `hit_cluster` 线索（D2，2026-10-29）：资产为中心，先全貌再逐条。
+def _hit_guard_families(db: Any, now: datetime) -> set[str]:
+    """24h 内已经“看过”的簇族。
+
+    两类来源：
+    - 已派工/已完成的 `hit_cluster`/`hit_case`：hint.reuse_identity 就是簇族；
+    - **已完成分流的 `hit_digest`**：闸门已经看过这些条目（包括未被点名的），
+      不能再每小时重复展示同一批正常簇 —— 否则摘要闸门会变成新的固定开销。
+    """
+    day_ago = now - timedelta(hours=24)
+    families: set[str] = set()
+    for value in db.scalars(
+        select(AnalysisTask.hint["reuse_identity"].astext).where(
+            AnalysisTask.kind.in_(("hit_cluster", "hit_case")),
+            AnalysisTask.created_at >= day_ago,
+            AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
+        )
+    ):
+        text = str(value or "").strip()
+        if text:
+            families.add(text)
+    for hint in db.scalars(
+        select(AnalysisTask.hint).where(
+            AnalysisTask.kind == "hit_digest",
+            AnalysisTask.created_at >= day_ago,
+            AnalysisTask.state == "done",
+        )
+    ):
+        items = hint.get("items") if isinstance(hint, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("reuse_identity") or "").strip()
+            if text:
+                families.add(text)
+    return families
+
+
+def enqueue_hit_digest(client: Any) -> int:
+    """命中簇 → 每小时一条 `hit_digest`，由便宜闸门挑出需要完整调查的簇。
 
     为什么不直接开逐条 hit：一次扫描命中几十个 IP，逐条派 = 几十条外部 IP 任务，
     队列立刻爆量；簇把同一（归类·网段·小时）折成一件，主体是被访问资产。
     强度只读客观量（事件数/涉及资产数/staleness），**不读 rule_severity** ——
     严重度是 NDR 的判断，读了就等于替智能体下结论。
 
-    护栏（用户拍板）：60 分钟桶去重（queue 层自带）＋每轮上限 20＋
-    **同一簇族 24 小时最多观察一次**（持续扫描不是新现象，每小时重派刷不完的队列）。
+    2026-11 成本整改：旧实现每个簇直接起完整 agent（单任务 ≈25 万 token），而
+    绝大多数是扫描器/正常业务。现在每小时把最近 60 分钟的簇压成一条摘要，
+    闸门只返回 `item_id` 列表，被点名的才由 `escalate_digest` 生成 `hit_case`。
+
+    护栏（用户拍板）：60 分钟回看＋每小时一条摘要＋单条摘要最多 30 个簇＋
+    **同一簇族 24 小时最多观察一次**（持续扫描不是新现象，每小时重派刷不完队列）。
     """
     if "hit_cluster" not in params.candidate_kinds():
         return 0
     now = datetime.now(UTC)
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    subject = f"hit-cluster-digest:{hour_key}"
     since = now - timedelta(minutes=_HIT_CLUSTER_RECALL_MINUTES)
-    guard_families: set[str] = set()
     try:
         with SessionLocal() as db:
+            existing = db.scalars(
+                select(AnalysisTask)
+                .where(
+                    AnalysisTask.kind == "hit_digest",
+                    AnalysisTask.subject == subject,
+                    AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
+                )
+                .limit(1)
+            ).first()
+            if existing is not None:
+                return 0
             rows = list(
                 db.scalars(
                     select(HitEvent)
@@ -421,21 +474,7 @@ def enqueue_hit_clusters(client: Any) -> int:
                     .limit(_HIT_CLUSTER_EVENT_CAP)
                 ).all()
             )
-            # 24h 观察护栏的账本：最近一天真正派过工的簇族（按 canonical family）不再重复派。
-            # 不按 `dedupe_key`：它带 principal，principal 在事件顺序变化时会漂移；
-            # 也不把 expired/stuck 算进来——它们没有完成分析，不能让一个失败任务占住 24h。
-            day_ago = now - timedelta(hours=24)
-            guard_families = {
-                str(k).strip()
-                for k in db.scalars(
-                    select(AnalysisTask.hint["reuse_identity"].astext).where(
-                        AnalysisTask.kind == "hit_cluster",
-                        AnalysisTask.created_at >= day_ago,
-                        AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
-                    )
-                )
-                if str(k).strip()
-            }
+            guard_families = _hit_guard_families(db, now)
     except Exception:  # noqa: BLE001 — 派工失败不能拖垮检测
         return 0
     clusters: dict[str, list[Any]] = {}
@@ -507,7 +546,9 @@ def enqueue_hit_clusters(client: Any) -> int:
             )
         )
     scored = sorted(scored, key=lambda item: item[0], reverse=True)
-    made = 0
+    items: list[dict[str, Any]] = []
+    window_start: datetime | None = None
+    window_end: datetime | None = None
     for (
         strength,
         principal,
@@ -516,7 +557,20 @@ def enqueue_hit_clusters(client: Any) -> int:
         family,
         rule_names,
         dns_domains,
-    ) in scored[:_HIT_CLUSTER_PER_ROUND]:
+    ) in scored:
+        if len(items) >= _HIT_DIGEST_MAX_ITEMS:
+            break
+        # 已有抑制覆盖的簇不再占用摘要位置，也不能再消耗一次闸门调用。
+        try:
+            blocked = suppression.decide_task(kind="hit_cluster", reuse_identity=family)
+        except Exception:  # noqa: BLE001 — 抑制查询失败按未抑制处理，不丢线索
+            blocked = None
+        if blocked is not None:
+            try:
+                suppression.note_hit(blocked.id)
+            except Exception as exc:  # noqa: BLE001 — 计数失败不影响分流
+                log.debug("抑制命中计数失败（%s）：%s", blocked.id, exc)
+            continue
         event_ids = [str(ev.id) for ev in events[:20]]
         direction = str((events[0].direction if events else "") or "")
         lead = events[0]
@@ -530,7 +584,30 @@ def enqueue_hit_clusters(client: Any) -> int:
             affected = sorted(
                 {str(x) for ev in events for x in (ev.dst_ips or []) if is_internal_ip(str(x))}
             )
-        hint: dict[str, Any] = {
+        peers: list[str] = []
+        if direction == "in→out":
+            # 我方外连：对端 = 外部目的地
+            peers = sorted(
+                {
+                    str(x)
+                    for ev in events
+                    for x in (ev.dst_ips or [])
+                    if not is_internal_ip(str(x))
+                }
+                - {""}
+            )
+        elif direction:
+            # 入站/横向：对端 = 外部发起方（中继场景优先真实客户端）
+            peers = sorted(
+                {
+                    str(ev.client or ev.src_ip or "")
+                    for ev in events
+                    if not is_internal_ip(str(ev.client or ev.src_ip or ""))
+                }
+                - {""}
+            )
+        # 完整 hint 留给 `escalate_digest` 生成 hit_case；闸门只看 facts（更短）。
+        case_hint: dict[str, Any] = {
             "簇": cluster_text,
             "事件数": len(events),
             "事件ID": event_ids,
@@ -546,52 +623,79 @@ def enqueue_hit_clusters(client: Any) -> int:
             "reuse_identity": family,
         }
         if principal_role == "actor":
-            hint["actor_asset"] = {"kind": "ip", "value": principal}
+            case_hint["actor_asset"] = {"kind": "ip", "value": principal}
             if direction == "in→in":
-                hint["victim_assets"] = [{"kind": "ip", "value": v} for v in affected[:20]]
+                case_hint["victim_assets"] = [{"kind": "ip", "value": v} for v in affected[:20]]
         elif principal_role == "victim":
-            hint["victim_assets"] = [{"kind": "ip", "value": principal}]
+            case_hint["victim_assets"] = [{"kind": "ip", "value": principal}]
         if direction:
-            hint["方向"] = direction
-            hint["direction"] = direction
-            if direction == "in→out":
-                # 我方外连：对端 = 外部目的地
-                peers = sorted(
-                    {
-                        str(x)
-                        for ev in events
-                        for x in (ev.dst_ips or [])
-                        if not is_internal_ip(str(x))
-                    }
-                    - {""}
-                )
-            else:
-                # 入站/横向：对端 = 外部发起方（中继场景优先真实客户端）
-                peers = sorted(
-                    {
-                        str(ev.client or ev.src_ip or "")
-                        for ev in events
-                        if not is_internal_ip(str(ev.client or ev.src_ip or ""))
-                    }
-                    - {""}
-                )
+            case_hint["方向"] = direction
+            case_hint["direction"] = direction
             if peers:
-                hint["对端"] = peers[:20]
-                hint["peer"] = peers[:20]
-        result = queue.enqueue(
-            kind="hit_cluster",
-            subject_kind="asset",
-            subject=principal,
-            strength=strength,
-            feature=f"cluster:{family}",
-            hint=hint,
-            window_start=events[-1].first_seen if events else None,
-            window_end=events[0].last_seen if events else None,
-            client=client,
+                case_hint["对端"] = peers[:20]
+                case_hint["peer"] = peers[:20]
+        facts: dict[str, Any] = {
+            "簇": cluster_text,
+            "规则": rule_names[:5],
+            "事件数": len(events),
+        }
+        if direction:
+            facts["方向"] = direction
+        if affected:
+            facts["受影响资产"] = affected[:5]
+        if peers:
+            facts["对端"] = peers[:5]
+        if dns_domains:
+            facts["DNS域"] = dns_domains[:5]
+        firsts = [ev.first_seen for ev in events if ev.first_seen is not None]
+        lasts = [ev.last_seen for ev in events if ev.last_seen is not None]
+        first_seen = min(firsts) if firsts else None
+        last_seen = max(lasts) if lasts else None
+        if first_seen is not None and (window_start is None or first_seen < window_start):
+            window_start = first_seen
+        if last_seen is not None and (window_end is None or last_seen > window_end):
+            window_end = last_seen
+        items.append(
+            {
+                "item_id": f"hit|{lead.cluster_id or family}",
+                "kind": "hit_cluster",
+                "subject_kind": "asset",
+                "subject": principal,
+                "strength": round(float(strength), 3),
+                "count": len(events),
+                "first_seen": first_seen.isoformat() if first_seen else "",
+                "last_seen": last_seen.isoformat() if last_seen else "",
+                "facts": facts,
+                "reuse_identity": family,
+                "case_hint": case_hint,
+            }
         )
-        if result in ("new", "merged"):
-            made += 1
-    return made
+    if not items:
+        return 0
+    result = queue.enqueue(
+        kind="hit_digest",
+        subject_kind="digest",
+        subject=subject,
+        strength=max(float(item["strength"]) for item in items),
+        feature="hit_digest",
+        hint={
+            "任务类型": "hit_digest",
+            "窗口": hour_key,
+            "条目数": len(items),
+            "items": items,
+            "要求": "只挑出需要完整调查的 item_id；不直接下结论、不建抑制。",
+        },
+        window_start=window_start or now,
+        window_end=window_end or now,
+        client=client,
+        # 摘要属于运行层分流，不受旧配置里 candidate_kinds 是否已迁移影响；
+        # 总开关 analysis.enabled 与 hit_cluster 开关仍然有效。
+        force=True,
+    )
+    if result in ("new", "merged"):
+        queue.bump(client, "hit_digest_enqueued", 1)
+        return 1
+    return 0
 
 
 #: 每轮最多派几条（总配额）

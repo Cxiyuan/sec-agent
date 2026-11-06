@@ -162,6 +162,22 @@ def test_decide_task_matches_only_stable_identity(sup: ModuleType, monkeypatch: 
     assert sup.decide_task(kind="structure", reuse_identity="novelty|asset:10.1.2.3") is None
 
 
+def test_hit_case_shares_hit_cluster_suppression_identity(
+    sup: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hit_case 是摘要升级出来的命中簇：抑制必须按 hit_cluster 的语义匹配。"""
+    row = _Row(
+        scope="task",
+        reuse_identity="hit|fam-1",
+        task_kind="hit_cluster",
+        mode=sup.MODE_SUPPRESS,
+    )
+    monkeypatch.setattr(sup, "enabled", lambda: True)
+    monkeypatch.setattr(sup, "_active_rows", lambda: (row,))
+    assert sup.decide_task(kind="hit_case", reuse_identity="hit|fam-1") is not None
+    assert sup.decide_task(kind="hit_cluster", reuse_identity="hit|fam-1") is not None
+
+
 def test_task_scope_create_item_bypasses_event_trial(
     sup: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

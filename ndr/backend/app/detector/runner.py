@@ -897,11 +897,13 @@ def _analysis_round(
         if now - float(state.get("last_obs_digest") or 0.0) >= digest_gap:
             state["last_obs_digest"] = now
             stats["candidate_obs_digest"] += candidates.enqueue_obs_digest(client)
-        # 命中簇（D2）：节拍与 observation 同步（300 秒，落在 5–10 分钟要求内）；
-        # 开关走 analysis.candidate_kinds（移除 hit_cluster 即回滚，不部署侧改动）
-        if now - float(state.get("last_hit_cluster") or 0.0) >= 300:
-            state["last_hit_cluster"] = now
-            stats["candidate_hit_cluster"] += candidates.enqueue_hit_clusters(client)
+        # 命中簇（D2）：与 observation 一样改为小时摘要（2026-11 成本整改）。
+        # 旧实现每个簇直接起完整 agent；现在只建一条 hit_digest，由便宜闸门
+        # 挑出需要完整调查的簇。开关仍走 analysis.candidate_kinds
+        # （移除 hit_cluster 即回滚，不部署侧改动）。
+        if now - float(state.get("last_hit_digest") or 0.0) >= digest_gap:
+            state["last_hit_digest"] = now
+            stats["candidate_hit_digest"] += candidates.enqueue_hit_digest(client)
         # Coverage 不再是模型任务（2026-11 成本整改）：覆盖率只进资产/服务台账，
         # 由 subjects.coverage 与界面展示；这里不再生成 coverage task。
         # 复测与冷摘要：低频（6 小时一次）的"回头看"任务。

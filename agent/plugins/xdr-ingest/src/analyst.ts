@@ -13,7 +13,7 @@ import type { AgentFollowupInput, AgentHandleLike, AgentScopedContext, AgentsSer
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
-import { buildAnalysisPrompt, buildObservationCasePrompt } from './prompt.ts'
+import { buildAnalysisPrompt, buildHitCasePrompt, buildObservationCasePrompt } from './prompt.ts'
 import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { registerRdapTool } from './rdap.ts'
 import { auditDelta } from './session-audit.ts'
@@ -481,8 +481,12 @@ export class Analyst {
 
   private async runUnlocked(task: ClaimedTask): Promise<AnalystOutcome> {
     const startedAt = Date.now()
-    // 观察摘要不走 DSH：一次便宜模型调用只做分流；全量 agent 只处理 upgrade 出来的 case。
-    if (task.kind === 'obs_digest' || task.kind === 'struct_digest') {
+    // 摘要任务不走 DSH：一次便宜模型调用只做分流；全量 agent 只处理升级出来的 case。
+    if (
+      task.kind === 'obs_digest'
+      || task.kind === 'struct_digest'
+      || task.kind === 'hit_digest'
+    ) {
       return this.runObservationDigest(task, startedAt)
     }
     // 先回答“能不能续跑”。可恢复会话优先于复用/抑制/轻量初筛：快捷路径
@@ -774,7 +778,9 @@ export class Analyst {
         try {
           const taskText = (task.kind === 'obs_case' || task.kind === 'struct_case')
             ? buildObservationCasePrompt(promptTask, workflow)
-            : buildAnalysisPrompt(promptTask, workflow)
+            : task.kind === 'hit_case'
+              ? buildHitCasePrompt(promptTask, workflow)
+              : buildAnalysisPrompt(promptTask, workflow)
           agentCtx.systemPrompt?.section?.({
             name: 'xdr-ingest/task',
             order: 10,
@@ -973,7 +979,9 @@ export class Analyst {
           ? continuationPrompt(task, resumeReason)
           : (task.kind === 'obs_case' || task.kind === 'struct_case')
           ? buildObservationCasePrompt(promptTask, workflow)
-          : buildAnalysisPrompt(promptTask, workflow),
+          : task.kind === 'hit_case'
+            ? buildHitCasePrompt(promptTask, workflow)
+            : buildAnalysisPrompt(promptTask, workflow),
         this.options.source ?? 'xdr-ingest',
       ))
       await Promise.resolve(followup)

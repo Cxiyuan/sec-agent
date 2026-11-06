@@ -167,7 +167,7 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '- 想提交抑制（`submit_suppression`）只在这些同时成立时：判了 false_positive、',
     '  证据 ≥3 条且来自 ≥2 种取数工具、置信度够、而且这个现象不是刚出现的。',
     '  **提交前自检，不满足就不要调用**：',
-    '  · 当前 task_id 的 kind 是 `hit` / `hit_cluster`：必须传 typed `match`；',
+    '  · 当前 task_id 的 kind 是 `hit` / `hit_cluster` / `hit_case`：必须传 typed `match`；',
     '    `match` 固定写成 `{"logic":"and","rules":[{"field":"src_ip","op":"eq","value":"1.2.3.4"},{"field":"dst_port","op":"eq","value":80}]}`。',
     '    `rules` 必须是**数组**，绝不能写成 `{"item":[...]}` 或 `{"items":[...]}`；至少 2 个不同字段。',
     '  · 其他 kind（novelty/observation/structure/coverage/shift/retest）：**不要传 match**，',
@@ -224,6 +224,49 @@ export function buildObservationCasePrompt(task: PromptTask, workflow?: Workflow
     '3. 最多再做 2–3 次针对性检索；不要重复查已知事实，不要扩大时间窗；',
     '4. 证据足够就调用 complete_task；证据不足用 inconclusive，并在 terminal_reason/evidence_gap 写清缺什么；',
     '5. 不要因为“第一次出现”本身判攻击；资产未登记只说明台账缺口。',
+    '',
+    `任务：${task.id}`,
+    ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0
+      ? ['按当前工作流的阶段推进，但允许为这条窄案件提前收尾。']
+      : []),
+  ].join('\n')
+}
+
+/**
+ * 命中簇案件的窄提示词：digest 闸门已经从一小时的簇里挑出了这一条。
+ *
+ * 与观察案件的区别：这里的核心证据是**规则命中本身**（命中事件、簇内资产、
+ * 外部对端、DNS 域），所以允许直查 search_hits / hit_clusters / raw_evidence，
+ * 但仍然要求少轮次收尾 —— 目的不是把全量调查重跑一遍。
+ */
+export function buildHitCasePrompt(task: PromptTask, workflow?: WorkflowRecord | null): string {
+  const facts = {
+    task_id: task.id,
+    kind: task.kind,
+    subject_kind: task.subject_kind,
+    subject: task.subject,
+    direction: task.direction ?? null,
+    principal_asset: task.principal_asset ?? null,
+    objective_strength: task.strength,
+    window: { start: task.window_start ?? null, end: task.window_end ?? null },
+    cluster: task.hint ?? null,
+  }
+  return [
+    '你是深瞳 NDR 的命中簇案件分析器。上游摘要闸门已经从最近一小时的命中簇里',
+    '挑出了这一条，你的任务是确认它是真实威胁还是规则误报，而不是重新做全量调查。',
+    '',
+    '<task>',
+    JSON.stringify(facts, null, 2),
+    '</task>',
+    '',
+    '工作方式（硬约束）：',
+    '1. 先看 task_facts / asset_context / prior_findings，确认主体资产、受影响资产与外部对端；',
+    '2. 用 search_hits 或 hit_clusters 看簇内命中（规则、方向、端口、URI/签名），必要时用 raw_evidence 取样本；',
+    '3. 需要域名归属时用 domain_intel，需要规则条件时用 get_rule；',
+    '4. 最多再做 3–5 次针对性检索；不要重复查已知事实，不要扩大时间窗；',
+    '5. 证据足够就调用 complete_task；证据不足用 inconclusive，并在 terminal_reason/evidence_gap 写清缺什么；',
+    '6. 规则严重度不是结论；资产未登记只说明台账缺口，不能据此判恶意；',
+    '7. 判 false_positive 且证据来自 ≥2 种工具时，按提示词要求用 typed match 提交抑制，让同类簇下一轮不再入队。',
     '',
     `任务：${task.id}`,
     ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0

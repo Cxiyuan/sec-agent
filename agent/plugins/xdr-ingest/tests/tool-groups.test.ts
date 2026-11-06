@@ -46,6 +46,24 @@ test('planToolGroups 对缺失工具不报错，也不产生未知名字', () =>
   assert.deepEqual(planned.groups, {})
 })
 
+test('hit_case 使用窄工具面：保留簇证据工具，去掉会话检索与低频能力', () => {
+  const available = [
+    ...CORE_NDR_TOOLS.map(name => `${prefix}${name}`),
+    `${prefix}dns_queries`,
+    'session_search',
+    'session_trace',
+  ]
+  const planned = planToolGroups(available, 'hit_case')
+  assert.ok(planned.core.includes(`${prefix}search_hits`))
+  assert.ok(planned.core.includes(`${prefix}hit_clusters`))
+  assert.ok(planned.core.includes(`${prefix}raw_evidence`))
+  assert.ok(planned.core.includes(`${prefix}complete_task`))
+  assert.ok(planned.core.includes(`${prefix}submit_suppression`))
+  assert.ok(!planned.core.includes(`${prefix}session_search`))
+  assert.ok(!planned.core.includes(`${prefix}timeline`))
+  assert.deepEqual(planned.groups.network, [`${prefix}dns_queries`])
+})
+
 test('工具组名覆盖加载工具的参数枚举', () => {
   assert.deepEqual(TOOL_GROUP_NAMES, [
     'network', 'identity', 'evidence', 'task', 'suppression', 'schedule', 'deliverable', 'other', 'all',

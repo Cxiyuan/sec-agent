@@ -938,6 +938,16 @@ def decide(entry: UnifiedLog, *, rule: str = "") -> Matched | None:
     return None
 
 
+def _canonical_task_kind(kind: str) -> str:
+    """`hit_case` 是摘要升级出来的命中簇案件：抑制语义与 `hit_cluster` 完全一致。
+
+    摘要闸门只是把「哪些簇值得调查」提前了，来源事实没有变；如果这里不归一，
+    hit_case 提交的抑制会以另一个 task_kind 入库，后续同类簇匹配不上。
+    """
+    text = str(kind or "")
+    return "hit_cluster" if text == "hit_case" else text
+
+
 def decide_task(*, kind: str, reuse_identity: str) -> Matched | None:
     """任务级抑制：在 queue.enqueue 入队前按稳定 reuse_identity 精确匹配。
 
@@ -948,26 +958,27 @@ def decide_task(*, kind: str, reuse_identity: str) -> Matched | None:
     identity = str(reuse_identity or "").strip()
     if not enabled() or not identity:
         return None
+    wanted = _canonical_task_kind(kind)
     for row in _active_rows():
         if str(getattr(row, "scope", SCOPE_EVENT) or SCOPE_EVENT) != SCOPE_TASK:
             continue
         if str(getattr(row, "reuse_identity", "") or "") != identity:
             continue
-        task_kind = str(getattr(row, "task_kind", "") or "")
-        if task_kind and task_kind != str(kind or ""):
+        task_kind = _canonical_task_kind(str(getattr(row, "task_kind", "") or ""))
+        if task_kind and task_kind != wanted:
             continue
         return Matched(id=str(row.id), name=str(row.name or ""), mode=MODE_SUPPRESS)
     return None
 
 
 def task_event_suppressed(*, kind: str, hint: dict[str, Any] | None) -> Matched | None:
-    """hit/hit_cluster 任务的事件级抑制检查。
+    """hit/hit_cluster/hit_case 任务的事件级抑制检查。
 
     事件级抑制过去只在检测热路径 `decide()` 上求值；抑制创建时已经在队列里的
-    hit/hit_cluster 任务不会被回收，仍会被 agent 领走。这里用任务 hint 的
-    `事件ID` 重新求值一次，让 event suppression 对**入队和领取**同样生效。
+    命中任务不会被回收，仍会被 agent 领走。这里用任务 hint 的 `事件ID`
+    重新求值一次，让 event suppression 对**入队和领取**同样生效。
     """
-    task_kind = str(kind or "")
+    task_kind = _canonical_task_kind(kind)
     if task_kind not in ("hit", "hit_cluster") or not enabled():
         return None
     raw_ids = (hint or {}).get("事件ID")
