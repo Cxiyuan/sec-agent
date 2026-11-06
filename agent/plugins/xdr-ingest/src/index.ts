@@ -16,6 +16,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
+import { llmAggApiKeyResolver } from './credentials.ts'
 import { agentsOf } from './agent-port.ts'
 import { Analyst } from './analyst.ts'
 import { ClaimLoop } from './claim-loop.ts'
@@ -305,6 +306,7 @@ export function apply(ctx: Context, config: Config): void {
   const storeOf = (projectId: string): DataStore => registry?.get(projectId) ?? memoryStore
 
   const manager = new ProjectManager({
+    resolveApiKey: llmAggApiKeyResolver(ctx),
     config: {
       pollSeconds: config.pollSeconds,
       maxConcurrent: config.maxConcurrent,

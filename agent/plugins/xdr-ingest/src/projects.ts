@@ -198,6 +198,7 @@ export class ProjectRuntime {
   /** 轻量初筛（低阶模型闸门）：配置每任务现取，控制台改了下一个任务就生效。 */
   private lightTriage: LightTriage | null = null
   private light: LightTriageConfig = DEFAULT_LIGHT_TRIAGE
+  private readonly resolveApiKey: (() => Promise<string | undefined>) | undefined
   private loop: ClaimLoop | null = null
   private syncSuppressions: (() => Promise<void>) | null = null
   private workflowRecord: WorkflowRecord | null = null
@@ -211,6 +212,8 @@ export class ProjectRuntime {
     readonly admin: ProjectAdminStore
     readonly sessions: SessionProjects
     readonly gate: ConcurrencyGate
+    /** 摘要闸门的网关池 Key（dsh 凭据服务/环境变量）。 */
+    readonly resolveApiKey?: () => Promise<string | undefined>
   }) {
     this.record = deps.project
     this.projectId = deps.project.projectId
@@ -220,6 +223,7 @@ export class ProjectRuntime {
     this.admin = deps.admin
     this.sessions = deps.sessions
     this.gate = deps.gate
+    this.resolveApiKey = deps.resolveApiKey
     this.breaker = new FailureBreaker({
       threshold: deps.config.breakerThreshold,
       baseCooldownMs: deps.config.breakerBaseMs,
@@ -296,7 +300,10 @@ export class ProjectRuntime {
     const [fallbackProvider, fallbackName] = splitModel(this.record.fallbackModel)
     // 初筛器只建一次：配置经 getter 现取（改配置不用重启、不用换实例），
     // 熔断状态也因此跨任务保留。
-    this.lightTriage = new LightTriage({ config: () => this.light })
+    this.lightTriage = new LightTriage({
+      config: () => this.light,
+      ...(this.resolveApiKey === undefined ? {} : { resolveApiKey: this.resolveApiKey }),
+    })
     const analyst = new Analyst({
       agents: this.agents,
       ndr: this.ndr,
@@ -608,6 +615,7 @@ export class ProjectManager {
   private readonly sessions: SessionProjects
   private readonly storeOf: (projectId: string) => DataStore
   private readonly gate: ConcurrencyGate
+  private readonly resolveApiKey: (() => Promise<string | undefined>) | undefined
 
   constructor(deps: {
     readonly config: ProjectRuntimeConfig
@@ -616,12 +624,14 @@ export class ProjectManager {
     readonly sessions: SessionProjects
     readonly storeOf: (projectId: string) => DataStore
     readonly maxConcurrentTotal?: () => number
+    readonly resolveApiKey?: () => Promise<string | undefined>
   }) {
     this.config = deps.config
     this.agents = deps.agents
     this.admin = deps.admin
     this.sessions = deps.sessions
     this.storeOf = deps.storeOf
+    this.resolveApiKey = deps.resolveApiKey
     this.gate = new ConcurrencyGate(deps.maxConcurrentTotal ?? (() => 16))
   }
 
@@ -851,6 +861,7 @@ export class ProjectManager {
       admin: this.admin as ProjectAdminStore,
       sessions: this.sessions,
       gate: this.gate,
+      ...(this.resolveApiKey === undefined ? {} : { resolveApiKey: this.resolveApiKey }),
     })
     this.runtimes.set(project.projectId, runtime)
     return runtime.start()

@@ -13,7 +13,7 @@ import { Analyst } from '../src/analyst.ts'
 import type { AgentCreateOptions, AgentHandleLike, AgentResumeOptions, AgentsServiceLike } from '../src/agent-port.ts'
 import type { ClaimedTask } from '../src/claim-loop.ts'
 import type { NdrTaskPort, ReusePayload, TaskStateReply } from '../src/analyst.ts'
-import type { LightTriagePort, TriageResult } from '../src/light-triage.ts'
+import type { DigestGateResult, LightTriagePort, TriageResult } from '../src/light-triage.ts'
 import { MemoryStateStore } from '../src/state-store.ts'
 import { taskResultKey } from '../src/task-results.ts'
 import type { SessionAudit } from '../src/session-audit.ts'
@@ -1251,4 +1251,71 @@ test('租约心跳失败时取消会话并 defer，不代交结论', async () =>
   assert.equal(rec.cancelled, 1)
   assert.equal(rec.completed.length, 0)
   assert.equal(rec.deferred[0]?.reason, 'lease_lost')
+})
+
+test('observation digest 只走便宜闸门，不启动 DSH 会话', async () => {
+  const rec = recorder()
+  let creates = 0
+  let escalated: string[] = []
+  const store = new MemoryStateStore()
+  const agents: AgentsServiceLike = {
+    async create() {
+      creates += 1
+      throw new Error('digest 不应创建 DSH 会话')
+    },
+  }
+  const light: LightTriagePort = {
+    async triage(): Promise<TriageResult> {
+      return { kind: 'escalate', reason: 'disabled', ms: 0 }
+    },
+    async gate(): Promise<DigestGateResult> {
+      return { attention: ['o2'], model: 'cheap', ms: 3 }
+    },
+  }
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() { return { state: 'claimed' } },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+    async escalateDigest(_id, ids) {
+      escalated = [...ids]
+      return { ok: true, accepted: ids.length }
+    },
+  }
+  const digestTask: ClaimedTask = {
+    ...task,
+    id: 'task-digest',
+    kind: 'observation_digest',
+    subject_kind: 'digest',
+    subject: 'observation-digest:2026-11-06T04',
+    hint: {
+      任务类型: 'observation_digest',
+      items: [
+        { observation_id: 'o1', kind: 'egress_new', subject: '10.0.0.5', subject_kind: 'asset', strength: 0.6, facts: {} },
+        { observation_id: 'o2', kind: 'profile_anomaly', subject: '10.0.0.5', subject_kind: 'asset', strength: 0.8, facts: {} },
+      ],
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr,
+    timeoutMs: 1000,
+    process: store,
+    lightTriage: light,
+  })
+  const outcome = await analyst.run(digestTask)
+  assert.equal(outcome.completed, true)
+  assert.equal(outcome.triaged, true)
+  assert.equal(creates, 0, 'digest 不能创建 DSH 会话')
+  assert.deepEqual(escalated, ['o2'])
+  assert.equal(rec.completed.length, 0)
+  const proc = await store.getProcess('task-digest')
+  assert.equal(proc?.outcome, 'triaged')
+  assert.equal(proc?.decision['action'], 'observation_digest')
 })

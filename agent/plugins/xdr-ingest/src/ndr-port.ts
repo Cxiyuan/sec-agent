@@ -272,6 +272,19 @@ export class NdrTaskPortAdapter implements NdrTaskPort {
     }
   }
 
+  /** 价值闸门分流：把摘要中需要调查的 observation 转成完整案件。 */
+  async escalateDigest(
+    taskId: string,
+    attentionIds: readonly string[],
+    note = '',
+  ): Promise<{ ok?: boolean, accepted?: number, error?: string } | void> {
+    return await this.caller.callTool('escalate_digest', {
+      task_id: taskId,
+      attention_ids: [...attentionIds],
+      note,
+    }) as { ok?: boolean, accepted?: number, error?: string }
+  }
+
   /**
    * 写回 DSH 审计投影。它与 `log_step` 是两类东西：
    * `log_step` 是模型写的“未经核实观察”；这里是运行事实（工具调用/tokens/turn 终态），

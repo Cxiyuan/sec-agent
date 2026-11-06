@@ -1290,3 +1290,127 @@ def _as_dt(value: Any) -> datetime | None:
 def significance_for(value: float, mean: float, var: float) -> float:
     """把（值, 均值, 方差）换算成上尾概率 —— 复用基线那套检验，避免两处口径漂移。"""
     return poisson.count_p_value(value, mean=mean, var=var)
+
+
+#: Observation 摘要闸门：每次最多带多少条事实给便宜模型分流。
+_OBS_DIGEST_MAX_ITEMS = 30
+
+
+def enqueue_observation_digest(client: Any) -> int:
+    """把最近一小时的 observation 折成一条摘要任务，交给便宜模型分流。
+
+    与 `enqueue_observations` 的区别：后者逐条生成完整分析任务，会让每个新外连/
+    新端口都跑一轮 20 万 token 的调查。这里只产出一条 `observation_digest`，
+    由 Agent 的价值闸门（无工具、便宜模型）挑出真正需要完整调查的条目，
+    再由 `escalate_digest` 生成 `observation_case`。
+
+    只处理 `last_enqueued_at` 已过冷却期的事实；同一小时只建一条摘要。
+    """
+    if not params.enabled():
+        return 0
+    now = datetime.now(UTC)
+    since = now - timedelta(minutes=60)
+    cutoff = now - timedelta(hours=_OBS_COOLDOWN_HOURS)
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    subject = f"observation-digest:{hour_key}"
+    with SessionLocal() as db:
+        # 同一小时已经排过摘要就不重复建；新到的事实会进入下一个小时。
+        existing = db.scalars(
+            select(AnalysisTask)
+            .where(
+                AnalysisTask.kind == "observation_digest",
+                AnalysisTask.subject == subject,
+                AnalysisTask.state.in_(("pending", "deferred", "claimed", "done")),
+            )
+            .limit(1)
+        ).first()
+        if existing is not None:
+            return 0
+        rows = list(
+            db.scalars(
+                select(Observation)
+                .where(
+                    Observation.last_seen >= since,
+                    Observation.strength >= _OBS_MIN_STRENGTH,
+                    (Observation.last_enqueued_at.is_(None))
+                    | (Observation.last_enqueued_at < cutoff),
+                )
+                .order_by(Observation.strength.desc(), Observation.last_seen.desc())
+                .limit(_OBS_DIGEST_MAX_ITEMS)
+            ).all()
+        )
+    if not rows:
+        return 0
+    items = []
+    suppressed_ids: list[str] = []
+    for row in rows:
+        identity = str(row.reuse_identity or row.dedupe_key or "").strip()
+        if identity:
+            blocked = suppression.decide_task(kind="observation", reuse_identity=identity)
+            if blocked is not None:
+                suppression.note_hit(blocked.id)
+                suppressed_ids.append(str(row.id))
+                continue
+        evidence = _recent_rule_hits(str(row.subject or ""))
+        items.append(
+            {
+                "observation_id": str(row.id),
+                "kind": str(row.kind or ""),
+                "subject_kind": str(row.subject_kind or ""),
+                "subject": str(row.subject or ""),
+                "strength": float(row.strength or 0),
+                "count": int(row.count or 0),
+                "facts": row.facts or {},
+                "first_seen": row.first_seen.isoformat() if row.first_seen else "",
+                "last_seen": row.last_seen.isoformat() if row.last_seen else "",
+                "reuse_identity": str(row.reuse_identity or row.dedupe_key or ""),
+                **({"相关规则命中": evidence} if evidence else {}),
+            }
+        )
+    if not items:
+        with SessionLocal() as db:
+            for obs_id in suppressed_ids:
+                item = db.get(Observation, obs_id)
+                if item is not None:
+                    item.last_enqueued_at = now
+            db.commit()
+        return 0
+    result = queue.enqueue(
+        kind="observation_digest",
+        subject_kind="digest",
+        subject=subject,
+        strength=max(item["strength"] for item in items),
+        feature="observation_digest",
+        hint={
+            "任务类型": "observation_digest",
+            "窗口": hour_key,
+            "条目数": len(items),
+            "items": items,
+            "要求": "只挑出需要完整调查的 observation_id；不直接下结论、不建抑制。",
+        },
+        window_start=min(
+            row.first_seen for row in rows if row.first_seen is not None
+        ) if any(row.first_seen is not None for row in rows) else now,
+        window_end=now,
+        client=client,
+        # 摘要属于运行层分流，不受旧配置里 candidate_kinds 是否已迁移影响；
+        # 总开关 analysis.enabled 仍然有效。
+        force=True,
+    )
+    if result in ("new", "merged"):
+        with SessionLocal() as db:
+            for row in rows:
+                item = db.get(Observation, row.id)
+                if item is not None:
+                    item.last_enqueued_at = now
+            db.commit()
+        queue.bump(client, "observation_digest_enqueued", 1)
+        return 1
+    if suppressed_ids:
+        with SessionLocal() as db:
+            for obs_id in suppressed_ids:
+                item = db.get(Observation, obs_id)
+                if item is not None:
+                    item.last_enqueued_at = now
+            db.commit()
+    return 0

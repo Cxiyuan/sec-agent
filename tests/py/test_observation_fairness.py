@@ -234,3 +234,111 @@ def test_rule_evidence_matches_destination(cand: Any, monkeypatch: pytest.Monkey
     assert src_item["as_source"] is True and src_item["as_destination"] is False
     # 目的侧证据排在前面（"它被谁打了"优先）
     assert out[0]["event_id"] == "ev-dst"
+
+
+class DigestDB:
+    """Minimal DB for `enqueue_observation_digest`: first query existing task, then rows."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+        self.calls = 0
+        self.committed = False
+
+    def scalars(self, _stmt: Any) -> Any:
+        self.calls += 1
+        rows = [] if self.calls == 1 else list(self.rows)
+
+        class R:
+            def first(self) -> Any:
+                return rows[0] if rows else None
+
+            def all(self) -> list[Any]:
+                return rows
+
+            def __iter__(self) -> Any:
+                return iter(rows)
+
+        return R()
+
+    def get(self, _model: Any, key: str) -> Any:
+        for row in self.rows:
+            if row.id == key:
+                return row
+        return None
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
+def test_observation_digest_combines_facts_and_marks_cooldown(
+    cand: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [_obs("egress_new", idx="o1"), _obs("profile_anomaly", idx="o2")]
+    db = DigestDB(rows)
+    monkeypatch.setattr(cand, "SessionLocal", lambda: db)
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(cand, "queue", fake_queue)
+    monkeypatch.setattr(cand, "_recent_rule_hits", lambda *_a, **_k: [])
+    monkeypatch.setattr(cand.params, "enabled", lambda: True)
+
+    made = cand.enqueue_observation_digest(client=SimpleNamespace())
+    assert made == 1
+    assert fake_queue.calls[0]["kind"] == "observation_digest"
+    assert fake_queue.calls[0]["hint"]["条目数"] == 2
+    assert [x["observation_id"] for x in fake_queue.calls[0]["hint"]["items"]] == ["o1", "o2"]
+    assert all(row.last_enqueued_at is not None for row in rows)
+
+
+def test_escalate_digest_creates_observation_cases_only_for_attention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue_mod = importlib.import_module("app.analysis.queue")
+    parent = SimpleNamespace(
+        id="digest-1",
+        kind="observation_digest",
+        state="claimed",
+        hint={
+            "items": [
+                {"observation_id": "o1", "kind": "egress_new", "subject_kind": "asset", "subject": "10.0.0.5", "strength": 0.6, "facts": {"目标": "1.2.3.4"}},
+                {"observation_id": "o2", "kind": "profile_anomaly", "subject_kind": "asset", "subject": "10.0.0.5", "strength": 0.8, "facts": {"风险分": 0.8}},
+            ]
+        },
+        lease_until=None,
+        updated_at=NOW,
+        note="",
+        depth=0,
+        window_start=NOW,
+        window_end=NOW,
+    )
+
+    class DB:
+        def get(self, _model: Any, key: str) -> Any:
+            return parent if key == "digest-1" else None
+
+        def commit(self) -> None:
+            return None
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    created: list[dict[str, Any]] = []
+    monkeypatch.setattr(queue_mod, "SessionLocal", lambda: DB())
+    monkeypatch.setattr(queue_mod, "enqueue", lambda **kwargs: created.append(kwargs) or "new")
+    monkeypatch.setattr(queue_mod, "bump", lambda *_a, **_k: None)
+
+    out = queue_mod.escalate_digest(SimpleNamespace(), "digest-1", ["o2", "missing"], note="test")
+    assert out["ok"] is True
+    assert out["accepted"] == 1
+    assert parent.state == "done"
+    assert created[0]["kind"] == "observation_case"
+    assert created[0]["hint"]["observation_id"] == "o2"
+    assert created[0]["force"] is True

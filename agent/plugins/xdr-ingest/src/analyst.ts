@@ -13,7 +13,7 @@ import type { AgentFollowupInput, AgentHandleLike, AgentScopedContext, AgentsSer
 import type { WorkflowRecord } from './state-store.ts'
 import type { ClaimedTask, NdrPort } from './claim-loop.ts'
 import type { LightTriagePort, TriageResult } from './light-triage.ts'
-import { buildAnalysisPrompt } from './prompt.ts'
+import { buildAnalysisPrompt, buildObservationCasePrompt } from './prompt.ts'
 import { ALWAYS_DENY_TOOLS, planToolGroups, TOOL_GROUP_NAMES } from './tool-groups.ts'
 import { registerRdapTool } from './rdap.ts'
 import { auditDelta } from './session-audit.ts'
@@ -112,6 +112,12 @@ export interface NdrTaskPort extends NdrPort {
   deferTask(taskId: string, reason: string, options?: { readonly retryAfterSeconds?: number }): Promise<unknown>
   /** 续租：长会话/同会话恢复期间不能被 NDR sweep 回收后双跑。 */
   renewLease?(taskId: string): Promise<{ readonly ok?: boolean; readonly error?: string } | void>
+  /** 价值闸门：只把 digest 中 attention 的 observation 转成完整案件。 */
+  escalateDigest?(
+    taskId: string,
+    attentionIds: readonly string[],
+    note?: string,
+  ): Promise<{ readonly ok?: boolean; readonly accepted?: number; readonly error?: string } | void>
   /** 生效中的精准抑制清单（抑制记忆的来源；不实现 = 不做抑制记忆）。 */
   /** null = 本次同步失败（不要据此清空本地抑制记忆）。 */
   listSuppressions?(): Promise<readonly SuppressionView[] | null>
@@ -289,6 +295,141 @@ export class Analyst {
   }
 
   /**
+   * Observation digest：便宜模型只点名需要完整调查的 observation，不产生 verdict。
+   *
+   * 这里不建 DSH 会话。模型失败/闸门未配置时降级为 defer，绝不再退回
+   * “一条 observation 跑一轮完整 agent”的老路径。
+   */
+  private async runObservationDigest(task: ClaimedTask, startedAt: number): Promise<AnalystOutcome> {
+    const rawAttempt = await this.options.process?.startProcess({
+      taskId: task.id,
+      sessionId: '',
+      kind: task.kind,
+      subject: task.subject,
+      model: 'observation-gate',
+      startedAt: new Date().toISOString(),
+      decision: { action: 'observation_digest', phase: 'digest' },
+    }) ?? 0
+    const attempt = rawAttempt > 0 ? rawAttempt : 1
+    const gate = this.options.lightTriage?.gate
+    if (gate === undefined) {
+      return this.deferDigest(task, attempt, startedAt, 'digest_gate_unavailable')
+    }
+    let result: Awaited<ReturnType<NonNullable<typeof gate>>>
+    try {
+      result = await gate(task)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[xdr-ingest] observation digest 闸门异常（任务 ${task.id}）：${message.slice(0, 240)}`)
+      return this.deferDigest(task, attempt, startedAt, 'digest_gate_error')
+    }
+    if ('error' in result) {
+      console.warn(`[xdr-ingest] observation digest 闸门失败（任务 ${task.id}）：${result.error.slice(0, 240)}`)
+      return this.deferDigest(task, attempt, startedAt, 'digest_gate_error')
+    }
+    const note = `观察摘要分流：attention ${result.attention.length}`
+    if (this.options.ndr.escalateDigest === undefined) {
+      return this.deferDigest(task, attempt, startedAt, 'digest_escalate_unavailable')
+    }
+    let escalated: { accepted?: number, error?: string } | void = undefined
+    try {
+      escalated = await this.options.ndr.escalateDigest(task.id, result.attention, note)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[xdr-ingest] observation digest 分流写回失败（任务 ${task.id}）：${message.slice(0, 240)}`)
+      return this.deferDigest(task, attempt, startedAt, 'digest_escalate_failed')
+    }
+    if (escalated !== undefined && typeof escalated === 'object'
+      && typeof escalated.error === 'string' && escalated.error !== '') {
+      console.warn(`[xdr-ingest] observation digest 分流被拒绝（任务 ${task.id}）：${escalated.error.slice(0, 240)}`)
+      return this.deferDigest(task, attempt, startedAt, 'digest_escalate_failed')
+    }
+    const decision = {
+      action: 'observation_digest',
+      attention: [...result.attention],
+      gate_model: result.model,
+      gate_ms: result.ms,
+    }
+    await this.finishProcess(task, 'triaged', startedAt, {
+      verdict: '',
+      note,
+      model: `gate:${result.model}`,
+      sessionId: '',
+      toolsUsed: 0,
+      toolErrors: 0,
+      turns: 0,
+      tokens: tokenUsageOf(null),
+      decision,
+    })
+    await this.sendAudit(task, {
+      sessionId: '',
+      attempt,
+      outcome: 'triaged',
+      verdict: '',
+      note,
+      decision,
+      startedAt,
+      model: `gate:${result.model}`,
+      toolsUsed: 0,
+      toolErrors: 0,
+    })
+    return {
+      taskId: task.id,
+      completed: true,
+      state: 'done',
+      deferred: false,
+      durationMs: Date.now() - startedAt,
+      triaged: true,
+      attempt,
+      decision,
+    }
+  }
+
+  private async deferDigest(
+    task: ClaimedTask,
+    attempt: number,
+    startedAt: number,
+    reason: string,
+  ): Promise<AnalystOutcome> {
+    const decision = { action: 'observation_digest_deferred', reason }
+    await this.finishProcess(task, 'deferred', startedAt, {
+      verdict: '',
+      note: `观察摘要闸门暂不可用：${reason}`,
+      model: 'observation-gate',
+      sessionId: '',
+      toolsUsed: 0,
+      toolErrors: 0,
+      turns: 0,
+      tokens: tokenUsageOf(null),
+      decision,
+    })
+    await this.sendAudit(task, {
+      sessionId: '',
+      attempt,
+      outcome: 'deferred',
+      verdict: '',
+      note: `观察摘要闸门暂不可用：${reason}`,
+      decision,
+      startedAt,
+      model: 'observation-gate',
+    })
+    try {
+      await this.options.ndr.deferTask(task.id, reason, { retryAfterSeconds: 300 })
+    } catch {
+      // 租约可能已丢；审计已经留下原因，下一次 claim 再处理。
+    }
+    return {
+      taskId: task.id,
+      completed: false,
+      state: '',
+      deferred: true,
+      durationMs: Date.now() - startedAt,
+      attempt,
+      error: reason,
+    }
+  }
+
+  /**
    * 找可恢复的上一段会话：进程索引优先，NDR audits 补缺。
    *
    * 必须同时满足：会话 id 非空、outcome 不是终态、事实指纹一致、会话日志可读、
@@ -340,6 +481,10 @@ export class Analyst {
 
   private async runUnlocked(task: ClaimedTask): Promise<AnalystOutcome> {
     const startedAt = Date.now()
+    // 观察摘要不走 DSH：一次便宜模型调用只做分流；全量 agent 只处理 upgrade 出来的 case。
+    if (task.kind === 'observation_digest') {
+      return this.runObservationDigest(task, startedAt)
+    }
     // 先回答“能不能续跑”。可恢复会话优先于复用/抑制/轻量初筛：快捷路径
     // 关单会把上一轮已经完成的工具证据直接丢掉，这正是本次要根治的行为。
     const workflow = typeof this.options.workflow === 'function'
@@ -542,7 +687,7 @@ export class Analyst {
         // 工具面默认只保留核心取证工具；罕见能力通过 enable_analysis_tools
         // 按组激活。工具始终注册在 registry 里，不会因为 24 小时未调用而删除。
         const available = (agentCtx.tools?.schemas?.() ?? []).map(tool => tool.name)
-        const planned = planToolGroups(available)
+        const planned = planToolGroups(available, task.kind)
         const groupDisposers = new Map<string, () => void>()
 
         let loaderReady = false
@@ -627,7 +772,9 @@ export class Analyst {
         // 系统提示，并额外注册一条排在 runtime-context 之后的 required 用户上下文，
         // 让任务成为模型眼里的“最后一条请求”。该上下文由 DSH 正常生成 id/source。
         try {
-          const taskText = buildAnalysisPrompt(promptTask, workflow)
+          const taskText = task.kind === 'observation_case'
+            ? buildObservationCasePrompt(promptTask, workflow)
+            : buildAnalysisPrompt(promptTask, workflow)
           agentCtx.systemPrompt?.section?.({
             name: 'xdr-ingest/task',
             order: 10,
@@ -824,6 +971,8 @@ export class Analyst {
       const followup = handle.agent.followup(followupMessage(
         resumable
           ? continuationPrompt(task, resumeReason)
+          : task.kind === 'observation_case'
+          ? buildObservationCasePrompt(promptTask, workflow)
           : buildAnalysisPrompt(promptTask, workflow),
         this.options.source ?? 'xdr-ingest',
       ))

@@ -193,3 +193,41 @@ export function buildAnalysisPrompt(task: PromptTask, workflow?: WorkflowRecord 
     '线索类型只说明 NDR 为什么把它排进队列，不规定你必须分析什么或怎么分析。',
   ].join('\n')
 }
+
+/**
+ * 观察案件的窄提示词：digest 闸门已经挑出这一条，目的只是确认/排除，
+ * 不是把同一套全量调查再跑一遍。不要把 hint 当结论，也不要把“首次出现”当攻击。
+ */
+export function buildObservationCasePrompt(task: PromptTask, workflow?: WorkflowRecord | null): string {
+  const facts = {
+    task_id: task.id,
+    kind: task.kind,
+    subject_kind: task.subject_kind,
+    subject: task.subject,
+    direction: task.direction ?? null,
+    principal_asset: task.principal_asset ?? null,
+    objective_strength: task.strength,
+    window: { start: task.window_start ?? null, end: task.window_end ?? null },
+    fact: task.hint ?? null,
+  }
+  return [
+    '你是深瞳 NDR 的观察案件分析器。上游摘要闸门已经从一批观察事实里挑出了这一条，',
+    '你的任务是用最少取证确认它是否值得进一步处置，而不是重新做全量调查。',
+    '',
+    '<task>',
+    JSON.stringify(facts, null, 2),
+    '</task>',
+    '',
+    '工作方式（硬约束）：',
+    '1. 先看 task_facts / asset_context / egress_baseline / prior_findings；',
+    '2. 需要域名归属时用 domain_intel，需要规则条件时用 get_rule；',
+    '3. 最多再做 2–3 次针对性检索；不要重复查已知事实，不要扩大时间窗；',
+    '4. 证据足够就调用 complete_task；证据不足用 inconclusive，并在 terminal_reason/evidence_gap 写清缺什么；',
+    '5. 不要因为“第一次出现”本身判攻击；资产未登记只说明台账缺口。',
+    '',
+    `任务：${task.id}`,
+    ...(workflow !== undefined && workflow !== null && workflow.stages.length > 0
+      ? ['按当前工作流的阶段推进，但允许为这条窄案件提前收尾。']
+      : []),
+  ].join('\n')
+}
