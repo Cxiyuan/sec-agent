@@ -1319,3 +1319,59 @@ test('observation digest 只走便宜闸门，不启动 DSH 会话', async () =>
   assert.equal(proc?.outcome, 'triaged')
   assert.equal(proc?.decision['action'], 'obs_digest')
 })
+
+test('struct_digest 也走闸门，不启动 DSH 会话', async () => {
+  const rec = recorder()
+  let escalated: string[] = []
+  const agents: AgentsServiceLike = {
+    async create() {
+      throw new Error('struct digest 不应创建 DSH 会话')
+    },
+  }
+  const light: LightTriagePort = {
+    async triage(): Promise<TriageResult> {
+      return { kind: 'escalate', reason: 'disabled', ms: 0 }
+    },
+    async gate(): Promise<DigestGateResult> {
+      return { attention: ['s1'], model: 'deepseek-v4-flash', ms: 2 }
+    },
+  }
+  const ndr: NdrTaskPort = {
+    async claimTasks() { return { tasks: [] } },
+    async taskState() { return { state: 'claimed' } },
+    async completeTask(id, payload) {
+      rec.completed.push(payload)
+      return { ok: true, task_state: 'done', task_id: id }
+    },
+    async deferTask(id, reason) {
+      rec.deferred.push({ id, reason })
+      return { ok: true }
+    },
+    async escalateDigest(_id, ids) {
+      escalated = [...ids]
+      return { ok: true, accepted: ids.length }
+    },
+  }
+  const structureTask: ClaimedTask = {
+    ...task,
+    id: 'task-struct-digest',
+    kind: 'struct_digest',
+    subject_kind: 'digest',
+    subject: 'structure-digest:2026-11-06T11',
+    hint: {
+      任务类型: 'struct_digest',
+      items: [{ item_id: 's1', subject: '10.0.0.5', strength: 0.8, facts: {} }],
+    },
+  }
+  const analyst = new Analyst({
+    agents,
+    ndr,
+    timeoutMs: 1000,
+    process: new MemoryStateStore(),
+    lightTriage: light,
+  })
+  const outcome = await analyst.run(structureTask)
+  assert.equal(outcome.completed, true)
+  assert.equal(outcome.triaged, true)
+  assert.deepEqual(escalated, ['s1'])
+})
