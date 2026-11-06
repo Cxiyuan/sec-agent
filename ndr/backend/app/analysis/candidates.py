@@ -960,6 +960,23 @@ def enqueue_suppression_followup(client: Any) -> int:
                     "加 rule 维度指出是哪条规则，或把 src_ip 精确到具体来源"
                 ),
             }
+        # 同一抑制的待办只保留一条：旧实现的 dedupe_key 带小时桶，会每小时
+        # 重新生成一条完全相同的 structure 任务，几十条重复把模型预算吃光。
+        try:
+            with SessionLocal() as db:
+                active = db.scalars(
+                    select(AnalysisTask)
+                    .where(
+                        AnalysisTask.kind == "structure",
+                        AnalysisTask.state.in_(("pending", "deferred", "claimed")),
+                        AnalysisTask.hint["suppression_name"].astext == name,
+                    )
+                    .limit(1)
+                ).first()
+                if active is not None:
+                    continue
+        except Exception as exc:  # noqa: BLE001 — 去重失败不能阻断待办
+            log.debug("读抑制待办去重失败：%s", exc)
         strength = feedback.apply(0.75, "structure", name)
         result = queue.enqueue(
             kind="structure",
@@ -977,6 +994,7 @@ def enqueue_suppression_followup(client: Any) -> int:
                 "实际值": reason.get("actual"),
                 "上限": reason.get("limit"),
                 "试算": trial,
+                "suppression_name": name,
                 "抑制ID": item.get("id") or "",
                 "原任务": item.get("source_task_id") or "",
                 "要求": (
