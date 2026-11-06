@@ -1156,6 +1156,10 @@ def _apply_suppression(
         if "error" in context:
             return {"error": context["error"]}
         task_kind = str(context.get("kind") or "")
+        # hit_case 是摘要升级出来的命中簇案件：抑制按 hit_cluster 的语义入库，
+        # 这样事件级 typed match 才能继续拦住后续同类簇。
+        if task_kind == "hit_case":
+            task_kind = "hit_cluster"
         body["task_kind"] = task_kind
         if task_kind in EVENT_SCOPE_TASK_KINDS:
             body["scope"] = "event"
@@ -1252,7 +1256,7 @@ def _renew_task_lease(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _escalate_digest(args: dict[str, Any]) -> dict[str, Any]:
-    """价值闸门：把 digest 里 attention 的 observation 转成完整案件。"""
+    """价值闸门：把 digest 里 attention 的条目转成完整案件（obs/struct/hit）。"""
     return analysis_queue.escalate_digest(
         _client(),
         str(args.get("task_id") or ""),
@@ -2003,10 +2007,10 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "escalate_digest": {
         "run": _escalate_digest,
-        "desc": "价值闸门分流：只把 digest 中被点名的 observation 转成完整案件，不直接下结论",
+        "desc": "价值闸门分流：只把 digest 中被点名的条目转成完整案件，不直接下结论",
         "params": {
-            "task_id": "obs_digest 任务 ID",
-            "attention_ids": "需要升级的 observation_id 列表",
+            "task_id": "obs_digest / struct_digest / hit_digest 任务 ID",
+            "attention_ids": "需要升级的 item_id 列表（observation_id 或 item_id）",
             "note": "分流说明（可选）",
         },
     },

@@ -47,6 +47,26 @@ export const CORE_AGENT_TOOLS: readonly string[] = [
   'session_event_read',
 ]
 
+/**
+ * hit_case 的窄工具面：以命中簇证据为中心，允许直查命中/事件样本，
+ * 但去掉全量调查才需要的能力（轨迹、规则清单、覆盖率等）。
+ */
+export const HIT_CASE_TOOLS: readonly string[] = [
+  'task_facts',
+  'asset_context',
+  'prior_findings',
+  'get_rule',
+  'search_hits',
+  'hit_clusters',
+  'get_event_detail',
+  'raw_evidence',
+  'search_events',
+  'domain_intel',
+  'list_networks',
+  'complete_task',
+  'submit_suppression',
+]
+
 /** obs_case 的窄工具面：先看事实/资产/基线/域名，不做全量调查。 */
 export const OBSERVATION_CASE_TOOLS: readonly string[] = [
   'task_facts',
@@ -135,9 +155,13 @@ export function planToolGroups(
   kind = '',
 ): PlannedToolGroups {
   const existing = new Set(available)
+  const caseKind = kind === 'obs_case' || kind === 'struct_case' || kind === 'hit_case'
+  const ndrTools = kind === 'hit_case'
+    ? HIT_CASE_TOOLS
+    : caseKind ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS
   const core = [
-    ...((kind === 'obs_case' || kind === 'struct_case') ? OBSERVATION_CASE_TOOLS : CORE_NDR_TOOLS).map(withPrefix),
-    ...((kind === 'obs_case' || kind === 'struct_case') ? [] : CORE_AGENT_TOOLS),
+    ...ndrTools.map(withPrefix),
+    ...(caseKind ? [] : CORE_AGENT_TOOLS),
   ].filter(name => existing.has(name))
   const assigned = new Set(core)
   const groups: Record<string, string[]> = {}

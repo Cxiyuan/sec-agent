@@ -1377,7 +1377,9 @@ export type AnalysisTaskKind =
   | "obs_digest"
   | "obs_case"
   | "struct_digest"
-  | "struct_case";
+  | "struct_case"
+  | "hit_digest"
+  | "hit_case";
 
 /** 任务结论（`analysis/verdicts.py` 的结论态；`pending`/`done` 是流程态不算判定） */
 export type AnalysisVerdict =

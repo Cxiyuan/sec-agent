@@ -1,9 +1,12 @@
-"""hit_cluster 派工（D2，2026-10-29 架构整改）。
+"""hit_cluster 派工（D2，2026-10-29；2026-11 改为小时摘要）。
 
 一次外→内扫描命中几十个 IP：旧行为要么逐条 hit 爆量、要么（默认）完全不派工。
 整改后按「归类·网段·小时」成簇，主体是被访问资产；强度只读客观量。
-用户拍板的护栏都在这里钉住：60 分钟桶去重、每轮上限 20、不看 rule_severity、
-同一簇族 24h 最多观察一次。
+
+2026-11 成本整改：每个簇直接起完整 agent 变成「每小时一条 `hit_digest`」，
+由便宜闸门挑出需要完整调查的簇，只有被点名的才生成 `hit_case`。
+用户拍板的护栏继续钉住：60 分钟回看、每小时一条、单条最多 30 个簇、
+不看 rule_severity、同一簇族 24h 最多观察一次。
 """
 
 from __future__ import annotations
@@ -28,22 +31,43 @@ class _Scalars:
     def all(self) -> list[Any]:
         return list(self._items)
 
+    def first(self) -> Any:
+        return self._items[0] if self._items else None
+
     def __iter__(self) -> Any:
         return iter(self._items)
 
 
 class FakeDB:
-    """只模拟 `enqueue_hit_clusters` 用到的两段查询。"""
+    """只模拟 `enqueue_hit_digest` 用到的四段查询（按 SQL 文本分流）。"""
 
-    def __init__(self, hit_rows: list[Any], task_families: set[str]) -> None:
+    def __init__(
+        self,
+        hit_rows: list[Any],
+        task_families: set[str] | None = None,
+        digest_hints: list[dict[str, Any]] | None = None,
+        existing: Any = None,
+    ) -> None:
         self._hit_rows = hit_rows
-        self._task_families = task_families
+        self._task_families = task_families or set()
+        self._digest_hints = digest_hints or []
+        self._existing = existing
 
     def scalars(self, stmt: Any) -> _Scalars:
+        # 参数是绑定占位符，SQL 文本里看不到 kind 的字面值；按选择列区分查询。
         text = str(stmt)
-        if "analysis_tasks" in text:
+        if "hit_events" in text:
+            return _Scalars(list(self._hit_rows))
+        # 同一小时是否已有摘要：select(AnalysisTask) 展开成全部列
+        if "analysis_tasks.id" in text:
+            return _Scalars([self._existing] if self._existing is not None else [])
+        # 已派工/已完成的 hit_cluster/hit_case → hint.reuse_identity
+        if "analysis_tasks.hint ->>" in text:
             return _Scalars(list(self._task_families))
-        return _Scalars(list(self._hit_rows))
+        # 已完成分流的 hit_digest.hint（闸门看过哪些条目）
+        if "analysis_tasks.hint" in text:
+            return _Scalars(list(self._digest_hints))
+        return _Scalars([])
 
     def __enter__(self) -> Self:
         return self
@@ -95,6 +119,7 @@ class EnqueueSpy:
         self.calls: list[dict[str, Any]] = []
         self.keys: set[str] = set()
         self.families: set[str] = set()
+        self.bumps: list[str] = []
 
     def enqueue(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
@@ -103,55 +128,109 @@ class EnqueueSpy:
             kwargs["kind"], kwargs["subject_kind"], kwargs["subject"], kwargs["feature"]
         )
         self.keys.add(key)
-        family = str((kwargs.get("hint") or {}).get("reuse_identity") or "")
-        if family:
-            self.families.add(family)
+        hint = kwargs.get("hint") or {}
+        items = hint.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and str(item.get("reuse_identity") or ""):
+                    self.families.add(str(item["reuse_identity"]))
+        elif str(hint.get("reuse_identity") or ""):
+            self.families.add(str(hint["reuse_identity"]))
         return "new"
+
+    def bump(self, _client: Any, key: str, _amount: int = 1) -> None:
+        self.bumps.append(key)
 
 
 def _install(
-    monkeypatch: pytest.MonkeyPatch, hit_rows: list[Any], spy: EnqueueSpy
+    monkeypatch: pytest.MonkeyPatch,
+    hit_rows: list[Any],
+    spy: EnqueueSpy,
+    *,
+    task_families: set[str] | None = None,
+    digest_hints: list[dict[str, Any]] | None = None,
+    existing: Any = None,
 ) -> None:
     cand = importlib.import_module("app.analysis.candidates")
-    monkeypatch.setattr(cand, "SessionLocal", lambda: FakeDB(hit_rows, set(spy.families)))
+    monkeypatch.setattr(
+        cand,
+        "SessionLocal",
+        lambda: FakeDB(
+            hit_rows,
+            task_families if task_families is not None else set(spy.families),
+            digest_hints,
+            existing,
+        ),
+    )
     monkeypatch.setattr(cand, "queue", spy)
     monkeypatch.setattr(cand.subjects, "staleness", lambda *_a, **_k: 0.5, raising=True)
     monkeypatch.setattr(
         cand.feedback, "apply", lambda strength, *_a, **_k: strength, raising=True
     )
+    monkeypatch.setattr(
+        cand.suppression, "decide_task", lambda **_k: None, raising=True
+    )
 
 
-def test_external_scan_folds_into_one_asset_task(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """验收：一次外→内扫描 → 1 条以被访问资产为主体的任务，带方向与外部对端。"""
+def test_external_scan_folds_into_one_hourly_digest(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """验收：一次外→内扫描 → 1 条摘要，条目主体是被访问资产，带方向与外部对端。"""
     cand = importlib.import_module("app.analysis.candidates")
     spy = EnqueueSpy()
     rows = [_hit(f"c{i % 3}") for i in range(30)]  # 归到 3 个簇 ID（同规则同资产）
     _install(monkeypatch, rows, spy)
-    made = cand.enqueue_hit_clusters(client=None)
-    assert made == 3
-    for call in spy.calls:
-        assert call["kind"] == "hit_cluster"
-        assert call["subject_kind"] == "asset"
-        assert call["subject"] == ADMIN_ASSET, "主体 = 被扫描的资产，不是几十个外部 IP"
-        hint = call["hint"]
-        assert hint["方向"] == "out→in"
-        assert SCANNER in hint["对端"]
-        assert {"kind": "ip", "value": ADMIN_ASSET} in hint["受影响资产"]
-        assert len(hint["事件ID"]) <= 20
-        assert hint["规则"] == ["端口扫描"]
-        assert hint["reuse_identity"]
+    made = cand.enqueue_hit_digest(client=None)
+    assert made == 1
+    call = spy.calls[0]
+    assert call["kind"] == "hit_digest"
+    assert call["subject_kind"] == "digest"
+    assert "条目数" in call["hint"] and call["hint"]["条目数"] == 3
+    items = call["hint"]["items"]
+    for item in items:
+        assert item["subject"] == ADMIN_ASSET, "主体 = 被扫描的资产，不是几十个外部 IP"
+        assert item["kind"] == "hit_cluster"
+        assert item["subject_kind"] == "asset"
+        facts = item["facts"]
+        assert facts["方向"] == "out→in"
+        assert SCANNER in facts["对端"]
+        case_hint = item["case_hint"]
+        assert {"kind": "ip", "value": ADMIN_ASSET} in case_hint["受影响资产"]
+        assert len(case_hint["事件ID"]) <= 20
+        assert case_hint["规则"] == ["端口扫描"]
+        assert item["reuse_identity"]
+    assert call["force"] is True
 
 
-def test_same_family_not_retasked_within_24h(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_same_family_not_retasked_within_24h(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """24h 观察护栏：同（主体, 规则族）第二次出现不重派（持续扫描≠新现象）。"""
     cand = importlib.import_module("app.analysis.candidates")
     spy = EnqueueSpy()
     _install(monkeypatch, [_hit("c1")], spy)
-    assert cand.enqueue_hit_clusters(None) == 1
+    assert cand.enqueue_hit_digest(None) == 1
     # 下一轮：同一个簇族换了个小时桶的 cluster_id、换了扫描器 IP
     _install(monkeypatch, [_hit("c1next")], spy)
-    assert cand.enqueue_hit_clusters(None) == 0, "24h 内同一簇族只能观察一次"
+    assert cand.enqueue_hit_digest(None) == 0, "24h 内同一簇族只能观察一次"
     assert len(spy.calls) == 1
+
+
+def test_completed_digest_also_guards_families(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已完成分流的摘要也算“看过”：闸门没点名的正常簇不能每小时重复展示。"""
+    cand = importlib.import_module("app.analysis.candidates")
+    first = EnqueueSpy()
+    _install(monkeypatch, [_hit("c1")], first)
+    assert cand.enqueue_hit_digest(None) == 1
+    family = next(iter(first.families))
+    # 下一小时：同一个簇族换了 cluster_id，但上一小时的摘要已经把它交给闸门看过
+    digest_hints = [{"items": [{"item_id": "hit|c1", "reuse_identity": family}]}]
+    spy = EnqueueSpy()
+    _install(monkeypatch, [_hit("c1next")], spy, digest_hints=digest_hints)
+    assert cand.enqueue_hit_digest(None) == 0
+    assert spy.calls == []
 
 
 def test_strength_ignores_rule_severity(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,24 +240,49 @@ def test_strength_ignores_rule_severity(rig: Any, monkeypatch: pytest.MonkeyPatc
     for severity in ("critical", "info", "high"):
         spy = EnqueueSpy()
         _install(monkeypatch, [_hit("c1", severity=severity)], spy)
-        assert cand.enqueue_hit_clusters(None) == 1
+        assert cand.enqueue_hit_digest(None) == 1
         strengths.append(float(spy.calls[0]["strength"]))
     assert strengths[0] == strengths[1] == strengths[2], f"强度因严重度变了：{strengths}"
     assert 0.0 <= strengths[0] <= 1.0
 
 
-def test_cap_twenty_per_round(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """每轮上限 20：25 个不同簇也只占 20 个坑。"""
+def test_digest_caps_items_per_hour(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """单条摘要最多 30 个簇：35 个不同簇也只列 30 个，其余留给下一小时。"""
     cand = importlib.import_module("app.analysis.candidates")
     spy = EnqueueSpy()
-    rows = []
-    for i in range(25):
-        rule = f"规则{i:02d}"
-        rows.append(_hit(f"cls{i}", rule=rule))
+    rows = [_hit(f"cls{i}", rule=f"规则{i:02d}") for i in range(35)]
     _install(monkeypatch, rows, spy)
-    made = cand.enqueue_hit_clusters(None)
-    assert made == 20
-    assert len(spy.calls) == 20
+    made = cand.enqueue_hit_digest(None)
+    assert made == 1
+    assert len(spy.calls[0]["hint"]["items"]) == 30
+
+
+def test_one_digest_per_hour(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一小时已经排过摘要就不重复建：新簇进入下一个小时。"""
+    cand = importlib.import_module("app.analysis.candidates")
+    spy = EnqueueSpy()
+    _install(monkeypatch, [_hit("c1")], spy, existing=SimpleNamespace(id="digest-1"))
+    assert cand.enqueue_hit_digest(None) == 0
+    assert spy.calls == []
+
+
+def test_suppressed_cluster_never_reaches_gate(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已有抑制覆盖的簇不占摘要位置，也不再消耗一次闸门调用。"""
+    cand = importlib.import_module("app.analysis.candidates")
+    spy = EnqueueSpy()
+    _install(monkeypatch, [_hit("c1")], spy)
+    noted: list[str] = []
+    monkeypatch.setattr(
+        cand.suppression, "decide_task", lambda **_k: SimpleNamespace(id="sup-1"), raising=True
+    )
+    monkeypatch.setattr(
+        cand.suppression, "note_hit", lambda sup_id: noted.append(str(sup_id)), raising=True
+    )
+    assert cand.enqueue_hit_digest(None) == 0
+    assert spy.calls == []
+    assert noted == ["sup-1"]
 
 
 def test_external_to_external_is_skipped(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,7 +290,7 @@ def test_external_to_external_is_skipped(rig: Any, monkeypatch: pytest.MonkeyPat
     cand = importlib.import_module("app.analysis.candidates")
     spy = EnqueueSpy()
     _install(monkeypatch, [_hit("c1", dst=SCANNER)], spy)  # src/dst 都是公网
-    assert cand.enqueue_hit_clusters(None) == 0
+    assert cand.enqueue_hit_digest(None) == 0
 
 
 def test_knob_off_disables_generator(rig: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,13 +299,15 @@ def test_knob_off_disables_generator(rig: Any, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cand.params, "candidate_kinds", lambda: {"novelty"})
     spy = EnqueueSpy()
     _install(monkeypatch, [_hit("c1")], spy)
-    assert cand.enqueue_hit_clusters(None) == 0
+    assert cand.enqueue_hit_digest(None) == 0
     assert spy.calls == []
 
 
 def test_kinds_default_includes_hit_cluster() -> None:
     kinds = importlib.import_module("app.analysis.params")
     assert "hit_cluster" in kinds.KINDS
+    assert "hit_digest" in kinds.KINDS
+    assert "hit_case" in kinds.KINDS
     assert "hit_cluster" in str(kinds._BY_KEY["analysis.candidate_kinds"].default)
 
 
@@ -217,13 +323,14 @@ def test_lateral_cluster_principal_is_source_actor(
     row.direction = "in→in"
     row.client = actor
     _install(monkeypatch, [row], spy)
-    assert cand.enqueue_hit_clusters(None) == 1
-    assert spy.calls[0]["subject"] == actor
-    hint = spy.calls[0]["hint"]
-    assert hint["主体角色"] == "actor"
-    assert hint["actor_asset"] == {"kind": "ip", "value": actor}
-    assert {"kind": "ip", "value": victim} in hint["victim_assets"]
-    assert {"kind": "ip", "value": victim} in hint["受影响资产"]
+    assert cand.enqueue_hit_digest(None) == 1
+    item = spy.calls[0]["hint"]["items"][0]
+    assert item["subject"] == actor
+    case_hint = item["case_hint"]
+    assert case_hint["主体角色"] == "actor"
+    assert case_hint["actor_asset"] == {"kind": "ip", "value": actor}
+    assert {"kind": "ip", "value": victim} in case_hint["victim_assets"]
+    assert {"kind": "ip", "value": victim} in case_hint["受影响资产"]
 
 
 def test_dns_cluster_family_separates_domains(
@@ -243,9 +350,11 @@ def test_dns_cluster_family_separates_domains(
         {"query": "32849170ffb36267323742377076e244.rdt.tfogc.com"}
     ]
     _install(monkeypatch, [first, second], spy)
-    assert cand.enqueue_hit_clusters(None) == 2
+    assert cand.enqueue_hit_digest(None) == 1
+    items = spy.calls[0]["hint"]["items"]
+    assert len(items) == 2
     assert len(spy.families) == 2, "不同 DNS 主域不能共享同一个 reuse_identity"
-    domains = {tuple(call["hint"]["dns_domains"]) for call in spy.calls}
+    domains = {tuple(item["case_hint"]["dns_domains"]) for item in items}
     assert domains == {("smtcdns.com",), ("tfogc.com",)}
 
 
@@ -259,11 +368,11 @@ def test_in_to_out_cluster_keeps_our_assets_as_affected(
     row.direction = "in→out"
     row.dst_ips = [SCANNER]
     _install(monkeypatch, [row], spy)
-    assert cand.enqueue_hit_clusters(None) == 1
-    hint = spy.calls[0]["hint"]
-    assert hint["方向"] == "in→out"
-    assert {"kind": "ip", "value": ADMIN_ASSET} in hint["受影响资产"]
-    assert SCANNER in hint["对端"]
+    assert cand.enqueue_hit_digest(None) == 1
+    case_hint = spy.calls[0]["hint"]["items"][0]["case_hint"]
+    assert case_hint["方向"] == "in→out"
+    assert {"kind": "ip", "value": ADMIN_ASSET} in case_hint["受影响资产"]
+    assert SCANNER in case_hint["对端"]
 
 
 def test_recall_window_limits_query(
@@ -285,7 +394,7 @@ def test_recall_window_limits_query(
             return super().scalars(stmt)
 
     monkeypatch.setattr(cand, "SessionLocal", lambda: SpyDB([], set(spy.keys)))
-    cand.enqueue_hit_clusters(None)
+    cand.enqueue_hit_digest(None)
     assert captured["stmts"], "应当发起查询"
     query = " ".join(captured["stmts"])
     assert "created_at >=" in query or "created_at >= " in query
